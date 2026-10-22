@@ -70,8 +70,12 @@ impl Transport for Models {
             reason: RunFinishReason::Completed,
         })
     }
-    fn watch(&self, _: &Route) -> Result<(), BrocaError> {
-        Ok(())
+    fn event_get(&self, _: &Route, _: &RunEventGetParams) -> Result<RunEventReply, BrocaError> {
+        Ok(RunEventReply {
+            state: "absent".into(),
+            event_key: None,
+            jcs: None,
+        })
     }
     fn result(&self, _: &Route, _: &RunResultParams) -> Result<RunResultResponse, BrocaError> {
         Ok(RunResultResponse {

@@ -1,6 +1,6 @@
 //! The Broca wire subset used by flow model calls.
 //!
-//! Send, status and subscribe shapes are mirrored from Broca commit
+//! Send and status shapes are mirrored from Broca commit
 //! 3fded44a5d9b4ff4487259d4c67c152af272b729: broca-wire/src/lib.rs
 //! (97-195, 402-424, 669-780) and broca-protocol/src/{caller,usage,request}.rs.
 //! The `run.result` shapes are mirrored from Broca commit
@@ -96,30 +96,6 @@ pub struct StatusParams {
     pub run_id: Option<String>,
 }
 
-/// A subscribe attach point. Broca also accepts `"start"` and a durable
-/// cursor; basal only ever attaches at the live head, because the stream
-/// only wakes it and never carries a result it must not miss.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum FromWire {
-    Named(String),
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubscribeParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<FromWire>,
-}
-impl SubscribeParams {
-    /// Attach at the session's live head.
-    pub fn live() -> Self {
-        Self {
-            from: Some(FromWire::Named("live".into())),
-        }
-    }
-}
-
 /// Metadata not used for flow settlement remains available to adapters.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Terminal {
@@ -186,34 +162,13 @@ impl RunStatusResponse {
     }
 }
 
-/// The control units basal reacts to. The stream is only a wake signal: a
-/// finished run prompts a `run.result` read, and every other unit,
-/// assistant messages included, is ignored.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ControlUnit {
-    /// Its reason and metadata are not decoded here: `run.result` and
-    /// `run.status` are the only sources of a call's outcome and usage.
-    RunFinished {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run_id: Option<String>,
-    },
-    #[serde(other)]
-    Other,
-}
-/// A subscribe event. The control cursor is not decoded: basal keeps no
-/// position in the stream.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SubscribeEvent {
-    Control { unit: Box<ControlUnit> },
-    Display { event: Value },
-}
-
 pub const OP_RUN_RESULT: &str = "run.result";
 pub const OP_RUN_STATUS: &str = "run.status";
 pub const OP_SESSION_SEND: &str = "session.send";
-pub const OP_SESSION_SUBSCRIBE: &str = "session.subscribe";
+/// Reads a run event's body by its event key. Broca answers it only on a
+/// route bound to the event's own session (the bind the send used); on any
+/// other route the event is `absent`.
+pub const OP_RUN_EVENT_GET: &str = "run.event.get";
 /// The refusal code `run.result` answers when the session has no run with
 /// the requested run id.
 pub const UNKNOWN_RUN: &str = "unknown_run";
@@ -264,4 +219,25 @@ pub struct RunResultResponse {
     pub error: Option<ProviderError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_message: Option<FinalMessage>,
+}
+
+/// `run.event.get` params. Unknown members are refused, as Broca refuses them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunEventGetParams {
+    pub event_key: String,
+}
+
+/// `run.event.get`, inside the management `result`. `found` carries the
+/// event key and `jcs`, the exact body bytes the bus digest covers. Broca
+/// answers `absent` for an unknown key, a key from another session, or a
+/// body pruned after its 24 hours. `state` is decoded as an open string.
+/// Shapes from Broca's captured replies (test-vectors/broca-run-events).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunEventReply {
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jcs: Option<String>,
 }

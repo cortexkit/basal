@@ -3,11 +3,15 @@
 //! The host records call identity, reads each accepted call's outcome with
 //! `run.result` and delivers it.
 //!
-//! The session stream is only a wake signal. Whenever it reports a finished
-//! run, and on every reconnect or module start, `BrocaHost::poll` asks
-//! `run.result` about each accepted call that has no outcome yet, so a missed
-//! stream event costs latency, never correctness. `run.result` reads through
-//! Broca's archive, so it answers for archived sessions too.
+//! Broca publishes `run.ended` (and, after a bus outage, `run.skipped`) on the
+//! account's event stream. The module's event reader commits each notice that
+//! names a pending call as a wake (see `RunWake`) before it acknowledges the
+//! notice, and `BrocaHost::wake` then checks the body against the bus digest
+//! and reads that one call with `run.result`. Events are only wake signals:
+//! every accepted call also carries a durable `check_at`, so a lost event
+//! costs latency (bounded by `MAX_CHECK_MS` and the run's deadline), never an
+//! outcome. Module start reads every pending call once. `run.result` reads
+//! through Broca's archive, so it answers for archived sessions too.
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod fake;
@@ -84,11 +88,13 @@ pub trait Transport: Send + Sync {
     }
     fn configure_flow(&self, _flow_id: &str, _scope: Option<crate::flow_scope::RegisteredScope>) {}
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError>;
-    /// Makes sure a subscription attached at the session's live head is
-    /// open, and that it wakes `BrocaHost::poll` when the session's run
-    /// finishes. Called before each `run.result` read, so a run that
-    /// finishes after the read still wakes the host.
-    fn watch(&self, route: &Route) -> Result<(), BrocaError>;
+    /// `run.event.get`: a run event's body by its event key, asked on the
+    /// call's own route (see `BrocaHost::event_route`).
+    fn event_get(
+        &self,
+        route: &Route,
+        params: &RunEventGetParams,
+    ) -> Result<RunEventReply, BrocaError>;
     fn result(
         &self,
         route: &Route,
@@ -98,7 +104,7 @@ pub trait Transport: Send + Sync {
     /// `run.result` does not carry.
     fn status(&self, route: &Route, params: &StatusParams)
     -> Result<RunStatusResponse, BrocaError>;
-    /// Closes the session's subscription once its call is settled.
+    /// Closes the call's route once its call is settled.
     fn release(&self, _route: &Route) {}
 }
 
@@ -130,6 +136,204 @@ pub trait StateStore: Send + Sync {
             .collect())
     }
     fn save(&self, call: &StoredCall) -> Result<(), BrocaError>;
+    /// The basal run's deadline in Unix milliseconds, if it has one: a
+    /// pending call is checked once before it (see `next_check_at`).
+    fn deadline(&self, _run_id: &str) -> Result<Option<i64>, BrocaError> {
+        Ok(None)
+    }
+    /// Committed bus wakes not yet handled, oldest first.
+    fn wakes(&self) -> Result<Vec<RunWake>, BrocaError> {
+        Ok(Vec::new())
+    }
+    fn clear_wake(&self, _event_key: &str, _send_id: &str) -> Result<(), BrocaError> {
+        Ok(())
+    }
+    /// Pending accepted calls whose check is due at `now`. A call with no
+    /// check time yet (saved before checks existed) is due at once.
+    fn due(&self, now: i64) -> Result<Vec<String>, BrocaError> {
+        Ok(self
+            .load()?
+            .into_iter()
+            .filter(|call| call.waiting() && call.check_at.unwrap_or(0) <= now)
+            .map(|call| call.send_id)
+            .collect())
+    }
+    /// The earliest moment anything is due: a check, or now (0) when a wake
+    /// is waiting. `None` when nothing is pending, so the host sleeps until
+    /// something wakes it.
+    fn next_check(&self) -> Result<Option<i64>, BrocaError> {
+        if !self.wakes()?.is_empty() {
+            return Ok(Some(0));
+        }
+        Ok(self
+            .load()?
+            .into_iter()
+            .filter(StoredCall::waiting)
+            .map(|call| call.check_at.unwrap_or(0))
+            .min())
+    }
+}
+
+/// Which bus notice committed a wake for a pending call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeKind {
+    /// `run.ended` naming the call's Broca run.
+    Ended,
+    /// `run.skipped` naming the call's session: Broca dropped events from
+    /// that session during a bus outage, so its run may have ended unseen.
+    Skipped,
+    /// A `run.skipped` for a session no pending call has learned the
+    /// `session_ref` of. It may be this call's, so the call is read once.
+    /// Its body is not fetched: Broca serves a body only on its own
+    /// session's route, which is unknown here.
+    Recheck,
+}
+impl WakeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ended => "ended",
+            Self::Skipped => "skipped",
+            Self::Recheck => "recheck",
+        }
+    }
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "ended" => Some(Self::Ended),
+            "skipped" => Some(Self::Skipped),
+            "recheck" => Some(Self::Recheck),
+            _ => None,
+        }
+    }
+}
+
+/// A bus notice the event reader committed for one pending call, before it
+/// acknowledged the notice. The headers are copied as the bus carried them;
+/// nothing here is trusted until the body read with `run.event.get` matches
+/// `digest` (see `verify_run_event`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunWake {
+    pub send_id: String,
+    pub kind: WakeKind,
+    /// The bus message id; empty for `Recheck`, which has no body to read.
+    pub event_key: String,
+    /// SHA-256 of the body's JSON Canonicalization Scheme (JCS, RFC 8785)
+    /// bytes, from the `Ck-Content-Digest` header.
+    pub digest: String,
+    pub run_id: Option<String>,
+    pub session_ref: Option<String>,
+    pub seq: Option<String>,
+}
+
+/// Why a run event's body does not support its wake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventRefusal {
+    /// Broca has no such event on this route: an unknown key, another
+    /// session's event, or a body pruned after its 24 hours.
+    Absent,
+    /// The body disagrees with its bus message.
+    Mismatch(&'static str),
+}
+
+/// Checks a `run.event.get` reply against the bus message the wake was
+/// committed from: the body must hash to the bus digest, and must name the
+/// same event key, run, session and sequence number as the headers. Returns
+/// the decoded body.
+pub fn verify_run_event(wake: &RunWake, reply: &RunEventReply) -> Result<Value, EventRefusal> {
+    use sha2::{Digest, Sha256};
+    if reply.state != "found" {
+        return Err(EventRefusal::Absent);
+    }
+    if reply.event_key.as_deref() != Some(wake.event_key.as_str()) {
+        return Err(EventRefusal::Mismatch("event key"));
+    }
+    let jcs = reply
+        .jcs
+        .as_deref()
+        .ok_or(EventRefusal::Mismatch("body missing"))?;
+    let expected = digest_hex(&wake.digest).ok_or(EventRefusal::Mismatch("bus digest"))?;
+    if format!("{:x}", Sha256::digest(jcs.as_bytes())) != expected {
+        return Err(EventRefusal::Mismatch("digest"));
+    }
+    let body: Value =
+        serde_json::from_str(jcs).map_err(|_| EventRefusal::Mismatch("body is not JSON"))?;
+    let text = |field: &str| body.get(field).and_then(Value::as_str);
+    // The `seq` header is decimal text; the body carries the number.
+    let seq_matches = |field: &str| {
+        wake.seq.as_ref().is_none_or(|header| {
+            body.get(field)
+                .and_then(Value::as_u64)
+                .is_some_and(|n| &n.to_string() == header)
+        })
+    };
+    let session_matches = || {
+        wake.session_ref
+            .as_deref()
+            .is_none_or(|header| text("session_ref") == Some(header))
+    };
+    match wake.kind {
+        WakeKind::Ended => {
+            if wake.run_id.is_none() || text("run_id") != wake.run_id.as_deref() {
+                return Err(EventRefusal::Mismatch("run id"));
+            }
+            if !session_matches() {
+                return Err(EventRefusal::Mismatch("session"));
+            }
+            if !seq_matches("seq") {
+                return Err(EventRefusal::Mismatch("sequence"));
+            }
+            if text("terminal").is_none() {
+                return Err(EventRefusal::Mismatch("not an ended run"));
+            }
+        }
+        WakeKind::Skipped => {
+            if wake.session_ref.is_none() || !session_matches() {
+                return Err(EventRefusal::Mismatch("session"));
+            }
+            // A skipped marker's `seq` header is the last skipped sequence.
+            if !seq_matches("to_seq") {
+                return Err(EventRefusal::Mismatch("sequence"));
+            }
+        }
+        WakeKind::Recheck => return Err(EventRefusal::Mismatch("a recheck has no body")),
+    }
+    Ok(body)
+}
+
+/// Bare lowercase SHA-256 hex, also accepting the `sha256:` prefix some
+/// publishers use. Anything else is refused.
+fn digest_hex(digest: &str) -> Option<&str> {
+    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+    (hex.len() == 64
+        && hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    .then_some(hex)
+}
+
+/// How long after acceptance a call with no event is read anyway.
+pub const FIRST_CHECK_MS: i64 = 120_000;
+/// The longest a pending call goes unread when no event arrives. A flow
+/// run's deadline defaults to ten minutes, so a lost `run.ended` must not
+/// leave a finished call unread much longer than this.
+pub const MAX_CHECK_MS: i64 = 300_000;
+/// A pending call is read once at least this long before its run's deadline,
+/// so a run never reaches its deadline with a finished call unread.
+pub const DEADLINE_MARGIN_MS: i64 = 30_000;
+
+/// When a pending call that has been checked `checks` times is next read if
+/// no event arrives first: two minutes, then doubling up to `MAX_CHECK_MS`,
+/// and never later than `DEADLINE_MARGIN_MS` before the run's deadline. Once
+/// that point has passed, the doubling alone applies, so a run near its
+/// deadline is not read in a tight loop.
+pub fn next_check_at(now: i64, checks: u32, deadline: Option<i64>) -> i64 {
+    let delay = FIRST_CHECK_MS
+        .saturating_mul(1i64 << checks.min(8))
+        .min(MAX_CHECK_MS);
+    let at = now.saturating_add(delay);
+    match deadline.map(|d| d.saturating_sub(DEADLINE_MARGIN_MS)) {
+        Some(before) if before > now => at.min(before),
+        _ => at,
+    }
 }
 
 pub struct FlowIdentity {
@@ -192,6 +396,24 @@ pub struct StoredCall {
     pub selection: ModelSelection,
     #[serde(default)]
     pub report_attempted: bool,
+    /// When the call is next read if no bus event wakes it first (Unix ms).
+    /// Absent on a call saved before checks existed: due at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_at: Option<i64>,
+    /// How many scheduled checks found the run still going; each one doubles
+    /// the wait before the next (see `next_check_at`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub checks: u32,
+}
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+impl StoredCall {
+    /// Accepted by Broca and not yet recorded by the runtime: the calls a
+    /// bus wake or a scheduled check can settle.
+    pub fn waiting(&self) -> bool {
+        !self.acknowledged && !self.deferred && self.handle.is_some()
+    }
 }
 
 pub struct BrocaHost {
@@ -211,6 +433,19 @@ pub struct BrocaHost {
     status_lag: Mutex<HashMap<String, u32>>,
     sink: Mutex<Option<Arc<dyn CompletionSink>>>,
     codemode_sink: Mutex<Option<Arc<dyn CompletionSink>>>,
+    /// Unix milliseconds, for scheduling checks. Tests substitute a clock.
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    /// Wakes the thread that runs `wake` (see `subc::PollWake`), so it
+    /// handles new bus wakes and recomputes when the next check is due.
+    waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+/// What became of one committed wake.
+enum WakeStep {
+    /// Handled (or no longer relevant): delete it.
+    Done,
+    /// Another activation holds the call: keep the wake for the next pass.
+    Busy,
 }
 
 use basal_proto::util::lock;
@@ -234,6 +469,31 @@ impl BrocaHost {
             status_lag: Mutex::new(HashMap::new()),
             sink: Mutex::new(None),
             codemode_sink: Mutex::new(None),
+            clock: Arc::new(|| i64::try_from(basal_proto::util::unix_millis()).unwrap_or(i64::MAX)),
+            waker: Mutex::new(None),
+        }
+    }
+
+    /// Replaces the clock checks are scheduled by.
+    pub fn with_clock(mut self, clock: Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Sets what `model_events_committed` and newly scheduled checks call to
+    /// wake the thread that runs `wake`.
+    pub fn set_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.waker) = Some(waker);
+    }
+
+    fn now(&self) -> i64 {
+        (self.clock)()
+    }
+
+    fn notify(&self) {
+        let waker = lock(&self.waker).clone();
+        if let Some(waker) = waker {
+            waker();
         }
     }
 
@@ -391,6 +651,8 @@ impl BrocaHost {
             acknowledged: false,
             selection: e.selection,
             report_attempted: false,
+            check_at: None,
+            checks: 0,
         })
     }
 
@@ -454,10 +716,6 @@ impl BrocaHost {
         let Some(run_id) = call.broca_run_id.clone() else {
             return Ok(());
         };
-        // Watch before reading, so a run that ends after the read still
-        // wakes the host. A session that can no longer be watched (archived,
-        // say) matters only if its run has not ended yet.
-        let watched = self.transport.watch(&call.route);
         let result = match self.transport.result(
             &call.route,
             &RunResultParams {
@@ -488,7 +746,7 @@ impl BrocaHost {
             if !NONTERMINAL_STATES.contains(&state) {
                 tracing::warn!(broca_run_id = %run_id, state, "unrecognised Broca run state; waiting");
             }
-            return watched;
+            return Ok(());
         }
         // Usage and the provider's finish reason come only from run.status.
         // If run.status has not yet caught up with an ended run, wait for it
@@ -602,81 +860,193 @@ impl BrocaHost {
         Ok(())
     }
 
-    /// Run on stream wakeups, after reconnect and at module start: asks
-    /// `run.result` about every accepted call without an outcome and
-    /// delivers what is known. Errors leave durable work pending for the
-    /// next invocation, including sink failures after an outcome is saved.
+    /// Run at module start and when a completion sink attaches: reads every
+    /// pending call once with `run.result` and delivers what is known, which
+    /// is how a restart learns outcomes that arrived while basal was down.
+    /// Errors leave durable work pending for the next pass, including sink
+    /// failures after an outcome is saved.
     pub fn poll(&self) -> Result<(), BrocaError> {
-        let sink = lock(&self.sink).clone();
         let mut first_error = None;
         for send_id in self.store.pending_ids()? {
-            let gate = self.call_gate(&send_id);
-            // Another activation holds this send id's lock because it is
-            // dispatching the same call right now. Skip the call instead of
-            // waiting: once that activation commits the dispatch to the
-            // journal it polls again (`dispatch_committed`), and that poll
-            // picks the call up.
-            let Ok(_guard) = gate.try_lock() else {
-                continue;
-            };
-            let mut call = match self.store.get(&send_id) {
-                Ok(Some(call)) => call,
-                Ok(None) => continue,
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                    continue;
-                }
-            };
-            if call.acknowledged || call.deferred {
-                continue;
-            }
-            let codemode =
-                call.route.flow_id.as_deref() == Some(&format!("codemode:{}", call.basal_run_id));
-            if codemode && !self.store.codemode_active(&call.basal_run_id)? {
-                call.acknowledged = true;
-                self.store.save(&call)?;
-                self.transport.release(&call.route);
-                continue;
-            }
-            let sink = if codemode {
-                lock(&self.codemode_sink).clone()
-            } else {
-                sink.clone()
-            };
-            if codemode && sink.is_none() {
-                continue;
-            }
-            // A codemode call that Broca hasn't accepted yet is still being sent
-            // by the run's supervisor. Polling only follows calls Broca has
-            // accepted, so it must not send this one a second time.
-            if codemode && call.handle.is_none() {
-                continue;
-            }
-            let identity =
-                if !codemode && self.scope_checks.load(std::sync::atomic::Ordering::SeqCst) {
-                    match self.store.identity(&call.basal_run_id) {
-                        Ok(identity) => identity,
-                        Err(error) => {
-                            first_error.get_or_insert(error);
-                            continue;
-                        }
-                    }
-                } else {
-                    None
-                };
-            if let Some(identity) = identity {
-                call.route.flow_id = Some(identity.flow_id.clone());
-                if let Err(error) = self.transport.refresh_flow(&identity) {
-                    first_error.get_or_insert(error);
-                    continue;
-                }
-            }
             // One call's failure must not hold back the others.
-            if let Err(error) = self.advance(&mut call, sink.as_deref()) {
+            if let Err(error) = self.visit(&send_id) {
                 first_error.get_or_insert(error);
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    /// Run when the event reader commits wakes and whenever a check falls
+    /// due: handles each committed wake, then reads each call whose check is
+    /// due. Reads nothing else, so an idle module makes no Broca calls.
+    pub fn wake(&self) -> Result<(), BrocaError> {
+        let mut first_error = None;
+        match self.store.wakes() {
+            Ok(wakes) => {
+                for wake in wakes {
+                    match self.take_wake(&wake) {
+                        Ok(WakeStep::Done) => {
+                            if let Err(error) =
+                                self.store.clear_wake(&wake.event_key, &wake.send_id)
+                            {
+                                first_error.get_or_insert(error);
+                            }
+                        }
+                        Ok(WakeStep::Busy) => {}
+                        // A failure that may pass keeps the wake for a retry.
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+        for send_id in self.store.due(self.now())? {
+            if let Err(error) = self.visit(&send_id) {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// How long until `wake` has work: the earliest due check, or `None`
+    /// when no call is pending. Never shorter than `MIN_TIMER`: a call still
+    /// due right after a pass is held by another activation, which reads it
+    /// itself when its dispatch commits, so waiting costs nothing.
+    pub fn next_wake_in(&self) -> Option<std::time::Duration> {
+        match self.store.next_check() {
+            Ok(None) => None,
+            Ok(Some(at)) => Some(std::time::Duration::from_millis(
+                u64::try_from(at.saturating_sub(self.now()).max(MIN_TIMER_MS)).unwrap_or(u64::MAX),
+            )),
+            Err(error) => {
+                tracing::warn!(%error, "cannot read when the next Broca check is due");
+                Some(std::time::Duration::from_millis(MIN_TIMER_MS as u64))
+            }
+        }
+    }
+
+    /// Makes the wake's call due now if the wake is genuine. A body that is
+    /// absent or does not match its bus message settles nothing: the call
+    /// keeps its scheduled check, which reads the run regardless.
+    fn take_wake(&self, wake: &RunWake) -> Result<WakeStep, BrocaError> {
+        let gate = self.call_gate(&wake.send_id);
+        let Ok(_guard) = gate.try_lock() else {
+            return Ok(WakeStep::Busy);
+        };
+        let Some(mut call) = self.store.get(&wake.send_id)? else {
+            return Ok(WakeStep::Done);
+        };
+        if !call.waiting() {
+            return Ok(WakeStep::Done);
+        }
+        if wake.kind != WakeKind::Recheck {
+            if wake.kind == WakeKind::Ended
+                && call.broca_run_id.is_some()
+                && call.broca_run_id != wake.run_id
+            {
+                tracing::warn!(send_id = %call.send_id, event_key = %wake.event_key, "Broca run.ended names another run than the call's; ignoring it");
+                return Ok(WakeStep::Done);
+            }
+            let Some(route) = self.event_route(&mut call)? else {
+                return Ok(WakeStep::Busy);
+            };
+            let reply = match self.transport.event_get(
+                &route,
+                &RunEventGetParams {
+                    event_key: wake.event_key.clone(),
+                },
+            ) {
+                Ok(reply) => reply,
+                Err(BrocaError::Refused { code, detail }) => {
+                    tracing::warn!(send_id = %call.send_id, event_key = %wake.event_key, %code, %detail, "Broca refused run.event.get; the call waits for its scheduled check");
+                    return Ok(WakeStep::Done);
+                }
+                Err(error) => return Err(error),
+            };
+            if let Err(refusal) = verify_run_event(wake, &reply) {
+                tracing::warn!(send_id = %call.send_id, event_key = %wake.event_key, kind = wake.kind.as_str(), ?refusal, "Broca run event refused; the call waits for its scheduled check");
+                return Ok(WakeStep::Done);
+            }
+        }
+        call.check_at = Some(self.now());
+        self.store.save(&call)?;
+        Ok(WakeStep::Done)
+    }
+
+    /// The route `run.event.get` is asked on: the call's own session bind,
+    /// because Broca serves an event's body only on a route bound to the
+    /// event's session. `None` when the call cannot be read right now.
+    fn event_route(&self, call: &mut StoredCall) -> Result<Option<Route>, BrocaError> {
+        Ok(self.bind_route(call)?.then(|| call.route.clone()))
+    }
+
+    /// Readies a pending call's route for a read. A flow call's route is
+    /// re-pointed at the flow core still stands behind; a codemode call is
+    /// read only while its run is live and the supervisor's sink attached.
+    /// Returns false when the call must not be read now; a codemode call
+    /// whose run has ended is acknowledged instead.
+    fn bind_route(&self, call: &mut StoredCall) -> Result<bool, BrocaError> {
+        let codemode =
+            call.route.flow_id.as_deref() == Some(&format!("codemode:{}", call.basal_run_id));
+        if codemode {
+            if !self.store.codemode_active(&call.basal_run_id)? {
+                call.acknowledged = true;
+                self.store.save(call)?;
+                self.transport.release(&call.route);
+                return Ok(false);
+            }
+            // A codemode call that Broca hasn't accepted yet is still being
+            // sent by the run's supervisor, which must be the only sender.
+            return Ok(lock(&self.codemode_sink).is_some() && call.handle.is_some());
+        }
+        if self.scope_checks.load(std::sync::atomic::Ordering::SeqCst)
+            && let Some(identity) = self.store.identity(&call.basal_run_id)?
+        {
+            call.route.flow_id = Some(identity.flow_id.clone());
+            self.transport.refresh_flow(&identity)?;
+        }
+        Ok(true)
+    }
+
+    /// Reads one pending call and delivers what is known. A call whose run
+    /// is still going gets its next check (`next_check_at`).
+    fn visit(&self, send_id: &str) -> Result<(), BrocaError> {
+        let gate = self.call_gate(send_id);
+        // Another activation holds this send id's lock because it is
+        // dispatching the same call right now. Skip the call instead of
+        // waiting: once that activation commits the dispatch to the journal
+        // it reads the call again (`dispatch_committed`).
+        let Ok(_guard) = gate.try_lock() else {
+            return Ok(());
+        };
+        let Some(mut call) = self.store.get(send_id)? else {
+            return Ok(());
+        };
+        if call.acknowledged || call.deferred || !self.bind_route(&mut call)? {
+            return Ok(());
+        }
+        let codemode =
+            call.route.flow_id.as_deref() == Some(&format!("codemode:{}", call.basal_run_id));
+        let sink = if codemode {
+            lock(&self.codemode_sink).clone()
+        } else {
+            lock(&self.sink).clone()
+        };
+        self.advance(&mut call, sink.as_deref())?;
+        if !call.acknowledged && call.handle.is_some() {
+            let deadline = self.store.deadline(&call.basal_run_id).unwrap_or_else(|error| {
+                tracing::warn!(%error, run_id = %call.basal_run_id, "cannot read the run's deadline; checking its model call on the usual schedule");
+                None
+            });
+            call.check_at = Some(next_check_at(self.now(), call.checks, deadline));
+            call.checks = call.checks.saturating_add(1);
+            self.store.save(&call)?;
+        }
+        Ok(())
     }
 
     fn advance(
@@ -866,10 +1236,17 @@ impl Host for BrocaHost {
             Err(error) => Err(ambiguous(error.to_string())),
         }
     }
-    fn dispatch_committed(&self, _: &CallRequest) {
-        if let Err(error) = self.poll() {
+    fn dispatch_committed(&self, request: &CallRequest) {
+        // Read the call once now: its run may have ended before the reader
+        // could tie Broca's run.ended to it, since that needs the run id
+        // saved here. The read also schedules the call's first check.
+        if let Err(error) = self.visit(&request.idempotency_key) {
             tracing::error!(%error,"Broca completion remains pending after dispatch commit");
         }
+        self.notify();
+    }
+    fn model_events_committed(&self) {
+        self.notify();
     }
     fn now_ms(&self) -> f64 {
         0.0
@@ -907,6 +1284,10 @@ const TERMINAL_STATES: [&str; 6] = [
 /// exponential backoff, so an unreachable provider does not turn an
 /// indefinitely lagging status into a busy retry loop.
 pub const STATUS_LAG_POLLS: u32 = 12;
+
+/// The shortest wait between timed passes of `BrocaHost::wake` (see
+/// `next_wake_in`). Wakes from the event reader are not delayed by it.
+pub const MIN_TIMER_MS: i64 = 5_000;
 
 /// States of a run that has not ended. A paused run can still resume.
 const NONTERMINAL_STATES: [&str; 2] = ["active", "paused"];

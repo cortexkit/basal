@@ -934,3 +934,55 @@ select = { tests = ["manifest::tests::event_names_refuse_version_shaped_tokens",
 only = true
 build_timeout_s = 3600
 timeout_s = 600
+
+# Broca run events wake only the pending model call they name.
+[[control]]
+id = "broca-run-ended-wakes-calls-of-other-runs"
+guards = "a Broca run.ended commits a wake only for the pending model call waiting on that run"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "events::tests::" }
+expect_red = ["events::tests::broca_run_ended_commits_a_wake_only_for_the_pending_call_it_names", "events::tests::unrelated_events_wake_no_model_call_and_no_host"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = '"SELECT send_id FROM broca_waits WHERE broca_run_id = ?1",'
+new = '"SELECT send_id FROM broca_waits WHERE broca_run_id = ?1 OR 1", // NON-VACUITY BREAK'
+
+[[control]]
+id = "broca-run-skipped-ignores-its-known-session"
+guards = "a Broca run.skipped for a session a pending call has learned wakes that call"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "events::tests::" }
+expect_red = ["events::tests::broca_run_skipped_wakes_its_session_or_rechecks_unlearned_sessions"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = '"SELECT send_id FROM broca_waits WHERE session_ref = ?1",'
+new = '"SELECT send_id FROM broca_waits WHERE session_ref = ?1 AND 0", // NON-VACUITY BREAK'
+
+[[control]]
+id = "broca-run-skipped-for-an-unlearned-session-rechecks-nothing"
+guards = "a Broca run.skipped for a session no pending call has learned rechecks every call whose session is unknown"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "events::tests::" }
+expect_red = ["events::tests::broca_run_skipped_wakes_its_session_or_rechecks_unlearned_sessions"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = '"SELECT send_id FROM broca_waits WHERE session_ref IS NULL",'
+new = '"SELECT send_id FROM broca_waits WHERE session_ref IS NULL AND 0", // NON-VACUITY BREAK'

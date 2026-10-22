@@ -352,60 +352,6 @@ fn unknown_run_for_an_accepted_call_is_reported_as_unknown_not_rejected() {
 }
 
 #[test]
-fn a_missed_run_finished_is_recovered_on_reconnect_even_when_archived() {
-    for archived in [false, true] {
-        let fake = Arc::new(FakeBroca::default());
-        let store = Arc::new(MemoryStore::default());
-        let h = host(fake.clone(), store.clone());
-        let sink = Arc::new(Sink::default());
-        h.attach(sink.clone());
-        h.dispatch_model(&llm(0)).unwrap();
-        h.poll().unwrap();
-        assert_eq!(fake.watches().len(), 1);
-        fake.drop_finish("key:0").unwrap();
-        fake.finish(
-            "key:0",
-            "from run.result",
-            RunFinishReason::Completed,
-            Some(usage()),
-        )
-        .unwrap();
-        if archived {
-            fake.archive("key:0").unwrap();
-        }
-        // The finish never reached the subscription, so nothing woke the
-        // host and nothing was delivered.
-        assert_eq!(fake.wakes(), 0);
-        assert!(sink.completions.lock().unwrap().is_empty());
-        // A reconnect polls, which reads run.result for the pending call.
-        h.poll().unwrap();
-        let c = sink.completions.lock().unwrap();
-        assert_eq!(c.len(), 1, "archived: {archived}");
-        assert_eq!(value(&c[0]), json!({"text":"from run.result"}));
-        assert_eq!(c[0].outcome.usage.unwrap().input_tokens, Some(7));
-    }
-}
-
-#[test]
-fn a_finished_run_wakes_through_the_watch_opened_at_the_live_head() {
-    let fake = Arc::new(FakeBroca::default());
-    let h = host(fake.clone(), Arc::new(MemoryStore::default()));
-    let sink = Arc::new(Sink::default());
-    h.attach(sink.clone());
-    h.dispatch_model(&llm(0)).unwrap();
-    h.poll().unwrap();
-    assert_eq!(fake.watches().len(), 1);
-    fake.finish("key:0", "woken", RunFinishReason::Completed, None)
-        .unwrap();
-    assert_eq!(fake.wakes(), 1);
-    h.poll().unwrap();
-    assert_eq!(
-        value(&sink.completions.lock().unwrap()[0]),
-        json!({"text":"woken"})
-    );
-}
-
-#[test]
 fn a_module_restart_with_calls_in_flight_delivers_each_exactly_once() {
     let fake = Arc::new(FakeBroca::default());
     let store = Arc::new(MemoryStore::default());
@@ -617,7 +563,7 @@ fn malformed_inputs_and_unknown_kinds_are_typed_errors() {
 }
 
 #[test]
-fn wire_fixtures_pin_run_result_status_and_stream_shapes() {
+fn wire_fixtures_pin_run_result_status_and_event_get_shapes() {
     // run.result replies and params, in the JSON Broca's broca-wire crate
     // (role.rs) produces.
     let completed = json!({"run_id":"x","state":"completed","final_message":{"ordinal":3,"mid":"m3","text":""}});
@@ -645,18 +591,14 @@ fn wire_fixtures_pin_run_result_status_and_stream_shapes() {
         json!({"run_id":"x"})
     );
     assert_eq!(
-        serde_json::to_value(SubscribeParams::live()).unwrap(),
-        json!({"from":"live"})
+        serde_json::to_value(RunEventGetParams {
+            event_key: "k".into()
+        })
+        .unwrap(),
+        json!({"event_key":"k"})
     );
-    // A run_finished control event decodes (its cursor is ignored); an
-    // assistant message decodes as an ignored unit, never as text.
-    let finished: SubscribeEvent = serde_json::from_value(json!({"kind":"control","cursor":{"wal_seq":8,"sub_index":2},"unit":{"type":"run_finished","run_id":"x","reason":"completed","usage":{"output_tokens":5},"retries_used":0}})).unwrap();
     assert!(
-        matches!(finished, SubscribeEvent::Control { unit } if matches!(*unit, ControlUnit::RunFinished { run_id: Some(ref id) } if id == "x"))
-    );
-    let message: SubscribeEvent = serde_json::from_value(json!({"kind":"control","cursor":{"wal_seq":8,"sub_index":1},"unit":{"type":"assistant_message","message":{"message_id":"m","content":[]}}})).unwrap();
-    assert!(
-        matches!(message, SubscribeEvent::Control { unit } if matches!(*unit, ControlUnit::Other))
+        serde_json::from_value::<RunEventGetParams>(json!({"event_key":"k","extra":1})).is_err()
     );
 }
 

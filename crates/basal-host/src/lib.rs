@@ -564,6 +564,10 @@ pub trait Host: Send + Sync {
     /// Invoked after the accepted handle or immediate outcome is durable, so
     /// a fast model completion cannot arrive before its handle is journaled.
     fn dispatch_committed(&self, _request: &CallRequest) {}
+    /// Invoked after the event reader commits bus notices that may settle
+    /// pending model calls (Broca's `run.ended` and `run.skipped`), so the
+    /// model host can read those calls now instead of at their next check.
+    fn model_events_committed(&self) {}
     /// The current time in milliseconds since the Unix epoch, for a clock
     /// read. The runtime keeps the value monotonic within a run.
     fn now_ms(&self) -> f64;

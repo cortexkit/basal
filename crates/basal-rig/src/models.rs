@@ -260,6 +260,8 @@ mod tests {
             unknown: None,
             acknowledged: false,
             report_attempted: false,
+            check_at: None,
+            checks: 0,
             selection: ModelSelection {
                 provider_id: "openai".into(),
                 model_id: "gpt-6-luna".into(),

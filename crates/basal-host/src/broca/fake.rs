@@ -6,8 +6,9 @@
 //! run, its text the final message's text parts joined with nothing between
 //! them (`""` when it has none), `error` only on an `error` run, `reason`
 //! only on a paused one, and `unknown_run` for a run the session does not
-//! have. It answers for archived sessions too, which can no longer be
-//! watched.
+//! have. It answers for archived sessions too. `run.event.get` answers a
+//! published event only on the route of the session it belongs to, and
+//! `absent` everywhere else, as Broca does.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -29,19 +30,21 @@ struct Run {
     result: RunResultResponse,
     /// `run.result` refuses the run as `unknown_run`.
     forgotten: bool,
-    /// `session.subscribe` is refused, as for an archived session.
+    /// The session is archived. `run.result` and `run.status` still answer.
     archived: bool,
-    /// The finish is not delivered to the session's subscription.
-    drop_finish: bool,
-    /// A subscription is open on the session.
-    watched: bool,
+}
+/// A published run event's body and the session it belongs to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Event {
+    route: Route,
+    jcs: String,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct State {
     runs: BTreeMap<String, Run>,
     sends: Vec<(Route, Vec<u8>)>,
-    watches: Vec<Route>,
-    wakes: usize,
+    events: BTreeMap<String, Event>,
+    event_gets: usize,
     status_calls: usize,
     result_calls: usize,
     pending_next: bool,
@@ -117,14 +120,105 @@ impl FakeBroca {
     pub fn sends(&self) -> Vec<(Route, Vec<u8>)> {
         lock(&self.state).sends.clone()
     }
-    /// The session route of every subscription opened, in opening order.
-    pub fn watches(&self) -> Vec<Route> {
-        lock(&self.state).watches.clone()
+    /// How many times `run.event.get` was called.
+    pub fn event_gets(&self) -> usize {
+        lock(&self.state).event_gets
     }
-    /// How many run finishes reached an open subscription, each of which
-    /// would have woken the host.
-    pub fn wakes(&self) -> usize {
-        lock(&self.state).wakes
+    /// Stores an event body as Broca would, readable with `run.event.get`
+    /// only on `route`.
+    pub fn insert_event(&self, route: &Route, event_key: &str, jcs: &str) {
+        lock(&self.state).events.insert(
+            event_key.into(),
+            Event {
+                route: route.clone(),
+                jcs: jcs.into(),
+            },
+        );
+    }
+    /// Publishes `run.ended` for the call's run in its current state and
+    /// returns the wake the event reader would commit for it.
+    pub fn publish_ended(&self, send_id: &str) -> Result<RunWake, BrocaError> {
+        let (route, run_id, state) = {
+            let s = lock(&self.state);
+            let run = s
+                .runs
+                .get(send_id)
+                .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?;
+            (
+                run.route.clone(),
+                run.run_id.clone(),
+                run.result.state.clone(),
+            )
+        };
+        let session_ref = fake_session_ref(&route);
+        let seq = self.next_seq();
+        let jcs = serde_json::to_string(&json!({
+            "at_ms": 1, "run_id": run_id, "seq": seq, "session_ref": session_ref,
+            "structured_output": "absent", "terminal": state, "v": 1,
+        }))
+        .map_err(|e| BrocaError::Wire(e.to_string()))?;
+        Ok(self.publish(
+            send_id,
+            &route,
+            WakeKind::Ended,
+            Some(run_id),
+            session_ref,
+            seq,
+            jcs,
+        ))
+    }
+    /// Publishes `run.skipped` for the call's session and returns the wake
+    /// the event reader would commit for it.
+    pub fn publish_skipped(&self, send_id: &str) -> Result<RunWake, BrocaError> {
+        let route = lock(&self.state)
+            .runs
+            .get(send_id)
+            .map(|run| run.route.clone())
+            .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?;
+        let session_ref = fake_session_ref(&route);
+        let seq = self.next_seq();
+        let jcs = serde_json::to_string(&json!({
+            "count": 1, "from_ms": 1, "from_seq": seq, "session_ref": session_ref,
+            "to_ms": 1, "to_seq": seq,
+        }))
+        .map_err(|e| BrocaError::Wire(e.to_string()))?;
+        Ok(self.publish(
+            send_id,
+            &route,
+            WakeKind::Skipped,
+            None,
+            session_ref,
+            seq,
+            jcs,
+        ))
+    }
+    fn next_seq(&self) -> u64 {
+        lock(&self.state).events.len() as u64 + 1
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn publish(
+        &self,
+        send_id: &str,
+        route: &Route,
+        kind: WakeKind,
+        run_id: Option<String>,
+        session_ref: String,
+        seq: u64,
+        jcs: String,
+    ) -> RunWake {
+        use sha2::{Digest, Sha256};
+        let digest = format!("{:x}", Sha256::digest(jcs.as_bytes()));
+        let event_key = format!("{:x}", Sha256::digest(format!("{kind:?}:{seq}:{digest}")));
+        self.insert_event(route, &event_key, &jcs);
+        RunWake {
+            send_id: send_id.into(),
+            kind,
+            event_key,
+            digest,
+            run_id,
+            session_ref: Some(session_ref),
+            seq: Some(seq.to_string()),
+        }
     }
     /// How many times `run.status` and `run.result` were called, in that
     /// order.
@@ -138,15 +232,7 @@ impl FakeBroca {
     /// The session is archived: it can no longer be subscribed to, while
     /// `run.result` and `run.status` still answer.
     pub fn archive(&self, send_id: &str) -> Result<(), BrocaError> {
-        self.with_run(send_id, |r| {
-            r.archived = true;
-            r.watched = false;
-        })
-    }
-    /// The run's finish never reaches the subscription, as when the
-    /// connection drops at that moment.
-    pub fn drop_finish(&self, send_id: &str) -> Result<(), BrocaError> {
-        self.with_run(send_id, |r| r.drop_finish = true)
+        self.with_run(send_id, |r| r.archived = true)
     }
     /// `run.result` refuses the run as `unknown_run`, which Broca should
     /// never do for a run it accepted.
@@ -186,8 +272,8 @@ impl FakeBroca {
     }
     /// Sets both answers at once: `run.result` reports `state` (with
     /// `text` as the final message when completed, and the given error and
-    /// pause reason), `run.status` reports `status`. A terminal state
-    /// delivers a finish to the session's subscription.
+    /// pause reason), `run.status` reports `status`. Publishing the run's
+    /// events is the caller's choice (`publish_ended`).
     pub fn set(
         &self,
         send_id: &str,
@@ -215,11 +301,6 @@ impl FakeBroca {
             }),
         };
         run.status = status;
-        let wakes = run.watched && !run.drop_finish && !["active", "paused"].contains(&state);
-        if wakes {
-            run.watched = false;
-            s.wakes += 1;
-        }
         self.save(&s)
     }
     /// Changes only what `run.status` answers, leaving `run.result` alone.
@@ -266,8 +347,6 @@ impl Transport for FakeBroca {
                 },
                 forgotten: false,
                 archived: false,
-                drop_finish: false,
-                watched: false,
             };
             s.runs.insert(key.clone(), run);
         }
@@ -300,21 +379,27 @@ impl Transport for FakeBroca {
         }
         Ok(result)
     }
-    fn watch(&self, route: &Route) -> Result<(), BrocaError> {
+    fn event_get(
+        &self,
+        route: &Route,
+        params: &RunEventGetParams,
+    ) -> Result<RunEventReply, BrocaError> {
         let mut s = lock(&self.state);
-        let run = s
-            .runs
-            .values_mut()
-            .find(|r| &r.route == route)
-            .ok_or_else(|| refused("not_found"))?;
-        if run.archived {
-            return Err(refused("session_archived"));
-        }
-        if !run.watched {
-            run.watched = true;
-            s.watches.push(route.clone());
-        }
-        self.save(&s)
+        s.event_gets += 1;
+        let reply = match s.events.get(&params.event_key) {
+            Some(event) if &event.route == route => RunEventReply {
+                state: "found".into(),
+                event_key: Some(params.event_key.clone()),
+                jcs: Some(event.jcs.clone()),
+            },
+            _ => RunEventReply {
+                state: "absent".into(),
+                event_key: None,
+                jcs: None,
+            },
+        };
+        self.save(&s)?;
+        Ok(reply)
     }
     fn result(
         &self,
@@ -347,13 +432,12 @@ impl Transport for FakeBroca {
         self.save(&s)?;
         Ok(status)
     }
-    fn release(&self, route: &Route) {
-        let mut s = lock(&self.state);
-        if let Some(run) = s.runs.values_mut().find(|r| &r.route == route) {
-            run.watched = false;
-        }
-        let _ = self.save(&s);
-    }
+}
+/// A stand-in for Broca's session_ref: 32 lowercase hex characters, fixed
+/// per session.
+fn fake_session_ref(route: &Route) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(&route.session))[..32].to_owned()
 }
 
 /// Saved calls retained in memory while tests drop and reopen a host.
@@ -361,8 +445,35 @@ impl Transport for FakeBroca {
 #[derive(Default)]
 pub struct MemoryStore {
     calls: Mutex<BTreeMap<String, StoredCall>>,
+    wakes: Mutex<Vec<RunWake>>,
+    deadlines: Mutex<BTreeMap<String, i64>>,
+}
+impl MemoryStore {
+    /// Commits a wake as the event reader would.
+    pub fn add_wake(&self, wake: RunWake) {
+        let mut wakes = lock(&self.wakes);
+        if !wakes
+            .iter()
+            .any(|w| w.event_key == wake.event_key && w.send_id == wake.send_id)
+        {
+            wakes.push(wake);
+        }
+    }
+    pub fn set_deadline(&self, run_id: &str, deadline: i64) {
+        lock(&self.deadlines).insert(run_id.into(), deadline);
+    }
 }
 impl StateStore for MemoryStore {
+    fn deadline(&self, run_id: &str) -> Result<Option<i64>, BrocaError> {
+        Ok(lock(&self.deadlines).get(run_id).copied())
+    }
+    fn wakes(&self) -> Result<Vec<RunWake>, BrocaError> {
+        Ok(lock(&self.wakes).clone())
+    }
+    fn clear_wake(&self, event_key: &str, send_id: &str) -> Result<(), BrocaError> {
+        lock(&self.wakes).retain(|w| !(w.event_key == event_key && w.send_id == send_id));
+        Ok(())
+    }
     fn get(&self, send_id: &str) -> Result<Option<StoredCall>, BrocaError> {
         Ok(lock(&self.calls).get(send_id).cloned())
     }

@@ -161,11 +161,8 @@ fn serve() -> ExitCode {
             ));
             let store = Arc::new(basal_core::broca::BrocaStore::default());
             let wake = basal_host::broca::subc::PollWake::new();
-            let broca_transport = basal_host::broca::subc::SubcBrocaTransport::new(
-                transport.clone(),
-                "broca".into(),
-                wake.callback(),
-            );
+            let broca_transport =
+                basal_host::broca::subc::SubcBrocaTransport::new(transport.clone(), "broca".into());
             #[cfg(feature = "rig-kill-hook")]
             if let Some(hook) = basal_module::rig_kill::RigUnscopedSend::from_env() {
                 broca_transport.set_unscoped_send_hook(Arc::new(move |route| {

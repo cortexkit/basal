@@ -239,8 +239,8 @@ fn a_stalled_send_does_not_hold_an_unrelated_dispatch() {
                 run_id: format!("run:{}", params.send_id.unwrap()),
             })
         }
-        fn watch(&self, _: &Route) -> Result<(), BrocaError> {
-            Ok(())
+        fn event_get(&self, _: &Route, _: &RunEventGetParams) -> Result<RunEventReply, BrocaError> {
+            unreachable!()
         }
         fn result(&self, _: &Route, _: &RunResultParams) -> Result<RunResultResponse, BrocaError> {
             unreachable!()

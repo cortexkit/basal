@@ -1643,9 +1643,13 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
     assert_eq!(sent["generation"]["max_output_tokens"], 32);
     f.module.rt.quiesce();
     assert_eq!(
-        fake.watches().len(),
+        fake.calls().1,
         1,
-        "accepted model call must begin watching its session after its handle commits"
+        "an accepted model call is read once after its handle commits"
+    );
+    assert!(
+        snapshots.load().unwrap()[0].check_at.is_some(),
+        "an accepted model call has a scheduled check, so a lost run.ended cannot strand it"
     );
     // The journal retains the full envelope; the snapshot needs only its
     // identity digest and the exact frozen send bytes, not another prompt copy.

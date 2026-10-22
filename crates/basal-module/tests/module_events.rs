@@ -13,6 +13,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+#[path = "module_events/broca.rs"]
+mod broca;
 mod common;
 #[path = "module_events/hierarchical.rs"]
 mod hierarchical;

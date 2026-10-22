@@ -126,6 +126,8 @@ pub struct Report {
     pub duplicate: usize,
     pub queued: usize,
     pub overflow: usize,
+    /// Wakes committed for pending Broca model calls (see `broca_wakes`).
+    pub model_wakes: usize,
 }
 
 #[derive(PartialEq, Eq)]
@@ -317,6 +319,7 @@ impl Runtime {
             let mut report = Report::default();
             for notice in notices {
                 notice.target_flow()?;
+                report.model_wakes += broca_wakes(tx, notice, ctx.now_ms)?;
                 for (flow, first_approved, approved) in &approved {
                     if let Some(manifest) = approved {
                         match matches(manifest, notice, flow)? {
@@ -341,6 +344,9 @@ impl Runtime {
             Ok(report)
         })?;
         self.shared.signal.bump();
+        if report.model_wakes > 0 {
+            self.shared.host.model_events_committed();
+        }
         Ok(report)
     }
 
@@ -387,6 +393,105 @@ impl Runtime {
         }
         Ok(admitted)
     }
+}
+
+/// Commits a wake for each pending Broca model call a Broca run event
+/// concerns, inside the reader's admission transaction, so the wake is
+/// durable before the notice is acknowledged. `run.ended` names its run;
+/// `run.skipped` (Broca dropped a session's events during a bus outage)
+/// names only its session. A skipped session no pending call has learned
+/// commits a `recheck` for every call whose session is still unknown, since
+/// it may be any of theirs. Every other event wakes nothing. Returns how
+/// many wakes were committed; a notice that matches no pending call commits
+/// nothing and is acknowledged like any other.
+fn broca_wakes(tx: &Transaction, notice: &Notice, now: i64) -> Result<usize> {
+    use basal_host::broca::WakeKind;
+    let (module, name, version) = notice.identity()?;
+    if module != "broca" || version != 1 {
+        return Ok(0);
+    }
+    let header = |key: &str| {
+        notice
+            .headers
+            .get(key)
+            .map(String::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let run_id = header("run_id");
+    let session_ref = header("session_ref");
+    if let (Some(run_id), Some(session_ref)) = (run_id, session_ref) {
+        learn_session_ref(tx, run_id, session_ref)?;
+    }
+    let calls = |sql: &str, key: Option<&str>| -> Result<Vec<String>> {
+        let mut statement = tx.prepare(sql)?;
+        let params: &[&dyn rusqlite::ToSql] = match &key {
+            Some(key) => &[key],
+            None => &[],
+        };
+        let rows = statement.query_map(params, |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    };
+    let (kind, targets) = match name {
+        "run.ended" => {
+            let Some(run_id) = run_id else {
+                return Ok(0);
+            };
+            (
+                WakeKind::Ended,
+                calls(
+                    "SELECT send_id FROM broca_waits WHERE broca_run_id = ?1",
+                    Some(run_id),
+                )?,
+            )
+        }
+        "run.skipped" => {
+            let Some(session_ref) = session_ref else {
+                return Ok(0);
+            };
+            let known = calls(
+                "SELECT send_id FROM broca_waits WHERE session_ref = ?1",
+                Some(session_ref),
+            )?;
+            if known.is_empty() {
+                (
+                    WakeKind::Recheck,
+                    calls(
+                        "SELECT send_id FROM broca_waits WHERE session_ref IS NULL",
+                        None,
+                    )?,
+                )
+            } else {
+                (WakeKind::Skipped, known)
+            }
+        }
+        _ => return Ok(0),
+    };
+    // A recheck reads no body, so it keeps no event key: one per call,
+    // however many skipped sessions asked for it.
+    let (event_key, digest) = if kind == WakeKind::Recheck {
+        ("", "")
+    } else {
+        (notice.event_key.as_str(), notice.digest.as_str())
+    };
+    for send_id in &targets {
+        tx.execute(
+            "INSERT OR IGNORE INTO broca_wakes (send_id, event_key, kind, digest, run_id, session_ref, seq, received_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![send_id, event_key, kind.as_str(), digest, run_id, session_ref, header("seq"), now],
+        )?;
+    }
+    Ok(targets.len())
+}
+
+/// How a pending model call learns its Broca session_ref: from the headers
+/// of any Broca run event that names its run (`run.started` arrives first).
+/// Broca derives the value from the session's bind, so taking Broca's own
+/// value avoids recomputing it here.
+fn learn_session_ref(tx: &Transaction, run_id: &str, session_ref: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE broca_waits SET session_ref = ?2 WHERE broca_run_id = ?1 AND session_ref IS NULL",
+        params![run_id, session_ref],
+    )?;
+    Ok(())
 }
 
 /// Bounded receipt pruning; admitted runs and permanent trigger tombstones

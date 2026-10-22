@@ -1,0 +1,17 @@
+{
+  "digest_sha256_of_jcs": "a631c4b8aa7f3a6278cb3d63b02777da21579c10e827137244006930c297b83e",
+  "headers": {
+    "epoch": "2e0abb07-f7ee-4f78-970e-382ca95c1ebc",
+    "kind": "run.ended",
+    "run_id": "run-sid-w1Y2RodKlruk2D2XU3jgn6",
+    "seq": "371",
+    "session_ref": "9258383d1125fc16cc5961f06c2c4213"
+  },
+  "message_id": "36241764c4bc485c530014d720cbe3ea8d116228c2b11a139c99c78764dfa9f0",
+  "session_bind": {
+    "harness": "broca",
+    "project_root": "/redacted/machine-local/worktree",
+    "session": "alfonso:sidekick-00000000-0000-408e-98e0-753b485cf868"
+  },
+  "subject": "ck.box_853ecdb6e1681c3dc8c1c578d14c23a2.event.broca.run.ended.v1"
+}
