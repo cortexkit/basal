@@ -535,6 +535,7 @@ impl Fixture {
                 *run,
                 Start {
                     scope,
+                    preset: None,
                     tools,
                     unavailable,
                     limits,
@@ -707,6 +708,7 @@ fn shutdown_refuses_to_start_a_new_driver() {
             selector: serde_json::from_value(json!({"owner":{"kind":"reserved","module_id":"core"}, "ref":"scope-r", "epoch":7})).unwrap(),
             targets: Default::default(),
         },
+        preset: None,
         tools: Default::default(), unavailable: Default::default(), limits: Limits::default(), wall_deadline_ms: 10000,
     }).unwrap_err();
     assert_eq!(
@@ -1818,6 +1820,7 @@ fn panicking_driver_terminates_and_start_rejects_duplicate_or_terminal_runs() {
             .unwrap(),
             targets: Default::default(),
         },
+        preset: None,
         tools: Default::default(),
         unavailable: Default::default(),
         limits: Limits::default(),

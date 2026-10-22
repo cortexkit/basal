@@ -978,6 +978,7 @@ impl Driver {
                 subc_protocol::BindIdentity::new("/", "basal", format!("basal:flow:{}", self.key()))
             }),
             reply_timeout: Duration::from_secs(2),
+            preset: self.start.preset.clone(),
         }
     }
 
@@ -1509,6 +1510,7 @@ impl Driver {
             identity: self.identity.clone().unwrap_or_else(|| {
                 subc_protocol::BindIdentity::new("/", "basal", format!("basal:flow:{}", self.key()))
             }),
+            preset: self.start.preset.clone(),
             // The ck-basal process supervises the separate ck-basal-worker and
             // enforces 30 minutes of wall time, excluding person waits. A person
             // wait means the worker is blocked and every in-flight provider call

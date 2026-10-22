@@ -30,6 +30,7 @@ fn options() -> basal_host::transport::RunToolOptions {
     basal_host::transport::RunToolOptions {
         identity: subc_protocol::BindIdentity::new("/", "basal", "test"),
         reply_timeout: Duration::from_secs(1),
+        preset: None,
     }
 }
 fn target(custody: &Custody, run: &str) -> mpsc::Receiver<Event> {

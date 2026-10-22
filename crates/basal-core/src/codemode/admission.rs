@@ -90,6 +90,7 @@ pub struct Unavailable {
 #[derive(Debug)]
 pub struct Start {
     pub scope: RegisteredScope,
+    pub preset: Option<String>,
     pub tools: BTreeMap<String, Tool>,
     /// Dropped tools by name, never also in `tools`.
     pub unavailable: BTreeMap<String, Unavailable>,
@@ -226,6 +227,7 @@ pub fn admit(
                         })
                         .collect(),
                 },
+                preset: None,
                 tools,
                 unavailable: BTreeMap::new(),
                 limits,
@@ -699,6 +701,7 @@ pub fn admit_tool(
         let read = run_scope::CatalogRead {
             scope: &run_scope_selector,
             identity: &read_identity,
+            preset: opened.preset.as_deref(),
         };
         let resolved = run_scope::catalog(transport, &read, &daemon, &opened.catalog)
             .map_err(super::scope::error_value)?;
@@ -737,6 +740,7 @@ pub fn admit_tool(
                     })
                     .collect(),
             },
+            preset: opened.preset,
             tools,
             unavailable,
             limits,
