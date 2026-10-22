@@ -1,0 +1,50 @@
+# Temporary probe, never merged: witnesses the Windows mutation rows changed
+# by the CNG-device fix, on both images, and runs the worker's Windows
+# startup tests once more.
+name: pool-probe
+on:
+  push:
+    branches: [ci/windows-pool-probe]
+env:
+  CARGO_TERM_COLOR: never
+  PYTHONDONTWRITEBYTECODE: 1
+  CK_MUTATE_REV: 0b3bc096880e22ab43bec18eb6719a50fc59c270
+jobs:
+  witness:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: mkdir -p "$RUNNER_TEMP/evidence"
+      - name: Test the worker's Windows startup
+        run: cargo test -p basal-worker --locked --test windows_startup -- --show-output 2>&1 | tee "$RUNNER_TEMP/evidence/test-windows-startup.log"
+      - name: Install the pinned mutation runner
+        run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
+      - name: Check the catalogue
+        run: ckdev-mutate --catalogue mutations.d check 2>&1 | tee "$RUNNER_TEMP/evidence/mutate-check.log" | tail -5
+      - name: Witness the changed Windows mutation rows
+        if: always()
+        run: |
+          only=""
+          for id in windows-allowlist-skips-alpc-close windows-startup-keeps-current-directory \
+                    windows-startup-keeps-ksecdd windows-startup-closes-named-private-files \
+                    windows-startup-closes-unnamed-private-files windows-allowlist-skips-cng-count \
+                    windows-allowlist-skips-cng-identity windows-worker-closes-every-private-file \
+                    windows-allowlist-skips-mixed-inventory windows-worker-skips-handle-not-allowed; do
+            only="$only --only $id"
+          done
+          python script/witness-mutations.py --platform windows $only --output "$RUNNER_TEMP/evidence" 2>&1 | tee "$RUNNER_TEMP/evidence/witness.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: witness-${{ matrix.os }}
+          path: ${{ runner.temp }}/evidence
