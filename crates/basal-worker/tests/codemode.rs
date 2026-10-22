@@ -120,6 +120,108 @@ fn codemode_exposes_only_tools_console_and_frozen_intrinsics() {
 }
 
 #[test]
+fn codemode_unknown_tool_access_names_the_tool_and_lists_the_catalog() {
+    let mut req = request(
+        r#"
+        try { await tools.work({}); return 'reached'; }
+        catch (e) { return [e instanceof TypeError, e.message]; }
+    "#,
+    );
+    req.tools = vec!["echo".into(), "bash".into()];
+    let report = run(req);
+    assert_eq!(
+        value(&report),
+        json!([
+            true,
+            "tools.work is not available in this codemode run. Available tools: bash, echo (2). Not every tool is available inside programs yet."
+        ])
+    );
+    assert!(report.calls.is_empty());
+}
+
+#[test]
+fn codemode_uncaught_unknown_tool_is_a_script_error_naming_it() {
+    let report = run(request("return await tools.ctx_expand({});"));
+    match &report.result {
+        ActivationResult::Failed(Failure::Script { message }) => {
+            // Codemode hides stack traces, so the message is the whole text.
+            assert_eq!(
+                message,
+                "TypeError: tools.ctx_expand is not available in this codemode run. Available tools: echo (1). Not every tool is available inside programs yet."
+            );
+        }
+        other => panic!("expected a script failure: {other:?}"),
+    }
+    assert!(report.calls.is_empty());
+}
+
+#[test]
+fn codemode_tools_keeps_keys_in_typeof_await_and_json_working() {
+    let report = run(request(
+        r#"
+        const awaited = await tools;
+        return [Object.keys(tools), 'echo' in tools, 'work' in tools, typeof tools.echo,
+            awaited === tools, JSON.stringify(tools), JSON.stringify({tools}), tools.then, tools.toJSON,
+            tools[Symbol.iterator], tools[Symbol.toPrimitive], tools[Symbol.toStringTag],
+            Object.prototype.toString.call(tools), Object.getOwnPropertyNames(tools),
+            Object.getOwnPropertySymbols(tools).length, (await tools.echo(3))];
+    "#,
+    ));
+    assert_eq!(
+        value(&report),
+        json!([
+            ["echo"],
+            true,
+            false,
+            "function",
+            true,
+            "{}",
+            "{\"tools\":{}}",
+            null,
+            null,
+            null,
+            null,
+            null,
+            "[object Object]",
+            ["echo"],
+            0,
+            3
+        ])
+    );
+    assert_eq!(report.calls.len(), 1);
+}
+
+#[test]
+fn codemode_tools_entries_cannot_be_replaced_or_added() {
+    let report = run(request(
+        r#"
+        const echo = tools.echo;
+        const refused = [
+            () => { tools.echo = 1; },
+            () => { tools.work = 1; },
+            () => { delete tools.echo; },
+            () => Object.defineProperty(tools, 'echo', { value: 1 }),
+            () => Object.defineProperty(tools, 'work', { value: 1 }),
+            () => Object.setPrototypeOf(tools, {}),
+        ].map(f => { try { f(); return false; } catch (e) { return e instanceof TypeError; } });
+        return [refused, tools.echo === echo, Object.isFrozen(tools),
+            Object.getPrototypeOf(tools) === null, Object.keys(tools)];
+    "#,
+    ));
+    assert_eq!(
+        value(&report),
+        json!([
+            [true, true, true, true, true, true],
+            true,
+            true,
+            true,
+            ["echo"]
+        ])
+    );
+    assert!(report.calls.is_empty());
+}
+
+#[test]
 fn codemode_clock_and_random_are_worker_native() {
     let report = run(request(
         r#"

@@ -144,13 +144,41 @@
     if (!delete G[key]) throw new TypeErrorCtor('lockdown could not remove global ' + key);
   }
 
-  const tools = Object.create(null);
+  const catalog = Object.create(null);
   for (const name of names) {
-    define(tools, name, { value: async function (input) {
+    define(catalog, name, { value: async function (input) {
       const text = stringify(input === undefined ? null : input);
       return register(issueTool(name, text === undefined ? 'null' : text), name);
     }, enumerable: true });
   }
+  Object.freeze(catalog);
+  // A program that names a tool outside this run's catalog gets an error
+  // naming that tool and listing the ones it can call, instead of the bare
+  // "not a function" from calling undefined. The listing is built now, before
+  // any program code can replace Array methods.
+  const sortedNames = [...names].sort();
+  const available = sortedNames.length === 0
+    ? ' No tools are available in this run.'
+    : ' Available tools: ' + sortedNames.join(', ') + ' (' + sortedNames.length + ').';
+  const hasOwn = Object.prototype.hasOwnProperty;
+  const reflectGet = Reflect.get;
+  const ProxyCtor = Proxy;
+  // The handler has no prototype, so no trap can be inherited from a shared
+  // prototype. Only `get` is trapped; every other operation reaches the frozen
+  // catalog unchanged, so keys, `in`, descriptors and the refusal of writes
+  // and redefinitions behave exactly as on the catalog itself. The catalog
+  // and this handler are reachable only from this closure.
+  const handler = Object.create(null);
+  handler.get = function (target, key, receiver) {
+    if (typeof key !== 'string' || apply(hasOwn, target, [key])) return reflectGet(target, key, receiver);
+    // `await tools`, JSON.stringify and value inspection probe these names
+    // (and symbol keys, above); answering undefined keeps them working.
+    if (key === 'then' || key === 'toJSON') return undefined;
+    throw new TypeErrorCtor('tools.' + key + ' is not available in this codemode run.' + available +
+      ' Not every tool is available inside programs yet.');
+  };
+  Object.freeze(handler);
+  const tools = new ProxyCtor(catalog, handler);
   define(G, 'tools', { value: tools, writable: false, configurable: false });
   const console = Object.create(null);
   define(console, 'log', { value: function log(...args) {

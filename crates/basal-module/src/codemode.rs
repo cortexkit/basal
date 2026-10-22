@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use basal_core::channel::{ChannelError, WorkerChannel, WorkerSource};
 use basal_core::codemode::admission::{self, Admission, Platform};
-use basal_core::codemode::supervisor::Supervisor;
+use basal_core::codemode::supervisor::{Hold, Supervisor};
 use basal_core::{Clock, CoreError, Store};
 use basal_host::Host;
 use cortexkit_role_tool_provider::call::ToolCallRequest;
@@ -230,6 +230,12 @@ impl Codemode {
         Ok(result)
     }
 
+    /// The reply for a keyed call whose program is still running when the
+    /// foreground wait ends.
+    pub(crate) fn running(&self, id: &str) -> Value {
+        running(id, &self.supervisor.holds(id))
+    }
+
     pub(crate) fn cancel(&self, id: &str) -> Result<(), ErrorBody> {
         self.supervisor.cancel(id).map_err(storage)?;
         self.publish()
@@ -443,15 +449,25 @@ fn render_text(result: &mut Value) -> String {
         result["person_wait_ms"]
     );
     if let Some(error) = result.get("error") {
-        text.push_str(&format!("Error: {error}\n"));
+        text.push_str(&error_text(error));
     }
     if let Some(value) = result.get("value") {
-        text.push_str(&format!("\nReturn value:\n{value}\n"));
+        text.push_str(&return_value_text(value));
     }
-    text.push_str(&format!(
-        "\nOutput:\n{}\n\nTool | Outcome | Waited on person | Duration (ms)\n",
-        result["output"].as_str().unwrap_or("")
-    ));
+    // Empty sections are left out rather than printed as bare headings.
+    let output = result["output"].as_str().unwrap_or("");
+    if !output.is_empty() {
+        text.push_str("\nOutput:\n");
+        text.push_str(output);
+        if !output.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    if !calls.is_empty() {
+        text.push_str(
+            "\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\n",
+        );
+    }
     for call in &calls {
         text.push_str(&format!(
             "{} | {} | {} | {}\n",
@@ -461,6 +477,9 @@ fn render_text(result: &mut Value) -> String {
             call.get("duration_ms")
                 .map_or_else(|| "—".into(), Value::to_string)
         ));
+    }
+    if !warnings.is_empty() {
+        text.push('\n');
     }
     for warning in &warnings {
         text.push_str(&format!(
@@ -472,6 +491,38 @@ fn render_text(result: &mut Value) -> String {
         ));
     }
     result["warnings"] = warnings.into();
+    text
+}
+
+/// The return value as a model reads it. A string is shown verbatim, so its
+/// line breaks stay line breaks instead of `\n` escapes inside quotes; objects
+/// and arrays are pretty-printed JSON with a 2-space indent; null (also what an
+/// `undefined` return becomes) is `none`. structuredContent keeps the raw value.
+fn return_value_text(value: &Value) -> String {
+    let body = match value {
+        Value::Null => return "\nReturn value: none\n".into(),
+        Value::String(text) => text.clone(),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string_pretty(value).expect("JSON value")
+        }
+        other => other.to_string(),
+    };
+    let newline = if body.ends_with('\n') { "" } else { "\n" };
+    format!("\nReturn value:\n{body}{newline}")
+}
+
+/// The run error as plain text: its code, its message, and any provider
+/// detail as compact JSON on its own line.
+fn error_text(error: &Value) -> String {
+    let code = error["code"].as_str().unwrap_or("error");
+    let mut text = match &error["message"] {
+        Value::String(message) => format!("Error ({code}): {message}\n"),
+        Value::Null => format!("Error ({code})\n"),
+        other => format!("Error ({code}): {other}\n"),
+    };
+    if let Some(detail) = error.get("detail") {
+        text.push_str(&format!("Error detail: {detail}\n"));
+    }
     text
 }
 
@@ -502,12 +553,48 @@ fn render(id: &str, mut result: Value) -> Value {
     bounded_result(reply)
 }
 
-pub(crate) fn running(id: &str) -> Value {
+/// What the person is asked to do, by the provider's held reason.
+fn held_need(reason: Option<&str>) -> String {
+    match reason {
+        Some("consent") => "needs their consent".into(),
+        Some("login_handoff" | "login_capture") => "needs them to sign in".into(),
+        Some(other) => format!("is waiting on them ({other})"),
+        None => "is waiting on them".into(),
+    }
+}
+
+/// Text for a run still going when the foreground wait ends. It names any
+/// calls held on a person and says what basal does next: the program keeps
+/// running, and basal retains its final result for this call.
+fn running_text(holds: &[Hold]) -> String {
+    const AFTER: &str = "When the program finishes, basal retains its final result for this call.";
+    if holds.is_empty() {
+        return format!(
+            "Still running: the program had not finished when this reply was due. {AFTER}"
+        );
+    }
+    let waiting = holds
+        .iter()
+        .map(|hold| {
+            format!(
+                "{} (call {}) {}",
+                hold.tool,
+                hold.position + 1,
+                held_need(hold.reason.as_deref())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let minutes = basal_host::run_scope::PERSON_WAIT_MS / 60_000;
+    format!(
+        "Waiting on the person: {waiting}. The program resumes when they answer; a run waits on people for at most {minutes} minutes in total. {AFTER}"
+    )
+}
+
+pub(crate) fn running(id: &str, holds: &[Hold]) -> Value {
     bounded_result(
         cortexkit_role_tool_provider::result::ToolResult::new(vec![
-            cortexkit_role_tool_provider::result::ContentPart::text(
-                "running: the final result will be retained in late_results.",
-            ),
+            cortexkit_role_tool_provider::result::ContentPart::text(running_text(holds)),
         ])
         .with_structured_content(
             json!({"status":"running","run_id":id})

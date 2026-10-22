@@ -1,69 +1,6 @@
 use super::*;
 use cortexkit_role_tool_provider::result::{MAX_RESULT_BYTES, ToolResult, validate};
 
-// Preserve the former renderer independently: it returned model-facing text
-// next to the machine fields in one JSON object. The current renderer puts that
-// same text in content[0].text, separate from structuredContent. Comparing both
-// outputs catches any accidental change to the bytes the model receives.
-fn legacy_render(mut result: Value) -> Value {
-    let status = result["status"]
-        .as_str()
-        .unwrap_or("failed")
-        .replace("budget_exhausted:", "budget_exhausted: ");
-    let calls = result["calls"].as_array().cloned().unwrap_or_default();
-    let mut warnings = result["warnings"].as_array().cloned().unwrap_or_default();
-    if result["keyless"] == true {
-        warnings.push(json!({"code":"keyless","message":"This call had no key and can't be recovered if its reply is lost."}));
-    }
-    if calls
-        .iter()
-        .any(|call| call["outcome"] == "outcome_unknown")
-    {
-        warnings.push(json!({"code":"calls_unsettled","message":"Some calls have unknown outcomes and may still be running; they were never retried."}));
-    }
-    let mut text = format!(
-        "{status} · {} ms · {} calls · person wait {} ms\n",
-        result["duration_ms"],
-        result
-            .get("call_count")
-            .and_then(Value::as_u64)
-            .unwrap_or(calls.len() as u64),
-        result["person_wait_ms"]
-    );
-    if let Some(error) = result.get("error") {
-        text.push_str(&format!("Error: {error}\n"));
-    }
-    if let Some(value) = result.get("value") {
-        text.push_str(&format!("\nReturn value:\n{value}\n"));
-    }
-    text.push_str(&format!(
-        "\nOutput:\n{}\n\nTool | Outcome | Waited on person | Duration (ms)\n",
-        result["output"].as_str().unwrap_or("")
-    ));
-    for call in &calls {
-        text.push_str(&format!(
-            "{} | {} | {} | {}\n",
-            call["tool"].as_str().unwrap_or(""),
-            call["outcome"].as_str().unwrap_or(""),
-            call["waited_on_person"],
-            call.get("duration_ms")
-                .map_or_else(|| "—".into(), Value::to_string)
-        ));
-    }
-    for warning in &warnings {
-        text.push_str(&format!(
-            "Warning: {}\n",
-            warning
-                .get("message")
-                .and_then(Value::as_str)
-                .map_or_else(|| warning.to_string(), str::to_owned)
-        ));
-    }
-    result["warnings"] = warnings.into();
-    result["text"] = text.into();
-    result
-}
-
 fn successful_run() -> Value {
     json!({"status":"completed","value":{"answer":42},"output":"partial\nλ\n",
         "calls":[{"tool":"echo","outcome":"completed","waited_on_person":false,"duration_ms":8}],
@@ -71,8 +8,16 @@ fn successful_run() -> Value {
         "catalog_digest":"catalog"})
 }
 
+fn text(result: &Value) -> &str {
+    result["content"][0]["text"].as_str().unwrap()
+}
+
+const TABLE: &str = "\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\n";
+
+// The exact model-visible text, written out by hand. A change to these bytes
+// changes what every agent reads, so it must be a deliberate edit here.
 #[test]
-fn content_text_is_byte_identical_to_the_legacy_renderer() {
+fn content_text_snapshot() {
     let success = successful_run();
     let mut budget = success.clone();
     budget["status"] = "budget_exhausted:tool_calls".into();
@@ -81,9 +26,10 @@ fn content_text_is_byte_identical_to_the_legacy_renderer() {
     budget.as_object_mut().unwrap().remove("value");
     let mut refused = success.clone();
     refused["status"] = "failed".into();
-    refused["error"] = json!({"code":"script","message":"tool call refused"});
+    refused["error"] =
+        json!({"code":"no_session","message":"browser_use (call 1) failed: No session."});
     refused["calls"][0]["outcome"] = "refused".into();
-    refused["calls"][0]["code"] = "not_permitted".into();
+    refused["calls"][0]["code"] = "no_session".into();
     refused.as_object_mut().unwrap().remove("value");
     let mut unsettled = success.clone();
     unsettled["keyless"] = true.into();
@@ -93,23 +39,111 @@ fn content_text_is_byte_identical_to_the_legacy_renderer() {
         .unwrap()
         .remove("duration_ms");
     unsettled["warnings"] = json!([{"message":"Explicit warning"},{"code":"unknown"}]);
-    for run in [success, budget, refused, unsettled] {
-        let old = legacy_render(run.clone());
-        let new = render("codemode:example", run);
-        assert_eq!(new["content"], json!([{"type":"text","text":old["text"]}]));
+    let mut silent = success.clone();
+    silent["output"] = "".into();
+    silent["calls"] = json!([]);
+    silent["call_count"] = 0.into();
+    let cases = [
+        (
+            success,
+            format!(
+                "completed · 10 ms · 1 calls · person wait 0 ms\n\nReturn value:\n{{\n  \"answer\": 42\n}}\n\nOutput:\npartial\nλ\n{TABLE}echo | completed | false | 8\n"
+            ),
+            json!([]),
+        ),
+        (
+            budget,
+            format!(
+                "budget_exhausted: tool_calls · 10 ms · 1 calls · person wait 0 ms\nError (budget_exhausted:tool_calls): run budget exhausted\n\nOutput:\npartial\nλ\n{TABLE}echo | completed | false | 8\n"
+            ),
+            json!([]),
+        ),
+        (
+            refused,
+            format!(
+                "failed · 10 ms · 1 calls · person wait 0 ms\nError (no_session): browser_use (call 1) failed: No session.\n\nOutput:\npartial\nλ\n{TABLE}echo | refused | false | 8\n"
+            ),
+            json!([]),
+        ),
+        (
+            unsettled,
+            format!(
+                "completed · 10 ms · 1 calls · person wait 0 ms\n\nReturn value:\n{{\n  \"answer\": 42\n}}\n\nOutput:\npartial\nλ\n{TABLE}echo | outcome_unknown | false | —\n\nWarning: Explicit warning\nWarning: {{\"code\":\"unknown\"}}\nWarning: This call had no key and can't be recovered if its reply is lost.\nWarning: Some calls have unknown outcomes and may still be running; they were never retried.\n"
+            ),
+            json!([{"message":"Explicit warning"},{"code":"unknown"},
+                {"code":"keyless","message":"This call had no key and can't be recovered if its reply is lost."},
+                {"code":"calls_unsettled","message":"Some calls have unknown outcomes and may still be running; they were never retried."}]),
+        ),
+        // No console output and no calls: neither heading is printed.
+        (
+            silent,
+            "completed · 10 ms · 0 calls · person wait 0 ms\n\nReturn value:\n{\n  \"answer\": 42\n}\n"
+                .to_owned(),
+            json!([]),
+        ),
+    ];
+    for (run, expected, warnings) in cases {
+        let new = render("codemode:example", run.clone());
+        assert_eq!(new["content"], json!([{"type":"text","text":expected}]));
         let decoded: ToolResult = serde_json::from_value(new.clone()).unwrap();
         validate(&decoded).unwrap();
         assert!(new.get("text").is_none());
         let mut fields = new["structuredContent"].clone();
         assert_eq!(fields["run_id"], "codemode:example");
-        assert_eq!(fields["termination_reason"], old["status"]);
+        assert_eq!(fields["termination_reason"], run["status"]);
         for key in ["run_id", "termination_reason", "budget"] {
             fields.as_object_mut().unwrap().remove(key);
         }
-        let mut old_fields = old;
-        old_fields.as_object_mut().unwrap().remove("text");
-        assert_eq!(fields, old_fields);
+        let mut expected_fields = run;
+        expected_fields["warnings"] = warnings;
+        assert_eq!(fields, expected_fields);
     }
+}
+
+#[test]
+fn return_values_render_for_reading_while_structured_content_keeps_them_raw() {
+    let multiline = "--- e327\n(1) Home / X\n  e4088 generic";
+    for (value, expected) in [
+        (json!(multiline), format!("\nReturn value:\n{multiline}\n")),
+        (json!("ends with newline\n"), "\nReturn value:\nends with newline\n".to_owned()),
+        (json!(null), "\nReturn value: none\n".to_owned()),
+        (json!(7), "\nReturn value:\n7\n".to_owned()),
+        (json!(true), "\nReturn value:\ntrue\n".to_owned()),
+        (
+            json!({"distinct":["{\"a\":1}"],"n":[1,2]}),
+            "\nReturn value:\n{\n  \"distinct\": [\n    \"{\\\"a\\\":1}\"\n  ],\n  \"n\": [\n    1,\n    2\n  ]\n}\n"
+                .to_owned(),
+        ),
+    ] {
+        let mut run = successful_run();
+        run["value"] = value.clone();
+        run["output"] = "".into();
+        run["calls"] = json!([]);
+        run["call_count"] = 0.into();
+        let result = render("codemode:example", run);
+        assert_eq!(
+            text(&result),
+            format!("completed · 10 ms · 0 calls · person wait 0 ms\n{expected}")
+        );
+        assert_eq!(result["structuredContent"]["value"], value);
+    }
+}
+
+#[test]
+fn error_detail_is_plain_text_on_its_own_line() {
+    let mut run = successful_run();
+    run["status"] = "not_granted".into();
+    run.as_object_mut().unwrap().remove("value");
+    run["error"] =
+        json!({"code":"not_granted","message":"refused \"here\"","detail":{"reason":"x"}});
+    let result = render("codemode:example", run);
+    assert!(
+        text(&result).starts_with(
+            "not_granted · 10 ms · 1 calls · person wait 0 ms\nError (not_granted): refused \"here\"\nError detail: {\"reason\":\"x\"}\n"
+        ),
+        "{}",
+        text(&result)
+    );
 }
 
 #[test]
@@ -165,11 +199,8 @@ fn content_size_cap_marks_omissions_without_changing_success_or_failure() {
         // original model text or the outcome of a run that may have made writes.
         let detail = json!({"provider":"\u{0}λ".repeat(MAX_RESULT_BYTES)});
         let original_bytes = serialized_size(&detail);
+        let text = text(&render("codemode:example", run.clone())).to_owned();
         run["detail"] = detail;
-        let text = legacy_render(run.clone())["text"]
-            .as_str()
-            .unwrap()
-            .to_owned();
         let result = render("codemode:example", run);
         assert!(serialized_size(&result) < MAX_RESULT_BYTES);
         let decoded: ToolResult = serde_json::from_value(result.clone()).unwrap();
@@ -228,12 +259,41 @@ fn oversized_console_and_summaries_truncate_text_explicitly_on_utf8_boundaries()
 
 #[test]
 fn running_reply_is_valid_content_with_no_error_flag() {
-    let result = running("codemode:example");
+    let result = running("codemode:example", &[]);
     let decoded: ToolResult = serde_json::from_value(result.clone()).unwrap();
     validate(&decoded).unwrap();
     assert_eq!(
         result["content"][0]["text"],
-        "running: the final result will be retained in late_results."
+        "Still running: the program had not finished when this reply was due. When the program finishes, basal retains its final result for this call."
+    );
+    assert_eq!(
+        result["structuredContent"],
+        json!({"status":"running","run_id":"codemode:example"})
+    );
+    assert!(result.get("isError").is_none());
+}
+
+#[test]
+fn running_reply_names_each_held_call_and_what_the_person_must_do() {
+    let hold = |position, tool: &str, reason: Option<&str>| Hold {
+        position,
+        tool: tool.into(),
+        reason: reason.map(str::to_owned),
+    };
+    let result = running(
+        "codemode:example",
+        &[
+            hold(1, "browser_use", Some("consent")),
+            hold(2, "login", Some("login_handoff")),
+            hold(4, "other", Some("site_review")),
+            hold(5, "quiet", None),
+        ],
+    );
+    let decoded: ToolResult = serde_json::from_value(result.clone()).unwrap();
+    validate(&decoded).unwrap();
+    assert_eq!(
+        result["content"][0]["text"],
+        "Waiting on the person: browser_use (call 2) needs their consent; login (call 3) needs them to sign in; other (call 5) is waiting on them (site_review); quiet (call 6) is waiting on them. The program resumes when they answer; a run waits on people for at most 10 minutes in total. When the program finishes, basal retains its final result for this call."
     );
     assert_eq!(
         result["structuredContent"],
@@ -271,10 +331,10 @@ fn structured_omission_keeps_large_but_deliverable_model_text() {
     let mut run = successful_run();
     run["status"] = "failed".into();
     run["error"] = json!({"code":"script","message":"x".repeat(2 * 1024 * 1024)});
-    let text = legacy_render(run.clone())["text"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let text = format!(
+        "failed · 10 ms · 1 calls · person wait 0 ms\nError (script): {}\n\nReturn value:\n{{\n  \"answer\": 42\n}}\n\nOutput:\npartial\nλ\n{TABLE}echo | completed | false | 8\n",
+        "x".repeat(2 * 1024 * 1024)
+    );
     let result = render("codemode:example", run);
     assert_eq!(
         result["content"][0]["text"],

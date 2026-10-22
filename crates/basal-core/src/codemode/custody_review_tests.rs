@@ -480,7 +480,7 @@ fn published_093_held_reply_vectors_are_consumed_without_local_wire_rules() {
     );
     for case in valid {
         match held::classify(case["body"].clone(), Some(&ResultFormat::ContentV1)) {
-            held::Reply::Held { detail } => assert_eq!(
+            held::Reply::Held { detail, .. } => assert_eq!(
                 detail,
                 case["body"]["held"].get("detail").cloned(),
                 "{}",

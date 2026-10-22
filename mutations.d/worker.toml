@@ -1020,8 +1020,24 @@ target = "--test codemode"
 expect_red = ["codemode_exposes_only_tools_console_and_frozen_intrinsics"]
 only = false
 file = "crates/basal-worker/src/codemode_prelude.js"
-old = "const tools = Object.create(null);"
-new = "const tools = {}; // NON-VACUITY BREAK"
+old = "const catalog = Object.create(null);"
+new = "const catalog = {}; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-unknown-tool-named"
+guards = "reading a name tools lacks throws a TypeError naming it and listing the run's tools"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+select = { tests = ["codemode_unknown_tool_access_names_the_tool_and_lists_the_catalog", "codemode_tools_keeps_keys_in_typeof_await_and_json_working"] }
+expect_red = ["codemode_unknown_tool_access_names_the_tool_and_lists_the_catalog"]
+only = true
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = """    throw new TypeErrorCtor('tools.' + key + ' is not available in this codemode run.' + available +
+      ' Not every tool is available inside programs yet.');"""
+new = "    return undefined; // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-frozen-intrinsics"
