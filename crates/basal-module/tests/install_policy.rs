@@ -4,7 +4,7 @@
 mod common;
 mod wire;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use basal_core::{InstallGate, InstallRequest, NoHooks, Store, install};
 use basal_host::cingulate_consent::CingulateConsent;
@@ -24,6 +24,39 @@ use wire::Fake;
 const FLOW: &str = "policy-flow";
 const RULE: &str = "head-self-within-limits";
 const SCRIPT: &str = "return 1;";
+
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+impl tracing::Subscriber for CapturedLogs {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={value:?};", field.name()));
+            }
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.push_str(&format!("{}={value:?};", field.name()));
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0
+            .lock()
+            .unwrap()
+            .push((*event.metadata().level(), fields.0));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
 
 fn head() -> Caller {
     Caller::Agent {
@@ -657,6 +690,149 @@ fn seed_manifest(store: &Store, id: &str, manifest: &str, card: bool, confirmed:
             Ok(())
         })
         .unwrap();
+}
+
+fn record_v3(store: &Store, approve: bool) {
+    let manifest = manifest(FLOW, 3);
+    let request = InstallRequest {
+        script: SCRIPT.into(),
+        manifest: manifest.clone(),
+        author: "operator".into(),
+        loop_override: false,
+    };
+    let parsed = basal_core::manifest::Manifest::parse(&manifest).unwrap();
+    store
+        .write(|tx| {
+            let installed = install::record(tx, &parsed, &request, vec![], common::T0).unwrap();
+            if approve {
+                install::approve(
+                    tx,
+                    FLOW,
+                    3,
+                    &installed.code_hash,
+                    "operator",
+                    common::T0,
+                    &Default::default(),
+                )
+                .unwrap();
+            } else {
+                // This is the on-disk state left by older basal versions, before
+                // approving a newer version also closed older pending cards.
+                tx.execute(
+                    "UPDATE installs SET state='approved', approval_ref='operator', approved_at=?2, approval_kind='card' WHERE flow_id=?1 AND version=3",
+                    params![FLOW, common::T0],
+                )?;
+                tx.execute(
+                    "UPDATE flows SET approved_version=3, owner='operator', first_approved_at=?2 WHERE flow_id=?1",
+                    params![FLOW, common::T0],
+                )?;
+                tx.execute(
+                    "UPDATE installs SET install_check_error='stale approval remains pending' WHERE flow_id=?1 AND version=1",
+                    [FLOW],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn approving_v3_supersedes_an_older_pending_install_card() {
+    let fake = Fake::new();
+    let f = common::fixture_with_store(
+        "approve-supersedes-install-card",
+        common::Options {
+            hosts: Some(hosts(&fake, false)),
+            install_gate: InstallGate::Core,
+            ..common::Options::default()
+        },
+        |store| {
+            seed(store.as_ref(), FLOW, true, true);
+            record_v3(store.as_ref(), true);
+            let states = store
+                .read(|conn| {
+                    let card: String = conn.query_row(
+                        "SELECT state FROM install_cards WHERE flow_id=?1 AND version=1",
+                        [FLOW],
+                        |row| row.get(0),
+                    )?;
+                    let install: String = conn.query_row(
+                        "SELECT state FROM installs WHERE flow_id=?1 AND version=1",
+                        [FLOW],
+                        |row| row.get(0),
+                    )?;
+                    Ok((card, install))
+                })
+                .unwrap();
+            assert_eq!(states, ("stale".into(), "superseded".into()));
+            Ok(())
+        },
+    );
+
+    let cards = f.module.rt.cards(FLOW).unwrap();
+    assert_eq!(cards[0].state, basal_core::cards::CardState::Stale);
+    assert_eq!(cards[0].decided_by.as_deref(), Some("basal"));
+    let states = f
+        .module
+        .rt
+        .store()
+        .read(|conn| {
+            let v1: String = conn.query_row(
+                "SELECT state FROM installs WHERE flow_id=?1 AND version=1",
+                [FLOW],
+                |row| row.get(0),
+            )?;
+            let v3: String = conn.query_row(
+                "SELECT state FROM installs WHERE flow_id=?1 AND version=3",
+                [FLOW],
+                |row| row.get(0),
+            )?;
+            Ok((v1, v3))
+        })
+        .unwrap();
+    assert_eq!(states, ("superseded".into(), "approved".into()));
+    assert!(fake.calls("flow.install_status").is_empty());
+}
+
+#[test]
+fn startup_supersedes_stale_pending_card_without_checking_core_or_warning() {
+    let fake = Fake::new();
+    let logs = CapturedLogs::default();
+    let f = tracing::subscriber::with_default(logs.clone(), || {
+        common::fixture_with_store(
+            "recover-stale-install-card",
+            common::Options {
+                hosts: Some(hosts(&fake, false)),
+                install_gate: InstallGate::Core,
+                ..common::Options::default()
+            },
+            |store| {
+                seed(store.as_ref(), FLOW, true, true);
+                record_v3(store.as_ref(), false);
+                Ok(())
+            },
+        )
+    });
+
+    let card = f.module.rt.cards(FLOW).unwrap().remove(0);
+    assert_eq!(card.state, basal_core::cards::CardState::Stale);
+    assert!(fake.calls("flow.install_status").is_empty());
+    let state_and_error = f
+        .module
+        .rt
+        .store()
+        .read(|conn| {
+            Ok(conn.query_row(
+                "SELECT state, install_check_error FROM installs WHERE flow_id=?1 AND version=1",
+                [FLOW],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(state_and_error, ("superseded".into(), None));
+    assert!(!logs.0.lock().unwrap().iter().any(|(level, fields)| {
+        *level == tracing::Level::WARN && fields.contains("install approval remains pending")
+    }));
 }
 
 #[test]
