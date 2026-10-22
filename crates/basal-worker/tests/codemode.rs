@@ -210,7 +210,13 @@ fn codemode_tools_entries_cannot_be_replaced_or_added() {
     ));
     assert_eq!(
         value(&report),
-        json!([[true, true, true, true, true, true], true, true, true, ["echo"]])
+        json!([
+            [true, true, true, true, true, true],
+            true,
+            true,
+            true,
+            ["echo"]
+        ])
     );
     assert!(report.calls.is_empty());
 }

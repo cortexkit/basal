@@ -464,7 +464,9 @@ fn render_text(result: &mut Value) -> String {
         }
     }
     if !calls.is_empty() {
-        text.push_str("\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\n");
+        text.push_str(
+            "\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\n",
+        );
     }
     for call in &calls {
         text.push_str(&format!(
@@ -550,7 +552,9 @@ fn held_need(reason: Option<&str>) -> String {
 fn running_text(holds: &[Hold]) -> String {
     const AFTER: &str = "When the program finishes, basal retains its final result for this call.";
     if holds.is_empty() {
-        return format!("Still running: the program had not finished when this reply was due. {AFTER}");
+        return format!(
+            "Still running: the program had not finished when this reply was due. {AFTER}"
+        );
     }
     let waiting = holds
         .iter()

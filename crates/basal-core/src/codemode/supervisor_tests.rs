@@ -2246,7 +2246,10 @@ fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
     let delivery = f.delivery();
     assert_eq!(delivery.settlement, Settlement::Fulfilled);
     assert_eq!(delivery.value, JsonText::new(r#"{"answer":42}"#).unwrap());
-    assert!(f.supervisor.holds("r").is_empty(), "a settled call is no longer held");
+    assert!(
+        f.supervisor.holds("r").is_empty(),
+        "a settled call is no longer held"
+    );
     let ack = f.custody_attempt("late_results.ack");
     assert_eq!(
         ack.input,
