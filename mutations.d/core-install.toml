@@ -95,11 +95,9 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install_policy.rs"
-old = '''install::approve(tx, flow_id, version, hash, &reference, now, schedule).map_err(|e| match e {
-                install::InstallError::Store(e) => e,
-                other => CoreError::Invalid(other.to_string()),
-            })?;'''
-new = 'let _ = (tx, flow_id, version, hash, &reference, now, schedule); // NON-VACUITY BREAK'
+old = '''match install::approve(tx, flow_id, version, hash, &reference, now, schedule) {'''
+new = '''let _ = (&hash, &reference, &schedule); // NON-VACUITY BREAK
+            match Ok::<(), install::InstallError>(()) {'''
 
 [[control]]
 id = "policy-provenance-not-stored"
