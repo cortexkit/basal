@@ -170,9 +170,11 @@ separate commit limits with headroom above their JavaScript heap budgets.
 Dropping or killing a worker terminates its job and every thread in the process.
 
 Before reading its first frame, the worker reverts the thread token, checks that
-none remains, lowers its actual primary to Untrusted, and closes all Advanced
-Local Procedure Call (ALPC) ports
-and non-inheritable non-stdio File handles (including KsecDD on Server 2022).
+none remains, lowers its actual primary to Untrusted, and closes the leftovers
+it can identify as unused: every Advanced Local Procedure Call (ALPC) port, the
+current-directory handle and, on Server 2022, the `\Device\KsecDD` handle of
+`bcrypt.dll`. Any other non-stdio File is kept for the allowlist to judge; only
+the CNG device passes.
 It attests the actual token, required process mitigations and the handle table.
 A failed check exits 70 with a named reason, never a weaker sandbox. The parent
 accepts a Windows `Welcome` only on Windows, with all five confinement fields true. Its
@@ -198,15 +200,17 @@ for a flow to affect the outside world: the parent checks their manifest grants.
 Windows needs runtime handles beyond stdio. The startup allowlist fits the
 entire inventory to **one image profile**: either the windows-latest ceilings
 or the windows-2022 ceilings in the table below, never their union.
-Stdio and `\KnownDlls` must be present at exactly their counts; all other rows
-are ceilings. Unknown types, access masks, extra inheritable handles and excess
-counts are refused. Each profile permits at most **26 handles**:
+Stdio, `\KnownDlls` and `\Device\CNG` must be present at exactly their counts;
+all other rows are ceilings. Unknown types, access masks, names of the exact
+rows, extra inheritable handles and excess counts are refused. Each profile
+permits at most **27 handles**:
 
 | Type | Access | windows-latest ceiling | windows-2022 ceiling | windows-latest production | windows-2022 production |
 | --- | --- | ---: | ---: | ---: | ---: |
 | File stdin | `0x120189` | 1 (exact) | 1 (exact) | 1 | 1 |
 | File stdout/stderr | `0x120196` | 2 (exact) | 2 (exact) | 2 | 2 |
 | Directory `\KnownDlls` | `0x3` | 1 (exact) | 1 (exact) | 1 | 1 |
+| File `\Device\CNG` | `0x100001` | 1 (exact) | 1 (exact) | 1 | 1 |
 | Event | `0x1f0003` | ≤7 | ≤7 | 6 | 6 |
 | IoCompletion | `0x1f0003` | ≤2 | ≤2 | 2 | 2 |
 | TpWorkerFactory | `0xf00ff` | ≤2 | ≤2 | 2 | 2 |
@@ -214,7 +218,7 @@ counts are refused. Each profile permits at most **26 handles**:
 | WaitCompletionPacket | `0x1` | ≤6 | ≤5 | 6 | 5 |
 | Semaphore | `0x100003` | 0 | ≤2 | 0 | 2 |
 | SchedulerSharedData | `0x1` | ≤1 | 0 | 1 | 0 |
-| **Total** | | **≤26** | **≤26** | **25** | **25** |
+| **Total** | | **≤27** | **≤27** | **26** | **26** |
 
 The production counts and creator chains are committed in
 [`windows-handle-provenance.md`](../crates/basal-worker/tests/data/windows-handle-provenance.md).
@@ -224,6 +228,18 @@ can weaken the worker's startup checks. The images were `win25-vs2026` version
 `20260925.250.1` and `win22` version `20261004.326.1`. An image change requires
 remeasurement, not an automatic widening of the allowlist. Production used six
 Event handles per image, one below each seven-Event ceiling.
+
+`\Device\CNG` is the kernel CNG device. `bcryptprimitives.dll`, which Rust's
+standard library imports for `ProcessPrng`, opens it while the process loads,
+with read access only, and keeps the process-private handle to fetch random
+seed material from the kernel. It closes the handle itself when it detaches
+during `ExitProcess`. If startup closed the handle first, that second close was
+an invalid-handle reference, so a worker that ended on its own sometimes died
+with `0xc0000008` and was counted as a confinement fault. The CNG row was
+measured on both images, in every worker of CI run
+[39707491078](https://github.com/cortexkit/basal/actions/runs/39707491078);
+the committed provenance measurement predates it and counts the other 25
+handles.
 
 `\KnownDlls` is shared and read-only (query and traverse). Every other residual
 object beyond stdio is unnamed and was private to the worker in the measured

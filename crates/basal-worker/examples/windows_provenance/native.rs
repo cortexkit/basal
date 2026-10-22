@@ -161,7 +161,10 @@ unsafe fn inventory(process: HANDLE, stdio: [usize; 3]) -> Result<Vec<HandleEntr
     let mut result = Vec::new();
     for entry in entries {
         let ty = types.get(&entry.ty).ok_or("unknown object type")?.clone();
-        let name = if ty == "Directory" {
+        // The allowlist judges the Directory and a non-inheritable File that is
+        // not a standard pipe by name.
+        let private_file = ty == "File" && entry.attrs & 2 == 0 && !stdio.contains(&entry.handle);
+        let name = if ty == "Directory" || private_file {
             let mut duplicate = null_mut();
             if DuplicateHandle(
                 process,
@@ -173,7 +176,7 @@ unsafe fn inventory(process: HANDLE, stdio: [usize; 3]) -> Result<Vec<HandleEntr
                 DUPLICATE_SAME_ACCESS,
             ) == 0
             {
-                return Err(format!("duplicate Directory: {}", GetLastError()));
+                return Err(format!("duplicate {ty}: {}", GetLastError()));
             }
             let duplicate = Handle(duplicate);
             let (buffer, _) = query(duplicate.0, 1, true)?;

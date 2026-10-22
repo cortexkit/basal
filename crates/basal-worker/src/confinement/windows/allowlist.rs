@@ -2,14 +2,15 @@
 //!
 //! Before it reads input the worker lists every handle in its own table and
 //! accepts the table only if it fits one of two measured profiles, one per
-//! supported Windows image. Some rows are exact: the three standard pipes and
-//! the loader's read-only `\KnownDlls` directory must each be there. Every
-//! other row is a ceiling on handles the system's own start-up code creates
-//! for the process's thread pool, loader and crypto initialisation: unnamed,
-//! private objects that give no file, network, process or persistent reach.
-//! Anything else (a file that is not a standard pipe, a section, process,
-//! thread, token, job, key, port, another directory, any inheritable handle
-//! that is not a standard pipe) is refused.
+//! supported Windows image. Some rows are exact: the three standard pipes, the
+//! loader's read-only `\KnownDlls` directory and the kernel CNG device that
+//! `bcryptprimitives.dll` keeps open must each be there. Every other row is a
+//! ceiling on handles the system's own start-up code creates for the
+//! process's thread pool, loader and crypto initialisation: unnamed, private
+//! objects that give no file, network, process or persistent reach. Anything
+//! else (any other file, a section, process, thread, token, job, key, port,
+//! another directory, any inheritable handle that is not a standard pipe) is
+//! refused.
 //!
 //! The table must fit a single profile on its own. The two profiles are never
 //! combined, so a table holding Windows 11's SchedulerSharedData handle and
@@ -26,8 +27,9 @@ pub enum Stdio {
 }
 
 /// One handle in the worker's table, as identified without dereferencing it:
-/// its type comes from the table's type index and the system's type list,
-/// and only the single Directory handle has its name queried.
+/// its type comes from the table's type index and the system's type list.
+/// Only the single Directory handle and a single non-inheritable File handle
+/// that is not a standard pipe have their names queried.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandleEntry {
     /// The handle value.
@@ -40,7 +42,8 @@ pub struct HandleEntry {
     pub inheritable: bool,
     /// Which standard handle it is, if its value is one of them.
     pub stdio: Option<Stdio>,
-    /// The object name, read for the Directory handle only.
+    /// The object name, read for the Directory handle and a non-inheritable
+    /// File handle that is not a standard pipe only.
     pub name: Option<String>,
 }
 
@@ -52,6 +55,21 @@ pub const STDOUT_ACCESS: u32 = 0x0012_0196;
 pub const KNOWN_DLLS_ACCESS: u32 = 0x3;
 /// The one object directory the loader keeps open.
 pub const KNOWN_DLLS: &str = "\\KnownDlls";
+/// The kernel CNG device. `bcryptprimitives.dll`, which Rust's standard
+/// library imports for `ProcessPrng`, opens it while the process loads and
+/// keeps the handle for the life of the process: it asks the kernel for
+/// random seed material through it, and closes it when the DLL detaches
+/// during `ExitProcess`. Closing it at startup is therefore not possible: the
+/// DLL's own later close or use of the stale value is an invalid-handle
+/// reference, which strict handle checks make fatal (`0xC0000008`).
+pub const CNG_DEVICE: &str = "\\Device\\CNG";
+/// `FILE_READ_DATA | SYNCHRONIZE`, the access `bcryptprimitives.dll` opens
+/// the CNG device with: enough for its device I/O controls, nothing more.
+pub const CNG_ACCESS: u32 = 0x0010_0001;
+/// The kernel security device that `bcrypt.dll` opens on Windows Server 2022
+/// to register for crypto configuration changes. Measured on that image, the
+/// DLL never uses or closes the handle again, so startup closes it.
+pub const KSECDD_DEVICE: &str = "\\Device\\KsecDD";
 
 /// At most `count` handles of this type with exactly this access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,8 +85,8 @@ pub struct Profile {
     pub name: &'static str,
     /// The ceiling rows. A row with count 0 is a type this image never has.
     pub ceilings: [Ceiling; 7],
-    /// The largest number of handles in the whole table, the exact rows
-    /// included.
+    /// The largest number of handles in the whole table, the five exact rows
+    /// (three pipes, `\KnownDlls`, the CNG device) included.
     pub total: usize,
 }
 
@@ -92,7 +110,7 @@ pub const WINDOWS_LATEST: Profile = Profile {
         ceiling("Semaphore", 0x0010_0003, 0),
         ceiling("SchedulerSharedData", 0x1, 1),
     ],
-    total: 26,
+    total: 27,
 };
 
 /// Windows Server 2022 (the `windows-2022` runner image).
@@ -107,25 +125,63 @@ pub const WINDOWS_2022: Profile = Profile {
         ceiling("Semaphore", 0x0010_0003, 2),
         ceiling("SchedulerSharedData", 0x1, 0),
     ],
-    total: 26,
+    total: 27,
 };
 
 /// Every profile a table may fit.
 pub const PROFILES: [&Profile; 2] = [&WINDOWS_LATEST, &WINDOWS_2022];
 
-/// Whether startup step 3 closes this handle before the allowlist runs.
+/// What startup step 3 does with one handle, before the allowlist runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leftover {
+    /// Close it.
+    Close,
+    /// Leave it open for the allowlist to judge.
+    Keep,
+    /// Read its name, then ask again with the name.
+    NeedsName,
+}
+
+/// One handle as startup step 3 sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Candidate<'a> {
+    pub type_name: &'a str,
+    /// Whether it is one of the three standard handles.
+    pub stdio: bool,
+    pub inheritable: bool,
+    /// Whether it is the process's current-directory handle.
+    pub current_directory: bool,
+    /// The object name, once read.
+    pub name: Option<&'a str>,
+}
+
+/// Decides what startup step 3 does with a handle. It closes exactly three
+/// kinds of handle, each of which nothing in the worker uses again:
 ///
-/// It closes the loader's connection to the session's client/server runtime
-/// port (every ALPC Port) and every File handle that is neither a standard
-/// handle nor inheritable, which on Server 2022 is the crypto driver device
-/// the CNG start-up code opens. Only the three pipes are inherited; any other
-/// inheritable handle came from the parent by mistake and is left open, so
-/// that the allowlist refuses it instead of the worker hiding it.
-pub fn closed_at_startup(type_name: &str, stdio: bool, inheritable: bool) -> bool {
-    match type_name {
-        "ALPC Port" => true,
-        "File" => !stdio && !inheritable,
-        _ => false,
+/// - every ALPC Port, which is the loader's connection to the session's
+///   client/server runtime port;
+/// - the current-directory handle the process starts with: the worker never
+///   changes directory or opens a relative path;
+/// - on Windows Server 2022, the `\Device\KsecDD` handle of `bcrypt.dll`.
+///
+/// Any other File that is neither a standard handle nor inheritable is named
+/// first and then kept, so that the allowlist judges it: the CNG device is
+/// allowed, anything else is refused. Startup never closes a handle it has
+/// not identified, because a system DLL that later closes or uses its own
+/// copy of the value would end the worker with an invalid-handle fault.
+/// An inheritable handle that is not a standard pipe is kept as well, so that
+/// the allowlist refuses it instead of the worker hiding it.
+pub fn leftover(candidate: &Candidate) -> Leftover {
+    match candidate.type_name {
+        "ALPC Port" => Leftover::Close,
+        "File" if candidate.stdio || candidate.inheritable => Leftover::Keep,
+        "File" if candidate.current_directory => Leftover::Close,
+        "File" => match candidate.name {
+            None => Leftover::NeedsName,
+            Some(KSECDD_DEVICE) => Leftover::Close,
+            Some(_) => Leftover::Keep,
+        },
+        _ => Leftover::Keep,
     }
 }
 
@@ -154,6 +210,7 @@ pub fn check(entries: &[HandleEntry]) -> Result<&'static Profile, String> {
     let mut refused: Vec<String> = Vec::new();
     let mut stdio = [0usize; 3];
     let mut known_dlls = 0usize;
+    let mut cng = 0usize;
     // Handles counted against a ceiling row, by (type, access).
     let mut counted: BTreeMap<(&str, u32), usize> = BTreeMap::new();
     for entry in entries {
@@ -182,6 +239,14 @@ pub fn check(entries: &[HandleEntry]) -> Result<&'static Profile, String> {
             }
             continue;
         }
+        if entry.type_name == "File" {
+            if entry.name.as_deref() == Some(CNG_DEVICE) && entry.access == CNG_ACCESS {
+                cng += 1;
+            } else {
+                refused.push(describe(entry));
+            }
+            continue;
+        }
         let row = PROFILES
             .iter()
             .flat_map(|profile| profile.ceilings.iter())
@@ -200,6 +265,9 @@ pub fn check(entries: &[HandleEntry]) -> Result<&'static Profile, String> {
         refused.push(format!(
             "{known_dlls} {KNOWN_DLLS} directory handles, expected 1"
         ));
+    }
+    if cng != 1 {
+        refused.push(format!("{cng} {CNG_DEVICE} file handles, expected 1"));
     }
     if !refused.is_empty() {
         return Err(refused.join("; "));
@@ -254,7 +322,8 @@ mod tests {
         (0..count).map(|_| entry(type_name, access)).collect()
     }
 
-    /// The exact rows: the three inherited pipes and `\KnownDlls`.
+    /// The exact rows: the three inherited pipes, `\KnownDlls` and the CNG
+    /// device.
     fn exact() -> Vec<HandleEntry> {
         let pipe = |stdio, access| HandleEntry {
             inheritable: true,
@@ -269,10 +338,18 @@ mod tests {
                 name: Some(KNOWN_DLLS.into()),
                 ..entry("Directory", KNOWN_DLLS_ACCESS)
             },
+            cng(),
         ]
     }
 
-    /// The 26-handle table measured on Windows 11.
+    fn cng() -> HandleEntry {
+        HandleEntry {
+            name: Some(CNG_DEVICE.into()),
+            ..entry("File", CNG_ACCESS)
+        }
+    }
+
+    /// The windows-latest profile's 26 ceiling handles plus the CNG device.
     fn latest() -> Vec<HandleEntry> {
         let mut table = exact();
         table.extend(rows("Event", 0x1f0003, 7));
@@ -284,7 +361,7 @@ mod tests {
         table
     }
 
-    /// The 26-handle table measured on Windows Server 2022.
+    /// The windows-2022 profile's 26 ceiling handles plus the CNG device.
     fn server_2022() -> Vec<HandleEntry> {
         let mut table = exact();
         table.extend(rows("Event", 0x1f0003, 7));
@@ -298,9 +375,9 @@ mod tests {
 
     #[test]
     fn each_images_measured_table_fits_its_own_profile() {
-        assert_eq!(latest().len(), 26);
+        assert_eq!(latest().len(), 27);
         assert_eq!(check(&latest()), Ok(&WINDOWS_LATEST));
-        assert_eq!(server_2022().len(), 26);
+        assert_eq!(server_2022().len(), 27);
         assert_eq!(check(&server_2022()), Ok(&WINDOWS_2022));
     }
 
@@ -313,13 +390,13 @@ mod tests {
     }
 
     /// Windows 11's SchedulerSharedData handle together with Server 2022's
-    /// semaphores: 28 handles that fit neither profile alone, and would pass
+    /// semaphores: 29 handles that fit neither profile alone, and would pass
     /// only if the two profiles were combined.
     #[test]
     fn the_mixed_table_fits_no_profile() {
         let mut mixed = latest();
         mixed.extend(rows("Semaphore", 0x100003, 2));
-        assert_eq!(mixed.len(), 28);
+        assert_eq!(mixed.len(), 29);
         let error = check(&mixed).expect_err("the mixed table must be refused");
         assert!(error.contains("not windows-latest: 2 Semaphore"), "{error}");
         assert!(
@@ -338,7 +415,7 @@ mod tests {
         let mut table = latest();
         table.pop();
         table.push(entry("Event", 0x1f0003));
-        assert_eq!(table.len(), 26);
+        assert_eq!(table.len(), 27);
         let error = check(&table).expect_err("eight events");
         assert!(error.contains("8 Event 0x1f0003, at most 7"), "{error}");
 
@@ -346,28 +423,70 @@ mod tests {
         table.push(entry("WaitCompletionPacket", 0x1));
         assert!(
             check(&table).is_err(),
-            "six wait packets on 2022 and 27 in all"
+            "six wait packets on 2022 and 28 in all"
         );
     }
 
     #[test]
     fn a_table_over_the_total_is_refused() {
         // Every ceiling of windows-latest filled, plus one Semaphore that only
-        // windows-2022 allows: 27 handles.
+        // windows-2022 allows: 28 handles.
         let mut table = latest();
         table.extend(rows("Semaphore", 0x100003, 1));
-        let error = check(&table).expect_err("27 handles");
-        assert!(error.contains("27 handles, at most 26"), "{error}");
+        let error = check(&table).expect_err("28 handles");
+        assert!(error.contains("28 handles, at most 27"), "{error}");
+    }
+
+    fn candidate(type_name: &str) -> Candidate<'_> {
+        Candidate {
+            type_name,
+            stdio: false,
+            inheritable: false,
+            current_directory: false,
+            name: None,
+        }
+    }
+
+    fn named(name: &str) -> Candidate<'_> {
+        Candidate {
+            name: Some(name),
+            ..candidate("File")
+        }
     }
 
     #[test]
-    fn startup_closes_ports_and_private_files_only() {
-        assert!(closed_at_startup("ALPC Port", false, false));
-        assert!(closed_at_startup("File", false, false));
+    fn startup_closes_the_csr_port_the_current_directory_and_ksecdd() {
+        assert_eq!(leftover(&candidate("ALPC Port")), Leftover::Close);
+        let directory = Candidate {
+            current_directory: true,
+            ..candidate("File")
+        };
+        assert_eq!(leftover(&directory), Leftover::Close);
+        assert_eq!(leftover(&named(KSECDD_DEVICE)), Leftover::Close);
+    }
+
+    /// Closing a handle a system DLL still owns ends the worker when the DLL
+    /// later closes or uses it, so only identified handles are closed. The
+    /// CNG device stays open for `bcryptprimitives.dll`, and any other File
+    /// stays open for the allowlist to refuse.
+    #[test]
+    fn startup_keeps_the_cng_device_and_every_unidentified_file() {
+        assert_eq!(leftover(&candidate("File")), Leftover::NeedsName);
+        assert_eq!(leftover(&named(CNG_DEVICE)), Leftover::Keep);
+        assert_eq!(leftover(&named("\\Device\\Afd")), Leftover::Keep);
+        assert_eq!(leftover(&named("")), Leftover::Keep);
         // The standard pipes stay, and so does an inheritable file, which the
-        // allowlist must see and refuse.
-        assert!(!closed_at_startup("File", true, true));
-        assert!(!closed_at_startup("File", false, true));
+        // allowlist must see and refuse, even one named like a closed device.
+        for (stdio, inheritable) in [(true, true), (true, false), (false, true)] {
+            let kept = Candidate {
+                stdio,
+                inheritable,
+                current_directory: true,
+                name: Some(KSECDD_DEVICE),
+                ..candidate("File")
+            };
+            assert_eq!(leftover(&kept), Leftover::Keep, "{kept:?}");
+        }
         for kept in [
             "Directory",
             "Event",
@@ -379,7 +498,33 @@ mod tests {
             "SchedulerSharedData",
             "Key",
         ] {
-            assert!(!closed_at_startup(kept, false, false), "{kept}");
+            assert_eq!(leftover(&candidate(kept)), Leftover::Keep, "{kept}");
+        }
+    }
+
+    #[test]
+    fn the_cng_device_must_be_there_once_with_its_name_and_access() {
+        let mut table = latest();
+        table.remove(4);
+        let error = check(&table).expect_err("no CNG device");
+        assert!(error.contains("0 \\Device\\CNG file handles"), "{error}");
+        let mut table = latest();
+        table.push(cng());
+        assert!(check(&table).is_err(), "two CNG device handles");
+        for (name, access) in [
+            (Some(CNG_DEVICE), 0x100003),
+            (Some(CNG_DEVICE), 0x12019f),
+            (Some(KSECDD_DEVICE), CNG_ACCESS),
+            (Some("\\Device\\CNG\\x"), CNG_ACCESS),
+            (None, CNG_ACCESS),
+        ] {
+            let mut table = latest();
+            table[4] = HandleEntry {
+                name: name.map(Into::into),
+                ..entry("File", access)
+            };
+            let error = check(&table).expect_err("not the CNG device");
+            assert!(error.contains("File"), "{name:?} {access:#x}: {error}");
         }
     }
 

@@ -1,7 +1,7 @@
 //! The startup sequence: the six checks in order, before the first frame
 //! read. See the parent module for what each step guards.
 
-use super::allowlist::{self, closed_at_startup};
+use super::allowlist::{self, Candidate, Leftover, leftover};
 use super::native::{self, CURRENT_PROCESS_TOKEN, OBJ_INHERIT, PackageSid, close, last};
 use super::{Arguments, Refusal, attest, mitigation, reason};
 use crate::confinement::{ConfinementError, Entered};
@@ -109,23 +109,34 @@ fn lower_integrity(adjustment: Result<Token, String>, skip: bool) -> Result<(), 
     close(handle, "primary adjustment handle").map_err(refuse)
 }
 
-/// Step 3: close the ALPC port and private File handles the loader left (see
-/// [`closed_at_startup`]). A handle that cannot be listed or closed refuses
+/// Step 3: close the handles the loader left that nothing uses again (see
+/// [`leftover`]). A handle that cannot be listed, named or closed refuses
 /// startup as `handle-not-allowed`, the check that would otherwise see it.
 fn close_startup_leftovers() -> Result<(), Refusal> {
     let refuse = |detail: String| Refusal::new(reason::HANDLE_NOT_ALLOWED, detail);
     let types = native::object_types().map_err(refuse)?;
     let standard = native::standard_handles();
+    let current_directory = native::current_directory_handle().map_err(refuse)?;
     for entry in native::handle_snapshot().map_err(refuse)? {
         let Some(type_name) = types.get(&entry.type_index) else {
             continue;
         };
         let value = entry.handle as usize;
-        if closed_at_startup(
+        let mut candidate = Candidate {
             type_name,
-            standard.contains(&value),
-            entry.attributes & OBJ_INHERIT != 0,
-        ) {
+            stdio: standard.contains(&value),
+            inheritable: entry.attributes & OBJ_INHERIT != 0,
+            current_directory: value == current_directory,
+            name: None,
+        };
+        let mut action = leftover(&candidate);
+        let name;
+        if action == Leftover::NeedsName {
+            name = native::object_name_via_duplicate(entry.handle).map_err(refuse)?;
+            candidate.name = Some(&name);
+            action = leftover(&candidate);
+        }
+        if action == Leftover::Close {
             close(entry.handle, &format!("{type_name} {value:#x}")).map_err(refuse)?;
         }
     }
