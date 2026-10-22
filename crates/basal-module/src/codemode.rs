@@ -452,7 +452,7 @@ fn render_text(result: &mut Value) -> String {
         text.push_str(&error_text(error));
     }
     if let Some(value) = result.get("value") {
-        text.push_str(&format!("\nReturn value:\n{value}\n"));
+        text.push_str(&return_value_text(value));
     }
     // Empty sections are left out rather than printed as bare headings.
     let output = result["output"].as_str().unwrap_or("");
@@ -492,6 +492,23 @@ fn render_text(result: &mut Value) -> String {
     }
     result["warnings"] = warnings.into();
     text
+}
+
+/// The return value as a model reads it. A string is shown verbatim, so its
+/// line breaks stay line breaks instead of `\n` escapes inside quotes; objects
+/// and arrays are pretty-printed JSON with a 2-space indent; null (also what an
+/// `undefined` return becomes) is `none`. structuredContent keeps the raw value.
+fn return_value_text(value: &Value) -> String {
+    let body = match value {
+        Value::Null => return "\nReturn value: none\n".into(),
+        Value::String(text) => text.clone(),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string_pretty(value).expect("JSON value")
+        }
+        other => other.to_string(),
+    };
+    let newline = if body.ends_with('\n') { "" } else { "\n" };
+    format!("\nReturn value:\n{body}{newline}")
 }
 
 /// The run error as plain text: its code, its message, and any provider

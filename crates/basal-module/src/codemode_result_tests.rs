@@ -47,7 +47,7 @@ fn content_text_snapshot() {
         (
             success,
             format!(
-                "completed · 10 ms · 1 calls · person wait 0 ms\n\nReturn value:\n{{\"answer\":42}}\n\nOutput:\npartial\nλ\n{TABLE}echo | completed | false | 8\n"
+                "completed · 10 ms · 1 calls · person wait 0 ms\n\nReturn value:\n{{\n  \"answer\": 42\n}}\n\nOutput:\npartial\nλ\n{TABLE}echo | completed | false | 8\n"
             ),
             json!([]),
         ),
@@ -68,7 +68,7 @@ fn content_text_snapshot() {
         (
             unsettled,
             format!(
-                "completed · 10 ms · 1 calls · person wait 0 ms\n\nReturn value:\n{{\"answer\":42}}\n\nOutput:\npartial\nλ\n{TABLE}echo | outcome_unknown | false | —\n\nWarning: Explicit warning\nWarning: {{\"code\":\"unknown\"}}\nWarning: This call had no key and can't be recovered if its reply is lost.\nWarning: Some calls have unknown outcomes and may still be running; they were never retried.\n"
+                "completed · 10 ms · 1 calls · person wait 0 ms\n\nReturn value:\n{{\n  \"answer\": 42\n}}\n\nOutput:\npartial\nλ\n{TABLE}echo | outcome_unknown | false | —\n\nWarning: Explicit warning\nWarning: {{\"code\":\"unknown\"}}\nWarning: This call had no key and can't be recovered if its reply is lost.\nWarning: Some calls have unknown outcomes and may still be running; they were never retried.\n"
             ),
             json!([{"message":"Explicit warning"},{"code":"unknown"},
                 {"code":"keyless","message":"This call had no key and can't be recovered if its reply is lost."},
@@ -77,7 +77,7 @@ fn content_text_snapshot() {
         // No console output and no calls: neither heading is printed.
         (
             silent,
-            "completed · 10 ms · 0 calls · person wait 0 ms\n\nReturn value:\n{\"answer\":42}\n"
+            "completed · 10 ms · 0 calls · person wait 0 ms\n\nReturn value:\n{\n  \"answer\": 42\n}\n"
                 .to_owned(),
             json!([]),
         ),
@@ -97,6 +97,35 @@ fn content_text_snapshot() {
         let mut expected_fields = run;
         expected_fields["warnings"] = warnings;
         assert_eq!(fields, expected_fields);
+    }
+}
+
+#[test]
+fn return_values_render_for_reading_while_structured_content_keeps_them_raw() {
+    let multiline = "--- e327\n(1) Home / X\n  e4088 generic";
+    for (value, expected) in [
+        (json!(multiline), format!("\nReturn value:\n{multiline}\n")),
+        (json!("ends with newline\n"), "\nReturn value:\nends with newline\n".to_owned()),
+        (json!(null), "\nReturn value: none\n".to_owned()),
+        (json!(7), "\nReturn value:\n7\n".to_owned()),
+        (json!(true), "\nReturn value:\ntrue\n".to_owned()),
+        (
+            json!({"distinct":["{\"a\":1}"],"n":[1,2]}),
+            "\nReturn value:\n{\n  \"distinct\": [\n    \"{\\\"a\\\":1}\"\n  ],\n  \"n\": [\n    1,\n    2\n  ]\n}\n"
+                .to_owned(),
+        ),
+    ] {
+        let mut run = successful_run();
+        run["value"] = value.clone();
+        run["output"] = "".into();
+        run["calls"] = json!([]);
+        run["call_count"] = 0.into();
+        let result = render("codemode:example", run);
+        assert_eq!(
+            text(&result),
+            format!("completed · 10 ms · 0 calls · person wait 0 ms\n{expected}")
+        );
+        assert_eq!(result["structuredContent"]["value"], value);
     }
 }
 
@@ -303,7 +332,7 @@ fn structured_omission_keeps_large_but_deliverable_model_text() {
     run["status"] = "failed".into();
     run["error"] = json!({"code":"script","message":"x".repeat(2 * 1024 * 1024)});
     let text = format!(
-        "failed · 10 ms · 1 calls · person wait 0 ms\nError (script): {}\n\nReturn value:\n{{\"answer\":42}}\n\nOutput:\npartial\nλ\n{TABLE}echo | completed | false | 8\n",
+        "failed · 10 ms · 1 calls · person wait 0 ms\nError (script): {}\n\nReturn value:\n{{\n  \"answer\": 42\n}}\n\nOutput:\npartial\nλ\n{TABLE}echo | completed | false | 8\n",
         "x".repeat(2 * 1024 * 1024)
     );
     let result = render("codemode:example", run);

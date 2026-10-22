@@ -14,7 +14,7 @@ result body:
 
 ```json
 {
-  "content": [{"type": "text", "text": "completed · 10 ms · 1 calls · person wait 0 ms\n..."}],
+  "content": [{"type": "text", "text": "completed · 10 ms · 1 calls · person wait 0 ms\n\nReturn value:\n{\n  \"answer\": 42\n}\n\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\necho | completed | false | 8\n"}],
   "structuredContent": {
     "run_id": "codemode:...",
     "status": "completed",
@@ -38,12 +38,18 @@ Consumers build model input from ordered `content` parts only, never from
 `structuredContent`. Codemode emits one text part. For a run that fits the
 size bound it holds, in order: the status/duration/call-count/person-wait line,
 the error if present (`Error (<code>): <message>`, plus an `Error detail:` line
-with the provider detail as JSON when there is one), the JSON return value if
-present, console output under `Output:` when there is any, the call-summary
-table (a header, a `--- | --- | --- | ---` separator and one row per call) when
-the program made calls, then warnings. The JSON return value is capped at 16 KiB and
-console output at 64 KiB by the worker. No text is synthesized from the machine
-fields by the consumer.
+with the provider detail as JSON when there is one), the return value if
+present, console output verbatim under `Output:` when there is any, the
+call-summary table (a header, a `--- | --- | --- | ---` separator and one row per call) when
+the program made calls, then warnings.
+
+The return value is rendered for reading: a string verbatim, without quotes and
+with real line breaks; an object or array as JSON pretty-printed with a 2-space
+indent (strings inside it are still JSON-escaped); a number or boolean as JSON;
+and null, which is also what returning `undefined` gives, as `Return value:
+none`. `structuredContent.value` always holds the raw JSON value, unchanged.
+The JSON return value is capped at 16 KiB and console output at 64 KiB by the
+worker. No text is synthesized from the machine fields by the consumer.
 
 `structuredContent` carries the machine-readable fields: status, return value,
 console output, call summaries, warnings, optional error and provider detail,
