@@ -614,10 +614,11 @@ outstanding cingulate grant-loss card whose answer body exactly matches the
 current revision. This prevents an answer to older or unrelated content from
 claiming the replacement id.
 
-Each provider's answer feed is read only while basal has an open card on it.
-With no open card basal does no consent work at all: no polling thread, no
-timer and no page read, at startup or later. The first card raised starts the
-poller. Basal applies each answer durably and idempotently before
+Each provider's answer feed is read only while basal has an open card on it,
+or while a failed poll on that provider still needs a retry. If no card is open
+when basal starts, no poller is started: no thread, no timer and no page read.
+The first card raised starts it. Once every card is closed, the poller waits
+without a timer and reads nothing until the next card is raised. Basal applies each answer durably and idempotently before
 acknowledging it on its own provider. The feed uses `consent.answers`
 continuations and a durable cursor, then `consent.ack` through the fully
 processed page, including empty final pages that cover withdrawals. A failed

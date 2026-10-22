@@ -721,7 +721,7 @@ CREATE TABLE decision_superseded_ids (
 "#;
 
 // Decision cards are held only by `consent/v1` providers. prefrontal-core
-// removed its elicitation plane, so a card recorded on the 'legacy' path can
+// removed its `elicitation.*` operations, so a card recorded on the 'legacy' path can
 // never be answered, updated or withdrawn there. `consent_path` stays: it
 // names the provider (`consent:<module id>`) that holds each card, which a
 // lost reply or a later catalog change must not lose.
