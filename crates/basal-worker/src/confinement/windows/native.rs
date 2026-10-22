@@ -49,8 +49,16 @@ pub(super) const OBJ_INHERIT: u32 = 0x2;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xc000_0004_u32 as i32;
 /// `STATUS_BUFFER_OVERFLOW`: the buffer was too small for the whole result.
 const STATUS_BUFFER_OVERFLOW: i32 = 0x8000_0005_u32 as i32;
+/// `ProcessBasicInformation`, which holds the address of the process's PEB.
+const PROCESS_BASIC_INFORMATION: u32 = 0;
 /// `ProcessHandleInformation`, the process's own handle table.
 const PROCESS_HANDLE_INFORMATION: u32 = 51;
+/// Offset of `ProcessParameters` in the 64-bit PEB.
+const PEB_PROCESS_PARAMETERS: usize = 0x20;
+/// Offset of `CurrentDirectory.Handle` in the 64-bit
+/// `RTL_USER_PROCESS_PARAMETERS`: the `CURDIR` starts at 0x38 with its
+/// 16-byte DOS path, and its handle follows.
+const PARAMETERS_CURRENT_DIRECTORY_HANDLE: usize = 0x48;
 /// `ObjectNameInformation`.
 const OBJECT_NAME_INFORMATION: u32 = 1;
 /// `ObjectTypesInformation`: every object type and its index.
@@ -538,10 +546,10 @@ pub(super) fn object_name_via_duplicate(handle: HANDLE) -> Result<String> {
             DUPLICATE_SAME_ACCESS,
         ) == 0
         {
-            return Err(last("DuplicateHandle(directory)"));
+            return Err(last("DuplicateHandle(named handle)"));
         }
         let name = object_name(duplicate);
-        close(duplicate, "directory duplicate")?;
+        close(duplicate, "named handle duplicate")?;
         name
     }
 }
@@ -583,6 +591,45 @@ fn object_name(handle: HANDLE) -> Result<String> {
     Err("the object name kept growing".into())
 }
 
+/// The value of the handle the process holds open on its current directory,
+/// read from the process parameters in its PEB. Nothing in the worker
+/// changes directory, so the value read here stays the one in use.
+pub(super) fn current_directory_handle() -> Result<usize> {
+    // PROCESS_BASIC_INFORMATION: the exit status (padded to 8 bytes), then
+    // the PEB address, then four more pointer-sized fields.
+    let mut basic = [0usize; 6];
+    let result = unsafe {
+        NtQueryInformationProcess(
+            GetCurrentProcess(),
+            PROCESS_BASIC_INFORMATION,
+            basic.as_mut_ptr().cast(),
+            size_of_val(&basic) as u32,
+            null_mut(),
+        )
+    };
+    if result < 0 {
+        return Err(status(
+            "NtQueryInformationProcess(ProcessBasicInformation)",
+            result,
+        ));
+    }
+    let peb = basic[1];
+    if peb == 0 {
+        return Err("the process has no PEB address".into());
+    }
+    // The PEB and its process parameters belong to this process and live as
+    // long as it does.
+    unsafe {
+        let parameters = std::ptr::read_volatile((peb + PEB_PROCESS_PARAMETERS) as *const usize);
+        if parameters == 0 {
+            return Err("the PEB has no process parameters".into());
+        }
+        Ok(std::ptr::read_volatile(
+            (parameters + PARAMETERS_CURRENT_DIRECTORY_HANDLE) as *const usize,
+        ))
+    }
+}
+
 /// Which standard handle `value` is.
 pub(super) fn stdio_slot(value: usize, standard: &[usize; 3]) -> Option<Stdio> {
     [Stdio::Input, Stdio::Output, Stdio::Error]
@@ -611,12 +658,22 @@ pub(super) fn handle_table() -> Result<Vec<HandleEntry>> {
             name: None,
         })
         .collect();
-    // Only a single Directory handle is named. With two or more the table is
-    // refused anyway, and nothing is queried.
+    // Only a single Directory handle, and a single File handle that is not a
+    // standard pipe and not inheritable, are named. With two or more of
+    // either the table is refused anyway, and nothing of that kind is queried.
     let directories: Vec<usize> = (0..table.len())
         .filter(|&index| table[index].type_name == "Directory")
         .collect();
     if let [index] = directories[..] {
+        table[index].name = Some(object_name_via_duplicate(snapshot[index].handle)?);
+    }
+    let files: Vec<usize> = (0..table.len())
+        .filter(|&index| {
+            let entry = &table[index];
+            entry.type_name == "File" && entry.stdio.is_none() && !entry.inheritable
+        })
+        .collect();
+    if let [index] = files[..] {
         table[index].name = Some(object_name_via_duplicate(snapshot[index].handle)?);
     }
     Ok(table)

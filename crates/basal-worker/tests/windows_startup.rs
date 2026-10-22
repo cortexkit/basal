@@ -215,6 +215,209 @@ fn an_activation_completes_under_the_full_confinement() {
     assert_eq!(ended.code, 0, "{}", ended.stderr);
 }
 
+/// One handle in the worker's table, read by the parent.
+#[derive(Debug)]
+struct WorkerHandle {
+    value: usize,
+    type_name: String,
+    access: u32,
+    inheritable: bool,
+    /// The object name, read for File handles that are not standard pipes.
+    name: Option<String>,
+}
+
+/// Reads the confined worker's handle table from the parent. File handles
+/// other than the three pipes are named through a duplicate in the parent.
+fn worker_handles(child: &ConfinedProcess) -> Vec<WorkerHandle> {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    #[link(name = "ntdll", kind = "raw-dylib")]
+    unsafe extern "system" {
+        fn NtQueryInformationProcess(
+            process: HANDLE,
+            class: u32,
+            buffer: *mut c_void,
+            length: u32,
+            returned: *mut u32,
+        ) -> i32;
+        fn NtQueryObject(
+            handle: HANDLE,
+            class: u32,
+            buffer: *mut c_void,
+            length: u32,
+            returned: *mut u32,
+        ) -> i32;
+    }
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        maximum_length: u16,
+        buffer: *const u16,
+    }
+    unsafe fn text(name: &UnicodeString) -> String {
+        if name.buffer.is_null() {
+            return String::new();
+        }
+        String::from_utf16_lossy(unsafe {
+            std::slice::from_raw_parts(name.buffer, usize::from(name.length) / 2)
+        })
+    }
+    /// Runs one query into a large enough pointer-aligned buffer.
+    fn query(run: impl Fn(*mut c_void, u32, *mut u32) -> i32, what: &str) -> Vec<usize> {
+        let mut bytes = 64 * 1024u32;
+        for _ in 0..8 {
+            let mut buffer = vec![0usize; bytes as usize / 8];
+            let mut returned = 0;
+            let status = run(buffer.as_mut_ptr().cast(), bytes, &mut returned);
+            if matches!(status as u32, 0xc000_0004 | 0x8000_0005) {
+                bytes = returned.max(bytes).saturating_mul(2);
+                continue;
+            }
+            assert!(status >= 0, "{what}: NTSTATUS {:#010x}", status as u32);
+            return buffer;
+        }
+        panic!("{what} kept growing");
+    }
+
+    let process = child.as_raw_handle() as HANDLE;
+    let stdio = child.inherited_stdio();
+    unsafe {
+        // ObjectTypesInformation: a count, then one entry per type, each
+        // followed by its name and aligned to a pointer.
+        let types_buffer = query(
+            |buffer, bytes, returned| {
+                NtQueryObject(std::ptr::null_mut(), 3, buffer, bytes, returned)
+            },
+            "ObjectTypesInformation",
+        );
+        let base = types_buffer.as_ptr().cast::<u8>();
+        let mut types = std::collections::BTreeMap::new();
+        let mut offset = 8;
+        for _ in 0..*base.cast::<u32>() {
+            let name = &*base.add(offset).cast::<UnicodeString>();
+            // The type index is the byte after the name, the 13 counters,
+            // the generic mapping, the valid access mask and two flags.
+            let index = *base.add(offset + 16 + 13 * 4 + 4 * 4 + 4 + 2);
+            types.insert(u32::from(index), text(name));
+            offset = (offset + 104 + usize::from(name.maximum_length)).next_multiple_of(8);
+        }
+        // ProcessHandleInformation: a count and a reserved field, then
+        // 40-byte entries.
+        let table = query(
+            |buffer, bytes, returned| {
+                NtQueryInformationProcess(process, 51, buffer, bytes, returned)
+            },
+            "ProcessHandleInformation",
+        );
+        let mut handles = Vec::new();
+        for index in 0..table[0] {
+            let entry = &table[2 + index * 5..2 + index * 5 + 5];
+            let value = entry[0];
+            let access = entry[3] as u32;
+            let type_index = (entry[3] >> 32) as u32;
+            let attributes = entry[4] as u32;
+            let type_name = types
+                .get(&type_index)
+                .cloned()
+                .unwrap_or_else(|| format!("unknown type {type_index}"));
+            let name = if type_name == "File" && !stdio.contains(&value) {
+                let mut duplicate: HANDLE = std::ptr::null_mut();
+                assert_ne!(
+                    DuplicateHandle(
+                        process,
+                        value as HANDLE,
+                        GetCurrentProcess(),
+                        &mut duplicate,
+                        0,
+                        0,
+                        DUPLICATE_SAME_ACCESS,
+                    ),
+                    0,
+                    "duplicate the worker's File {value:#x}: {}",
+                    std::io::Error::last_os_error()
+                );
+                let buffer = query(
+                    |buffer, bytes, returned| NtQueryObject(duplicate, 1, buffer, bytes, returned),
+                    "ObjectNameInformation",
+                );
+                CloseHandle(duplicate);
+                Some(text(&*buffer.as_ptr().cast::<UnicodeString>()))
+            } else {
+                None
+            };
+            handles.push(WorkerHandle {
+                value,
+                type_name,
+                access,
+                inheritable: attributes & 2 != 0,
+                name,
+            });
+        }
+        handles
+    }
+}
+
+/// Startup closes only the leftovers it has identified: every ALPC port (the
+/// client/server runtime connection), the current-directory handle and, on
+/// Server 2022, the `\Device\KsecDD` handle of `bcrypt.dll`. It keeps the kernel CNG device
+/// that `bcryptprimitives.dll` owns. Closing that one made a worker die with
+/// STATUS_INVALID_HANDLE when the DLL closed it again during `ExitProcess`,
+/// so a worker that ended on its own was counted as a confinement fault.
+#[test]
+fn startup_keeps_the_cng_device_and_closes_only_identified_leftovers() {
+    use basal_worker::confinement::windows::allowlist::{CNG_ACCESS, CNG_DEVICE, KSECDD_DEVICE};
+
+    let mut child = start(Deviation::Full);
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = child.stdout.take().expect("stdout");
+    write_parent_message(
+        &mut stdin,
+        &ParentMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .expect("send hello");
+    match read_worker_message(&mut stdout) {
+        Ok(WorkerMessage::Welcome(welcome)) => assert_eq!(welcome.confinement, CONFINED),
+        other => fail(child, format!("no welcome: {other:?}")),
+    }
+    let handles = worker_handles(&child);
+    println!("full: handles after startup {handles:#?}");
+    let stdio = child.inherited_stdio();
+    let files: Vec<(&str, u32)> = handles
+        .iter()
+        .filter(|handle| handle.type_name == "File" && !stdio.contains(&handle.value))
+        .map(|handle| (handle.name.as_deref().unwrap_or(""), handle.access))
+        .collect();
+    assert_eq!(
+        files,
+        [(CNG_DEVICE, CNG_ACCESS)],
+        "the CNG device is the only File besides the pipes, and {KSECDD_DEVICE} and the \
+         current directory are closed"
+    );
+    assert!(
+        handles.iter().all(|handle| handle.type_name != "ALPC Port"),
+        "the client/server runtime port is closed: {handles:#?}"
+    );
+    assert!(
+        handles
+            .iter()
+            .all(|handle| !handle.inheritable || stdio.contains(&handle.value)),
+        "{handles:#?}"
+    );
+
+    write_parent_message(&mut stdin, &ParentMessage::Shutdown).expect("send shutdown");
+    drop(stdin);
+    drop(stdout);
+    let ended = end(child);
+    assert_eq!(ended.code, 0, "{}", ended.stderr);
+}
+
 // Worker checks of token, mitigation and handle properties the launcher can
 // break when it creates the process. In these test variants the parent's own
 // pre-resume checks expect the broken property, so the worker is resumed and
