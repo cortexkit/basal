@@ -4,8 +4,59 @@ use basal_host::transport::{Transport, WireError};
 use basal_module::events::Reader;
 use serde_json::Value;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Mutex, OnceLock};
 
 const SUBJECT_V2: &str = "ck.account.event.plexus.pull_request_review.v2";
+
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+static CAPTURED_LOGS: OnceLock<CapturedLogs> = OnceLock::new();
+
+impl tracing::Subscriber for CapturedLogs {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={value:?};", field.name()));
+            }
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.push_str(&format!("{}={value:?};", field.name()));
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0.lock().unwrap().push((
+            *event.metadata().level(),
+            format!("{};{}", event.metadata().target(), fields.0),
+        ));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+fn captured_logs() -> &'static CapturedLogs {
+    CAPTURED_LOGS.get_or_init(|| {
+        let logs = CapturedLogs::default();
+        tracing::subscriber::set_global_default(logs.clone())
+            .expect("test log subscriber is installed once");
+        logs
+    })
+}
+
+fn logged_at(logs: &CapturedLogs, level: tracing::Level, subject: &str, reason: &str) -> bool {
+    logs.0.lock().unwrap().iter().any(|(seen_level, fields)| {
+        *seen_level == level && fields.contains(subject) && fields.contains(reason)
+    })
+}
 
 struct BlockingTransport {
     handle: tokio::runtime::Handle,
@@ -184,6 +235,56 @@ async fn reader_panic_reports_dead_health_and_restarts() {
     assert_eq!(run_count(&rt), 1);
     publish(&server, 2, 2).await;
     wait_health(&reader, |h| h.admitted == 2).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_foreign_malformed_notice_is_debug_and_counts_malformed() {
+    let logs = captured_logs();
+    let server = Server::start().await;
+    let (rt, transport) = fixture(&server).await;
+    let reader = Reader::start(rt, transport);
+    let subject = "ck.account.event.subc.activity.v3";
+    let key = format!("{:064x}", 41);
+    super::v2::publish(&server, subject, &format!("{key}.v3"), Some(&key)).await;
+
+    let health = wait_health(&reader, |h| h.malformed == 1).await;
+    assert_eq!(health.malformed, 1);
+    assert_eq!(health.admitted, 0);
+    assert!(
+        !logged_at(
+            logs,
+            tracing::Level::WARN,
+            subject,
+            "undeclared event version"
+        ),
+        "unsubscribed malformed notice must not warn"
+    );
+    assert!(logged_at(
+        logs,
+        tracing::Level::DEBUG,
+        subject,
+        "undeclared event version"
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_subscribed_malformed_notice_still_warns() {
+    let logs = captured_logs();
+    let server = Server::start().await;
+    let (rt, transport) = fixture(&server).await;
+    let reader = Reader::start(rt, transport);
+    let key = "invalid";
+    super::v2::publish(&server, SUBJECT_V2, &format!("{key}.v2"), Some(key)).await;
+
+    let health = wait_health(&reader, |h| h.malformed == 1).await;
+    assert_eq!(health.malformed, 1);
+    assert_eq!(health.admitted, 0);
+    assert!(logged_at(
+        logs,
+        tracing::Level::WARN,
+        SUBJECT_V2,
+        "invalid event key"
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use async_nats::jetstream::{self, consumer::PullConsumer};
 use basal_core::{
     Runtime,
-    events::{Notice, Report},
+    events::{Notice, Report, parse_subject_identity},
 };
 use basal_host::{Catalog, transport::Transport};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -361,6 +361,19 @@ pub fn decode(message: &jetstream::Message, catalog: &dyn Catalog) -> Result<Not
     Ok(notice)
 }
 
+fn malformed_notice_could_matter(rt: &Runtime, identity: Option<(&str, &str, u32)>) -> bool {
+    let Some((module, name, _version)) = identity else {
+        return false;
+    };
+    if module == "broca" && matches!(name, "run.ended" | "run.skipped") {
+        return true;
+    }
+    // A failed lookup is treated as potentially relevant so a store problem
+    // cannot hide a malformed notice from an installed event consumer.
+    rt.has_enabled_event_subscription(module, name)
+        .unwrap_or(true)
+}
+
 pub async fn pull(consumer: &PullConsumer) -> Result<Vec<jetstream::Message>, String> {
     let mut stream = consumer
         .fetch()
@@ -402,12 +415,21 @@ async fn commit_batch_report(
     let mut commit = tokio::task::spawn_blocking(move || {
         let notices = owned_messages
             .iter()
-            .filter_map(|m| match decode(m, rt.catalog()) {
+            .filter_map(|m| {
+                // Parse the subject before decoding so a body error still leaves the event identity
+                // available to check whether the malformed notice could matter to a consumer.
+                let identity = parse_subject_identity(&m.subject).ok();
+                match decode(m, rt.catalog()) {
                 Ok(notice) => Some(notice),
                 Err(reason) => {
-                    tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");
+                    if malformed_notice_could_matter(&rt, identity) {
+                        tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");
+                    } else {
+                        tracing::debug!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");
+                    }
                     None
                 }
+            }
             })
             .collect::<Vec<_>>();
         let malformed = owned_messages.len() - notices.len();
