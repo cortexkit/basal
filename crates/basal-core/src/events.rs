@@ -53,28 +53,7 @@ impl Notice {
     /// Parse the subject before selecting the fetch key from transport headers.
     /// Key validation belongs to `identity`, after the key has been selected.
     pub fn subject_identity(&self) -> Result<(&str, &str, u32)> {
-        let parts: Vec<_> = self.subject.split('.').collect();
-        if !(6..=9).contains(&parts.len())
-            || parts[0] != "ck"
-            || parts[2] != "event"
-            || parts.iter().any(|p| p.is_empty() || p.contains(['*', '>']))
-            || parts[4..parts.len() - 1].iter().any(|p| {
-                p.strip_prefix('v')
-                    .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-            })
-        {
-            return Err(CoreError::Invalid("invalid event subject".into()));
-        }
-        let version_token = parts[parts.len() - 1];
-        let version = version_token
-            .strip_prefix('v')
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|v| *v > 0 && version_token == format!("v{v}"))
-            .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?;
-        // Borrow the complete dotted name, excluding the prefix and version separator.
-        let name_start: usize = parts[..4].iter().map(|p| p.len() + 1).sum();
-        let name_end = self.subject.len() - version_token.len() - 1;
-        Ok((parts[3], &self.subject[name_start..name_end], version))
+        parse_subject_identity(&self.subject)
     }
 
     pub fn identity(&self) -> Result<(&str, &str, u32)> {
@@ -115,6 +94,33 @@ impl Notice {
         JsonText::new(serde_json::json!({"event_notice": self}).to_string())
             .map_err(|e| CoreError::Invalid(e.to_string()))
     }
+}
+
+/// Parse the event identity directly from a bus subject, without constructing
+/// a notice or validating its transport headers.
+pub fn parse_subject_identity(subject: &str) -> Result<(&str, &str, u32)> {
+    let parts: Vec<_> = subject.split('.').collect();
+    if !(6..=9).contains(&parts.len())
+        || parts[0] != "ck"
+        || parts[2] != "event"
+        || parts.iter().any(|p| p.is_empty() || p.contains(['*', '>']))
+        || parts[4..parts.len() - 1].iter().any(|p| {
+            p.strip_prefix('v')
+                .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        })
+    {
+        return Err(CoreError::Invalid("invalid event subject".into()));
+    }
+    let version_token = parts[parts.len() - 1];
+    let version = version_token
+        .strip_prefix('v')
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0 && version_token == format!("v{v}"))
+        .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?;
+    // Borrow the dotted event name after the module and before its trailing version token.
+    let name_start: usize = parts[..4].iter().map(|p| p.len() + 1).sum();
+    let name_end = subject.len() - version_token.len() - 1;
+    Ok((parts[3], &subject[name_start..name_end], version))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -297,6 +303,33 @@ fn offer(
 }
 
 impl Runtime {
+    /// Whether an enabled, approved flow subscribes to this event identity.
+    /// Event reader diagnostics use the same effective manifests as admission.
+    pub fn has_enabled_event_subscription(&self, module: &str, name: &str) -> Result<bool> {
+        self.store().read(|conn| {
+            let flows: Vec<String> = conn
+                .prepare("SELECT flow_id FROM flows WHERE state='enabled' ORDER BY flow_id")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for flow in flows {
+                let Some(approved) = install::approved(conn, &flow)? else {
+                    continue;
+                };
+                let manifest = effective_manifest(conn, &approved.manifest, &flow)?;
+                if manifest
+                    .trigger
+                    .events
+                    .iter()
+                    .flatten()
+                    .any(|event| event.module == module && event.name == name)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
     /// The entire fan-out commits before the caller acknowledges any notice.
     /// A failed transaction leaves every notice eligible for redelivery.
     pub fn admit_events(&self, notices: &[Notice]) -> Result<Report> {

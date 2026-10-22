@@ -2734,6 +2734,23 @@ new = """let owned_messages = messages.to_vec();
     for message in messages { let _ = decode(message, rt.catalog()); } // NON-VACUITY BREAK"""
 
 [[control]]
+id = "event-reader-foreign-malformed-notice-does-not-warn"
+guards = "unsubscribed malformed notices stay in health counts without producing warnings"
+test_file = "crates/basal-module/tests/module_events/reader.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["reader::reader_foreign_malformed_notice_is_debug_and_counts_malformed"]
+select = { tests = ["reader::reader_foreign_malformed_notice_is_debug_and_counts_malformed", "reader::reader_subscribed_malformed_notice_still_warns"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = '''tracing::debug!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");'''
+new = '''tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement"); // NON-VACUITY BREAK'''
+
+[[control]]
 id = "event-reader-worker-panic-hidden-from-health"
 guards = "batch worker panic disconnects reader health before retrying the unacknowledged batch"
 test_file = "crates/basal-module/tests/module_events/reader.rs"
