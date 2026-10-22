@@ -6,7 +6,6 @@
 use super::{BrocaError, BrocaHost, Route, Transport, wire::*};
 use crate::transport::{SubcTransport, WireError};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
 use subc_protocol::BindIdentity;
 
 use basal_proto::util::lock;
@@ -37,23 +36,6 @@ fn identity(route: &Route) -> BindIdentity {
 }
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// How long a failed pass waits before trying again. A failure can leave a
-/// call that no event will wake again (Broca unreachable, a run whose
-/// `run.status` still says active or paused in the brief window after
-/// `run.result` reports it ended), so a failure is retried on its own
-/// rather than waiting for the next event or check.
-const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(5);
-const MAX_RETRY_AFTER_FAILURE: Duration = Duration::from_secs(300);
-
-fn retry_delay(failures: u32) -> Duration {
-    RETRY_AFTER_FAILURE
-        .saturating_mul(
-            1u32.checked_shl(failures.saturating_sub(1).min(6))
-                .unwrap_or(u32::MAX),
-        )
-        .min(MAX_RETRY_AFTER_FAILURE)
-}
-
 /// Coalesces wakes from the event reader and newly scheduled checks, and
 /// runs `BrocaHost::wake` on one blocking thread. Reading Broca from a Tokio
 /// callback would nest the consumer's blocking runtime.
@@ -80,11 +62,13 @@ impl PollWake {
             }
         })
     }
-    /// Starts the thread. Its first pass reads every pending call
-    /// (`BrocaHost::poll`), which is how a module start reads every call left
-    /// in flight by the last process. After that it sleeps until woken or
-    /// until the next check is due, then runs `BrocaHost::wake`. With no
-    /// pending call it sleeps until woken.
+    /// Starts the thread. It sleeps until woken (a bus wake committed, a
+    /// call newly saved as waiting) or until the next check is due, then runs
+    /// `BrocaHost::wake`. With no pending call it sleeps until woken. A failed
+    /// read backs off that call alone through its own `check_at`, so the
+    /// thread itself never backs off. Module start reads every pending call
+    /// through `BrocaHost::attach`, so the first pass here is an ordinary
+    /// `wake`.
     pub fn start(self: &Arc<Self>, host: &Arc<BrocaHost>) {
         let Some(receiver) = lock(&self.receiver).take() else {
             return;
@@ -92,27 +76,12 @@ impl PollWake {
         host.set_waker(self.callback());
         let weak = Arc::downgrade(host);
         std::thread::spawn(move || {
-            let mut failures: u32 = 0;
-            let mut first = true;
             loop {
                 let Some(host) = weak.upgrade() else { break };
-                let pass = if std::mem::take(&mut first) {
-                    host.poll()
-                } else {
-                    host.wake()
-                };
-                match pass {
-                    Err(error) => {
-                        failures = failures.saturating_add(1);
-                        tracing::warn!(%error, failures, retry_after_s = retry_delay(failures).as_secs(), "Broca calls remain pending; backing off");
-                    }
-                    Ok(()) => failures = 0,
+                if let Err(error) = host.wake() {
+                    tracing::warn!(%error, "Broca calls remain pending; each retries at its own next check");
                 }
-                let timeout = if failures == 0 {
-                    host.next_wake_in()
-                } else {
-                    Some(retry_delay(failures))
-                };
+                let timeout = host.next_wake_in();
                 drop(host);
                 let woken = match timeout {
                     None => receiver
@@ -229,6 +198,17 @@ impl Transport for SubcBrocaTransport {
         }
         self.call(route, OP_SESSION_SEND, params)
     }
+    fn send_status(
+        &self,
+        route: &Route,
+        params: &SendStatusParams,
+    ) -> Result<serde_json::Value, BrocaError> {
+        self.call(
+            route,
+            OP_SEND_STATUS,
+            &serde_json::to_vec(params).map_err(|e| BrocaError::Invalid(e.to_string()))?,
+        )
+    }
     fn event_get(
         &self,
         route: &Route,
@@ -273,14 +253,6 @@ impl Transport for SubcBrocaTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn failed_passes_back_off_exponentially_to_a_cap() {
-        assert_eq!(retry_delay(1), Duration::from_secs(5));
-        assert_eq!(retry_delay(2), Duration::from_secs(10));
-        assert_eq!(retry_delay(3), Duration::from_secs(20));
-        assert_eq!(retry_delay(100), Duration::from_secs(300));
-    }
 
     #[test]
     fn wakeups_are_coalesced_without_a_clock() {

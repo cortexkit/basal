@@ -125,6 +125,34 @@ impl StateStore for BrocaStore {
             })
             .map_err(|e| BrocaError::Store(e.to_string()))
     }
+    fn run_ended(&self, run_id: &str) -> Result<bool, BrocaError> {
+        self.store()?
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE run_id = ?1 AND state IN ('succeeded', 'failed', 'cancelled', 'engine_mismatch'))",
+                    [run_id],
+                    |r| r.get(0),
+                )?)
+            })
+            .map_err(|e| BrocaError::Store(e.to_string()))
+    }
+    fn forget(&self, send_id: &str) -> Result<(), BrocaError> {
+        self.store()?
+            .write(|tx| {
+                tx.execute("DELETE FROM broca_waits WHERE send_id = ?1", [send_id])?;
+                tx.execute("DELETE FROM broca_wakes WHERE send_id = ?1", [send_id])?;
+                Ok(())
+            })
+            .map_err(|e| BrocaError::Store(e.to_string()))
+    }
+    fn learn_session_ref(&self, send_id: &str, session_ref: &str) -> Result<(), BrocaError> {
+        self.store()?
+            .write(|tx| {
+                crate::events::learn_session_ref_for(tx, send_id, session_ref)?;
+                Ok(())
+            })
+            .map_err(|e| BrocaError::Store(e.to_string()))
+    }
     fn wakes(&self) -> Result<Vec<RunWake>, BrocaError> {
         self.store()?
             .read(|c| {

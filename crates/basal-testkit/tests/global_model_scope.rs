@@ -70,6 +70,16 @@ impl Transport for Models {
             reason: RunFinishReason::Completed,
         })
     }
+    fn send_status(
+        &self,
+        _: &Route,
+        _: &SendStatusParams,
+    ) -> Result<serde_json::Value, BrocaError> {
+        Err(BrocaError::Refused {
+            code: UNKNOWN_SEND.into(),
+            detail: "never queued".into(),
+        })
+    }
     fn event_get(&self, _: &Route, _: &RunEventGetParams) -> Result<RunEventReply, BrocaError> {
         Ok(RunEventReply {
             state: "absent".into(),

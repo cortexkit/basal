@@ -241,3 +241,56 @@ pub struct RunEventReply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jcs: Option<String>,
 }
+
+/// Reports what became of an accepted send, by its send id, on the call's
+/// own route, including its run id once started, without submitting the
+/// send again. The answer has the same shape as `session.send`'s, plus
+/// `delivered` once the send was delivered.
+pub const OP_SEND_STATUS: &str = "send.status";
+/// The refusal code `send.status` answers for a send id Broca has no record
+/// of for this caller. Terminal.
+pub const UNKNOWN_SEND: &str = "unknown_send";
+
+/// `send.status` params. Unknown members are refused, as Broca refuses them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendStatusParams {
+    pub send_id: String,
+}
+
+/// What basal takes from a `send.status` answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendStatus {
+    /// Still queued behind another run.
+    Pending,
+    /// Started as (or joined) the run `run_id`; it may be active, paused or
+    /// finished, which `run.result` then reports.
+    Started { run_id: String },
+}
+
+/// Decodes a `send.status` answer (inside the management `result`):
+/// `{"state":"pending","submission_id"}`, or `active`, `paused` or
+/// `finished` with a `run_id`. A finished send's `reason` is an open string
+/// and `delivered` is tolerated; neither is needed, since `run.result`
+/// reports the outcome. Shapes from Broca's pinned goldens. Anything else
+/// is a decoding error: the host leaves the call pending and reads it again
+/// after its own backoff.
+pub fn decode_send_status(reply: &Value) -> Result<SendStatus, String> {
+    let text = |field: &str| {
+        reply
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    };
+    match reply.get("state").and_then(Value::as_str) {
+        Some("pending") => text("submission_id")
+            .map(|_| SendStatus::Pending)
+            .ok_or_else(|| "send.status pending without a submission_id".into()),
+        Some("active" | "paused" | "finished") => text("run_id")
+            .map(|run_id| SendStatus::Started {
+                run_id: run_id.to_owned(),
+            })
+            .ok_or_else(|| "send.status reported a started send without a run_id".into()),
+        other => Err(format!("unrecognised send.status state {other:?}")),
+    }
+}

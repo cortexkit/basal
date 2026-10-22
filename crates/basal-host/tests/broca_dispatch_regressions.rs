@@ -239,6 +239,13 @@ fn a_stalled_send_does_not_hold_an_unrelated_dispatch() {
                 run_id: format!("run:{}", params.send_id.unwrap()),
             })
         }
+        fn send_status(
+            &self,
+            _: &Route,
+            _: &SendStatusParams,
+        ) -> Result<serde_json::Value, BrocaError> {
+            unreachable!()
+        }
         fn event_get(&self, _: &Route, _: &RunEventGetParams) -> Result<RunEventReply, BrocaError> {
             unreachable!()
         }

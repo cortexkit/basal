@@ -2,10 +2,14 @@
 //! `run.skipped` wake makes the call due once its body matches the bus
 //! digest, and every accepted call keeps a scheduled check, so a lost event
 //! costs latency, never an outcome.
+use basal_host::broca::{BrocaError, Route, Transport};
 use basal_host::broca::{
-    BrocaHost, EventRefusal, FIRST_CHECK_MS, MAX_CHECK_MS, RunWake, StateStore, WakeKind,
+    BrocaHost, ENDED_RUN_CHECK_MS, EventRefusal, FIRST_CHECK_MS, FIRST_RETRY_MS, MAX_CHECK_MS,
+    MAX_RETRY_MS, MIN_TIMER_MS, RECHECK_MIN_INTERVAL_MS, RunWake, StateStore, WakeKind,
     fake::{FakeBroca, MemoryStore},
-    next_check_at, verify_run_event,
+    next_check_at, retry_at,
+    subc::PollWake,
+    verify_run_event,
     wire::*,
 };
 use basal_host::selector::{FakeSelector, ModelSelector, SelectionRequest};
@@ -83,7 +87,7 @@ struct Fixture {
     store: Arc<MemoryStore>,
     clock: Arc<AtomicI64>,
     sink: Arc<Sink>,
-    host: BrocaHost,
+    host: Arc<BrocaHost>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -91,7 +95,7 @@ impl Fixture {
         let store = Arc::new(MemoryStore::default());
         let clock = Arc::new(AtomicI64::new(START));
         let sink = Arc::new(Sink::default());
-        let host = Self::host(&fake, &store, &clock);
+        let host = Arc::new(Self::host(&fake, &store, &clock));
         host.attach(sink.clone());
         Self {
             fake,
@@ -193,9 +197,34 @@ fn a_commit_wakes_the_timer_thread_to_learn_the_new_check() {
         seen.fetch_add(1, Ordering::SeqCst);
     }));
     f.accept(0);
-    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    let after_accept = wakes.load(Ordering::SeqCst);
+    assert!(after_accept >= 1);
     f.host.model_events_committed();
-    assert_eq!(wakes.load(Ordering::SeqCst), 2);
+    assert_eq!(wakes.load(Ordering::SeqCst), after_accept + 1);
+}
+
+#[test]
+fn a_call_saved_as_waiting_is_scheduled_even_if_its_dispatch_never_commits() {
+    let f = Fixture::new();
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let seen = wakes.clone();
+    f.host.set_waker(Arc::new(move || {
+        seen.fetch_add(1, Ordering::SeqCst);
+    }));
+    // The runtime never calls dispatch_committed (it gave up on the call).
+    f.host.dispatch_model(&llm(0)).unwrap();
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    // The call is due at once, so the woken thread reads it.
+    assert_eq!(
+        f.host.next_wake_in(),
+        Some(std::time::Duration::from_millis(MIN_TIMER_MS as u64))
+    );
+    f.finish(0, "read without a commit");
+    f.host.wake().unwrap();
+    assert_eq!(
+        f.sink.texts(),
+        vec![json!({"text": "read without a commit"})]
+    );
 }
 
 #[test]
@@ -363,18 +392,43 @@ fn a_skipped_session_no_call_has_learned_rechecks_without_a_body() {
     let f = Fixture::new();
     f.accept(0);
     f.finish(0, "done");
-    f.store.add_wake(RunWake {
-        send_id: "key:0".into(),
+    // The call was read at acceptance; a recheck a minute later reads it.
+    f.advance(RECHECK_MIN_INTERVAL_MS);
+    f.store.add_wake(recheck(0));
+    f.host.wake().unwrap();
+    assert_eq!(f.sink.texts(), vec![json!({"text": "done"})]);
+    assert_eq!(f.fake.event_gets(), 0);
+}
+
+fn recheck(position: u64) -> RunWake {
+    RunWake {
+        send_id: format!("key:{position}"),
         kind: WakeKind::Recheck,
         event_key: String::new(),
         digest: String::new(),
         run_id: None,
         session_ref: None,
         seq: None,
-    });
+    }
+}
+
+#[test]
+fn rechecks_of_a_call_read_moments_ago_read_nothing() {
+    let f = Fixture::new();
+    f.accept(0);
+    let reads = f.fake.calls();
+    // Skipped markers from other sessions arriving in separate batches.
+    for _ in 0..5 {
+        f.advance(1_000);
+        f.store.add_wake(recheck(0));
+        f.host.wake().unwrap();
+    }
+    assert_eq!(f.fake.calls(), reads);
+    assert!(f.store.wakes().unwrap().is_empty());
+    f.advance(RECHECK_MIN_INTERVAL_MS);
+    f.store.add_wake(recheck(0));
     f.host.wake().unwrap();
-    assert_eq!(f.sink.texts(), vec![json!({"text": "done"})]);
-    assert_eq!(f.fake.event_gets(), 0);
+    assert_eq!(f.fake.calls().1, reads.1 + 1);
 }
 
 #[test]
@@ -516,5 +570,377 @@ fn captured_bodies_are_refused_when_anything_disagrees() {
     assert_eq!(
         refuse(&other_session, &reply),
         EventRefusal::Mismatch("session")
+    );
+}
+
+/// Waits up to `limit` for `done`, polling every 10 ms.
+fn eventually(limit: std::time::Duration, done: impl Fn() -> bool) -> bool {
+    let until = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < until {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    done()
+}
+
+#[test]
+fn the_timer_thread_settles_a_call_when_the_reader_commits_its_wake() {
+    let f = Fixture::new();
+    f.accept(0);
+    let timer = PollWake::new();
+    timer.start(&f.host);
+    // Let the thread finish its first pass (nothing is due) and go to sleep
+    // until the call's check, two minutes away on the injected clock.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(f.sink.texts().is_empty());
+    f.finish(0, "woken by the reader");
+    f.store.add_wake(f.fake.publish_ended("key:0").unwrap());
+    f.host.model_events_committed();
+    assert!(
+        eventually(std::time::Duration::from_secs(5), || !f
+            .sink
+            .texts()
+            .is_empty()),
+        "the reader's wake did not reach the timer thread"
+    );
+    assert_eq!(f.sink.texts(), vec![json!({"text": "woken by the reader"})]);
+}
+
+#[test]
+fn the_timer_thread_reads_a_past_due_check_within_its_minimum_wait() {
+    let f = Fixture::new();
+    f.accept(0);
+    f.fake.set_failing("key:0", true).unwrap();
+    f.advance(FIRST_CHECK_MS);
+    let timer = PollWake::new();
+    timer.start(&f.host);
+    // The first pass finds the call due, fails to read it, and pushes its
+    // check out by the first retry; the thread sleeps until then.
+    assert!(eventually(std::time::Duration::from_secs(5), || f
+        .stored(0)
+        .failures
+        == 1));
+    f.fake.set_failing("key:0", false).unwrap();
+    f.finish(0, "read by the timer");
+    f.advance(FIRST_RETRY_MS);
+    // Nothing wakes the thread: only its own timeout can make this read.
+    assert!(
+        eventually(
+            std::time::Duration::from_millis(MIN_TIMER_MS as u64 + 3_000),
+            || !f.sink.texts().is_empty()
+        ),
+        "the past-due check was not read"
+    );
+    assert_eq!(f.sink.texts(), vec![json!({"text": "read by the timer"})]);
+}
+
+#[test]
+fn the_timer_threads_first_pass_reads_only_what_is_due() {
+    let f = Fixture::new();
+    f.accept(0);
+    let reads = f.fake.calls();
+    let timer = PollWake::new();
+    timer.start(&f.host);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    // attach() already read every pending call at start; the thread's first
+    // pass must not read them all again.
+    assert_eq!(f.fake.calls(), reads);
+}
+
+#[test]
+fn a_failing_call_backs_off_alone_and_never_delays_another_calls_check() {
+    let f = Fixture::new();
+    f.store.set_deadline("r", START + 600_000);
+    f.accept(0);
+    f.accept(1);
+    f.fake.set_failing("key:0", true).unwrap();
+    f.advance(FIRST_CHECK_MS);
+    let mut expected = FIRST_RETRY_MS;
+    for failures in 1..=4u32 {
+        assert!(f.host.wake().is_err());
+        let call = f.stored(0);
+        assert_eq!(call.failures, failures);
+        assert_eq!(call.check_at, Some(f.now() + expected));
+        expected = (expected * 2).min(MAX_RETRY_MS);
+        f.advance(call.check_at.unwrap() - f.now());
+    }
+    // Call 1 was read when it fell due, and is next due on its own schedule.
+    let other = f.stored(1);
+    assert_eq!(other.failures, 0);
+    assert_eq!(other.checks, 2);
+    // The thread's next wake follows the earliest of the two calls' checks,
+    // not a backoff shared by all calls.
+    let soonest = f.stored(0).check_at.min(other.check_at).unwrap();
+    assert_eq!(
+        f.host.next_wake_in(),
+        Some(std::time::Duration::from_millis(
+            (soonest - f.now()).max(MIN_TIMER_MS) as u64
+        ))
+    );
+    // A successful read clears the call's failures.
+    f.fake.set_failing("key:0", false).unwrap();
+    f.advance(f.stored(0).check_at.unwrap() - f.now());
+    f.host.wake().unwrap();
+    assert_eq!(f.stored(0).failures, 0);
+}
+
+#[test]
+fn retries_double_to_a_cap_and_one_falls_before_the_run_deadline() {
+    let now = START;
+    assert_eq!(retry_at(now, 1, None), now + FIRST_RETRY_MS);
+    assert_eq!(retry_at(now, 2, None), now + 2 * FIRST_RETRY_MS);
+    assert_eq!(retry_at(now, 40, None), now + MAX_RETRY_MS);
+    assert_eq!(retry_at(now, 40, Some(now + 60_000)), now + 30_000);
+}
+
+#[test]
+fn a_flow_call_of_an_ended_run_is_checked_only_rarely() {
+    let f = Fixture::new();
+    f.accept(0);
+    f.store.end_run("r");
+    f.advance(FIRST_CHECK_MS);
+    f.host.wake().unwrap();
+    assert_eq!(f.stored(0).check_at, Some(f.now() + ENDED_RUN_CHECK_MS));
+}
+
+fn codemode_request(position: u64) -> CallRequest {
+    let key = format!("codemode-key:{position}");
+    let selection = FakeSelector::default()
+        .select(&SelectionRequest {
+            caller_class: "codemode".into(),
+            iq: 40,
+            eq: 20,
+            flow_id: "codemode:c".into(),
+            run_id: "c".into(),
+            send_id: key.clone(),
+        })
+        .unwrap();
+    CallRequest {
+        flow_id: "codemode:c".into(),
+        run_id: "c".into(),
+        position,
+        kind: CallKind::Primitive(Primitive::Llm),
+        args: JsonText::new(
+            json!({"send_id": key, "work_class": "codemode:c",
+                "session": basal_host::broca::codemode_session("c", position), "op": "llm",
+                "max_output": 12, "request": {"prompt": "hello"}, "selection": selection})
+            .to_string(),
+        )
+        .unwrap(),
+        idempotency_key: key,
+        attempt: 1,
+    }
+}
+
+#[test]
+fn a_codemode_call_without_its_supervisor_is_rescheduled_not_spun_on() {
+    let f = Fixture::new();
+    // No codemode sink is attached.
+    f.host.dispatch_model(&codemode_request(0)).unwrap();
+    f.host.wake().unwrap();
+    let call = f.store.get("codemode-key:0").unwrap().unwrap();
+    assert_eq!(call.check_at, Some(START + FIRST_CHECK_MS));
+    assert_eq!(
+        f.host.next_wake_in(),
+        Some(std::time::Duration::from_millis(FIRST_CHECK_MS as u64))
+    );
+}
+
+#[test]
+fn a_verified_run_ended_teaches_the_call_its_session_ref() {
+    let f = Fixture::new();
+    f.accept(0);
+    // The run has not ended as far as run.result knows, so the call stays
+    // pending after the wake.
+    let wake = f.fake.publish_ended("key:0").unwrap();
+    let session_ref = wake.session_ref.clone().unwrap();
+    f.store.add_wake(wake);
+    f.host.wake().unwrap();
+    assert_eq!(f.store.session_ref("key:0"), Some(session_ref));
+}
+
+#[test]
+fn a_queued_send_learns_its_run_from_send_status_and_is_never_sent_again() {
+    let f = Fixture::new();
+    f.fake.pending_next();
+    assert_eq!(
+        f.host.dispatch_model(&llm(0)).unwrap(),
+        Dispatched::Accepted {
+            handle: "submission:key:0".into()
+        }
+    );
+    f.host.dispatch_committed(&llm(0));
+    assert_eq!(f.fake.send_statuses(), 1);
+    assert_eq!(f.stored(0).broca_run_id, None);
+    f.fake.start("key:0").unwrap();
+    f.advance(FIRST_CHECK_MS);
+    f.host.wake().unwrap();
+    assert_eq!(f.stored(0).broca_run_id.as_deref(), Some("run:key:0"));
+    f.finish(0, "queued answer");
+    f.advance(2 * FIRST_CHECK_MS);
+    f.host.wake().unwrap();
+    assert_eq!(f.sink.texts(), vec![json!({"text": "queued answer"})]);
+    assert_eq!(f.fake.sends().len(), 1, "a queued send is never sent again");
+}
+
+#[test]
+fn a_refused_repeat_of_an_accepted_send_never_rejects_the_call() {
+    let f = Fixture::new();
+    f.accept(0);
+    // The runtime re-dispatches the accepted call and Broca refuses the
+    // repeat: the call must stay pending, not settle as rejected.
+    f.fake.refuse_next_send("invalid_params");
+    assert!(f.host.dispatch_model(&llm(0)).is_err());
+    let call = f.stored(0);
+    assert!(call.outcome.is_none());
+    assert!(!call.acknowledged);
+    f.finish(0, "the real answer");
+    f.advance(FIRST_CHECK_MS);
+    f.host.wake().unwrap();
+    assert_eq!(f.sink.texts(), vec![json!({"text": "the real answer"})]);
+}
+
+#[test]
+fn an_unknown_send_is_reported_as_unknown_not_rejected() {
+    let f = Fixture::new();
+    f.fake.pending_next();
+    f.host.dispatch_model(&llm(0)).unwrap();
+    f.fake.forget_send("key:0");
+    f.host.dispatch_committed(&llm(0));
+    let call = f.stored(0);
+    assert!(call.outcome.is_none());
+    assert!(
+        call.unknown
+            .as_deref()
+            .is_some_and(|detail| detail.contains("unknown_send")),
+        "{call:?}"
+    );
+}
+
+#[test]
+fn send_status_shapes_from_brocas_goldens_decode() {
+    for (reply, expected) in [
+        (
+            json!({"state":"pending","submission_id":"sub-1"}),
+            Ok(SendStatus::Pending),
+        ),
+        (
+            json!({"state":"active","run_id":"run-1","delivered":{"as":"turn","ref":"run-1"}}),
+            Ok(SendStatus::Started {
+                run_id: "run-1".into(),
+            }),
+        ),
+        (
+            json!({"state":"active","run_id":"run-joined","delivered":{"as":"step","ref":"run-joined"}}),
+            Ok(SendStatus::Started {
+                run_id: "run-joined".into(),
+            }),
+        ),
+        (
+            json!({"state":"finished","run_id":"run-1","reason":"budget_exhausted","delivered":{"as":"turn","ref":"run-1"}}),
+            Ok(SendStatus::Started {
+                run_id: "run-1".into(),
+            }),
+        ),
+        (
+            json!({"state":"paused","run_id":"run-1","pause_reason":"auth_required"}),
+            Ok(SendStatus::Started {
+                run_id: "run-1".into(),
+            }),
+        ),
+    ] {
+        assert_eq!(decode_send_status(&reply), expected, "{reply}");
+    }
+    for reply in [
+        json!({"state":"active"}),
+        json!({"state":"pending"}),
+        json!({"state":"teleported","run_id":"run-1"}),
+        json!("finished"),
+    ] {
+        assert!(decode_send_status(&reply).is_err(), "{reply}");
+    }
+    assert_eq!(
+        serde_json::to_value(SendStatusParams {
+            send_id: "s".into()
+        })
+        .unwrap(),
+        json!({"send_id":"s"})
+    );
+}
+
+/// A transport that, while `run.event.get` is in flight, re-dispatches the
+/// same call from another thread, to show the call's gate is free then.
+struct ReDispatchDuringGet {
+    fake: Arc<FakeBroca>,
+    host: std::sync::OnceLock<std::sync::Weak<BrocaHost>>,
+    dispatched: std::sync::atomic::AtomicBool,
+}
+impl Transport for ReDispatchDuringGet {
+    fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError> {
+        self.fake.send(route, params)
+    }
+    fn send_status(&self, route: &Route, params: &SendStatusParams) -> Result<Value, BrocaError> {
+        self.fake.send_status(route, params)
+    }
+    fn event_get(
+        &self,
+        route: &Route,
+        params: &RunEventGetParams,
+    ) -> Result<RunEventReply, BrocaError> {
+        let host = self.host.get().and_then(std::sync::Weak::upgrade).unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = host.dispatch_model(&llm(0));
+            let _ = done.send(());
+        });
+        if finished
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .is_ok()
+        {
+            self.dispatched.store(true, Ordering::SeqCst);
+        }
+        self.fake.event_get(route, params)
+    }
+    fn result(
+        &self,
+        route: &Route,
+        params: &RunResultParams,
+    ) -> Result<RunResultResponse, BrocaError> {
+        self.fake.result(route, params)
+    }
+    fn status(
+        &self,
+        route: &Route,
+        params: &StatusParams,
+    ) -> Result<RunStatusResponse, BrocaError> {
+        self.fake.status(route, params)
+    }
+}
+
+#[test]
+fn the_call_gate_is_not_held_while_a_run_event_body_is_fetched() {
+    let fake = Arc::new(FakeBroca::default());
+    let probe = Arc::new(ReDispatchDuringGet {
+        fake: fake.clone(),
+        host: std::sync::OnceLock::new(),
+        dispatched: std::sync::atomic::AtomicBool::new(false),
+    });
+    let store = Arc::new(MemoryStore::default());
+    let host = Arc::new(BrocaHost::new(
+        probe.clone(),
+        store.clone(),
+        "/project".into(),
+        "basal".into(),
+        Arc::new(FakeSelector::default()),
+    ));
+    probe.host.set(Arc::downgrade(&host)).unwrap();
+    host.dispatch_model(&llm(0)).unwrap();
+    store.add_wake(fake.publish_ended("key:0").unwrap());
+    host.wake().unwrap();
+    assert!(
+        probe.dispatched.load(Ordering::SeqCst),
+        "a re-dispatch of the call waited for run.event.get"
     );
 }

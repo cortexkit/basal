@@ -88,6 +88,10 @@ pub trait Transport: Send + Sync {
     }
     fn configure_flow(&self, _flow_id: &str, _scope: Option<crate::flow_scope::RegisteredScope>) {}
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError>;
+    /// `send.status`: what became of an accepted send, asked on the call's
+    /// own route. Returns the management `result` as JSON, decoded by
+    /// `wire::decode_send_status`.
+    fn send_status(&self, route: &Route, params: &SendStatusParams) -> Result<Value, BrocaError>;
     /// `run.event.get`: a run event's body by its event key, asked on the
     /// call's own route (see `BrocaHost::event_route`).
     fn event_get(
@@ -140,6 +144,23 @@ pub trait StateStore: Send + Sync {
     /// pending call is checked once before it (see `next_check_at`).
     fn deadline(&self, _run_id: &str) -> Result<Option<i64>, BrocaError> {
         Ok(None)
+    }
+    /// Whether a flow call's basal run has ended (succeeded, failed,
+    /// cancelled or engine mismatch). Such a call is checked only rarely
+    /// (`ENDED_RUN_CHECK_MS`): its outcome can no longer change the run, but
+    /// it still settles the token reservation if Broca ever finishes.
+    fn run_ended(&self, _run_id: &str) -> Result<bool, BrocaError> {
+        Ok(false)
+    }
+    /// Drops the wait and every wake of a send id that no longer has a
+    /// pending call, so nothing stays due for it.
+    fn forget(&self, _send_id: &str) -> Result<(), BrocaError> {
+        Ok(())
+    }
+    /// Records the session_ref a verified run event body names for a
+    /// pending call, unless the call already has one.
+    fn learn_session_ref(&self, _send_id: &str, _session_ref: &str) -> Result<(), BrocaError> {
+        Ok(())
     }
     /// Committed bus wakes not yet handled, oldest first.
     fn wakes(&self) -> Result<Vec<RunWake>, BrocaError> {
@@ -320,6 +341,33 @@ pub const MAX_CHECK_MS: i64 = 300_000;
 /// so a run never reaches its deadline with a finished call unread.
 pub const DEADLINE_MARGIN_MS: i64 = 30_000;
 
+/// How often a flow call whose basal run has already ended is read: rarely,
+/// since its outcome can no longer change the run (see `StateStore::run_ended`).
+pub const ENDED_RUN_CHECK_MS: i64 = 3_600_000;
+/// A `run.skipped` recheck of a call read less than this long ago is
+/// dropped, so a stream of skipped markers from other sessions cannot
+/// multiply reads of the same call.
+pub const RECHECK_MIN_INTERVAL_MS: i64 = 60_000;
+/// The first wait after a failed read of one call, doubling per consecutive
+/// failure up to `MAX_RETRY_MS`. Each call backs off on its own, so one
+/// failing call never delays another's check.
+pub const FIRST_RETRY_MS: i64 = 5_000;
+pub const MAX_RETRY_MS: i64 = 300_000;
+
+/// When a call whose read has failed `failures` times in a row is read
+/// again: `FIRST_RETRY_MS` doubling to `MAX_RETRY_MS`, never later than
+/// `DEADLINE_MARGIN_MS` before the run's deadline while that point is ahead.
+pub fn retry_at(now: i64, failures: u32, deadline: Option<i64>) -> i64 {
+    let delay = FIRST_RETRY_MS
+        .saturating_mul(1i64 << failures.saturating_sub(1).min(8))
+        .min(MAX_RETRY_MS);
+    let at = now.saturating_add(delay);
+    match deadline.map(|d| d.saturating_sub(DEADLINE_MARGIN_MS)) {
+        Some(before) if before > now => at.min(before),
+        _ => at,
+    }
+}
+
 /// When a pending call that has been checked `checks` times is next read if
 /// no event arrives first: two minutes, then doubling up to `MAX_CHECK_MS`,
 /// and never later than `DEADLINE_MARGIN_MS` before the run's deadline. Once
@@ -404,6 +452,14 @@ pub struct StoredCall {
     /// the wait before the next (see `next_check_at`).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub checks: u32,
+    /// How many reads of this call have failed in a row; each failure
+    /// pushes `check_at` out by `retry_at`. Reset by a successful read.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub failures: u32,
+    /// When Broca was last asked about this call (Unix ms), so a
+    /// `run.skipped` recheck can skip a call read moments ago.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<i64>,
 }
 fn is_zero(n: &u32) -> bool {
     *n == 0
@@ -653,12 +709,13 @@ impl BrocaHost {
             report_attempted: false,
             check_at: None,
             checks: 0,
+            failures: 0,
+            read_at: None,
         })
     }
 
     /// Sends the frozen request. A first send records the handle; a repeat
-    /// with the same bytes is idempotent under the send id, and is how a
-    /// queued submission learns the run id it started as. Returns whether
+    /// with the same bytes is idempotent under the send id. Returns whether
     /// Broca answered that the run already finished.
     fn issue(&self, call: &mut StoredCall) -> Result<bool, BrocaError> {
         let result = match self.transport.send(&call.route, &call.params) {
@@ -666,6 +723,18 @@ impl BrocaHost {
             Err(BrocaError::Refused { code, detail }) => {
                 if code == "send_id_reuse" {
                     tracing::error!(send_id = %call.send_id, %detail, "Broca refused a changed payload under an existing send id");
+                }
+                // Broca already accepted this send once, so its first
+                // submission may still run: a refused repeat must not settle
+                // the call as rejected. The call stays pending and is read.
+                if call.handle.is_some() {
+                    tracing::error!(send_id = %call.send_id, %code, %detail, "Broca refused a repeat of a send it had accepted; the call stays pending");
+                    return Err(BrocaError::Unavailable {
+                        proven_unsent: false,
+                        detail: format!(
+                            "Broca refused a repeat of an accepted send ({code}): {detail}"
+                        ),
+                    });
                 }
                 if call.handle.is_none() {
                     call.handle = Some(call.send_id.clone());
@@ -696,7 +765,12 @@ impl BrocaHost {
                 call.broca_run_id = Some(run_id.clone());
                 run_id
             }
-            SendResult::Pending { submission_id } => submission_id,
+            SendResult::Pending { submission_id } => {
+                // Every model call has its own session, so Broca should never
+                // queue one behind another run.
+                tracing::error!(send_id = %call.send_id, %submission_id, "Broca queued a model call in its own session; its run is learned with send.status");
+                submission_id
+            }
         };
         if handle.is_empty() {
             return Err(BrocaError::Wire("empty Broca handle".into()));
@@ -708,6 +782,46 @@ impl BrocaHost {
         }
         self.store.save(call)?;
         Ok(finished)
+    }
+
+    /// A queued submission (a send Broca answered `pending`) learns the run it
+    /// started as from `send.status`, never by sending again. Still queued
+    /// leaves the call pending. `unknown_send` means Broca no longer knows a
+    /// send it accepted: the outcome is unknowable, so the call is reported
+    /// as unknown (the run moves to `needs_reconcile`), never as rejected.
+    /// Any other refusal or an undecodable reply returns an error: the call
+    /// stays pending and is read again after its own backoff.
+    fn learn_run(&self, call: &mut StoredCall) -> Result<(), BrocaError> {
+        let reply = match self.transport.send_status(
+            &call.route,
+            &SendStatusParams {
+                send_id: call.send_id.clone(),
+            },
+        ) {
+            Ok(reply) => reply,
+            Err(BrocaError::Refused { code, detail }) if code == UNKNOWN_SEND => {
+                tracing::error!(send_id = %call.send_id, %detail, "Broca does not know a send it accepted as queued");
+                call.unknown = Some(format!(
+                    "Broca answered unknown_send for send id {}, which it accepted as a queued submission: {detail}",
+                    call.send_id
+                ));
+                return self.store.save(call);
+            }
+            Err(BrocaError::Refused { code, detail }) => {
+                return Err(BrocaError::Unavailable {
+                    proven_unsent: false,
+                    detail: format!("send.status refused ({code}): {detail}"),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        match decode_send_status(&reply).map_err(BrocaError::Wire)? {
+            SendStatus::Pending => Ok(()),
+            SendStatus::Started { run_id } => {
+                call.broca_run_id = Some(run_id);
+                self.store.save(call)
+            }
+        }
     }
 
     /// Reads the call's run with `run.result` and records its outcome once
@@ -929,10 +1043,91 @@ impl BrocaHost {
         }
     }
 
-    /// Makes the wake's call due now if the wake is genuine. A body that is
+    /// Makes the wake's call due if the wake is genuine. A body that is
     /// absent or does not match its bus message settles nothing: the call
-    /// keeps its scheduled check, which reads the run regardless.
+    /// keeps its scheduled check, which reads the run regardless. The call's
+    /// gate is not held while the body is fetched, so a re-dispatch of the
+    /// same call never waits on Broca here.
     fn take_wake(&self, wake: &RunWake) -> Result<WakeStep, BrocaError> {
+        let now = self.now();
+        let route = {
+            let gate = self.call_gate(&wake.send_id);
+            let Ok(_guard) = gate.try_lock() else {
+                return Ok(WakeStep::Busy);
+            };
+            let Some(mut call) = self.store.get(&wake.send_id)? else {
+                self.store.forget(&wake.send_id)?;
+                return Ok(WakeStep::Done);
+            };
+            if call.acknowledged || call.deferred {
+                self.store.forget(&wake.send_id)?;
+                return Ok(WakeStep::Done);
+            }
+            if !call.waiting() {
+                return Ok(WakeStep::Done);
+            }
+            match wake.kind {
+                WakeKind::Recheck => {
+                    if call
+                        .read_at
+                        .is_some_and(|at| now.saturating_sub(at) < RECHECK_MIN_INTERVAL_MS)
+                    {
+                        return Ok(WakeStep::Done);
+                    }
+                    None
+                }
+                WakeKind::Ended | WakeKind::Skipped => {
+                    if wake.kind == WakeKind::Ended
+                        && call.broca_run_id.is_some()
+                        && call.broca_run_id != wake.run_id
+                    {
+                        tracing::warn!(send_id = %call.send_id, event_key = %wake.event_key, "Broca run.ended names another run than the call's; ignoring it");
+                        return Ok(WakeStep::Done);
+                    }
+                    // A call that cannot be read now (a codemode call whose
+                    // supervisor has not attached) is left to its check.
+                    let Some(route) = self.event_route(&mut call)? else {
+                        return Ok(WakeStep::Done);
+                    };
+                    Some(route)
+                }
+            }
+        };
+        // `due` is when the call is read: now for a genuine wake, or after a
+        // short pause when the body could not be fetched for a reason that
+        // may pass (the read itself does not depend on the body).
+        let mut learned = None;
+        let due = match route {
+            None => now,
+            Some(route) => match self.transport.event_get(
+                &route,
+                &RunEventGetParams {
+                    event_key: wake.event_key.clone(),
+                },
+            ) {
+                Ok(reply) => match verify_run_event(wake, &reply) {
+                    Ok(body) => {
+                        learned = body
+                            .get("session_ref")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        now
+                    }
+                    Err(refusal) => {
+                        tracing::warn!(send_id = %wake.send_id, event_key = %wake.event_key, kind = wake.kind.as_str(), ?refusal, "Broca run event refused; the call waits for its scheduled check");
+                        return Ok(WakeStep::Done);
+                    }
+                },
+                Err(BrocaError::Refused { code, detail }) => {
+                    tracing::warn!(send_id = %wake.send_id, event_key = %wake.event_key, %code, %detail, "Broca refused run.event.get; the call waits for its scheduled check");
+                    return Ok(WakeStep::Done);
+                }
+                Err(error) => {
+                    tracing::warn!(send_id = %wake.send_id, event_key = %wake.event_key, %error, "run.event.get failed; reading the call shortly instead");
+                    now.saturating_add(MIN_TIMER_MS)
+                }
+            },
+        };
         let gate = self.call_gate(&wake.send_id);
         let Ok(_guard) = gate.try_lock() else {
             return Ok(WakeStep::Busy);
@@ -943,37 +1138,11 @@ impl BrocaHost {
         if !call.waiting() {
             return Ok(WakeStep::Done);
         }
-        if wake.kind != WakeKind::Recheck {
-            if wake.kind == WakeKind::Ended
-                && call.broca_run_id.is_some()
-                && call.broca_run_id != wake.run_id
-            {
-                tracing::warn!(send_id = %call.send_id, event_key = %wake.event_key, "Broca run.ended names another run than the call's; ignoring it");
-                return Ok(WakeStep::Done);
-            }
-            let Some(route) = self.event_route(&mut call)? else {
-                return Ok(WakeStep::Busy);
-            };
-            let reply = match self.transport.event_get(
-                &route,
-                &RunEventGetParams {
-                    event_key: wake.event_key.clone(),
-                },
-            ) {
-                Ok(reply) => reply,
-                Err(BrocaError::Refused { code, detail }) => {
-                    tracing::warn!(send_id = %call.send_id, event_key = %wake.event_key, %code, %detail, "Broca refused run.event.get; the call waits for its scheduled check");
-                    return Ok(WakeStep::Done);
-                }
-                Err(error) => return Err(error),
-            };
-            if let Err(refusal) = verify_run_event(wake, &reply) {
-                tracing::warn!(send_id = %call.send_id, event_key = %wake.event_key, kind = wake.kind.as_str(), ?refusal, "Broca run event refused; the call waits for its scheduled check");
-                return Ok(WakeStep::Done);
-            }
-        }
-        call.check_at = Some(self.now());
+        call.check_at = Some(call.check_at.map_or(due, |at| at.min(due)));
         self.store.save(&call)?;
+        if let Some(session_ref) = learned {
+            self.store.learn_session_ref(&call.send_id, &session_ref)?;
+        }
         Ok(WakeStep::Done)
     }
 
@@ -1012,8 +1181,11 @@ impl BrocaHost {
         Ok(true)
     }
 
-    /// Reads one pending call and delivers what is known. A call whose run
-    /// is still going gets its next check (`next_check_at`).
+    /// Reads one pending call and delivers what is known, then schedules
+    /// its next check: `next_check_at` while its run is going, rarely once a
+    /// flow call's basal run has ended, and `retry_at` after a failed read,
+    /// so the failure backs off this call alone. A send id with no pending
+    /// call left has its wait dropped.
     fn visit(&self, send_id: &str) -> Result<(), BrocaError> {
         let gate = self.call_gate(send_id);
         // Another activation holds this send id's lock because it is
@@ -1024,29 +1196,63 @@ impl BrocaHost {
             return Ok(());
         };
         let Some(mut call) = self.store.get(send_id)? else {
-            return Ok(());
+            return self.store.forget(send_id);
         };
-        if call.acknowledged || call.deferred || !self.bind_route(&mut call)? {
-            return Ok(());
+        if call.acknowledged || call.deferred {
+            return self.store.forget(send_id);
         }
         let codemode =
             call.route.flow_id.as_deref() == Some(&format!("codemode:{}", call.basal_run_id));
-        let sink = if codemode {
-            lock(&self.codemode_sink).clone()
-        } else {
-            lock(&self.sink).clone()
-        };
-        self.advance(&mut call, sink.as_deref())?;
-        if !call.acknowledged && call.handle.is_some() {
-            let deadline = self.store.deadline(&call.basal_run_id).unwrap_or_else(|error| {
-                tracing::warn!(%error, run_id = %call.basal_run_id, "cannot read the run's deadline; checking its model call on the usual schedule");
-                None
-            });
-            call.check_at = Some(next_check_at(self.now(), call.checks, deadline));
-            call.checks = call.checks.saturating_add(1);
-            self.store.save(&call)?;
+        let read = (|| {
+            if !self.bind_route(&mut call)? {
+                return Ok(false);
+            }
+            let sink = if codemode {
+                lock(&self.codemode_sink).clone()
+            } else {
+                lock(&self.sink).clone()
+            };
+            self.advance(&mut call, sink.as_deref())?;
+            Ok(true)
+        })();
+        // Settled, or a codemode call its supervisor is still sending: no
+        // check to schedule.
+        if call.acknowledged || call.handle.is_none() {
+            return read.map(|_| ());
         }
-        Ok(())
+        let now = self.now();
+        let deadline = self.store.deadline(&call.basal_run_id).unwrap_or_else(|error| {
+            tracing::warn!(%error, run_id = %call.basal_run_id, "cannot read the run's deadline; checking its model call on the usual schedule");
+            None
+        });
+        match read {
+            Ok(read) => {
+                if read {
+                    call.read_at = Some(now);
+                    call.failures = 0;
+                }
+                let ended = !codemode
+                    && self.store.run_ended(&call.basal_run_id).unwrap_or_else(|error| {
+                        tracing::warn!(%error, run_id = %call.basal_run_id, "cannot read whether the run has ended");
+                        false
+                    });
+                call.check_at = Some(if ended {
+                    now.saturating_add(ENDED_RUN_CHECK_MS)
+                } else {
+                    next_check_at(now, call.checks, deadline)
+                });
+                call.checks = call.checks.saturating_add(1);
+                self.store.save(&call)
+            }
+            Err(error) => {
+                call.failures = call.failures.saturating_add(1);
+                call.check_at = Some(retry_at(now, call.failures, deadline));
+                if let Err(save) = self.store.save(&call) {
+                    tracing::warn!(error = %save, send_id = %call.send_id, "cannot save a failed Broca call's next check");
+                }
+                Err(error)
+            }
+        }
     }
 
     fn advance(
@@ -1055,8 +1261,10 @@ impl BrocaHost {
         sink: Option<&dyn CompletionSink>,
     ) -> Result<(), BrocaError> {
         if call.outcome.is_none() && call.unknown.is_none() {
-            if call.handle.is_none() || call.broca_run_id.is_none() {
+            if call.handle.is_none() {
                 self.issue(call)?;
+            } else if call.broca_run_id.is_none() {
+                self.learn_run(call)?;
             }
             if call.outcome.is_none() {
                 self.resolve(call)?;
@@ -1132,7 +1340,13 @@ impl BrocaHost {
         }
         if call.unknown.is_none() {
             call.deferred = false;
-            let finished = self.issue(&mut call)?;
+            let issued = self.issue(&mut call);
+            // A call saved as waiting must be on the timer thread's schedule
+            // even if the runtime never commits this dispatch.
+            if call.waiting() {
+                self.notify();
+            }
+            let finished = issued?;
             if finished && call.outcome.is_none() {
                 self.resolve(&mut call).map_err(|error| match error {
                     BrocaError::Flow(refusal) => BrocaError::Unavailable {

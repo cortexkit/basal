@@ -32,6 +32,12 @@ struct Run {
     forgotten: bool,
     /// The session is archived. `run.result` and `run.status` still answer.
     archived: bool,
+    /// `run.result` fails as unreachable, as when Broca is down.
+    #[serde(default)]
+    failing: bool,
+    /// `send.status` answers `unknown_send` for this send.
+    #[serde(default)]
+    send_forgotten: bool,
 }
 /// A published run event's body and the session it belongs to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +51,8 @@ struct State {
     sends: Vec<(Route, Vec<u8>)>,
     events: BTreeMap<String, Event>,
     event_gets: usize,
+    send_statuses: usize,
+    refuse_next_send: Option<String>,
     status_calls: usize,
     result_calls: usize,
     pending_next: bool,
@@ -119,6 +127,28 @@ impl FakeBroca {
     }
     pub fn sends(&self) -> Vec<(Route, Vec<u8>)> {
         lock(&self.state).sends.clone()
+    }
+    /// How many times `send.status` was called.
+    pub fn send_statuses(&self) -> usize {
+        lock(&self.state).send_statuses
+    }
+    /// A queued submission starts its run: `send.status` and a re-send now
+    /// answer `active` with the run id.
+    pub fn start(&self, send_id: &str) -> Result<(), BrocaError> {
+        self.with_run(send_id, |r| r.pending = false)
+    }
+    /// `send.status` answers `unknown_send` for this send from now on.
+    pub fn forget_send(&self, send_id: &str) {
+        let _ = self.with_run(send_id, |r| r.send_forgotten = true);
+    }
+    /// `run.result` for this call fails as unreachable until `false`.
+    pub fn set_failing(&self, send_id: &str, failing: bool) -> Result<(), BrocaError> {
+        self.with_run(send_id, |r| r.failing = failing)
+    }
+    /// The next `session.send` is refused with `code`, whether or not Broca
+    /// accepted the send before.
+    pub fn refuse_next_send(&self, code: &str) {
+        lock(&self.state).refuse_next_send = Some(code.into());
     }
     /// How many times `run.event.get` was called.
     pub fn event_gets(&self) -> usize {
@@ -323,6 +353,10 @@ impl Transport for FakeBroca {
             .ok_or_else(|| refused("invalid_params"))?;
         let mut s = lock(&self.state);
         s.sends.push((route.clone(), params.to_vec()));
+        if let Some(code) = s.refuse_next_send.take() {
+            self.save(&s)?;
+            return Err(refused(&code));
+        }
         if let Some(old) = s.runs.get(&key) {
             if old.bytes != params || &old.route != route {
                 return Err(refused("send_id_reuse"));
@@ -347,6 +381,8 @@ impl Transport for FakeBroca {
                 },
                 forgotten: false,
                 archived: false,
+                failing: false,
+                send_forgotten: false,
             };
             s.runs.insert(key.clone(), run);
         }
@@ -379,6 +415,27 @@ impl Transport for FakeBroca {
         }
         Ok(result)
     }
+    fn send_status(&self, route: &Route, params: &SendStatusParams) -> Result<Value, BrocaError> {
+        let mut s = lock(&self.state);
+        s.send_statuses += 1;
+        let reply = s
+            .runs
+            .get(&params.send_id)
+            .filter(|r| &r.route == route && !r.send_forgotten)
+            .map(|r| {
+                let delivered = json!({"as": "turn", "ref": r.run_id});
+                match r.status.terminal() {
+                    Some((reason, _)) => json!({"state": "finished", "run_id": r.run_id,
+                        "reason": state_name(reason), "delivered": delivered}),
+                    None if r.pending => {
+                        json!({"state": "pending", "submission_id": r.submission_id})
+                    }
+                    None => json!({"state": "active", "run_id": r.run_id, "delivered": delivered}),
+                }
+            });
+        self.save(&s)?;
+        reply.ok_or_else(|| refused(UNKNOWN_SEND))
+    }
     fn event_get(
         &self,
         route: &Route,
@@ -408,6 +465,13 @@ impl Transport for FakeBroca {
     ) -> Result<RunResultResponse, BrocaError> {
         let mut s = lock(&self.state);
         s.result_calls += 1;
+        if s.runs.values().any(|r| &r.route == route && r.failing) {
+            self.save(&s)?;
+            return Err(BrocaError::Unavailable {
+                proven_unsent: false,
+                detail: "fake Broca unreachable".into(),
+            });
+        }
         let result = s
             .runs
             .values()
@@ -447,6 +511,8 @@ pub struct MemoryStore {
     calls: Mutex<BTreeMap<String, StoredCall>>,
     wakes: Mutex<Vec<RunWake>>,
     deadlines: Mutex<BTreeMap<String, i64>>,
+    ended: Mutex<std::collections::BTreeSet<String>>,
+    session_refs: Mutex<BTreeMap<String, String>>,
 }
 impl MemoryStore {
     /// Commits a wake as the event reader would.
@@ -462,10 +528,27 @@ impl MemoryStore {
     pub fn set_deadline(&self, run_id: &str, deadline: i64) {
         lock(&self.deadlines).insert(run_id.into(), deadline);
     }
+    /// The basal run has ended (see `StateStore::run_ended`).
+    pub fn end_run(&self, run_id: &str) {
+        lock(&self.ended).insert(run_id.into());
+    }
+    /// The session_ref learned for a call, if any.
+    pub fn session_ref(&self, send_id: &str) -> Option<String> {
+        lock(&self.session_refs).get(send_id).cloned()
+    }
 }
 impl StateStore for MemoryStore {
     fn deadline(&self, run_id: &str) -> Result<Option<i64>, BrocaError> {
         Ok(lock(&self.deadlines).get(run_id).copied())
+    }
+    fn run_ended(&self, run_id: &str) -> Result<bool, BrocaError> {
+        Ok(lock(&self.ended).contains(run_id))
+    }
+    fn learn_session_ref(&self, send_id: &str, session_ref: &str) -> Result<(), BrocaError> {
+        lock(&self.session_refs)
+            .entry(send_id.into())
+            .or_insert_with(|| session_ref.into());
+        Ok(())
     }
     fn wakes(&self) -> Result<Vec<RunWake>, BrocaError> {
         Ok(lock(&self.wakes).clone())

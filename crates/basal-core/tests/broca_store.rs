@@ -93,3 +93,85 @@ fn keyed_snapshot_lookup_ignores_unrelated_corruption_and_migrates_legacy_params
     adapter.save(&settled).unwrap();
     assert!(adapter.pending_ids().unwrap().is_empty());
 }
+
+fn scratch(name: &str) -> (std::path::PathBuf, Arc<Store>) {
+    let dir = std::env::temp_dir().join(format!("basal-broca-store-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Arc::new(Store::open(dir.join("store.db"), Durability::throwaway()).unwrap());
+    (dir, store)
+}
+
+fn count(store: &Store, table: &str) -> i64 {
+    store
+        .read(|c| Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?))
+        .unwrap()
+}
+
+#[test]
+fn a_wait_whose_call_is_gone_is_dropped_not_spun_on() {
+    let (dir, store) = scratch("orphan");
+    store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO broca_waits (send_id, broca_run_id, check_at) VALUES ('ghost', 'run-ghost', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let adapter = Arc::new(BrocaStore::new(store.clone()));
+    let host = BrocaHost::new(
+        Arc::new(FakeBroca::default()),
+        adapter.clone(),
+        "/".into(),
+        "basal".into(),
+        Arc::new(FakeSelector::default()),
+    );
+    // A due wait with no call: the scheduled read drops it.
+    host.wake().unwrap();
+    assert_eq!(count(&store, "broca_waits"), 0);
+    // A committed wake whose call is gone: handling it drops it.
+    store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO broca_wakes (send_id, event_key, kind, digest, received_at) VALUES ('ghost', 'k', 'ended', 'd', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(adapter.next_check().unwrap(), Some(0));
+    host.wake().unwrap();
+    assert_eq!(count(&store, "broca_wakes"), 0);
+    assert_eq!(adapter.next_check().unwrap(), None);
+    assert_eq!(host.next_wake_in(), None);
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn deleting_a_broca_call_drops_its_wait_and_wakes() {
+    let (dir, store) = scratch("triggers");
+    // A table rebuild in a later migration drops triggers silently; these
+    // two keep a removed call (including a cascade from its journal or
+    // codemode_calls row) from leaving a wait that stays due forever.
+    let triggers: Vec<String> = store
+        .read(|c| {
+            let mut statement = c.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%forget_wait' ORDER BY name",
+            )?;
+            let rows = statement.query_map([], |r| r.get(0))?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .unwrap();
+    assert_eq!(
+        triggers,
+        [
+            "broca_calls_forget_wait",
+            "codemode_broca_calls_forget_wait"
+        ]
+    );
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -483,13 +483,28 @@ fn broca_wakes(tx: &Transaction, notice: &Notice, now: i64) -> Result<usize> {
 }
 
 /// How a pending model call learns its Broca session_ref: from the headers
-/// of any Broca run event that names its run (`run.started` arrives first).
+/// of any Broca run event that names its run (`run.started` arrives first),
+/// and from the body of a verified `run.ended` (`learn_session_ref_for`).
 /// Broca derives the value from the session's bind, so taking Broca's own
 /// value avoids recomputing it here.
 fn learn_session_ref(tx: &Transaction, run_id: &str, session_ref: &str) -> Result<()> {
     tx.execute(
         "UPDATE broca_waits SET session_ref = ?2 WHERE broca_run_id = ?1 AND session_ref IS NULL",
         params![run_id, session_ref],
+    )?;
+    Ok(())
+}
+
+/// The same, from a verified `run.event.get` body the host read for one
+/// call (its `run.ended` names the session), keyed by the call's send id.
+pub(crate) fn learn_session_ref_for(
+    tx: &Transaction,
+    send_id: &str,
+    session_ref: &str,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE broca_waits SET session_ref = ?2 WHERE send_id = ?1 AND session_ref IS NULL",
+        params![send_id, session_ref],
     )?;
     Ok(())
 }

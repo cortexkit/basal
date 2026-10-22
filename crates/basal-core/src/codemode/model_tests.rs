@@ -60,6 +60,13 @@ impl BrocaTransport for ObservedBroca {
         self.frozen.lock().unwrap().push(frozen);
         self.fake.send(route, params)
     }
+    fn send_status(
+        &self,
+        route: &Route,
+        params: &SendStatusParams,
+    ) -> std::result::Result<Value, basal_host::broca::BrocaError> {
+        self.fake.send_status(route, params)
+    }
     fn event_get(
         &self,
         route: &Route,
@@ -557,6 +564,9 @@ fn broca_startup_waits_for_codemode_recovery_before_polling() {
     );
     restarting.poll().unwrap();
     assert_eq!(f.wire.fake.sends().len(), 1);
+    // Nor is Broca asked about the queued call before the supervisor that
+    // owns it has attached.
+    assert_eq!(f.wire.fake.send_statuses(), 0);
 }
 
 #[test]
@@ -744,4 +754,46 @@ fn a_codemode_model_call_settles_from_a_committed_run_ended() {
     // Settled: the wait and its wake are gone, so nothing is due again.
     assert!(adapter.wakes().unwrap().is_empty());
     assert_eq!(adapter.next_check().unwrap(), None);
+}
+
+#[test]
+fn deleting_a_codemode_call_cascades_to_its_wait_and_wakes() {
+    let f = ModelFixture::new();
+    let key = store::call_key("r", 0);
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    assert_eq!(f.committed.recv_timeout(TIMEOUT).unwrap(), 0);
+    let counts = |store: &Store| -> (i64, i64) {
+        store
+            .read(|c| {
+                Ok((
+                    c.query_row("SELECT COUNT(*) FROM broca_waits", [], |r| r.get(0))?,
+                    c.query_row("SELECT COUNT(*) FROM broca_wakes", [], |r| r.get(0))?,
+                ))
+            })
+            .unwrap()
+    };
+    f.f.host
+        .store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO broca_wakes (send_id, event_key, kind, digest, received_at) VALUES (?1, 'k', 'ended', 'd', 0)",
+                [&key],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(counts(&f.f.host.store), (1, 1));
+    // Codemode retention deletes the call row; its Broca snapshot goes by
+    // cascade, and the wait and wake with it.
+    f.f.host
+        .store
+        .write(|tx| {
+            tx.execute(
+                "DELETE FROM codemode_calls WHERE run_id = 'r' AND position = 0",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(counts(&f.f.host.store), (0, 0));
 }
