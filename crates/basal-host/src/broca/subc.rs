@@ -42,6 +42,10 @@ type Wake = Arc<dyn Fn() + Send + Sync>;
 pub struct PollWake {
     sender: mpsc::SyncSender<()>,
     receiver: Mutex<Option<mpsc::Receiver<()>>>,
+    /// How many passes the thread has finished, so tests can wait for a
+    /// pass instead of sleeping. Test builds only.
+    #[cfg(any(test, feature = "test-support"))]
+    passes: Arc<(Mutex<usize>, std::sync::Condvar)>,
 }
 impl PollWake {
     pub fn new() -> Arc<Self> {
@@ -49,7 +53,20 @@ impl PollWake {
         Arc::new(Self {
             sender,
             receiver: Mutex::new(Some(receiver)),
+            #[cfg(any(test, feature = "test-support"))]
+            passes: Arc::default(),
         })
+    }
+    /// Blocks until the thread has finished at least `count` passes, or
+    /// `limit` elapses. Returns whether it had. Test builds only.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_for_passes(&self, count: usize, limit: std::time::Duration) -> bool {
+        let (passes, finished) = &*self.passes;
+        let passes = lock(passes);
+        let (passes, _) = finished
+            .wait_timeout_while(passes, limit, |done| *done < count)
+            .unwrap_or_else(|p| p.into_inner());
+        *passes >= count
     }
     pub fn notify(&self) {
         let _ = self.sender.try_send(());
@@ -75,11 +92,19 @@ impl PollWake {
         };
         host.set_waker(self.callback());
         let weak = Arc::downgrade(host);
+        #[cfg(any(test, feature = "test-support"))]
+        let passes = self.passes.clone();
         std::thread::spawn(move || {
             loop {
                 let Some(host) = weak.upgrade() else { break };
                 if let Err(error) = host.wake() {
                     tracing::warn!(%error, "Broca calls remain pending; each retries at its own next check");
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    let (count, finished) = &*passes;
+                    *lock(count) += 1;
+                    finished.notify_all();
                 }
                 let timeout = host.next_wake_in();
                 drop(host);

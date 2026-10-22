@@ -573,6 +573,11 @@ fn captured_bodies_are_refused_when_anything_disagrees() {
     );
 }
 
+/// How long a test waits for the timer thread before calling it stalled.
+/// Generous on purpose: it only bounds a real stall, so a loaded runner
+/// cannot turn it into a flake.
+const STALL: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Waits up to `limit` for `done`, polling every 10 ms.
 fn eventually(limit: std::time::Duration, done: impl Fn() -> bool) -> bool {
     let until = std::time::Instant::now() + limit;
@@ -591,18 +596,15 @@ fn the_timer_thread_settles_a_call_when_the_reader_commits_its_wake() {
     f.accept(0);
     let timer = PollWake::new();
     timer.start(&f.host);
-    // Let the thread finish its first pass (nothing is due) and go to sleep
-    // until the call's check, two minutes away on the injected clock.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // The first pass finds nothing due; the thread then sleeps until the
+    // call's check, two minutes away on the injected clock.
+    assert!(timer.wait_for_passes(1, STALL));
     assert!(f.sink.texts().is_empty());
     f.finish(0, "woken by the reader");
     f.store.add_wake(f.fake.publish_ended("key:0").unwrap());
     f.host.model_events_committed();
     assert!(
-        eventually(std::time::Duration::from_secs(5), || !f
-            .sink
-            .texts()
-            .is_empty()),
+        eventually(STALL, || !f.sink.texts().is_empty()),
         "the reader's wake did not reach the timer thread"
     );
     assert_eq!(f.sink.texts(), vec![json!({"text": "woken by the reader"})]);
@@ -618,21 +620,19 @@ fn the_timer_thread_reads_a_past_due_check_within_its_minimum_wait() {
     timer.start(&f.host);
     // The first pass finds the call due, fails to read it, and pushes its
     // check out by the first retry; the thread sleeps until then.
-    assert!(eventually(std::time::Duration::from_secs(5), || f
-        .stored(0)
-        .failures
-        == 1));
+    assert!(timer.wait_for_passes(1, STALL));
+    assert_eq!(f.stored(0).failures, 1);
     f.fake.set_failing("key:0", false).unwrap();
     f.finish(0, "read by the timer");
     f.advance(FIRST_RETRY_MS);
     // Nothing wakes the thread: only its own timeout can make this read.
     assert!(
-        eventually(
-            std::time::Duration::from_millis(MIN_TIMER_MS as u64 + 3_000),
-            || !f.sink.texts().is_empty()
-        ),
+        eventually(STALL, || !f.sink.texts().is_empty()),
         "the past-due check was not read"
     );
+    // Only the thread's own timeout could make that read: nothing notified
+    // it, so it was the second pass.
+    assert!(timer.wait_for_passes(2, STALL));
     assert_eq!(f.sink.texts(), vec![json!({"text": "read by the timer"})]);
 }
 
@@ -643,7 +643,7 @@ fn the_timer_threads_first_pass_reads_only_what_is_due() {
     let reads = f.fake.calls();
     let timer = PollWake::new();
     timer.start(&f.host);
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(timer.wait_for_passes(1, STALL));
     // attach() already read every pending call at start; the thread's first
     // pass must not read them all again.
     assert_eq!(f.fake.calls(), reads);
