@@ -555,6 +555,64 @@ pub enum Failure {
     },
 }
 
+/// Plain text for people and models. The Debug form escapes the script's own
+/// message a second time and names Rust types, which callers cannot act on.
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Script { message } => f.write_str(message),
+            Self::ScriptHostRejection { position, message } => {
+                write!(f, "call {} rejected: {message}", position + 1)
+            }
+            Self::Nondeterminism(Nondeterminism::Divergence {
+                position,
+                recorded,
+                observed,
+            }) => write!(
+                f,
+                "replay diverged at call {}: recorded {}, observed {}",
+                position + 1,
+                recorded.kind,
+                observed.kind
+            ),
+            Self::Nondeterminism(Nondeterminism::UnreleasedOutcome { position, .. }) => write!(
+                f,
+                "replay did not issue call {} before its recorded outcome was due",
+                position + 1
+            ),
+            Self::Nondeterminism(Nondeterminism::UnconsumedCall { position }) => write!(
+                f,
+                "replay finished without issuing recorded call {}",
+                position + 1
+            ),
+            Self::ProfileViolation { kind } => write!(f, "{kind} is not allowed here"),
+            Self::EngineMismatch { expected, actual } => write!(
+                f,
+                "worker prelude {} differs from the expected {}",
+                hex(&actual.0[..8]),
+                hex(&expected.0[..8])
+            ),
+            Self::InvalidRequest { detail } => write!(f, "invalid activation request: {detail}"),
+            Self::ArgumentsTooLarge { bytes, cap } => {
+                write!(f, "call input has {bytes} bytes, over the {cap}-byte cap")
+            }
+            Self::ResultTooLarge { bytes, cap } => {
+                write!(f, "return value has {bytes} bytes, over the {cap}-byte cap")
+            }
+            Self::ResultNotSerializable { detail } => {
+                write!(f, "return value is not JSON: {detail}")
+            }
+            Self::InvalidHostValue { position, detail } => write!(
+                f,
+                "the answer to call {} is not valid data: {detail}",
+                position + 1
+            ),
+            Self::HostLink { detail } => write!(f, "lost the link to the parent: {detail}"),
+            Self::Engine { detail } => write!(f, "engine failure: {detail}"),
+        }
+    }
+}
+
 /// Which per-activation limit ended an activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BudgetKind {

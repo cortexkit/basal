@@ -10,7 +10,11 @@ use cortexkit_role_tool_provider::scope::ScopeIdentity;
 
 pub(super) enum Reply {
     Final(std::result::Result<Value, WireError>),
-    Held { detail: Option<Value> },
+    /// `reason` is the provider's snake_case reason, such as `consent`.
+    Held {
+        reason: String,
+        detail: Option<Value>,
+    },
 }
 
 /// Decode only tools that explicitly negotiated content/v1; legacy JSON is
@@ -32,6 +36,7 @@ pub(super) fn classify(
     }
     if let Some(held) = decoded.held() {
         return Reply::Held {
+            reason: held.reason.clone(),
             detail: held.detail.clone(),
         };
     }

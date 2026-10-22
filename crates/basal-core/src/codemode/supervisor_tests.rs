@@ -1470,6 +1470,58 @@ fn activation_failure_table_and_engine_budgets_are_exhaustive() {
 }
 
 #[test]
+fn uncaught_tool_rejection_ends_the_run_with_the_provider_code_as_plain_text() {
+    let f = Fixture::new();
+    f.standard();
+    f.issue(0, "read", json!({}));
+    f.attempt()
+        .reply
+        .send(Err(WireError::RefusedDetails {
+            code: "no_session".into(),
+            message: "No session.\nCall browser.launch, then retry the browser action.".into(),
+            detail: json!({"reason":"no browser session is open"}),
+        }))
+        .unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Rejected);
+    // The worker reports the rejection it delivered, by position, with the
+    // JavaScript text of the error the program left uncaught.
+    f.worker
+        .send(WorkerMessage::Finished {
+            activation_id: 1,
+            result: ActivationResult::Failed(Failure::ScriptHostRejection {
+                position: 0,
+                message: "HostError: No session.\n    at deliver (codemode_prelude.js:77:5)".into(),
+            }),
+        })
+        .unwrap();
+    let result = f.terminal();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(
+        result["error"],
+        json!({"code":"no_session","message":"read (call 1) failed: No session. Call browser.launch, then retry the browser action. Reason: no browser session is open."})
+    );
+    assert_eq!(result["calls"][0]["code"], "no_session");
+}
+
+#[test]
+fn script_error_is_the_plain_javascript_message() {
+    let f = Fixture::new();
+    f.standard();
+    f.worker
+        .send(WorkerMessage::Finished {
+            activation_id: 1,
+            result: ActivationResult::Failed(Failure::Script {
+                message: "TypeError: tools.work is not available in this codemode run.".into(),
+            }),
+        })
+        .unwrap();
+    assert_eq!(
+        f.terminal()["error"],
+        json!({"code":"script","message":"TypeError: tools.work is not available in this codemode run."})
+    );
+}
+
+#[test]
 fn intent_to_entry_delay_is_not_provider_time_and_unentered_intents_have_no_duration() {
     let f = Fixture::new();
     f.standard();
@@ -2176,6 +2228,14 @@ fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
     let f = Fixture::new();
     let (call, pull) = f.provider_held();
     assert!(f.parent.try_recv().is_err(), "held is not the final answer");
+    assert_eq!(
+        f.supervisor.holds("r"),
+        [Hold {
+            position: 0,
+            tool: "read".into(),
+            reason: Some("consent".into()),
+        }]
+    );
     assert_eq!(f.calls()[0].outcome, Outcome::Pending);
     assert_eq!(
         f.supervisor.result("r").unwrap().unwrap()["calls"][0]["waited_on_person"],
@@ -2186,6 +2246,7 @@ fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
     let delivery = f.delivery();
     assert_eq!(delivery.settlement, Settlement::Fulfilled);
     assert_eq!(delivery.value, JsonText::new(r#"{"answer":42}"#).unwrap());
+    assert!(f.supervisor.holds("r").is_empty(), "a settled call is no longer held");
     let ack = f.custody_attempt("late_results.ack");
     assert_eq!(
         ack.input,

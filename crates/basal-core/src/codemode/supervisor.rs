@@ -129,6 +129,9 @@ struct Shared {
     drivers: Mutex<Drivers>,
     dispatch_starts: Arc<DispatchStarts>,
     custody: Arc<held::Custody>,
+    /// Calls each live run is awaiting while a person decides, so a reply
+    /// sent before the run ends can say what it is waiting on.
+    holds: Mutex<BTreeMap<String, BTreeMap<u64, Hold>>>,
     terminal_changed: (Mutex<u64>, Condvar),
     terminal_hook: Mutex<Option<Arc<TerminalHook>>>,
     #[cfg(test)]
@@ -152,6 +155,17 @@ struct Shared {
 pub struct Supervisor(Arc<Shared>);
 
 pub type TerminalHook = dyn Fn(&str, Value) -> Result<()> + Send + Sync;
+
+/// A tool call a running program is awaiting while a person decides.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hold {
+    /// The call's zero-based position in the run.
+    pub position: u64,
+    pub tool: String,
+    /// The provider's snake_case reason, such as `consent`, when its held
+    /// reply named one.
+    pub reason: Option<String>,
+}
 
 #[derive(Clone)]
 struct Models {
@@ -215,6 +229,7 @@ impl Supervisor {
             drivers: Mutex::new(Drivers::default()),
             dispatch_starts: Arc::new(DispatchStarts::default()),
             custody: Arc::new(held::Custody::default()),
+            holds: Mutex::new(BTreeMap::new()),
             terminal_changed: (Mutex::new(0), Condvar::new()),
             terminal_hook: Mutex::new(None),
             #[cfg(test)]
@@ -357,6 +372,18 @@ impl Supervisor {
     /// injected clock as deadlines; terminal durations are the stored ones.
     pub fn result(&self, id: &str) -> Result<Option<Value>> {
         Self::result_for(&self.0.store, &self.0.clock, id)
+    }
+
+    /// The calls a running program is currently awaiting on a person, in
+    /// position order. Empty for unknown and ended runs.
+    pub fn holds(&self, id: &str) -> Vec<Hold> {
+        self.0
+            .holds
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|holds| holds.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn on_terminal(&self, hook: Arc<TerminalHook>) {
@@ -547,6 +574,9 @@ struct Driver {
     flight_positions: BTreeSet<u64>,
     held_positions: BTreeSet<u64>,
     tool_calls: BTreeMap<u64, (String, HostCall)>,
+    /// The tool, provider code and message of each call that rejected, so a
+    /// program ending on an uncaught rejection reports them as plain text.
+    rejections: BTreeMap<u64, Rejection>,
     blocked: bool,
     person_wait_ms: i64,
     last_tick_ms: i64,
@@ -586,6 +616,7 @@ impl Driver {
             flight_positions: BTreeSet::new(),
             held_positions: BTreeSet::new(),
             tool_calls: BTreeMap::new(),
+            rejections: BTreeMap::new(),
             blocked: false,
             person_wait_ms: 0,
             last_tick_ms,
@@ -860,15 +891,42 @@ impl Driver {
             }
             if held {
                 self.held_positions.insert(position);
+                if let Some((_, call)) = self.tool_calls.get(&position)
+                    && let CallKind::Tool { name } = &call.kind
+                {
+                    self.shared
+                        .holds
+                        .lock()
+                        .unwrap()
+                        .entry(self.run.run_id.clone())
+                        .or_default()
+                        .entry(position)
+                        .or_insert_with(|| Hold {
+                            position,
+                            tool: name.clone(),
+                            reason: None,
+                        });
+                }
                 self.shared.store.write(|tx| {
                     tx.execute("UPDATE codemode_calls SET waited_on_person=1 WHERE run_id=?1 AND position=?2 AND outcome='pending'", rusqlite::params![self.run.run_id, position])?;
                     Ok(())
                 })?;
             } else {
                 self.held_positions.remove(&position);
+                self.forget_hold(position);
             }
         }
         Ok(())
+    }
+
+    fn forget_hold(&self, position: u64) {
+        let mut holds = self.shared.holds.lock().unwrap();
+        if let Some(run) = holds.get_mut(&self.run.run_id) {
+            run.remove(&position);
+            if run.is_empty() {
+                holds.remove(&self.run.run_id);
+            }
+        }
     }
 
     fn custody_scope(&self) -> cortexkit_role_tool_provider::scope::ScopeIdentity {
@@ -980,12 +1038,22 @@ impl Driver {
         if let Ok(value) = answer.result {
             let format = self.result_format(&answer.call);
             match held::classify(value, format.as_ref()) {
-                held::Reply::Held { detail } => {
+                held::Reply::Held { reason, detail } => {
                     let _ = detail;
                     if self.wall()? {
                         return Ok(());
                     }
                     self.mark_held(answer.call.position, true)?;
+                    if let Some(hold) = self
+                        .shared
+                        .holds
+                        .lock()
+                        .unwrap()
+                        .get_mut(&self.run.run_id)
+                        .and_then(|run| run.get_mut(&answer.call.position))
+                    {
+                        hold.reason = Some(reason);
+                    }
                     self.start_intake(answer.call.position)?;
                     return Ok(());
                 }
@@ -1007,6 +1075,7 @@ impl Driver {
         self.in_flight -= 1;
         self.flight_positions.remove(&answer.call.position);
         self.held_positions.remove(&answer.call.position);
+        self.forget_hold(answer.call.position);
         if let Some((module, _)) = self.tool_calls.remove(&answer.call.position) {
             self.shared
                 .custody
@@ -1169,7 +1238,7 @@ impl Driver {
                 activation_id: 1,
                 result,
             } => {
-                let terminal = activation_end(result);
+                let terminal = activation_end(result, &self.rejections);
                 if terminal.status == Status::Completed {
                     self.completion = Some(terminal);
                     Ok(())
@@ -1553,6 +1622,18 @@ impl Driver {
                 "code":mapped.code, "tool":name, "outcome":mapped.outcome.as_str(),
                 "message":mapped.message
             });
+            self.rejections.insert(
+                call.position,
+                Rejection {
+                    code: mapped.code.clone().unwrap_or_else(|| "tool_error".into()),
+                    message: rejection_message(
+                        name,
+                        call.position,
+                        &mapped.message,
+                        mapped.reason.as_deref(),
+                    ),
+                },
+            );
             if let Some(reason) = mapped.reason {
                 rejection["reason"] = json!(reason);
             }
@@ -1583,6 +1664,7 @@ impl Driver {
 
     fn end(&mut self, mut terminal: Terminal) -> Result<()> {
         self.shared.custody.end(&self.run.run_id);
+        self.shared.holds.lock().unwrap().remove(&self.run.run_id);
         self.account_time();
         self.stopping = true;
         self.parent_owned_kill = true;
@@ -1845,7 +1927,7 @@ fn exhausted(budget: Budget) -> Terminal {
     )
 }
 
-fn activation_end(result: ActivationResult) -> Terminal {
+fn activation_end(result: ActivationResult, rejections: &BTreeMap<u64, Rejection>) -> Terminal {
     match result {
         ActivationResult::Completed { value } => {
             if value.as_str().len() > RESULT_BYTES {
@@ -1868,6 +1950,12 @@ fn activation_end(result: ActivationResult) -> Terminal {
             BudgetKind::Memory => Budget::Memory,
             BudgetKind::Stack => Budget::Stack,
         }),
+        ActivationResult::Failed(Failure::ScriptHostRejection { position, .. })
+            if rejections.contains_key(&position) =>
+        {
+            let rejection = &rejections[&position];
+            failed(&rejection.code, rejection.message.clone())
+        }
         ActivationResult::Failed(failure) => {
             let code = match &failure {
                 Failure::ProfileViolation { .. } => "profile_violation",
@@ -1882,8 +1970,54 @@ fn activation_end(result: ActivationResult) -> Terminal {
                 | Failure::HostLink { .. }
                 | Failure::Engine { .. } => "engine_error",
             };
-            failed(code, format!("{failure:?}"))
+            failed(code, failure.to_string())
         }
+    }
+}
+
+/// A tool call's rejection as the program received it.
+struct Rejection {
+    /// The provider's code, or basal's own when basal refused the call.
+    code: String,
+    /// One plain-text line naming the tool and the call.
+    message: String,
+}
+
+/// Provider messages can be long and span lines; the run error keeps one
+/// readable line of bounded size.
+const REJECTION_MESSAGE_BYTES: usize = 4096;
+
+fn rejection_message(tool: &str, position: u64, message: &str, reason: Option<&str>) -> String {
+    let mut text = message
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty())
+        && !text.contains(reason)
+    {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str("Reason: ");
+        text.push_str(reason);
+        if !reason.ends_with(['.', '!', '?']) {
+            text.push('.');
+        }
+    }
+    if text.len() > REJECTION_MESSAGE_BYTES {
+        let mut end = REJECTION_MESSAGE_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push('…');
+    }
+    if text.is_empty() {
+        format!("{tool} (call {}) failed.", position + 1)
+    } else {
+        format!("{tool} (call {}) failed: {text}", position + 1)
     }
 }
 
