@@ -220,8 +220,9 @@ pub trait Transport: Send + Sync {
         module: &str,
         name: &str,
         arguments: Value,
+        preset: Option<&str>,
     ) -> Result<Value, WireError> {
-        let _ = (scope, identity, module, name, arguments);
+        let _ = (scope, identity, module, name, arguments, preset);
         Err(WireError::NeverSent(
             "run-scoped role requests unavailable".into(),
         ))
@@ -235,6 +236,7 @@ pub type RunScopeEnded = dyn Fn(&str) + Send + Sync;
 pub struct RunToolOptions {
     pub identity: BindIdentity,
     pub reply_timeout: Duration,
+    pub preset: Option<String>,
 }
 
 /// Maps the client's typed send disposition without guessing from prose.
@@ -946,8 +948,11 @@ impl Transport for SubcTransport {
         let target = RouteTarget::ToolProvider {
             module_id: module.into(),
         };
-        let body = serde_json::to_vec(&tool_body(name, arguments, call_key)?)
-            .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let mut request = tool_body(name, arguments, call_key)?;
+        if let Some(preset) = &options.preset {
+            request["preset"] = Value::String(preset.clone());
+        }
+        let body = serde_json::to_vec(&request).map_err(|e| WireError::NeverSent(e.to_string()))?;
         // A re-opened attempt gets only what is left of the call's reply time.
         let deadline = std::time::Instant::now() + options.reply_timeout;
         send_with_one_reopen(
@@ -1003,10 +1008,9 @@ impl Transport for SubcTransport {
             options.identity.clone(),
             Some(custody_deadline.saturating_duration_since(std::time::Instant::now())),
         )?;
-        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(
-            name, arguments,
-        ))
-        .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments);
+        request.preset = options.preset.clone();
+        let body = serde_json::to_vec(&request).map_err(|e| WireError::NeverSent(e.to_string()))?;
         let remaining = custody_deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             return Err(WireError::TimedOut(
@@ -1079,12 +1083,13 @@ impl Transport for SubcTransport {
         module: &str,
         name: &str,
         arguments: Value,
+        preset: Option<&str>,
     ) -> Result<Value, WireError> {
-        // A role request names no call key in its envelope.
-        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(
-            name, arguments,
-        ))
-        .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        // Role requests omit the envelope call key, but still carry the run's
+        // catalog preset.
+        let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments);
+        request.preset = preset.map(str::to_owned);
+        let body = serde_json::to_vec(&request).map_err(|e| WireError::NeverSent(e.to_string()))?;
         let options = || CallOptions {
             timeout: self.timeout,
             ..Default::default()
@@ -1683,7 +1688,7 @@ mod tests {
             );
             assert_eq!(
                 transport
-                    .role_on_run_scope(&scope, &identity, "aft", "echo", json!({"n":1}))
+                    .role_on_run_scope(&scope, &identity, "aft", "echo", json!({"n":1}), None)
                     .unwrap(),
                 json!({"n":1})
             );
@@ -1787,6 +1792,7 @@ mod tests {
             let options = RunToolOptions {
                 identity: identity.clone(),
                 reply_timeout: Duration::from_secs(15),
+                preset: None,
             };
             assert_eq!(
                 transport
@@ -1988,6 +1994,7 @@ mod tests {
         RunToolOptions {
             identity: BindIdentity::new("/agent/project", "agent:other", "invoking-session"),
             reply_timeout: Duration::from_secs(5),
+            preset: None,
         }
     }
 

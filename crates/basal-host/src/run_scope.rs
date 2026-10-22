@@ -45,6 +45,8 @@ pub struct Opened {
     pub scope: Scope,
     pub expires_at_ms: i64,
     pub catalog: Vec<CatalogEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +114,7 @@ pub fn catalog_read_identity(
 pub struct CatalogRead<'a> {
     pub scope: &'a subc_protocol::scope::ScopeSelector,
     pub identity: &'a subc_protocol::BindIdentity,
+    pub preset: Option<&'a str>,
 }
 
 /// Whether a failed catalog read may succeed if the run is retried: the
@@ -235,7 +238,13 @@ fn codemode_served(
         ));
     }
     let answer = answers.entry(entry.module.clone()).or_insert_with(|| {
-        read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module)
+        read_tool_catalog_on_run(
+            transport,
+            read.scope,
+            read.identity,
+            &entry.module,
+            read.preset,
+        )
     });
     let answer = answer.as_ref().map_err(|error| {
         let hint = if catalog_read_may_recover(error) {
@@ -543,6 +552,7 @@ mod call_mode_tests {
             module: &str,
             name: &str,
             arguments: Value,
+            _preset: Option<&str>,
         ) -> Result<Value, WireError> {
             self.identities.lock().unwrap().push(identity.clone());
             self.scopes.lock().unwrap().push(scope.clone());
@@ -631,6 +641,7 @@ mod call_mode_tests {
         let read = CatalogRead {
             scope: &scope,
             identity: &identity,
+            preset: None,
         };
         catalog(provider, &read, daemon, entries)
     }

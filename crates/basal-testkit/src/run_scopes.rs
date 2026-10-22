@@ -44,6 +44,7 @@ impl RunScopes {
             },
             expires_at_ms: request.expires_at_ms,
             catalog,
+            preset: None,
         };
         state
             .opens

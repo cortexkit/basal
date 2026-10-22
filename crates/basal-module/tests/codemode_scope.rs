@@ -41,6 +41,7 @@ impl Transport for CoreScopes {
                     },
                     expires_at_ms: request.expires_at_ms,
                     catalog: vec![],
+                    preset: None,
                 })
                 .unwrap())
             }

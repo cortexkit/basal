@@ -89,9 +89,10 @@ pub fn read_tool_catalog(
     transport: &dyn Transport,
     module: &str,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    read_tool_catalog_with(&mut |name, arguments| {
-        transport.tool(module, name, arguments, &role_call_key())
-    })
+    read_tool_catalog_with(
+        &mut |name, arguments| transport.tool(module, name, arguments, &role_call_key()),
+        None,
+    )
 }
 
 /// `read_tool_catalog` for a codemode run: both requests go on a route
@@ -105,14 +106,19 @@ pub fn read_tool_catalog_on_run(
     scope: &subc_protocol::scope::ScopeSelector,
     identity: &subc_protocol::BindIdentity,
     module: &str,
+    preset: Option<&str>,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    read_tool_catalog_with(&mut |name, arguments| {
-        transport.role_on_run_scope(scope, identity, module, name, arguments)
-    })
+    read_tool_catalog_with(
+        &mut |name, arguments| {
+            transport.role_on_run_scope(scope, identity, module, name, arguments, preset)
+        },
+        preset,
+    )
 }
 
 fn read_tool_catalog_with(
     send: &mut dyn FnMut(&str, Value) -> Result<Value, WireError>,
+    preset: Option<&str>,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
     use cortexkit_role_tool_provider::catalog::{
         CatalogAnswer, CatalogRequest, params_for_capabilities,
@@ -128,8 +134,11 @@ fn read_tool_catalog_with(
         Some(tags) => params_for_capabilities(tags),
         None => serde_json::Map::new(),
     };
-    let request = serde_json::to_value(CatalogRequest::new(params))
+    let mut request = serde_json::to_value(CatalogRequest::new(params))
         .map_err(|e| WireError::NeverSent(e.to_string()))?;
+    if let Some(preset) = preset {
+        request["preset"] = Value::String(preset.to_owned());
+    }
     let answer = send("tool.catalog", request)?;
     let answer: CatalogAnswer = serde_json::from_value(answer)
         .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))?;
