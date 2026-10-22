@@ -60,8 +60,19 @@ impl BrocaTransport for ObservedBroca {
         self.frozen.lock().unwrap().push(frozen);
         self.fake.send(route, params)
     }
-    fn watch(&self, route: &Route) -> std::result::Result<(), basal_host::broca::BrocaError> {
-        self.fake.watch(route)
+    fn send_status(
+        &self,
+        route: &Route,
+        params: &SendStatusParams,
+    ) -> std::result::Result<Value, basal_host::broca::BrocaError> {
+        self.fake.send_status(route, params)
+    }
+    fn event_get(
+        &self,
+        route: &Route,
+        params: &RunEventGetParams,
+    ) -> std::result::Result<RunEventReply, basal_host::broca::BrocaError> {
+        self.fake.event_get(route, params)
     }
     fn result(
         &self,
@@ -243,9 +254,9 @@ impl ModelFixture {
     }
     fn finish_usage(&self, position: u64, text: &str, usage: Usage) -> Delivery {
         let key = store::call_key("r", position);
-        // Wait for dispatch_committed to finish its initial poll before completing
-        // the fake run. A concurrent completion poll skips a locked call, and the
-        // fake transport sends no stream wakeup to schedule another poll.
+        // Wait for dispatch_committed to finish its first read before completing
+        // the fake run. A concurrent read skips a locked call, and no bus event
+        // reaches this fixture to wake the host again.
         assert_eq!(self.committed.recv_timeout(TIMEOUT).unwrap(), position);
         self.wire
             .fake
@@ -553,6 +564,9 @@ fn broca_startup_waits_for_codemode_recovery_before_polling() {
     );
     restarting.poll().unwrap();
     assert_eq!(f.wire.fake.sends().len(), 1);
+    // Nor is Broca asked about the queued call before the supervisor that
+    // owns it has attached.
+    assert_eq!(f.wire.fake.send_statuses(), 0);
 }
 
 #[test]
@@ -681,4 +695,105 @@ fn both_model_tools_refuse_invalid_demands_before_routing() {
     }
     assert!(f.routing.calls.lock().unwrap().is_empty());
     assert!(f.wire.fake.sends().is_empty());
+}
+
+#[test]
+fn a_codemode_model_call_settles_from_a_committed_run_ended() {
+    let f = ModelFixture::new();
+    let key = store::call_key("r", 0);
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    assert_eq!(f.committed.recv_timeout(TIMEOUT).unwrap(), 0);
+    // The accepted call is waiting: its run id is indexed for the event
+    // reader, and it has a scheduled check.
+    let adapter = BrocaStore::new(f.f.host.store.clone());
+    let (run_id, check_at): (Option<String>, Option<i64>) =
+        f.f.host
+            .store
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT broca_run_id, check_at FROM broca_waits WHERE send_id = ?1",
+                    [&key],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .unwrap();
+    assert_eq!(run_id, Some(format!("run:{key}")));
+    assert!(check_at.is_some());
+    // The run was started with a 100 s deadline and has waited on no one.
+    assert_eq!(adapter.deadline("r").unwrap(), Some(100_000));
+    f.wire
+        .fake
+        .finish(
+            &key,
+            "from the event",
+            RunFinishReason::Completed,
+            Some(Usage::default()),
+        )
+        .unwrap();
+    let wake = f.wire.fake.publish_ended(&key).unwrap();
+    // Commit the wake as the event reader does.
+    f.f.host
+        .store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO broca_wakes (send_id, event_key, kind, digest, run_id, session_ref, seq, received_at) VALUES (?1, ?2, 'ended', ?3, ?4, ?5, ?6, 0)",
+                rusqlite::params![key, wake.event_key, wake.digest, wake.run_id, wake.session_ref, wake.seq],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    // A fresh adapter reads the committed wake back, as after a restart.
+    assert_eq!(adapter.wakes().unwrap(), vec![wake]);
+    assert_eq!(adapter.next_check().unwrap(), Some(0));
+    f.broca.wake().unwrap();
+    let d = f.f.delivery();
+    assert_eq!(
+        parse(d.value.as_str()).unwrap(),
+        json!({"text":"from the event"})
+    );
+    // Settled: the wait and its wake are gone, so nothing is due again.
+    assert!(adapter.wakes().unwrap().is_empty());
+    assert_eq!(adapter.next_check().unwrap(), None);
+}
+
+#[test]
+fn deleting_a_codemode_call_cascades_to_its_wait_and_wakes() {
+    let f = ModelFixture::new();
+    let key = store::call_key("r", 0);
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    assert_eq!(f.committed.recv_timeout(TIMEOUT).unwrap(), 0);
+    let counts = |store: &Store| -> (i64, i64) {
+        store
+            .read(|c| {
+                Ok((
+                    c.query_row("SELECT COUNT(*) FROM broca_waits", [], |r| r.get(0))?,
+                    c.query_row("SELECT COUNT(*) FROM broca_wakes", [], |r| r.get(0))?,
+                ))
+            })
+            .unwrap()
+    };
+    f.f.host
+        .store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO broca_wakes (send_id, event_key, kind, digest, received_at) VALUES (?1, 'k', 'ended', 'd', 0)",
+                [&key],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(counts(&f.f.host.store), (1, 1));
+    // Codemode retention deletes the call row; its Broca snapshot goes by
+    // cascade, and the wait and wake with it.
+    f.f.host
+        .store
+        .write(|tx| {
+            tx.execute(
+                "DELETE FROM codemode_calls WHERE run_id = 'r' AND position = 0",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(counts(&f.f.host.store), (0, 0));
 }

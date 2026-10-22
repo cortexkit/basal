@@ -1,6 +1,6 @@
 //! The Broca wire subset used by flow model calls.
 //!
-//! Send, status and subscribe shapes are mirrored from Broca commit
+//! Send and status shapes are mirrored from Broca commit
 //! 3fded44a5d9b4ff4487259d4c67c152af272b729: broca-wire/src/lib.rs
 //! (97-195, 402-424, 669-780) and broca-protocol/src/{caller,usage,request}.rs.
 //! The `run.result` shapes are mirrored from Broca commit
@@ -96,30 +96,6 @@ pub struct StatusParams {
     pub run_id: Option<String>,
 }
 
-/// A subscribe attach point. Broca also accepts `"start"` and a durable
-/// cursor; basal only ever attaches at the live head, because the stream
-/// only wakes it and never carries a result it must not miss.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum FromWire {
-    Named(String),
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubscribeParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<FromWire>,
-}
-impl SubscribeParams {
-    /// Attach at the session's live head.
-    pub fn live() -> Self {
-        Self {
-            from: Some(FromWire::Named("live".into())),
-        }
-    }
-}
-
 /// Metadata not used for flow settlement remains available to adapters.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Terminal {
@@ -186,34 +162,13 @@ impl RunStatusResponse {
     }
 }
 
-/// The control units basal reacts to. The stream is only a wake signal: a
-/// finished run prompts a `run.result` read, and every other unit,
-/// assistant messages included, is ignored.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ControlUnit {
-    /// Its reason and metadata are not decoded here: `run.result` and
-    /// `run.status` are the only sources of a call's outcome and usage.
-    RunFinished {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        run_id: Option<String>,
-    },
-    #[serde(other)]
-    Other,
-}
-/// A subscribe event. The control cursor is not decoded: basal keeps no
-/// position in the stream.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SubscribeEvent {
-    Control { unit: Box<ControlUnit> },
-    Display { event: Value },
-}
-
 pub const OP_RUN_RESULT: &str = "run.result";
 pub const OP_RUN_STATUS: &str = "run.status";
 pub const OP_SESSION_SEND: &str = "session.send";
-pub const OP_SESSION_SUBSCRIBE: &str = "session.subscribe";
+/// Reads a run event's body by its event key. Broca answers it only on a
+/// route bound to the event's own session (the bind the send used); on any
+/// other route the event is `absent`.
+pub const OP_RUN_EVENT_GET: &str = "run.event.get";
 /// The refusal code `run.result` answers when the session has no run with
 /// the requested run id.
 pub const UNKNOWN_RUN: &str = "unknown_run";
@@ -264,4 +219,78 @@ pub struct RunResultResponse {
     pub error: Option<ProviderError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_message: Option<FinalMessage>,
+}
+
+/// `run.event.get` params. Unknown members are refused, as Broca refuses them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunEventGetParams {
+    pub event_key: String,
+}
+
+/// `run.event.get`, inside the management `result`. `found` carries the
+/// event key and `jcs`, the exact body bytes the bus digest covers. Broca
+/// answers `absent` for an unknown key, a key from another session, or a
+/// body pruned after its 24 hours. `state` is decoded as an open string.
+/// Shapes from Broca's captured replies (test-vectors/broca-run-events).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunEventReply {
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jcs: Option<String>,
+}
+
+/// Reports what became of an accepted send, by its send id, on the call's
+/// own route, including its run id once started, without submitting the
+/// send again. The answer has the same shape as `session.send`'s, plus
+/// `delivered` once the send was delivered.
+pub const OP_SEND_STATUS: &str = "send.status";
+/// The refusal code `send.status` answers for a send id Broca has no record
+/// of for this caller. Terminal.
+pub const UNKNOWN_SEND: &str = "unknown_send";
+
+/// `send.status` params. Unknown members are refused, as Broca refuses them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendStatusParams {
+    pub send_id: String,
+}
+
+/// What basal takes from a `send.status` answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendStatus {
+    /// Still queued behind another run.
+    Pending,
+    /// Started as (or joined) the run `run_id`; it may be active, paused or
+    /// finished, which `run.result` then reports.
+    Started { run_id: String },
+}
+
+/// Decodes a `send.status` answer (inside the management `result`):
+/// `{"state":"pending","submission_id"}`, or `active`, `paused` or
+/// `finished` with a `run_id`. A finished send's `reason` is an open string
+/// and `delivered` is tolerated; neither is needed, since `run.result`
+/// reports the outcome. Shapes from Broca's pinned goldens. Anything else
+/// is a decoding error: the host leaves the call pending and reads it again
+/// after its own backoff.
+pub fn decode_send_status(reply: &Value) -> Result<SendStatus, String> {
+    let text = |field: &str| {
+        reply
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    };
+    match reply.get("state").and_then(Value::as_str) {
+        Some("pending") => text("submission_id")
+            .map(|_| SendStatus::Pending)
+            .ok_or_else(|| "send.status pending without a submission_id".into()),
+        Some("active" | "paused" | "finished") => text("run_id")
+            .map(|run_id| SendStatus::Started {
+                run_id: run_id.to_owned(),
+            })
+            .ok_or_else(|| "send.status reported a started send without a run_id".into()),
+        other => Err(format!("unrecognised send.status state {other:?}")),
+    }
 }

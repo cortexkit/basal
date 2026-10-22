@@ -45,6 +45,10 @@ pub struct Health {
     pub admitted: u64,
     pub queued: u64,
     pub overflow: u64,
+    /// Wakes committed for pending Broca model calls. Staying at zero while
+    /// model calls run means Broca's run events are not reaching basal, and
+    /// calls settle only at their scheduled checks.
+    pub model_wakes: u64,
     pub malformed: u64,
     pub first_batch_notices: Option<usize>,
     pub first_batch_elapsed_ms: Option<u64>,
@@ -549,6 +553,7 @@ async fn reader_loop(
                 h.admitted += report.admitted as u64;
                 h.queued += report.queued as u64;
                 h.overflow += report.overflow as u64;
+                h.model_wakes += report.model_wakes as u64;
                 h.malformed += malformed as u64;
                 h.skipped_before_install += report.skipped_before_install as u64;
                 h.filtered_out += report.filtered_out as u64;

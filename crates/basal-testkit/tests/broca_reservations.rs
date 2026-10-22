@@ -337,3 +337,45 @@ fn usage_settles_once_when_an_outcome_is_redelivered_after_a_restart() {
     rt.quiesce();
     assert_eq!(totals(&rt), (0, 7, 2, 5, 100, 0));
 }
+
+#[test]
+fn deleting_a_flow_journal_row_cascades_to_its_model_calls_wait_and_wakes() {
+    let world = World::new("broca-cascade");
+    let (rt, _host, _fake, _snapshots) = setup(&world);
+    let id = admit(&rt, &world, "return await llm({prompt:'hi'});");
+    assert!(matches!(
+        rt.resume(&id).unwrap(),
+        ActivationEnd::Suspended { .. }
+    ));
+    rt.quiesce();
+    let counts = || -> (i64, i64) {
+        rt.store()
+            .read(|c| {
+                Ok((
+                    c.query_row("SELECT COUNT(*) FROM broca_waits", [], |r| r.get(0))?,
+                    c.query_row("SELECT COUNT(*) FROM broca_wakes", [], |r| r.get(0))?,
+                ))
+            })
+            .unwrap()
+    };
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO broca_wakes (send_id, event_key, kind, digest, received_at) SELECT send_id, 'k', 'ended', 'd', 0 FROM broca_waits",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(counts(), (1, 1));
+    // Flow retention deletes journal rows; the Broca snapshot goes by
+    // cascade, and the wait and wake with it.
+    rt.store()
+        .write(|tx| {
+            tx.execute("DELETE FROM mailbox WHERE run_id = ?1", [&id])?;
+            tx.execute("DELETE FROM journal WHERE run_id = ?1", [&id])?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(counts(), (0, 0));
+}

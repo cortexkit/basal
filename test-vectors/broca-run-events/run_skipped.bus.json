@@ -1,0 +1,16 @@
+{
+  "digest_sha256_of_jcs": "94a358b4d3feaa59b3882d6e1bd9e2d43cc2f333f8db33ba1358dfe73f8f8dc8",
+  "headers": {
+    "epoch": "afd8e919-552c-4df0-9aca-ac0c71bdc00a",
+    "kind": "run.skipped",
+    "seq": "33",
+    "session_ref": "41649942e4fbd1fab5d098c447cd172e"
+  },
+  "message_id": "717fcf67a82b0bdf165b7860543b9e76e3184f8c7824093312cc174f68548a26",
+  "session_bind": {
+    "harness": "broca",
+    "project_root": "/redacted/machine-local/worktree",
+    "session": "alfonso:sidekick-planner-00000000-0000-4079-98e0-ac7572aaf4a8"
+  },
+  "subject": "ck.box_853ecdb6e1681c3dc8c1c578d14c23a2.event.broca.run.skipped.v1"
+}

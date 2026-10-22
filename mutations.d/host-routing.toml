@@ -179,7 +179,7 @@ new = "let fallback=json!({\"provider\":reply[\"selected\"][\"model\"][\"provide
 
 [[control]]
 id = "integration-accepted-model-subscription-wake-omitted"
-guards = "integration: accepted model subscription wake omitted"
+guards = "integration: an accepted model call is not read or scheduled after its handle commits"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
 package = "basal-module"
@@ -988,27 +988,6 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["transport::tests::model_refusal_has_provider_and_action_after_envelope_decoding"]
-only = true
-timeout_s = 600
-build_timeout_s = 3600
-
-[[control]]
-id = "stale-model-subscription-keeps-dead-handle"
-guards = "A stale scoped model subscription evicts its dead connection handle"
-file = "crates/basal-host/src/transport.rs"
-old = """
-.block_on(self.consumer.subscribe_route(&handle, bytes, opts));
-        if let Err(CallError::StaleRouteHandle(_)) = &result {"""
-new = """
-.block_on(self.consumer.subscribe_route(&handle, bytes, opts));
-        if false { // NON-VACUITY BREAK"""
-edits = []
-test_file = "crates/basal-host/src/transport.rs"
-runner = "cargo"
-package = "basal-host"
-platforms = ["linux"]
-target = "--lib"
-expect_red = ["transport::tests::stale_model_subscription_evicts_its_dead_handle"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600

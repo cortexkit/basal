@@ -127,6 +127,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "subc-client-rs",
  "subc-protocol",
  "subc-transport",

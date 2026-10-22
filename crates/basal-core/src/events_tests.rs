@@ -57,6 +57,7 @@ struct Source {
     on_notice: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     notice_replies:
         Mutex<Vec<std::result::Result<serde_json::Value, basal_host::transport::WireError>>>,
+    model_wakes: AtomicUsize,
 }
 impl Host for Source {
     fn supports_core_capability(&self, capability: &str) -> bool {
@@ -105,6 +106,9 @@ impl Host for Source {
         0.5
     }
     fn attach(&self, _: Arc<dyn CompletionSink>) {}
+    fn model_events_committed(&self) {
+        self.model_wakes.fetch_add(1, Ordering::SeqCst);
+    }
 }
 struct Fixture {
     rt: Runtime,
@@ -129,6 +133,7 @@ impl Fixture {
             notices: Mutex::new(Vec::new()),
             on_notice: Mutex::new(None),
             notice_replies: Mutex::new(Vec::new()),
+            model_wakes: AtomicUsize::new(0),
         });
         let catalog = MockCatalog::new();
         catalog.set_event(
@@ -1137,5 +1142,200 @@ fn journaled_flow_targeted_body_is_checked_against_run() {
     assert!(
         f.source.calls.lock().unwrap().is_empty(),
         "saved bodies require no live fetch"
+    );
+}
+
+fn broca_notice(name: &str, n: u64, headers: &[(&str, &str)]) -> Notice {
+    Notice {
+        published_at_ms: 1_000,
+        subject: format!("ck.account.event.broca.{name}.v1"),
+        event_key: format!("{:064x}", 0xb0ca_0000 + n),
+        digest: format!("{:064x}", 0xd16e_0000 + n),
+        headers: headers
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect(),
+    }
+}
+
+/// A `broca_wakes` row: send id, event key, kind, digest, run id,
+/// session_ref and seq.
+type WakeRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+impl Fixture {
+    /// A pending accepted Broca model call, as `BrocaStore::save` leaves it.
+    fn broca_wait(&self, send_id: &str, run_id: &str, session_ref: Option<&str>) {
+        self.rt
+            .store()
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO broca_waits (send_id, broca_run_id, session_ref, check_at) VALUES (?1, ?2, ?3, 0)",
+                    params![send_id, run_id, session_ref],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    fn broca_wakes(&self) -> Vec<WakeRow> {
+        self.rt
+            .store()
+            .read(|c| {
+                let mut statement = c.prepare("SELECT send_id, event_key, kind, digest, run_id, session_ref, seq FROM broca_wakes ORDER BY send_id, rowid")?;
+                let rows = statement.query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+                })?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap()
+    }
+    fn session_refs(&self) -> Vec<(String, Option<String>)> {
+        self.rt
+            .store()
+            .read(|c| {
+                let mut statement =
+                    c.prepare("SELECT send_id, session_ref FROM broca_waits ORDER BY send_id")?;
+                let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap()
+    }
+}
+
+#[test]
+fn broca_run_ended_commits_a_wake_only_for_the_pending_call_it_names() {
+    let f = Fixture::new(60);
+    f.broca_wait("s1", "run-1", None);
+    f.broca_wait("s2", "run-2", None);
+    let ended = broca_notice(
+        "run.ended",
+        1,
+        &[
+            ("kind", "run.ended"),
+            ("run_id", "run-1"),
+            ("session_ref", "ref-1"),
+            ("seq", "5"),
+        ],
+    );
+    let report =
+        f.rt.admit_events(&[
+            ended.clone(),
+            // Another session's run, and a started run: neither wakes a call.
+            broca_notice(
+                "run.ended",
+                2,
+                &[("run_id", "run-elsewhere"), ("session_ref", "ref-x")],
+            ),
+            broca_notice(
+                "run.started",
+                3,
+                &[("run_id", "run-2"), ("session_ref", "ref-2")],
+            ),
+            notice(9),
+        ])
+        .unwrap();
+    assert_eq!(report.model_wakes, 1);
+    assert_eq!(
+        f.broca_wakes(),
+        vec![(
+            "s1".into(),
+            ended.event_key.clone(),
+            "ended".into(),
+            ended.digest.clone(),
+            Some("run-1".into()),
+            Some("ref-1".into()),
+            Some("5".into())
+        )]
+    );
+    // Any event naming a call's run teaches the call its session_ref.
+    assert_eq!(
+        f.session_refs(),
+        vec![
+            ("s1".into(), Some("ref-1".into())),
+            ("s2".into(), Some("ref-2".into()))
+        ]
+    );
+    assert_eq!(f.source.model_wakes.load(Ordering::SeqCst), 1);
+    // A redelivery after a commit whose acknowledgement was lost adds nothing.
+    f.rt.admit_events(&[ended]).unwrap();
+    assert_eq!(f.broca_wakes().len(), 1);
+}
+
+#[test]
+fn unrelated_events_wake_no_model_call_and_no_host() {
+    let f = Fixture::new(60);
+    f.broca_wait("s1", "run-1", Some("ref-1"));
+    let report =
+        f.rt.admit_events(&[
+            broca_notice(
+                "run.progress",
+                1,
+                &[("run_id", "run-1"), ("session_ref", "ref-1")],
+            ),
+            broca_notice(
+                "run.paused",
+                2,
+                &[("run_id", "run-1"), ("session_ref", "ref-1")],
+            ),
+            broca_notice("run.ended", 3, &[("run_id", "run-9")]),
+            notice(4),
+        ])
+        .unwrap();
+    assert_eq!(report.model_wakes, 0);
+    assert!(f.broca_wakes().is_empty());
+    assert_eq!(f.source.model_wakes.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn broca_run_skipped_wakes_its_session_or_rechecks_unlearned_sessions() {
+    let f = Fixture::new(60);
+    f.broca_wait("s1", "run-1", Some("ref-1"));
+    f.broca_wait("s2", "run-2", None);
+    f.broca_wait("s3", "run-3", None);
+    // A skipped marker carries no run_id header at all.
+    let known = broca_notice(
+        "run.skipped",
+        1,
+        &[
+            ("kind", "run.skipped"),
+            ("session_ref", "ref-1"),
+            ("seq", "33"),
+        ],
+    );
+    let report = f.rt.admit_events(std::slice::from_ref(&known)).unwrap();
+    assert_eq!(report.model_wakes, 1);
+    assert_eq!(
+        f.broca_wakes(),
+        vec![(
+            "s1".into(),
+            known.event_key.clone(),
+            "skipped".into(),
+            known.digest.clone(),
+            None,
+            Some("ref-1".into()),
+            Some("33".into())
+        )]
+    );
+    // A session no pending call has learned may be any unlearned call's.
+    let unknown = |n| broca_notice("run.skipped", n, &[("session_ref", "ref-other")]);
+    let report = f.rt.admit_events(&[unknown(2), unknown(3)]).unwrap();
+    assert_eq!(report.model_wakes, 4);
+    let rechecks: Vec<_> = f
+        .broca_wakes()
+        .into_iter()
+        .filter(|w| w.2 == "recheck")
+        .map(|w| (w.0, w.1))
+        .collect();
+    // One recheck per call, however many skipped markers asked.
+    assert_eq!(
+        rechecks,
+        vec![("s2".into(), String::new()), ("s3".into(), String::new())]
     );
 }

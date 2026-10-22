@@ -37,6 +37,8 @@ libc.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+# Checks a Broca run event's body against the digest its bus message carries.
+sha2.workspace = true
 subc-client-rs.workspace = true
 subc-protocol.workspace = true
 tokio.workspace = true

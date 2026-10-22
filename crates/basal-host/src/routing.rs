@@ -328,6 +328,9 @@ impl Host for RoutingHost {
     fn dispatch_committed(&self, request: &CallRequest) {
         self.target(&request.kind).dispatch_committed(request);
     }
+    fn model_events_committed(&self) {
+        self.model.model_events_committed();
+    }
     fn now_ms(&self) -> f64 {
         self.ops.now_ms()
     }

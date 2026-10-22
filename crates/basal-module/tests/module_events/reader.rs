@@ -201,3 +201,29 @@ async fn reader_refuses_undeclared_or_unreadable_versions() {
     assert!(health.connected);
     assert!(health.error.is_none());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_health_counts_model_wakes() {
+    let server = Server::start().await;
+    let (rt, transport) = fixture(&server).await;
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO broca_waits (send_id, broca_run_id, check_at) VALUES ('send-1', 'run-1', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let reader = Reader::start(rt.clone(), transport.clone());
+    server
+        .publish_with_headers(
+            7,
+            "ck.account.event.broca.run.ended.v1",
+            std::collections::BTreeMap::from([("run_id".into(), "run-1".into())]),
+        )
+        .await;
+    let health = wait_health(&reader, |h| h.model_wakes == 1).await;
+    assert_eq!(health.admitted, 0);
+    assert!(health.error.is_none(), "{health:?}");
+}

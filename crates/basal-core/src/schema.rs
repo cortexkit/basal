@@ -402,7 +402,60 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 35,
         statements: CODEMODE_WITHDRAWN,
     },
+    Migration {
+        version: 36,
+        statements: BROCA_WAKES,
+    },
 ];
+
+// Broca model calls learn their completion from Broca's bus events.
+// `broca_waits` has one row per accepted call that the runtime has not yet
+// recorded (kept by `BrocaStore::save`), indexed by the Broca run id and the
+// session_ref the event reader matches notices against, and carrying the
+// call's next scheduled check. `broca_wakes` holds notices the reader
+// committed for a pending call before acknowledging them. A call row that
+// is deleted takes its wait and wakes with it, so nothing is due for a call
+// that no longer exists.
+const BROCA_WAKES: &str = r#"
+CREATE TABLE broca_waits (
+    send_id      TEXT PRIMARY KEY,
+    broca_run_id TEXT,
+    session_ref  TEXT,
+    check_at     INTEGER
+);
+CREATE INDEX broca_waits_run ON broca_waits(broca_run_id) WHERE broca_run_id IS NOT NULL;
+CREATE INDEX broca_waits_session ON broca_waits(session_ref) WHERE session_ref IS NOT NULL;
+CREATE INDEX broca_waits_check ON broca_waits(check_at);
+CREATE TABLE broca_wakes (
+    send_id     TEXT NOT NULL,
+    event_key   TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('ended', 'skipped', 'recheck')),
+    digest      TEXT NOT NULL,
+    run_id      TEXT,
+    session_ref TEXT,
+    seq         TEXT,
+    received_at INTEGER NOT NULL,
+    PRIMARY KEY (send_id, event_key)
+);
+INSERT INTO broca_waits (send_id, broca_run_id)
+    SELECT send_id, json_extract(snapshot, '$.broca_run_id') FROM broca_calls
+    WHERE json_extract(snapshot, '$.acknowledged') = 0
+      AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0
+      AND json_extract(snapshot, '$.handle') IS NOT NULL
+    UNION ALL
+    SELECT send_id, json_extract(snapshot, '$.broca_run_id') FROM codemode_broca_calls
+    WHERE json_extract(snapshot, '$.acknowledged') = 0
+      AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0
+      AND json_extract(snapshot, '$.handle') IS NOT NULL;
+CREATE TRIGGER broca_calls_forget_wait AFTER DELETE ON broca_calls BEGIN
+    DELETE FROM broca_waits WHERE send_id = old.send_id;
+    DELETE FROM broca_wakes WHERE send_id = old.send_id;
+END;
+CREATE TRIGGER codemode_broca_calls_forget_wait AFTER DELETE ON codemode_broca_calls BEGIN
+    DELETE FROM broca_waits WHERE send_id = old.send_id;
+    DELETE FROM broca_wakes WHERE send_id = old.send_id;
+END;
+"#;
 
 // Allow journal rows to defer board storage and registry-read failures.
 // SQLite requires rebuilding the CHECK constraint; copy the related mailbox

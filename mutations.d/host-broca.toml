@@ -211,55 +211,21 @@ new = "\"Broca answered unknown_run for a run, which"
 
 [[control]]
 id = "broca-poll-does-not-read-run-result-for-pending-calls"
-hub = "Polling resolves pending model calls from run.result even after missed notifications or reconnects, asserted by Broca and scoped transport tests"
+hub = "Pending model calls are resolved from run.result, whether a bus event or a scheduled check prompts the read, asserted by Broca and scoped transport tests"
 hub_targets = ["basal_host"]
 guards = "Broca poll does not read run.result for pending calls"
-test_file = "crates/basal-host/tests/broca.rs"
+test_file = "crates/basal-host/tests/broca_events.rs"
 runner = "cargo"
 package = "basal-host"
 platforms = ["linux"]
-target = "--test broca"
-expect_red = ["a_missed_run_finished_is_recovered_on_reconnect_even_when_archived"]
+target = "--test broca_events"
+expect_red = ["a_lost_run_ended_settles_at_the_scheduled_check_even_when_archived"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/broca/mod.rs"
 old = "if call.outcome.is_none() {\n                self.resolve(call)?;\n            }"
 new = ""
-
-[[control]]
-id = "broca-unwatchable-session-blocks-reading-a-finished-run"
-guards = "Broca unwatchable session blocks reading a finished run"
-test_file = "crates/basal-host/tests/broca.rs"
-runner = "cargo"
-package = "basal-host"
-platforms = ["linux"]
-target = "--test broca"
-expect_red = ["a_missed_run_finished_is_recovered_on_reconnect_even_when_archived"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/broca/mod.rs"
-old = "let watched = self.transport.watch(&call.route);"
-new = "self.transport.watch(&call.route)?; let watched: Result<(), BrocaError> = Ok(());"
-
-[[control]]
-id = "broca-pending-call-is-not-watched"
-hub = "Every pending model call opens a watch at the live head, asserted by completion, reconnect and scoped transport recovery tests"
-hub_targets = ["basal_host"]
-guards = "Broca pending call is not watched"
-test_file = "crates/basal-host/tests/broca.rs"
-runner = "cargo"
-package = "basal-host"
-platforms = ["linux"]
-target = "--test broca"
-expect_red = ["a_finished_run_wakes_through_the_watch_opened_at_the_live_head"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/broca/mod.rs"
-old = "let watched = self.transport.watch(&call.route);"
-new = "let watched: Result<(), BrocaError> = Ok(());"
 
 [[control]]
 id = "broca-outcome-settles-before-run-status-reports-usage"
@@ -379,54 +345,6 @@ old = "reason: UnknownReason::ProviderLostRun,"
 new = "reason: UnknownReason::ConnectionLost,"
 
 [[control]]
-id = "integration-stream-wake-omitted"
-guards = "integration: stream wake omitted"
-test_file = "crates/basal-host/src/broca/subc.rs"
-runner = "cargo"
-package = "basal-host"
-platforms = ["linux"]
-target = "--lib"
-expect_red = ["broca::subc::tests::only_a_finished_run_wakes_the_host_and_closes_the_stream"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/broca/subc.rs"
-old = "self.closed.store(true, Ordering::SeqCst);\n        (wake)();"
-new = "self.closed.store(true, Ordering::SeqCst);\n        let _ = wake;"
-
-[[control]]
-id = "integration-reconnect-wake-omitted"
-guards = "integration: reconnect wake omitted"
-test_file = "crates/basal-host/src/broca/subc.rs"
-runner = "cargo"
-package = "basal-host"
-platforms = ["linux"]
-target = "--lib"
-expect_red = ["broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/broca/subc.rs"
-old = "lock(streams).clear();\n    (wake)();"
-new = "lock(streams).clear();\n    let _ = wake;"
-
-[[control]]
-id = "integration-every-control-event-ends-the-stream"
-guards = "integration: every control event ends the stream"
-test_file = "crates/basal-host/src/broca/subc.rs"
-runner = "cargo"
-package = "basal-host"
-platforms = ["linux"]
-target = "--lib"
-expect_red = ["broca::subc::tests::only_a_finished_run_wakes_the_host_and_closes_the_stream"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/broca/subc.rs"
-old = "matches!(*unit, ControlUnit::RunFinished { .. })"
-new = "{ let _ = unit; true }"
-
-[[control]]
 id = "selector-broker-script-model-guard-omitted"
 guards = "selector: broker script model guard omitted"
 test_file = "crates/basal-host/tests/broca.rs"
@@ -517,17 +435,15 @@ build_timeout_s = 7200
 id = "broca-one-corrupt-snapshot-aborts-the-poll"
 guards = "broca one corrupt snapshot aborts the poll"
 file = "crates/basal-host/src/broca/mod.rs"
+scope = { after = "pub fn poll(&self)", before = "\n    }\n" }
 old = """
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                    continue;
-                }
-            };"""
+            if let Err(error) = self.visit(&send_id) {
+                first_error.get_or_insert(error);
+            }"""
 new = """
-                Err(error) => {
-                    return Err(error); // NON-VACUITY BREAK
-                }
-            };"""
+            if let Err(error) = self.visit(&send_id) {
+                return Err(error); // NON-VACUITY BREAK
+            }"""
 edits = []
 test_file = "crates/basal-host/tests/broca_dispatch_regressions.rs"
 runner = "cargo"
@@ -677,8 +593,8 @@ runner = "cargo"
 package = "basal-core"
 target = "--lib"
 file = "crates/basal-host/src/broca/mod.rs"
-old = "if codemode && !self.store.codemode_active(&call.basal_run_id)? {"
-new = "if false && codemode && !self.store.codemode_active(&call.basal_run_id)? { /* NON-VACUITY BREAK */"
+old = "if !self.store.codemode_active(&call.basal_run_id)? {"
+new = "if false && !self.store.codemode_active(&call.basal_run_id)? { /* NON-VACUITY BREAK */"
 platforms = ["linux"]
 expect_red = ["codemode::supervisor::tests::models::completed_codemode_runs_are_never_resent_by_broca_polling"]
 only = false
@@ -698,5 +614,198 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/broca/mod.rs"
-old = "if codemode && sink.is_none() {"
-new = "if false && codemode && sink.is_none() { /* NON-VACUITY BREAK */"
+old = "return Ok(lock(&self.codemode_sink).is_some() && call.handle.is_some());"
+new = "return Ok(call.handle.is_some()); /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "broca-run-event-digest-is-not-checked"
+guards = "a Broca run event's body must hash to the digest its bus message carries before it wakes a call"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["a_body_that_does_not_match_its_bus_digest_settles_nothing", "captured_bodies_are_refused_when_anything_disagrees"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+old = 'if format!("{:x}", Sha256::digest(jcs.as_bytes())) != expected {'
+new = 'if false && format!("{:x}", Sha256::digest(jcs.as_bytes())) != expected { // NON-VACUITY BREAK'
+
+[[control]]
+id = "broca-scheduled-check-never-falls-due"
+guards = "a pending model call whose run.ended is lost is still read at its scheduled check"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["a_lost_run_ended_settles_at_the_scheduled_check_even_when_archived"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+scope = { after = "pub fn next_check_at(", before = "\n}\n" }
+old = "    let at = now.saturating_add(delay);"
+new = "    let at = i64::MAX; // NON-VACUITY BREAK"
+
+[[control]]
+id = "broca-scheduled-check-wait-is-uncapped"
+guards = "the wait between checks of a pending model call doubles only up to MAX_CHECK_MS"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["a_run_still_going_at_its_check_is_read_again_later_never_in_a_loop", "checks_double_to_a_cap_and_one_falls_before_the_run_deadline"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+old = "        .min(MAX_CHECK_MS);"
+new = "; // NON-VACUITY BREAK"
+
+[[control]]
+id = "broca-scheduled-check-ignores-the-run-deadline"
+guards = "a pending model call is read once before its run's deadline"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["checks_double_to_a_cap_and_one_falls_before_the_run_deadline"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+scope = { after = "pub fn next_check_at(", before = "\n}\n" }
+old = "        Some(before) if before > now => at.min(before),"
+new = "        Some(before) if before > now => at, // NON-VACUITY BREAK"
+
+[[control]]
+id = "broca-timer-thread-never-times-out"
+guards = "the Broca timer thread wakes on its own when the next check falls due, not only when notified"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["the_timer_thread_reads_a_past_due_check_within_its_minimum_wait"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/subc.rs"
+old = "Some(timeout) => receiver.recv_timeout(timeout),"
+new = "Some(_) => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected), // NON-VACUITY BREAK"
+
+[[control]]
+id = "broca-timer-thread-is-not-the-hosts-waker"
+guards = "the reader's committed wakes and newly waiting calls wake the Broca timer thread"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["the_timer_thread_settles_a_call_when_the_reader_commits_its_wake"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/subc.rs"
+old = "host.set_waker(self.callback());"
+new = "// NON-VACUITY BREAK"
+
+[[control]]
+id = "broca-failed-read-keeps-the-call-due"
+guards = "a call whose read fails backs off on its own check_at instead of staying due"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["a_failing_call_backs_off_alone_and_never_delays_another_calls_check"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+old = "call.check_at = Some(retry_at(now, call.failures, deadline));"
+new = "// NON-VACUITY BREAK"
+
+[[control]]
+id = "broca-wait-of-a-gone-call-is-kept"
+guards = "a wait whose call no longer exists is dropped instead of staying due forever"
+test_file = "crates/basal-core/tests/broca_store.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test broca_store"
+expect_red = ["a_wait_whose_call_is_gone_is_dropped_not_spun_on"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+scope = { after = "fn visit(&self, send_id: &str)", before = "\n    }\n" }
+old = """
+        let Some(mut call) = self.store.get(send_id)? else {
+            return self.store.forget(send_id);
+        };"""
+new = """
+        let Some(mut call) = self.store.get(send_id)? else {
+            return Ok(()); // NON-VACUITY BREAK
+        };"""
+
+[[control]]
+id = "broca-refused-repeat-rejects-an-accepted-call"
+guards = "a refused repeat of a send Broca accepted never settles the call as rejected"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["a_refused_repeat_of_an_accepted_send_never_rejects_the_call"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+old = """
+                if call.handle.is_some() {
+                    tracing::error!(send_id = %call.send_id, %code, %detail, "Broca refused a repeat"""
+new = """
+                if false && call.handle.is_some() { // NON-VACUITY BREAK
+                    tracing::error!(send_id = %call.send_id, %code, %detail, "Broca refused a repeat"""
+
+[[control]]
+id = "broca-queued-send-is-sent-again"
+guards = "a queued submission learns its run from send.status and is never sent again"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["a_queued_send_learns_its_run_from_send_status_and_is_never_sent_again"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+old = """
+            } else if call.broca_run_id.is_none() {
+                self.learn_run(call)?;"""
+new = """
+            } else if call.broca_run_id.is_none() {
+                self.issue(call)?; // NON-VACUITY BREAK"""
+
+[[control]]
+id = "broca-unknown-send-is-not-reported-unknown"
+guards = "Broca's unknown_send for a queued submission is reported as an unknown outcome, never a rejection"
+test_file = "crates/basal-host/tests/broca_events.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test broca_events"
+expect_red = ["an_unknown_send_is_reported_as_unknown_not_rejected"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+old = "Err(BrocaError::Refused { code, detail }) if code == UNKNOWN_SEND => {"
+new = "Err(BrocaError::Refused { code, detail }) if false && code == UNKNOWN_SEND => { // NON-VACUITY BREAK"

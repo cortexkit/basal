@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subc_client_rs::consumer::{
     CallError, CallOptions, ConnectionState, ConsumerOptions, OutcomeUnknownCause, SubcConsumer,
-    SubscribeOptions, Subscription,
 };
 use subc_protocol::{BindIdentity, RouteTarget};
 
@@ -724,40 +723,6 @@ impl SubcTransport {
             .and_then(|bytes| decode_response(&bytes, true))
             .map_err(|e| contextual(e, module, op))
     }
-    pub(crate) fn subscribe_for_model(
-        &self,
-        flow: &str,
-        identity: BindIdentity,
-        module: &str,
-        op: &str,
-        params: &[u8],
-    ) -> Result<Subscription, WireError> {
-        let target = RouteTarget::ManagementSurface {
-            module_id: module.into(),
-        };
-        let bytes = management_bytes(op, params)?;
-        let opts = SubscribeOptions {
-            route_open_timeout: self.timeout,
-            route_retry_deadline: self.timeout,
-            ..Default::default()
-        };
-        let handle = self
-            .model_handle(flow, &target, identity)
-            .map_err(|e| contextual(e, module, op))?;
-        let result = self
-            .handle
-            .block_on(self.consumer.subscribe_route(&handle, bytes, opts));
-        if let Err(CallError::StaleRouteHandle(_)) = &result {
-            self.routes
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .closed(handle, false);
-        }
-        result
-            .map_err(map_error)
-            .map_err(|e| contextual(e, module, op))
-    }
-
     pub(crate) fn release_model(&self, flow: &str, identity: BindIdentity, module: &str) {
         let handle = self
             .routes
@@ -775,15 +740,6 @@ impl SubcTransport {
                 .handle
                 .block_on(self.consumer.close_handle(&handle, Default::default()));
         }
-    }
-    pub(crate) fn spawn(
-        &self,
-        task: impl std::future::Future<Output = ()> + Send + 'static,
-    ) -> tokio::task::JoinHandle<()> {
-        self.handle.spawn(task)
-    }
-    pub(crate) fn on_connection_state(&self, callback: impl Fn(ConnectionState) + Send + 'static) {
-        self.consumer.on_connection_state(callback);
     }
 }
 impl Transport for SubcTransport {
@@ -1422,33 +1378,6 @@ mod tests {
             );
         });
     }
-    #[test]
-    fn stale_model_subscription_evicts_its_dead_handle() {
-        with_scoped_transport(|transport, _, _, _| {
-            transport.configure_flow("a", Some(registered()));
-            let target = RouteTarget::ManagementSurface {
-                module_id: "broca".into(),
-            };
-            let identity = BindIdentity::new("/", "basal", "model");
-            let handle = transport
-                .model_handle("a", &target, identity.clone())
-                .unwrap();
-            transport
-                .handle
-                .block_on(transport.consumer.close_handle(&handle, Default::default()))
-                .unwrap();
-            assert!(
-                transport
-                    .subscribe_for_model("a", identity.clone(), "broca", "session.subscribe", b"{}")
-                    .is_err()
-            );
-            assert_ne!(
-                transport.model_handle("a", &target, identity).unwrap(),
-                handle
-            );
-        });
-    }
-
     #[test]
     fn stale_model_request_can_reopen_without_a_scope_epoch_change() {
         with_scoped_transport(|transport, _, _, _| {
@@ -2319,11 +2248,8 @@ mod tests {
                     send_id: "send-1".into(),
                 })
                 .unwrap();
-            let broca = crate::broca::subc::SubcBrocaTransport::new(
-                transport.clone(),
-                "broca".into(),
-                Arc::new(|| {}),
-            );
+            let broca =
+                crate::broca::subc::SubcBrocaTransport::new(transport.clone(), "broca".into());
             let model_store = Arc::new(crate::broca::fake::MemoryStore::default());
             let model_host = crate::broca::BrocaHost::new(
                 broca.clone(),
@@ -2477,11 +2403,7 @@ mod tests {
                     targets: ["broca".into()].into_iter().collect(),
                 }),
             );
-            let broca = crate::broca::subc::SubcBrocaTransport::new(
-                transport,
-                "broca".into(),
-                Arc::new(|| {}),
-            );
+            let broca = crate::broca::subc::SubcBrocaTransport::new(transport, "broca".into());
             broca.set_unscoped_send_hook(Arc::new(|route| route.session == "unscoped"));
             for session in ["unscoped", "scoped"] {
                 let route = Route {
@@ -2604,13 +2526,14 @@ mod tests {
                     "recovery must read the send's conversation"
                 );
             }
-            assert!(
-                recorded_calls
-                    .iter()
-                    .any(|(channel, body)| body["method"] == "session.subscribe"
-                        && session_for_channel(*channel) == session)
-            );
         }
+        // Model calls open no session stream: Broca's run events on the bus
+        // wake them, and each call's scheduled check covers a lost event.
+        assert!(
+            !recorded_calls
+                .iter()
+                .any(|(_, body)| body["method"] == "session.subscribe")
+        );
         let read = recorded_calls
             .iter()
             .find(|(_, body)| body["method"] == "session.read")
@@ -2636,11 +2559,8 @@ mod tests {
                 targets: ["broca".into()].into_iter().collect(),
             };
             transport.configure_flow("flow-a", Some(register(selector.clone())));
-            let broca = crate::broca::subc::SubcBrocaTransport::new(
-                transport.clone(),
-                "broca".into(),
-                Arc::new(|| {}),
-            );
+            let broca =
+                crate::broca::subc::SubcBrocaTransport::new(transport.clone(), "broca".into());
             let store = Arc::new(crate::broca::fake::MemoryStore::default());
             let selection = Arc::new(FakeSelector::default());
             let host = BrocaHost::new(
@@ -2674,11 +2594,8 @@ mod tests {
             let mut current = selector;
             current.epoch += 1;
             transport.configure_flow("flow-a", Some(register(current.clone())));
-            let broca = crate::broca::subc::SubcBrocaTransport::new(
-                transport.clone(),
-                "broca".into(),
-                Arc::new(|| {}),
-            );
+            let broca =
+                crate::broca::subc::SubcBrocaTransport::new(transport.clone(), "broca".into());
             let recovered =
                 BrocaHost::new(broca.clone(), store, "/".into(), "basal".into(), selection);
             recovered.poll().unwrap();
