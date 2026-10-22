@@ -898,11 +898,18 @@ impl Activation<'_> {
             }
             return self.finish_revoked_call(&call, reason);
         }
-        // Catalog tools and codemode's sleep exist only in the codemode
-        // profile. A flow activation is journaled and replayed, and the flow
-        // prelude never offers either, so a worker that sends one is
-        // compromised; it is stopped before anything is journaled.
-        if matches!(call.kind, CallKind::Tool { .. }) || call.kind.is_sleep() {
+        if matches!(call.kind, CallKind::Tool { .. }) {
+            return self.fail(
+                "profile_violation",
+                format!("{} is not available to flows", call.kind),
+                false,
+            );
+        }
+        // Codemode's sleep has no place in a flow: a flow activation is
+        // journaled and replayed, and the flow prelude never offers it, so a
+        // worker that sends one is compromised. It is stopped before anything
+        // is journaled.
+        if call.kind.is_sleep() {
             return self.fail(
                 "profile_violation",
                 format!("{} is not available to flows", call.kind),

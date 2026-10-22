@@ -1224,10 +1224,10 @@ impl Driver {
     /// Whether the program is waiting only on people. A pending sleep is the
     /// program's own wait, so it keeps the time on the wall budget.
     fn person_only(&self) -> bool {
-        self.blocked
-            && self.in_flight > 0
-            && self.held_positions.len() == self.in_flight
-            && self.sleeps.is_empty()
+        if !self.sleeps.is_empty() {
+            return false;
+        }
+        self.blocked && self.in_flight > 0 && self.held_positions.len() == self.in_flight
     }
 
     /// Starts a program sleep. It is not a tool call: it has no call row and

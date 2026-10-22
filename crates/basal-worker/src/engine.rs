@@ -235,7 +235,10 @@ impl Shared {
         // activation is journaled and replayed, and a pause has nothing to
         // replay. The flow prelude installs neither; this check refuses both
         // again in case a script reaches the native bridge by some other route.
-        if bridge.profile == Profile::Flow && (kind.is_shell() || kind.is_sleep()) {
+        if bridge.profile == Profile::Flow && kind.is_shell() {
+            return Err(failed(Failure::ProfileViolation { kind }));
+        }
+        if bridge.profile == Profile::Flow && kind.is_sleep() {
             return Err(failed(Failure::ProfileViolation { kind }));
         }
         if args.len() > bridge.max_value {
