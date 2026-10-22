@@ -1516,3 +1516,20 @@ timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
 old = "statements: \"CREATE INDEX runs_slot_holders ON runs(flow_id, admit_seq, state, run_id) WHERE state IN ('pending', 'running', 'suspended', 'needs_reconcile');\","
 new = "statements: \"CREATE INDEX runs_slot_holders ON runs(flow_id, admit_seq, run_id) WHERE state IN ('pending', 'running', 'suspended', 'needs_reconcile');\", // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-flow-driver-sleep-fence"
+guards = "the flow driver fails a worker that sends a codemode sleep before journaling it"
+test_file = "crates/basal-testkit/tests/dispatch_authorization.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test dispatch_authorization"
+expect_red = ["a_compromised_worker_cannot_issue_sleep"]
+only = true
+select = { tests = ["a_compromised_worker_cannot_issue_sleep", "a_compromised_worker_cannot_issue_sh", "a_compromised_worker_cannot_issue_tool", "a_compromised_worker_cannot_send_console"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if call.kind.is_sleep() {"
+new = "if false && call.kind.is_sleep() { // NON-VACUITY BREAK"
