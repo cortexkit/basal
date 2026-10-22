@@ -1,5 +1,6 @@
-//! The consent cutover is per card, not per daemon epoch. Tests drive the real
-//! engine and answer sink directly, without worker execution or polling timers.
+//! Each decision card belongs to the `consent/v1` provider it was raised on.
+//! Tests drive the real engine and answer sink directly, without worker
+//! execution or polling timers.
 mod common;
 
 use basal_core::decisions::{self, CardState};
@@ -18,7 +19,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 const PROVIDER: &str = "alternate-consent";
-const CORE: &str = "prefrontal-core";
+/// A second consent/v1 provider the catalog does not list: cards a test
+/// selects onto it stay there, whatever the catalog offers.
+const OTHER: &str = "second-consent";
 
 #[derive(Default)]
 struct Plane {
@@ -55,6 +58,16 @@ impl Wire {
             .filter(|(_, m, _)| m == method)
             .map(|(p, _, v)| (p.clone(), v.clone()))
             .collect()
+    }
+    fn calls_to(&self, provider: &str, method: &str) -> Vec<Value> {
+        self.calls(method)
+            .into_iter()
+            .filter(|(p, _)| p == provider)
+            .map(|(_, v)| v)
+            .collect()
+    }
+    fn acked(&self, provider: &str) -> i64 {
+        self.0.lock().unwrap().planes[provider].ack
     }
     fn settle(&self, provider: &str, id: &str, choice: Option<&str>) {
         let mut state = self.0.lock().unwrap();
@@ -98,7 +111,7 @@ impl Transport for Wire {
         let page_size = state.page_size;
         let plane = state.planes.entry(provider.into()).or_default();
         match method {
-            "elicitation.request" | "consent.request" => {
+            "consent.request" => {
                 let existing = plane
                     .cards
                     .iter()
@@ -111,7 +124,7 @@ impl Transport for Wire {
                 let id = if let Some((id, mut old)) = existing {
                     old.as_object_mut().unwrap().remove("elicitation_id");
                     old.as_object_mut().unwrap().remove("state");
-                    if old == params || provider == CORE {
+                    if old == params {
                         id
                     } else {
                         plane.cards.get_mut(&id).unwrap()["state"] = json!("withdrawn");
@@ -133,14 +146,14 @@ impl Transport for Wire {
                     Ok(json!({"elicitation_id":id}))
                 }
             }
-            "elicitation.answers" | "consent.answers" => {
+            "consent.answers" => {
                 let since = params["since"].as_i64().unwrap();
                 let pending: Vec<_> = plane
                     .answers
                     .iter()
                     .filter(|(c, _)| *c > since && *c > plane.ack)
                     .collect();
-                let count = if method == "consent.answers" && page_size > 0 {
+                let count = if page_size > 0 {
                     page_size.min(pending.len())
                 } else {
                     pending.len()
@@ -158,7 +171,7 @@ impl Transport for Wire {
                 }
                 Ok(page)
             }
-            "elicitation.ack" | "consent.ack" => {
+            "consent.ack" => {
                 if fail_ack {
                     return Err(WireError::Unknown("ack unavailable".into()));
                 }
@@ -167,7 +180,7 @@ impl Transport for Wire {
                     .max(params["cursor"].as_i64().unwrap().min(plane.cursor));
                 Ok(json!({"ok":true}))
             }
-            "elicitation.withdraw" | "consent.withdraw" => {
+            "consent.withdraw" => {
                 let card = plane
                     .cards
                     .get_mut(params["elicitation_id"].as_str().unwrap())
@@ -459,7 +472,8 @@ fn requester_vectors_are_pinned_and_all_three_requests_match_bytes() {
         DecisionKind::GrantLost,
     ] {
         let card = vector_card(kind);
-        consent.raise_decision(&card).unwrap();
+        let path = consent.decision_path().unwrap();
+        consent.raise_decision_on(&path, &card).unwrap();
         let calls = wire.calls("consent.request");
         let (provider, params) = calls.last().unwrap();
         assert_eq!(provider, PROVIDER);
@@ -490,7 +504,6 @@ fn new_cards_require_an_advertised_consent_capability() {
         Some(DecisionPath::Consent(PROVIDER.into()))
     );
     assert_eq!(rig.wire.calls("consent.request").len(), 1);
-    assert!(rig.wire.calls("elicitation.request").is_empty());
     rig.wire.listed(false);
     rig.reenable("unavailable");
     rig.pass();
@@ -498,14 +511,13 @@ fn new_cards_require_an_advertised_consent_capability() {
     assert_eq!(unavailable.consent_path, None);
     assert_eq!(unavailable.raised_revision, None);
     assert_eq!(rig.wire.calls("consent.request").len(), 1);
-    assert!(rig.wire.calls("elicitation.request").is_empty());
 }
 
 #[test]
-fn answers_on_both_paths_apply_once_and_ack_their_own_owner() {
+fn answers_on_two_providers_apply_once_and_ack_their_own_owner() {
     let rig = Rig::new();
-    rig.reenable("legacy");
-    rig.select_path("legacy", DecisionPath::Legacy);
+    rig.reenable("other");
+    rig.select_path("other", DecisionPath::Consent(OTHER.into()));
     rig.pass();
     rig.wire.listed(true);
     rig.reenable("modern");
@@ -513,49 +525,47 @@ fn answers_on_both_paths_apply_once_and_ack_their_own_owner() {
     // Independent stores can issue identical ids. Path identity must participate
     // in lookup rather than trusting an elicitation id as globally unique.
     assert_eq!(
-        rig.record("legacy").elicitation_id,
+        rig.record("other").elicitation_id,
         rig.record("modern").elicitation_id
     );
-    rig.wire.settle(CORE, "el_1", Some("reenable"));
+    rig.wire.settle(OTHER, "el_1", Some("reenable"));
     rig.wire.settle(PROVIDER, "el_1", Some("reenable"));
     rig.wire.settle(PROVIDER, "el_1", Some("reenable"));
     rig.wire.0.lock().unwrap().fail_ack = true;
     assert!(rig.consent.poll_once().is_err());
     rig.consent.poll_once().unwrap();
-    assert_eq!(rig.record("legacy").state, CardState::Applied);
+    assert_eq!(rig.record("other").state, CardState::Applied);
     assert_eq!(rig.record("modern").state, CardState::Applied);
     assert_eq!(rig.audit("flow.reenable"), 2);
     assert_eq!(rig.audit("decision.stale"), 0);
+    assert_eq!(
+        rig.wire.calls_to(OTHER, "consent.ack"),
+        [json!({"cursor":1})]
+    );
     assert!(
         rig.wire
-            .calls("elicitation.ack")
+            .calls_to(PROVIDER, "consent.ack")
             .iter()
-            .all(|(p, v)| p == CORE && v["cursor"] == 1)
+            .all(|v| *v == json!({"cursor":2}))
     );
-    assert_eq!(rig.wire.calls("elicitation.ack").len(), 2);
-    assert_eq!(
-        rig.wire.calls("consent.ack"),
-        [(PROVIDER.into(), json!({"cursor":2}))]
-    );
+    assert_eq!((rig.wire.acked(OTHER), rig.wire.acked(PROVIDER)), (1, 2));
     assert!(rig.wire.calls("consent.report_execution").is_empty());
 }
 
 #[test]
 fn updates_and_withdrawals_use_the_raising_path_and_replacement_id() {
-    for listed in [false, true] {
+    // One card is raised on the listed provider, the other is selected onto an
+    // unlisted one. Each keeps its provider after the catalog changes.
+    for (listed, owner, stranger) in [(true, PROVIDER, OTHER), (false, OTHER, PROVIDER)] {
         let mut rig = Rig::new();
         rig.wire.listed(listed);
         rig.grant("grant-flow");
         if !listed {
-            rig.select_path("grant-flow", DecisionPath::Legacy);
+            rig.select_path("grant-flow", DecisionPath::Consent(OTHER.into()));
         }
         rig.pass();
         let original = rig.record("grant-flow");
-        let path = if listed {
-            DecisionPath::Consent(PROVIDER.into())
-        } else {
-            DecisionPath::Legacy
-        };
+        let path = DecisionPath::Consent(owner.into());
         assert_eq!(original.consent_path, Some(path.clone()));
         rig.wire.listed(!listed);
         rig.repeat_grant("grant-flow");
@@ -563,43 +573,23 @@ fn updates_and_withdrawals_use_the_raising_path_and_replacement_id() {
         let updated = rig.record("grant-flow");
         assert_eq!(updated.consent_path, Some(path));
         assert_eq!(updated.raised_revision, Some(2));
-        let method = if listed {
-            "consent.request"
-        } else {
-            "elicitation.request"
-        };
-        let calls = rig.wire.calls(method);
+        let calls = rig.wire.calls_to(owner, "consent.request");
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].1["dedup_key"], calls[1].1["dedup_key"]);
-        assert_eq!(calls[1].1["flow_decision"]["grant_label"], "replacement");
-        if listed {
-            assert_ne!(updated.elicitation_id, original.elicitation_id);
-        }
+        assert_eq!(calls[0]["dedup_key"], calls[1]["dedup_key"]);
+        assert_eq!(calls[1]["flow_decision"]["grant_label"], "replacement");
+        assert_ne!(updated.elicitation_id, original.elicitation_id);
         rig.enable("grant-flow");
         rig.restart();
         rig.pass();
-        let withdrawals = rig.wire.calls(if listed {
-            "consent.withdraw"
-        } else {
-            "elicitation.withdraw"
-        });
         assert_eq!(
-            withdrawals,
+            rig.wire.calls("consent.withdraw"),
             [(
-                if listed { PROVIDER.into() } else { CORE.into() },
+                owner.into(),
                 json!({"elicitation_id":updated.elicitation_id.unwrap()})
             )]
         );
         assert!(rig.m().rt.decision_withdrawals_on().unwrap().is_empty());
-        assert!(
-            rig.wire
-                .calls(if listed {
-                    "elicitation.withdraw"
-                } else {
-                    "consent.withdraw"
-                })
-                .is_empty()
-        );
+        assert!(rig.wire.calls_to(stranger, "consent.request").is_empty());
     }
 }
 
@@ -623,7 +613,6 @@ fn provider_disappearance_keeps_old_answers_and_leaves_new_cards_pending() {
         [(PROVIDER.into(), json!({"since":0}))]
     );
     assert_eq!(rig.wire.calls("consent.request").len(), 1);
-    assert!(rig.wire.calls("elicitation.request").is_empty());
 }
 
 #[test]
@@ -641,7 +630,6 @@ fn lost_request_reply_cannot_move_a_card_after_restart() {
     rig.wire.listed(false);
     rig.restart();
     rig.pass();
-    assert!(rig.wire.calls("elicitation.request").is_empty());
     assert_eq!(rig.wire.calls("consent.request").len(), 2);
     assert_eq!(rig.wire.0.lock().unwrap().planes[PROVIDER].cards.len(), 1);
     assert_eq!(rig.record("lost").elicitation_id.as_deref(), Some("el_1"));
@@ -710,15 +698,15 @@ fn paged_cursor_is_durable_and_empty_withdrawal_pages_are_acked() {
 #[test]
 fn poison_page_is_not_acked_and_other_path_still_progresses() {
     let rig = Rig::new();
-    rig.reenable("legacy");
-    rig.select_path("legacy", DecisionPath::Legacy);
+    rig.reenable("other");
+    rig.select_path("other", DecisionPath::Consent(OTHER.into()));
     rig.pass();
     rig.wire.listed(true);
     rig.reenable("poison");
     rig.pass();
     rig.reenable("valid");
     rig.pass();
-    rig.wire.settle(CORE, "el_1", Some("reenable"));
+    rig.wire.settle(OTHER, "el_1", Some("reenable"));
     rig.wire.settle(PROVIDER, "el_1", Some("reenable"));
     rig.wire.settle(PROVIDER, "el_2", Some("reenable"));
     rig.wire
@@ -731,10 +719,11 @@ fn poison_page_is_not_acked_and_other_path_still_progresses() {
         .answers[0]
         .1["flow_decision"] = json!({});
     assert!(rig.consent.poll_once().is_err());
-    assert_eq!(rig.record("legacy").state, CardState::Applied);
+    assert_eq!(rig.record("other").state, CardState::Applied);
     assert_eq!(rig.record("valid").state, CardState::Applied);
     assert_eq!(rig.record("poison").state, CardState::Open);
-    assert!(rig.wire.calls("consent.ack").is_empty());
+    assert!(rig.wire.calls_to(PROVIDER, "consent.ack").is_empty());
+    assert_eq!(rig.wire.acked(OTHER), 1);
     assert_eq!(
         rig.m()
             .rt
@@ -753,8 +742,8 @@ fn poison_page_is_not_acked_and_other_path_still_progresses() {
 #[test]
 fn retention_tombstone_closes_only_its_owned_card_without_action() {
     let rig = Rig::new();
-    rig.reenable("legacy");
-    rig.select_path("legacy", DecisionPath::Legacy);
+    rig.reenable("other");
+    rig.select_path("other", DecisionPath::Consent(OTHER.into()));
     rig.pass();
     rig.wire.listed(true);
     rig.reenable("retained");
@@ -771,9 +760,9 @@ fn retention_tombstone_closes_only_its_owned_card_without_action() {
         .1 = json!({"elicitation_id":"el_1","state":"expired","settled_at":common::T0});
     rig.consent.poll_once().unwrap();
     assert_eq!(rig.record("retained").state, CardState::Expired);
-    assert_eq!(rig.record("legacy").state, CardState::Open);
+    assert_eq!(rig.record("other").state, CardState::Open);
     assert_eq!(rig.audit("flow.reenable"), 0);
-    assert_eq!(rig.wire.calls("consent.ack").len(), 1);
+    assert_eq!(rig.wire.calls_to(PROVIDER, "consent.ack").len(), 1);
 }
 
 #[test]
@@ -788,7 +777,8 @@ fn consent_endpoint_cannot_weaken_v2_body_validation() {
     ] {
         let mut card = vector_card(kind);
         card.flow_id = " ".into();
-        assert!(consent.raise_decision(&card).is_err());
+        let path = consent.decision_path().unwrap();
+        assert!(consent.raise_decision_on(&path, &card).is_err());
     }
     assert!(wire.calls("consent.request").is_empty());
     assert!(decision_request(&vector_card(DecisionKind::Reconcile)).is_ok());
@@ -870,29 +860,7 @@ fn old_context_and_recorded_superseded_ids_cannot_answer_an_outstanding_revision
 }
 
 #[test]
-fn legacy_path_never_recovers_a_differing_id_even_with_current_grant_context() {
-    let rig = Rig::new();
-    rig.grant("grant-flow");
-    rig.select_path("grant-flow", DecisionPath::Legacy);
-    rig.pass();
-    rig.repeat_grant("grant-flow");
-    let latest = rig.record("grant-flow");
-    assert_eq!(
-        rig.m()
-            .rt
-            .answer_decision_on(
-                &DecisionPath::Legacy,
-                &grant_answer(&latest, "unrecognized-id")
-            )
-            .unwrap(),
-        decisions::Answered::Superseded
-    );
-    assert_eq!(rig.record("grant-flow").state, CardState::Open);
-    assert_eq!(rig.audit("grant.check_now"), 0);
-}
-
-#[test]
-fn failed_final_ack_is_retried_from_the_durable_cursor_after_restart() {
+fn failed_final_ack_is_retried_from_the_durable_cursor_when_a_card_opens() {
     let mut rig = Rig::new();
     rig.wire.listed(true);
     rig.reenable("modern");
@@ -908,12 +876,26 @@ fn failed_final_ack_is_retried_from_the_durable_cursor_after_restart() {
             .unwrap(),
         1
     );
+    // After a restart with no open card nothing is read or acknowledged: the
+    // provider keeps the page, and the durable cursor covers it.
     rig.restart();
+    let sent = rig.wire.0.lock().unwrap().calls.len();
     rig.consent.poll_once().unwrap();
+    assert_eq!(rig.wire.0.lock().unwrap().calls.len(), sent);
+    assert_eq!(rig.wire.acked(PROVIDER), 0);
+    // The next card on that provider acknowledges the durable cursor before
+    // reading, so the applied answer is never read again.
+    rig.reenable("next");
+    rig.pass();
+    rig.consent.poll_once().unwrap();
+    assert_eq!(
+        rig.wire.calls_to(PROVIDER, "consent.ack")[1..],
+        [json!({"cursor":1}), json!({"cursor":1})]
+    );
     assert_eq!(
         rig.wire.calls("consent.answers").last().unwrap().1,
         json!({"since":1})
     );
-    assert_eq!(rig.wire.0.lock().unwrap().planes[PROVIDER].ack, 1);
+    assert_eq!(rig.wire.acked(PROVIDER), 1);
     assert_eq!(rig.audit("flow.reenable"), 1);
 }

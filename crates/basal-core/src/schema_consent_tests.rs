@@ -38,6 +38,88 @@ fn decision_path_migration_preserves_all_legacy_intents_and_withdrawals() {
 }
 
 #[test]
+fn consent_only_migration_reraises_open_legacy_cards_and_refuses_legacy_paths() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    for migration in MIGRATIONS
+        .iter()
+        .take_while(|m| m.statements != DECISION_PATHS_CONSENT_ONLY)
+    {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch(
+        "INSERT INTO decision_cards(dedup_key,kind,flow_id,version,instance,card,state,created_at,answered_at,elicitation_id,raised_revision,consent_path) VALUES
+            ('open-legacy','reenable','a',1,1,'{}','open',0,NULL,'core-1',1,'legacy'),
+            ('closed-legacy','reenable','b',1,1,'{}','declined',0,1,'core-2',1,'legacy'),
+            ('unraised','reenable','c',1,1,'{}','open',0,NULL,NULL,NULL,NULL),
+            ('provider','reenable','d',1,1,'{}','open',0,NULL,'cg-1',1,'consent:cingulate');
+         INSERT INTO decision_superseded_ids VALUES (1,'core-0'),(2,'core-1'),(4,'cg-0');
+         INSERT INTO decision_withdrawals VALUES ('legacy','core-3'),('consent:cingulate','cg-2');
+         INSERT INTO decision_answer_cursors VALUES ('legacy',9),('consent:cingulate',4);",
+    )
+    .unwrap();
+    conn.execute_batch(DECISION_PATHS_CONSENT_ONLY).unwrap();
+    type Row = (String, Option<String>, Option<i64>, Option<String>);
+    let cards: Vec<Row> = conn
+        .prepare("SELECT dedup_key,elicitation_id,raised_revision,consent_path FROM decision_cards ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        cards,
+        vec![
+            ("open-legacy".into(), None, None, None),
+            ("closed-legacy".into(), Some("core-2".into()), Some(1), None),
+            ("unraised".into(), None, None, None),
+            (
+                "provider".into(),
+                Some("cg-1".into()),
+                Some(1),
+                Some("consent:cingulate".into())
+            ),
+        ]
+    );
+    let strings = |sql: &str| -> Vec<String> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    assert_eq!(
+        strings("SELECT elicitation_id FROM decision_superseded_ids ORDER BY card_seq"),
+        ["core-1", "cg-0"]
+    );
+    assert_eq!(
+        strings("SELECT consent_path||'/'||elicitation_id FROM decision_withdrawals"),
+        ["consent:cingulate/cg-2"]
+    );
+    assert_eq!(
+        strings("SELECT consent_path||'/'||cursor FROM decision_answer_cursors"),
+        ["consent:cingulate/4"]
+    );
+    for refused in [
+        "UPDATE decision_cards SET consent_path='legacy' WHERE dedup_key='unraised'",
+        "UPDATE decision_cards SET consent_path='consent: ' WHERE dedup_key='unraised'",
+        "INSERT INTO decision_cards(dedup_key,kind,flow_id,version,instance,card,state,created_at,consent_path) VALUES ('new','reenable','e',1,1,'{}','open',0,'legacy')",
+        "INSERT INTO decision_withdrawals VALUES ('legacy','core-4')",
+        "UPDATE decision_withdrawals SET consent_path='legacy'",
+        "INSERT INTO decision_answer_cursors VALUES ('legacy',1)",
+        "UPDATE decision_answer_cursors SET consent_path='legacy'",
+    ] {
+        assert!(conn.execute(refused, []).is_err(), "{refused}");
+    }
+    conn.execute(
+        "UPDATE decision_cards SET consent_path='consent:cingulate' WHERE dedup_key='unraised'",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
 fn install_request_migration_preserves_history_without_inventing_attempts() {
     let conn = Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();

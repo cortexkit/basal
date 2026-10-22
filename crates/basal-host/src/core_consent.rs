@@ -1,4 +1,6 @@
-//! Core retains answers until basal has durably applied every decision in a page.
+//! Install cards go to prefrontal-core through `flow.install_request`. Decision
+//! cards are held by `consent/v1` providers, which retain answers until basal
+//! has durably applied every decision in a page.
 use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
@@ -526,7 +528,7 @@ fn unknown_reason_fact(reason: &str) -> Option<&'static str> {
     })
 }
 
-/// Reads an answer record of a `flow_decision` card. Core answers an
+/// Reads an answer record of a `flow_decision` card. The provider answers an
 /// expired card with state `expired` and the card's default (decline) id as
 /// its choice; basal reads every expiry as no choice at all, whatever id it
 /// names, so an expiry can never take an action.
@@ -627,10 +629,10 @@ struct State {
     transport: Arc<dyn Transport>,
     sink: Mutex<Option<Arc<dyn DecisionSink>>>,
     poll_started: AtomicBool,
-    retry_page: AtomicBool,
     wake: Mutex<(u64, bool)>,
     cond: Condvar,
-    catalog_decisions: bool,
+    /// Paths whose last poll failed. They are polled again even after their
+    /// last card closed, until a page is fully applied and acknowledged.
     retries: Mutex<BTreeSet<DecisionPath>>,
     poll_lock: Mutex<()>,
 }
@@ -653,6 +655,11 @@ impl State {
         self.cond.notify_all();
     }
 }
+
+/// Core's install consent (`flow.install_request`) and the answer poller for
+/// decision cards held by `consent/v1` providers. Core holds no decision
+/// cards, so on its own this adapter raises none: [`crate::cingulate_consent`]
+/// adds the provider selection.
 pub struct CoreConsent {
     state: Arc<State>,
     polling: bool,
@@ -664,22 +671,18 @@ impl CoreConsent {
                 transport,
                 sink: Mutex::new(None),
                 poll_started: AtomicBool::new(false),
-                retry_page: AtomicBool::new(false),
                 wake: Mutex::new((0, false)),
                 cond: Condvar::new(),
-                catalog_decisions: false,
                 retries: Mutex::new(BTreeSet::new()),
                 poll_lock: Mutex::new(()),
             }),
             polling: false,
         }
     }
-    pub(crate) fn for_catalog(transport: Arc<dyn Transport>) -> Self {
-        let mut consent = Self::new(transport);
-        Arc::get_mut(&mut consent.state).unwrap().catalog_decisions = true;
-        consent
-    }
+    /// A decision card is about to be sent: start the poller if it is not
+    /// running yet, and wake it.
     pub(crate) fn raised(&self) {
+        self.start_polling();
         self.state.raised();
     }
     #[cfg(test)]
@@ -697,168 +700,38 @@ impl CoreConsent {
     }
 }
 
-fn poll_allowed(state: &State) -> Result<bool, ConsentError> {
-    let sink = state
+fn attached_sink(state: &State) -> Result<Arc<dyn DecisionSink>, ConsentError> {
+    state
         .sink
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone()
-        .ok_or_else(|| ConsentError::Unavailable("decision sink is not attached".into()))?;
-    if state.catalog_decisions {
-        if state.retry_page.load(Ordering::Acquire)
-            || !state
-                .retries
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .is_empty()
-        {
+        .ok_or_else(|| ConsentError::Unavailable("decision sink is not attached".into()))
+}
+
+/// Whether any provider has a page to read: a path with an open card, or one
+/// whose last poll failed. With neither, the poller sends nothing.
+fn poll_allowed(state: &State) -> Result<bool, ConsentError> {
+    let sink = attached_sink(state)?;
+    if !state
+        .retries
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_empty()
+    {
+        return Ok(true);
+    }
+    for path in sink.decision_paths().map_err(sink_error)? {
+        if sink.has_open_cards_on(&path).map_err(sink_error)? {
             return Ok(true);
         }
-        for path in sink.decision_paths().map_err(sink_error)? {
-            if sink.has_open_cards_on(&path).map_err(sink_error)? {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
     }
-    Ok(state.retry_page.load(Ordering::Acquire)
-        || sink
-            .has_open_cards()
-            .map_err(|e| ConsentError::Unavailable(format!("reading owned decision cards: {e}")))?)
+    Ok(false)
 }
 
 fn poll(state: &State) -> Result<(), ConsentError> {
     let _guard = state.poll_lock.lock().unwrap_or_else(|p| p.into_inner());
-    if state.catalog_decisions {
-        return poll_catalog(state);
-    }
-    if !poll_allowed(state)? {
-        return Ok(());
-    }
-    // A failed apply or acknowledgement must keep polling even if applying
-    // the page closed the last card. Only a successful ack clears the debt.
-    state.retry_page.store(true, Ordering::Release);
-    let result = poll_page(state);
-    if result.is_ok() {
-        state.retry_page.store(false, Ordering::Release);
-    }
-    result
-}
-
-fn poll_page(state: &State) -> Result<(), ConsentError> {
-    let sink = state
-        .sink
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone()
-        .ok_or_else(|| ConsentError::Unavailable("decision sink is not attached".into()))?;
-    // Start at zero because core omits acknowledged answers. An in-memory
-    // cursor could skip an answer after a failed commit or process restart.
-    let reply = state
-        .transport
-        .management(CORE, "elicitation.answers", json!({"since":0}))
-        .map_err(error)?;
-    let records = reply["records"]
-        .as_array()
-        .ok_or_else(|| ConsentError::Unavailable("answer page has no records".into()))?;
-    let cursor = reply["cursor"]
-        .as_i64()
-        .filter(|c| *c >= 0)
-        .ok_or_else(|| ConsentError::Unavailable("answer cursor is invalid".into()))?;
-    // Keep poison records unacknowledged, but still apply independent valid
-    // decisions later in the page. Re-delivery is safe because sinks commit
-    // by card identity. Discarding a malformed record could lose consent.
-    let mut problem = None;
-    for record in records {
-        if let Err(error) = apply_record(state, sink.as_ref(), &DecisionPath::Legacy, record) {
-            tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
-            problem.get_or_insert(error);
-        }
-    }
-    if let Some(problem) = problem {
-        return Err(problem);
-    }
-    if records.is_empty() {
-        return Ok(());
-    }
-    let ack = state
-        .transport
-        .management(CORE, "elicitation.ack", json!({"cursor":cursor}))
-        .map_err(error)?;
-    if ack["ok"] != true {
-        return Err(ConsentError::Unavailable(
-            "core did not acknowledge the page".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn apply_record(
-    state: &State,
-    sink: &dyn DecisionSink,
-    path: &DecisionPath,
-    record: &Value,
-) -> Result<(), ConsentError> {
-    if matches!(path, DecisionPath::Consent(_)) && record.get("flow_decision").is_none() {
-        if record["state"] == "expired" && record["settled_at"].is_i64() {
-            return sink
-                .expire_on(path, field(record, "elicitation_id")?)
-                .map_err(sink_error);
-        }
-        return Err(ConsentError::Unavailable(
-            "consent answer has no decision body".into(),
-        ));
-    }
-    // Retained decision answers can omit their body. Fetch the owned record
-    // before applying them; install settlements never use this feed.
-    let full;
-    let record = if record.get("flow_install").is_none() && record.get("flow_decision").is_none() {
-        let id = field(record, "elicitation_id")?;
-        full = state
-            .transport
-            .management(
-                CORE,
-                "elicitation.await",
-                json!({"elicitation_id":id,"timeout_ms":0}),
-            )
-            .map_err(error)?;
-        &full
-    } else {
-        record
-    };
-    if record.get("flow_install").is_some() {
-        return Ok(());
-    }
-    if record.get("flow_decision").is_some() {
-        // The page stays unacknowledged until the sink has applied the answer.
-        let answer = decision_answer(record)?;
-        // Consent requester v1 forbids consent.report_execution for
-        // flow_decision cards: these settle policy questions, not execution work.
-        if let Err(e) = sink.answer_on(path, &answer) {
-            return Err(ConsentError::Unavailable(format!(
-                "applying the answer to {}: {e}",
-                answer.elicitation_id
-            )));
-        }
-        return Ok(());
-    }
-    Err(ConsentError::Unavailable(
-        "answer has no decision body".into(),
-    ))
-}
-
-fn sink_error(error: crate::SinkError) -> ConsentError {
-    ConsentError::Unavailable(error.to_string())
-}
-
-fn poll_catalog(state: &State) -> Result<(), ConsentError> {
-    let sink = state
-        .sink
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone()
-        .ok_or_else(|| ConsentError::Unavailable("decision sink is not attached".into()))?;
-    let startup = state.retry_page.load(Ordering::Acquire);
+    let sink = attached_sink(state)?;
     let mut paths: BTreeSet<_> = sink
         .decision_paths()
         .map_err(sink_error)?
@@ -879,21 +752,19 @@ fn poll_catalog(state: &State) -> Result<(), ConsentError> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .contains(&path);
-        if !startup && !retry && !sink.has_open_cards_on(&path).map_err(sink_error)? {
+        if !retry && !sink.has_open_cards_on(&path).map_err(sink_error)? {
             continue;
         }
+        // A failed apply or acknowledgement keeps the path polled even if
+        // applying the page closed its last card. Only a full success clears
+        // the debt.
         state
             .retries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(path.clone());
-        let result = match &path {
-            DecisionPath::Legacy => poll_page(state),
-            DecisionPath::Consent(provider) => {
-                poll_consent_pages(state, sink.as_ref(), &path, provider)
-            }
-        };
-        match result {
+        let DecisionPath::Consent(provider) = &path;
+        match poll_consent_pages(state, sink.as_ref(), &path, provider) {
             Ok(()) => {
                 state
                     .retries
@@ -906,8 +777,43 @@ fn poll_catalog(state: &State) -> Result<(), ConsentError> {
             }
         }
     }
-    state.retry_page.store(false, Ordering::Release);
     problem.map_or(Ok(()), Err)
+}
+
+/// Applies one answer record from a provider's page. Keep poison records
+/// unacknowledged: the caller still applies independent valid decisions later
+/// in the page, and redelivery is safe because the sink commits by card
+/// identity. Discarding a malformed record could lose consent.
+fn apply_record(
+    sink: &dyn DecisionSink,
+    path: &DecisionPath,
+    record: &Value,
+) -> Result<(), ConsentError> {
+    if record.get("flow_decision").is_none() {
+        if record["state"] == "expired" && record["settled_at"].is_i64() {
+            return sink
+                .expire_on(path, field(record, "elicitation_id")?)
+                .map_err(sink_error);
+        }
+        return Err(ConsentError::Unavailable(
+            "consent answer has no decision body".into(),
+        ));
+    }
+    // The page stays unacknowledged until the sink has applied the answer.
+    let answer = decision_answer(record)?;
+    // Consent requester v1 forbids consent.report_execution for
+    // flow_decision cards: these settle policy questions, not execution work.
+    if let Err(e) = sink.answer_on(path, &answer) {
+        return Err(ConsentError::Unavailable(format!(
+            "applying the answer to {}: {e}",
+            answer.elicitation_id
+        )));
+    }
+    Ok(())
+}
+
+fn sink_error(error: crate::SinkError) -> ConsentError {
+    ConsentError::Unavailable(error.to_string())
 }
 
 fn ack_consent(state: &State, provider: &str, cursor: i64) -> Result<(), ConsentError> {
@@ -959,7 +865,7 @@ fn poll_consent_pages(
             .transpose()?;
         let mut problem = None;
         for record in records {
-            if let Err(error) = apply_record(state, sink, path, record) {
+            if let Err(error) = apply_record(sink, path, record) {
                 problem.get_or_insert(error);
             }
         }
@@ -977,26 +883,6 @@ fn poll_consent_pages(
     }
 }
 impl Consent for CoreConsent {
-    fn withdraw_decision(&self, elicitation_id: &str) -> Result<(), ConsentError> {
-        let reply = self
-            .state
-            .transport
-            .management(
-                CORE,
-                "elicitation.withdraw",
-                json!({"elicitation_id":elicitation_id}),
-            )
-            .map_err(error)?;
-        if !matches!(
-            reply["state"].as_str(),
-            Some("withdrawn" | "answered" | "expired")
-        ) {
-            return Err(ConsentError::Unavailable(
-                "withdrawal returned no settled card".into(),
-            ));
-        }
-        Ok(())
-    }
     fn raise(&self, card: &InstallCard) -> Result<InstallOutcome, ConsentError> {
         let dry_run_text = crate::core_host::core_provides(
             self.state.transport.as_ref(),
@@ -1022,59 +908,60 @@ impl Consent for CoreConsent {
         }
         Ok(outcome)
     }
-    fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {
-        let reply = self
-            .state
-            .transport
-            .management(CORE, "elicitation.request", decision_request(card)?)
-            .map_err(error)?;
-        let id = reply["elicitation_id"]
-            .as_str()
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| ConsentError::Unavailable("missing elicitation id".into()))?;
-        self.state.raised();
-        Ok(id)
-    }
     fn attach(&self, sink: Arc<dyn DecisionSink>) {
         *self.state.sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
-        if self.state.catalog_decisions {
-            self.state.retry_page.store(true, Ordering::Release);
-            self.state.raised();
+        // With no open card nothing is started: no thread, no timer and no
+        // page read. The first raised card starts the poller. A store error
+        // starts it too, so the inventory is read again later.
+        if !matches!(poll_allowed(&self.state), Ok(false)) {
+            self.start_polling();
         }
-        if self.polling && !self.state.poll_started.swap(true, Ordering::AcqRel) {
-            // Reconcile once at startup even if the last answer already
-            // closed its card before a crash between apply and ack.
-            self.state.retry_page.store(true, Ordering::Release);
-            let state = self.state.clone();
-            std::thread::spawn(move || {
-                let mut delay = POLL_MIN;
-                loop {
-                    let (seen, stopped) = *state.wake.lock().unwrap_or_else(|p| p.into_inner());
-                    if stopped {
-                        break;
-                    }
-                    let allowed = poll_allowed(&state);
-                    if matches!(allowed, Ok(false)) {
-                        // No timer while idle. A card raised between the
-                        // inventory read and this wait changes the epoch.
-                        let wake = state.wake.lock().unwrap_or_else(|p| p.into_inner());
-                        drop(state.cond.wait_while(wake, |w| w.0 == seen && !w.1));
-                        delay = POLL_MIN;
-                        continue;
-                    }
-                    if let Err(error) = poll(&state) {
-                        tracing::warn!(%error, "consent polling failed; retrying without acknowledging answers");
-                    }
-                    let wake = state.wake.lock().unwrap_or_else(|p| p.into_inner());
-                    let (wake, _) = state
-                        .cond
-                        .wait_timeout_while(wake, delay, |w| w.0 == seen && !w.1)
-                        .unwrap_or_else(|p| p.into_inner());
-                    delay = next_poll_delay(delay, wake.0 != seen);
+        self.state.raised();
+    }
+}
+
+impl CoreConsent {
+    fn start_polling(&self) {
+        // Without a sink there is no inventory to read; attaching one starts
+        // the poller when it has cards.
+        let attached = self
+            .state
+            .sink
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some();
+        if !self.polling || !attached || self.state.poll_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let state = self.state.clone();
+        std::thread::spawn(move || {
+            let mut delay = POLL_MIN;
+            loop {
+                let (seen, stopped) = *state.wake.lock().unwrap_or_else(|p| p.into_inner());
+                if stopped {
+                    break;
                 }
-            });
-        }
+                let allowed = poll_allowed(&state);
+                if matches!(allowed, Ok(false)) {
+                    // No timer and no page read while no card is open. A card
+                    // raised between the inventory read and this wait changes
+                    // the epoch.
+                    let wake = state.wake.lock().unwrap_or_else(|p| p.into_inner());
+                    drop(state.cond.wait_while(wake, |w| w.0 == seen && !w.1));
+                    delay = POLL_MIN;
+                    continue;
+                }
+                if let Err(error) = poll(&state) {
+                    tracing::warn!(%error, "consent polling failed; retrying without acknowledging answers");
+                }
+                let wake = state.wake.lock().unwrap_or_else(|p| p.into_inner());
+                let (wake, _) = state
+                    .cond
+                    .wait_timeout_while(wake, delay, |w| w.0 == seen && !w.1)
+                    .unwrap_or_else(|p| p.into_inner());
+                delay = next_poll_delay(delay, wake.0 != seen);
+            }
+        });
     }
 }
 

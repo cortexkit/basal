@@ -1733,7 +1733,7 @@ guards = "withdrawals retain their raising provider across restart"
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
 expect_red = ["updates_and_withdrawals_use_the_raising_path_and_replacement_id"]
 select = "expected"
@@ -1742,7 +1742,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/engine.rs"
 old = 'inner.consent.withdraw_decision_on(&path, &id)'
-new = 'inner.consent.withdraw_decision_on(&basal_host::DecisionPath::Legacy, &id) /* NON-VACUITY BREAK */'
+new = 'inner.consent.withdraw_decision_on(&inner.consent.decision_path().unwrap_or_else(|_| path.clone()), &id) /* NON-VACUITY BREAK */'
 
 [[control]]
 id = "consent-persist-before-send"

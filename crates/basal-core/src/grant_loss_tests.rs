@@ -476,8 +476,14 @@ fn stale_positive_diagnostic_cannot_clear_a_repeat_loss() {
     assert_eq!(loss.grant_label, "updated grant label");
 }
 
+/// The consent/v1 provider these cards are raised on.
+fn cingulate() -> basal_host::DecisionPath {
+    basal_host::DecisionPath::Consent("cingulate".into())
+}
+
 fn answer_for(f: &Fixture, choice: Option<&str>) -> basal_host::DecisionAnswer {
     let card = &f.rt.decision_cards().unwrap()[0];
+    f.rt.select_decision_path(card.seq, &cingulate()).unwrap();
     f.rt.decision_raised(card.seq, card.revision, "grant-card")
         .unwrap();
     basal_host::DecisionAnswer {
@@ -499,7 +505,7 @@ fn grant_card_expiry_keeps_polling_and_explicit_keep_stops_it() {
         let f = Fixture::new("old-agent");
         f.lose("run", absence(json!("g1.card")), json!({}));
         let answer = answer_for(&f, choice);
-        f.rt.answer_decision(&answer).unwrap();
+        f.rt.answer_decision_on(&cingulate(), &answer).unwrap();
         assert_eq!(
             f.rt.grant_losses().unwrap()[0].state,
             if polling { "polling" } else { "stopped" }
@@ -519,7 +525,7 @@ fn grant_card_check_now_schedules_an_immediate_scoped_read() {
     f.lose("run", absence(json!("g1.opaque")), json!({}));
     f.rt.poll_lost_grants().unwrap();
     assert_eq!(f.rt.grant_losses().unwrap()[0].next_poll_at_ms, 1000);
-    f.rt.answer_decision(&answer_for(&f, Some("check_now")))
+    f.rt.answer_decision_on(&cingulate(), &answer_for(&f, Some("check_now")))
         .unwrap();
     assert_eq!(f.rt.grant_losses().unwrap()[0].next_poll_at_ms, 0);
     f.host.yes.store(true, Ordering::SeqCst);
@@ -533,6 +539,7 @@ fn restored_card_withdrawal_is_durable_even_after_a_late_raise_ack() {
     let f = Fixture::new("old-agent");
     f.lose("run", absence(json!("g1.opaque")), json!({}));
     let card = f.rt.decisions_due().unwrap().remove(0);
+    f.rt.select_decision_path(card.seq, &cingulate()).unwrap();
     f.host.yes.store(true, Ordering::SeqCst);
     f.rt.poll_lost_grants().unwrap();
     assert_eq!(
@@ -541,9 +548,13 @@ fn restored_card_withdrawal_is_durable_even_after_a_late_raise_ack() {
     );
     f.rt.decision_raised(card.seq, card.revision, "late-card")
         .unwrap();
-    assert_eq!(f.rt.decision_withdrawals().unwrap(), ["late-card"]);
-    f.rt.decision_withdrawn("late-card").unwrap();
-    assert!(f.rt.decision_withdrawals().unwrap().is_empty());
+    assert_eq!(
+        f.rt.decision_withdrawals_on().unwrap(),
+        [(cingulate(), "late-card".to_owned())]
+    );
+    f.rt.decision_withdrawn_on(&cingulate(), "late-card")
+        .unwrap();
+    assert!(f.rt.decision_withdrawals_on().unwrap().is_empty());
 }
 
 #[test]
@@ -554,7 +565,7 @@ fn grant_card_answer_to_a_superseded_body_cannot_stop_current_polling() {
     f.rt.config.clock.set(100);
     f.lose("run-2", absence(json!("g1.opaque")), json!({}));
     assert_eq!(
-        f.rt.answer_decision(&answer).unwrap(),
+        f.rt.answer_decision_on(&cingulate(), &answer).unwrap(),
         crate::decisions::Answered::Superseded
     );
     assert_eq!(f.rt.grant_losses().unwrap()[0].state, "polling");
@@ -619,19 +630,23 @@ fn retirement_after_unknown_preserves_reconcile_then_not_applied_fails_once() {
         .unwrap();
     let card = f.rt.decisions_due().unwrap().remove(0);
     assert_eq!(card.kind, basal_host::DecisionKind::Reconcile);
+    f.rt.select_decision_path(card.seq, &cingulate()).unwrap();
     f.rt.decision_raised(card.seq, card.revision, "reconcile-card")
         .unwrap();
-    f.rt.answer_decision(&basal_host::DecisionAnswer {
-        grant_context: None,
-        elicitation_id: "reconcile-card".into(),
-        choice: Some(crate::decisions::NOT_APPLIED.into()),
-        dedup_key: Some(card.dedup_key.clone()),
-        flow_id: "flow".into(),
-        version: 1,
-        decision: basal_host::DecisionKind::Reconcile,
-        run_id: Some("run".into()),
-        call_key: card.call_key.clone(),
-    })
+    f.rt.answer_decision_on(
+        &cingulate(),
+        &basal_host::DecisionAnswer {
+            grant_context: None,
+            elicitation_id: "reconcile-card".into(),
+            choice: Some(crate::decisions::NOT_APPLIED.into()),
+            dedup_key: Some(card.dedup_key.clone()),
+            flow_id: "flow".into(),
+            version: 1,
+            decision: basal_host::DecisionKind::Reconcile,
+            run_id: Some("run".into()),
+            call_key: card.call_key.clone(),
+        },
+    )
     .unwrap();
     assert_eq!(f.rt.run("run").unwrap().state, crate::RunState::Pending);
     let attempt =

@@ -198,26 +198,24 @@ pub struct DecisionAnswer {
     pub call_key: Option<String>,
 }
 
-/// The endpoint that owns a decision. Provider identity is retained even when
-/// the provider is temporarily absent from the daemon catalog.
+/// The `consent/v1` provider that owns a decision, by its catalog module id.
+/// Provider identity is retained even when the provider is temporarily absent
+/// from the daemon catalog, so a card's answers and withdrawal always go back
+/// to the provider that holds it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DecisionPath {
-    Legacy,
     Consent(String),
 }
 
 impl DecisionPath {
+    /// The stored form, `consent:<provider>`.
     pub fn key(&self) -> String {
         match self {
-            Self::Legacy => "legacy".into(),
             Self::Consent(provider) => format!("consent:{provider}"),
         }
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
-        if key == "legacy" {
-            return Some(Self::Legacy);
-        }
         key.strip_prefix("consent:")
             .filter(|p| !p.trim().is_empty())
             .map(|p| Self::Consent(p.to_owned()))
@@ -259,18 +257,14 @@ impl std::error::Error for ConsentError {}
 /// Where decisions are delivered. An error means the decision was not
 /// recorded; the consent plane keeps it and delivers it again.
 pub trait DecisionSink: Send + Sync {
-    /// Whether this owner has cards whose answers still need polling. Sinks
-    /// without a durable card inventory retain their existing polling policy.
-    fn has_open_cards(&self) -> Result<bool, SinkError> {
-        Ok(true)
-    }
-
+    /// Every provider this owner has stored cards, cursors or withdrawals on.
     fn decision_paths(&self) -> Result<Vec<DecisionPath>, SinkError> {
-        Ok(vec![DecisionPath::Legacy])
+        Ok(Vec::new())
     }
 
+    /// Whether this owner has cards on `path` whose answers still need polling.
     fn has_open_cards_on(&self, _path: &DecisionPath) -> Result<bool, SinkError> {
-        self.has_open_cards()
+        Ok(false)
     }
 
     fn answer_cursor(&self, _path: &DecisionPath) -> Result<i64, SinkError> {
@@ -281,10 +275,6 @@ pub trait DecisionSink: Send + Sync {
         Ok(())
     }
 
-    fn answer_on(&self, _path: &DecisionPath, answer: &DecisionAnswer) -> Result<(), SinkError> {
-        self.answer(answer)
-    }
-
     /// After retention, the feed supplies only the settled card's id, not its
     /// body or historical choice. Close that id on this path without an action.
     fn expire_on(&self, _path: &DecisionPath, _id: &str) -> Result<(), SinkError> {
@@ -293,9 +283,10 @@ pub trait DecisionSink: Send + Sync {
 
     fn decide(&self, decision: &DecisionEvent) -> Result<(), SinkError>;
 
-    /// Applies an answer to a decision card. An error means it was not
-    /// recorded; the consent plane keeps it and delivers it again.
-    fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError>;
+    /// Applies an answer from the provider on `path` to a decision card. An
+    /// error means it was not recorded; the provider keeps it and delivers it
+    /// again.
+    fn answer_on(&self, path: &DecisionPath, answer: &DecisionAnswer) -> Result<(), SinkError>;
 }
 
 /// Core's synchronous disposition of an install request. A policy reply is
@@ -320,47 +311,37 @@ pub trait Consent: Send + Sync {
     /// id is idempotent. Policy replies still require status confirmation.
     fn raise(&self, card: &InstallCard) -> Result<InstallOutcome, ConsentError>;
 
-    /// Raises an operator decision card and returns the consent plane's id
-    /// for it. Raising under a key whose card is still open updates that
-    /// card. An identical refresh keeps its id; changed content may return a
-    /// replacement id, which the runtime must retain.
-    fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError>;
-
-    /// Select before sending so the runtime can persist ownership even if the
-    /// request's reply is lost. Retries never select another endpoint.
+    /// The `consent/v1` provider a new decision card is raised on. The runtime
+    /// records it before sending, so even a lost reply leaves the card owned
+    /// by that provider; retries never select another one. An adapter without
+    /// a provider answers `Unavailable` and the card stays pending.
     fn decision_path(&self) -> Result<DecisionPath, ConsentError> {
-        Ok(DecisionPath::Legacy)
+        Err(ConsentError::Unavailable(
+            "this adapter has no consent/v1 provider for decision cards".into(),
+        ))
     }
 
+    /// Raises an operator decision card on `path` and returns the provider's
+    /// id for it. Raising under a key whose card is still open updates that
+    /// card. An identical refresh keeps its id; changed content may return a
+    /// replacement id, which the runtime must retain.
     fn raise_decision_on(
         &self,
-        path: &DecisionPath,
-        card: &DecisionCard,
+        _path: &DecisionPath,
+        _card: &DecisionCard,
     ) -> Result<String, ConsentError> {
-        if !matches!(path, DecisionPath::Legacy) {
-            return Err(ConsentError::Unavailable(
-                "this adapter cannot raise on the recorded consent path".into(),
-            ));
-        }
-        self.raise_decision(card)
+        Err(ConsentError::Unavailable(
+            "this adapter cannot raise decision cards".into(),
+        ))
     }
 
     fn withdraw_decision_on(
         &self,
-        path: &DecisionPath,
-        elicitation_id: &str,
+        _path: &DecisionPath,
+        _elicitation_id: &str,
     ) -> Result<(), ConsentError> {
-        if !matches!(path, DecisionPath::Legacy) {
-            return Err(ConsentError::Unavailable(
-                "this adapter cannot withdraw on the recorded consent path".into(),
-            ));
-        }
-        self.withdraw_decision(elicitation_id)
-    }
-
-    fn withdraw_decision(&self, _elicitation_id: &str) -> Result<(), ConsentError> {
         Err(ConsentError::Unavailable(
-            "decision withdrawal unavailable".into(),
+            "this adapter cannot withdraw decision cards".into(),
         ))
     }
 
@@ -394,8 +375,27 @@ pub struct MockConsent {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockConsent {
+    /// The provider id the mock raises decision cards under.
+    pub const PROVIDER: &'static str = "mock-consent";
+
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The decision path of every card the mock holds.
+    pub fn path() -> DecisionPath {
+        DecisionPath::Consent(Self::PROVIDER.into())
+    }
+
+    fn on_path(path: &DecisionPath) -> Result<(), ConsentError> {
+        if *path == Self::path() {
+            Ok(())
+        } else {
+            Err(ConsentError::Unavailable(format!(
+                "the mock holds no cards on {}",
+                path.key()
+            )))
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -509,7 +509,7 @@ impl MockConsent {
             }
         }
         for answer in answers {
-            if sink.answer(&answer).is_ok() {
+            if sink.answer_on(&Self::path(), &answer).is_ok() {
                 let mut state = self.lock();
                 if let Some(i) = state.undelivered_answers.iter().position(|a| *a == answer) {
                     state.undelivered_answers.remove(i);
@@ -521,7 +521,12 @@ impl MockConsent {
 
 #[cfg(any(test, feature = "test-support"))]
 impl Consent for MockConsent {
-    fn withdraw_decision(&self, elicitation_id: &str) -> Result<(), ConsentError> {
+    fn withdraw_decision_on(
+        &self,
+        path: &DecisionPath,
+        elicitation_id: &str,
+    ) -> Result<(), ConsentError> {
+        Self::on_path(path)?;
         let mut state = self.lock();
         if state.unavailable {
             return Err(ConsentError::Unavailable("mock consent offline".into()));
@@ -551,7 +556,16 @@ impl Consent for MockConsent {
         })
     }
 
-    fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {
+    fn decision_path(&self) -> Result<DecisionPath, ConsentError> {
+        Ok(Self::path())
+    }
+
+    fn raise_decision_on(
+        &self,
+        path: &DecisionPath,
+        card: &DecisionCard,
+    ) -> Result<String, ConsentError> {
+        Self::on_path(path)?;
         let mut state = self.lock();
         if state.unavailable {
             return Err(ConsentError::Unavailable(

@@ -406,6 +406,10 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 36,
         statements: BROCA_WAKES,
     },
+    Migration {
+        version: 37,
+        statements: DECISION_PATHS_CONSENT_ONLY,
+    },
 ];
 
 // Broca model calls learn their completion from Broca's bus events.
@@ -714,6 +718,49 @@ CREATE TABLE decision_superseded_ids (
     elicitation_id TEXT NOT NULL,
     PRIMARY KEY (card_seq, elicitation_id)
 );
+"#;
+
+// Decision cards are held only by `consent/v1` providers. prefrontal-core
+// removed its elicitation plane, so a card recorded on the 'legacy' path can
+// never be answered, updated or withdrawn there. `consent_path` stays: it
+// names the provider (`consent:<module id>`) that holds each card, which a
+// lost reply or a later catalog change must not lose.
+//
+// Every 'legacy' card returns to the unselected state (NULL), so no answer
+// can match it. An open one also drops its core id, its accepted revision and
+// its superseded ids, so the next pass raises it afresh on a consent/v1
+// provider instead of leaving its run or flow waiting on a card nobody can
+// see. A closed one keeps its id as history. Withdrawals and cursors on the
+// legacy path can never be sent and are dropped. The triggers then refuse any
+// path but `consent:<provider>`, on insert and on update, in all three tables.
+const DECISION_PATHS_CONSENT_ONLY: &str = r#"
+DELETE FROM decision_superseded_ids WHERE card_seq IN
+    (SELECT seq FROM decision_cards WHERE consent_path = 'legacy' AND state = 'open');
+UPDATE decision_cards SET elicitation_id = NULL, raised_revision = NULL
+    WHERE consent_path = 'legacy' AND state = 'open';
+UPDATE decision_cards SET consent_path = NULL WHERE consent_path = 'legacy';
+DELETE FROM decision_withdrawals WHERE consent_path = 'legacy';
+DELETE FROM decision_answer_cursors WHERE consent_path = 'legacy';
+CREATE TRIGGER decision_cards_path_insert BEFORE INSERT ON decision_cards
+WHEN NEW.consent_path IS NOT NULL AND (substr(NEW.consent_path, 1, 8) != 'consent:'
+    OR trim(substr(NEW.consent_path, 9)) = '')
+BEGIN SELECT RAISE(ABORT, 'decision cards are held only by consent/v1 providers'); END;
+CREATE TRIGGER decision_cards_path_update BEFORE UPDATE OF consent_path ON decision_cards
+WHEN NEW.consent_path IS NOT NULL AND (substr(NEW.consent_path, 1, 8) != 'consent:'
+    OR trim(substr(NEW.consent_path, 9)) = '')
+BEGIN SELECT RAISE(ABORT, 'decision cards are held only by consent/v1 providers'); END;
+CREATE TRIGGER decision_withdrawals_path_insert BEFORE INSERT ON decision_withdrawals
+WHEN substr(NEW.consent_path, 1, 8) != 'consent:' OR trim(substr(NEW.consent_path, 9)) = ''
+BEGIN SELECT RAISE(ABORT, 'decision cards are held only by consent/v1 providers'); END;
+CREATE TRIGGER decision_withdrawals_path_update BEFORE UPDATE OF consent_path ON decision_withdrawals
+WHEN substr(NEW.consent_path, 1, 8) != 'consent:' OR trim(substr(NEW.consent_path, 9)) = ''
+BEGIN SELECT RAISE(ABORT, 'decision cards are held only by consent/v1 providers'); END;
+CREATE TRIGGER decision_answer_cursors_path_insert BEFORE INSERT ON decision_answer_cursors
+WHEN substr(NEW.consent_path, 1, 8) != 'consent:' OR trim(substr(NEW.consent_path, 9)) = ''
+BEGIN SELECT RAISE(ABORT, 'decision cards are held only by consent/v1 providers'); END;
+CREATE TRIGGER decision_answer_cursors_path_update BEFORE UPDATE OF consent_path ON decision_answer_cursors
+WHEN substr(NEW.consent_path, 1, 8) != 'consent:' OR trim(substr(NEW.consent_path, 9)) = ''
+BEGIN SELECT RAISE(ABORT, 'decision cards are held only by consent/v1 providers'); END;
 "#;
 
 // One row for each `fs.write` temporary file that may exist on disk. The row

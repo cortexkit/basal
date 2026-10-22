@@ -510,13 +510,12 @@ fn install_cards_only_use_core_install_request_and_never_wake_answer_polling() {
                 .len(),
             1
         );
-        assert!(fake.calls("elicitation.request").is_empty());
         assert!(fake.calls("consent.request").is_empty());
         assert!(!f.module.rt.has_open_cards().unwrap());
         assert!(
             !f.module
                 .rt
-                .has_open_cards_on(&basal_host::DecisionPath::Legacy)
+                .has_open_cards_on(&basal_host::DecisionPath::Consent("cingulate".into()))
                 .unwrap()
         );
     }

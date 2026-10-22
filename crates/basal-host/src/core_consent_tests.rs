@@ -15,17 +15,20 @@ impl Transport for Wire {
     fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
         panic!("unexpected tool")
     }
-    fn management(&self, _: &str, op: &str, _: Value) -> Result<Value, WireError> {
+    fn management(&self, module: &str, op: &str, _: Value) -> Result<Value, WireError> {
+        assert_eq!(
+            module, "cingulate",
+            "answers are read from the card's provider"
+        );
         match op {
-            "elicitation.answers" => {
+            "consent.answers" => {
                 self.calls.lock().unwrap().push("answers");
                 Ok(self.page.lock().unwrap().clone())
             }
-            "elicitation.ack" => {
+            "consent.ack" => {
                 self.calls.lock().unwrap().push("ack");
                 Ok(json!({"ok": !self.fail_ack.swap(false, Ordering::AcqRel)}))
             }
-            "elicitation.request" => Ok(json!({"elicitation_id":"raised"})),
             _ => panic!("unexpected management call {op}"),
         }
     }
@@ -37,8 +40,16 @@ struct Sink {
     inventory: mpsc::Sender<()>,
 }
 
+fn cingulate() -> DecisionPath {
+    DecisionPath::Consent("cingulate".into())
+}
+
 impl DecisionSink for Sink {
-    fn has_open_cards(&self) -> Result<bool, crate::SinkError> {
+    fn decision_paths(&self) -> Result<Vec<DecisionPath>, crate::SinkError> {
+        Ok(vec![cingulate()])
+    }
+    fn has_open_cards_on(&self, path: &DecisionPath) -> Result<bool, crate::SinkError> {
+        assert_eq!(*path, cingulate());
         if !self.open.load(Ordering::Acquire) {
             let _ = self.inventory.send(());
         }
@@ -47,7 +58,8 @@ impl DecisionSink for Sink {
     fn decide(&self, _: &crate::DecisionEvent) -> Result<(), crate::SinkError> {
         panic!("install decisions do not use the answer feed")
     }
-    fn answer(&self, _: &DecisionAnswer) -> Result<(), crate::SinkError> {
+    fn answer_on(&self, path: &DecisionPath, _: &DecisionAnswer) -> Result<(), crate::SinkError> {
+        assert_eq!(*path, cingulate());
         self.calls.lock().unwrap().push("apply");
         self.open.store(false, Ordering::Release);
         Ok(())
@@ -83,16 +95,21 @@ fn idle_consent_makes_zero_rpcs() {
 }
 
 #[test]
-fn startup_reconciles_closed_unacked_cards_then_stays_idle() {
+fn no_poller_runs_while_no_card_is_open_and_a_raise_starts_it() {
+    // The provider still holds an answered page, but basal has no open card:
+    // attaching starts no thread and reads no page, at startup or later.
     let (wire, sink, inventory) = setup(false, true);
     let consent = CoreConsent::new(wire.clone()).with_polling();
-    consent.attach(sink);
-    // Inventory is consulted only after the startup page is applied and acked.
+    consent.attach(sink.clone());
+    assert!(!consent.state.poll_started.load(Ordering::Acquire));
+    assert!(wire.calls.lock().unwrap().is_empty());
+    while inventory.try_recv().is_ok() {}
+    // Raising a card starts the poller, which reads, applies and acknowledges
+    // the page, then finds no open card again and parks.
+    sink.open.store(true, Ordering::Release);
+    consent.raised();
+    assert!(consent.state.poll_started.load(Ordering::Acquire));
     inventory.recv_timeout(Duration::from_secs(60)).unwrap();
-    assert_eq!(*wire.calls.lock().unwrap(), ["answers", "apply", "ack"]);
-    for _ in 0..5 {
-        consent.poll_once().unwrap();
-    }
     assert_eq!(*wire.calls.lock().unwrap(), ["answers", "apply", "ack"]);
 }
 
@@ -125,37 +142,11 @@ fn open_cards_back_off_to_five_seconds_and_a_raise_resets_fast_polling() {
     let consent = CoreConsent::new(wire.clone());
     consent.attach(sink);
     consent.poll_once().unwrap();
-    assert_eq!(*wire.calls.lock().unwrap(), ["answers"]);
+    // An empty final page is still acknowledged: it can cover other owners'
+    // rows and withdrawals.
+    assert_eq!(*wire.calls.lock().unwrap(), ["answers", "ack"]);
     let seen = consent.state.wake.lock().unwrap().0;
-    consent
-        .raise_decision(&DecisionCard {
-            dedup_key: None,
-            flow_id: "flow".into(),
-            version: 1,
-            context: DecisionContext::GrantLost {
-                provider: "plexus".into(),
-                grant: "g".into(),
-                grant_label: "restore".into(),
-                refused_at_ms: 0,
-            },
-            title: "Decide".into(),
-            prompt: "Check grant".into(),
-            args_digest: None,
-            expires_in_ms: 60_000,
-            options: vec![
-                crate::DecisionOption {
-                    id: "check_now".into(),
-                    label: "Check".into(),
-                    decline: false,
-                },
-                crate::DecisionOption {
-                    id: "keep_disabled".into(),
-                    label: "Keep disabled".into(),
-                    decline: true,
-                },
-            ],
-        })
-        .unwrap();
+    consent.raised();
     assert_ne!(consent.state.wake.lock().unwrap().0, seen);
 }
 
