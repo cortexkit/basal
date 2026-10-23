@@ -373,7 +373,7 @@ timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
 old = 'call(transport, "codemode.run_scope.open", request)'
 new = '''call::<Open,Opened>(transport,"codemode.run_scope.open",request).or_else(|_| Ok(Opened {
-        scope:Scope { reference:request.run_id.clone(),epoch:19 },expires_at_ms:request.expires_at_ms,catalog:vec![]
+        scope:Scope { reference:request.run_id.clone(),epoch:19 },expires_at_ms:request.expires_at_ms,catalog:vec![],preset:None
     })) /* NON-VACUITY BREAK */'''
 
 [[control]]
