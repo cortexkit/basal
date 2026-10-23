@@ -35,11 +35,12 @@ operating system protects. The warning does not refuse the flow. It carries the
 manifest `field`, the original `path`, and `protections`: one entry per
 operating system whose protection covers the path, each with `os`, the
 protected `folder` and its `effect`. Its `text` gives one plain line per entry.
-A flow can run on any operating system, so the warning is the same on every
-host:
+A flow can run on any operating system, so both rules below are checked on
+every host:
 
 - **macOS** (`"os": "macos"`): `~/Desktop`, `~/Documents`, `~/Downloads` and
-  each volume under `/Volumes/` (removable and network volumes). The first
+  each volume under `/Volumes/` (removable and network volumes; a root at
+  `/Volumes` itself is reported as `/Volumes/*`, every volume). The first
   access asks the operator for permission.
 - **Windows** (`"os": "windows"`): `~/Documents`, `~/Favorites`, `~/Music`,
   `~/Pictures` and `~/Videos`, in any letter case, the profile folders that
@@ -47,9 +48,10 @@ host:
   while the operator has Controlled Folder Access on.
 - **Linux** has no general per-folder protection, so no entry names it.
 
-A root written with `~` matches on any host; an absolute root matches when it
-lies in the home folder of the host running basal. Paths are compared as
-written: symlinks are not resolved and the folders need not exist.
+A root written with `~` gets the same warning on every host; an absolute root
+matches when it lies in the home folder of the host running basal, so its
+warning can differ between hosts. Paths are compared lexically (`.` is dropped
+and `..` collapsed): symlinks are not resolved and the folders need not exist.
 
 ## Revocation during a run
 

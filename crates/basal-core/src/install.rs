@@ -249,7 +249,8 @@ impl ProtectingOs {
 }
 
 /// One operating system's protection over a manifest root: the protected
-/// folder, spelled as a manifest would write it, that contains the root.
+/// folder that contains the root, in the spelling the warning shows (`~` for
+/// the home folder, the folder name's usual letter case).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Protection {
     pub os: ProtectingOs,
@@ -328,9 +329,10 @@ pub fn agentless_audience_warnings(manifest: &Manifest, catalog: &dyn Catalog) -
 }
 
 /// Warns about manifest roots under folders an operating system protects,
-/// without resolving symlinks or checking whether the paths exist. The rules
-/// do not depend on the host: a manifest can run on any OS, so every OS's
-/// protections are checked and each warning entry names its OS.
+/// without resolving symlinks or checking whether the paths exist. A manifest
+/// can run on any OS, so the macOS and Windows rules are both checked on every
+/// host and each warning entry names its OS. Only an absolute root depends on
+/// the host: it matches when it lies in this host's home folder.
 pub fn protected_root_warnings(manifest: &Manifest) -> Vec<Warning> {
     let mut warnings = manifest
         .roots()
@@ -410,9 +412,10 @@ fn protections(path: &str) -> Vec<Protection> {
     found
 }
 
-/// The macOS volume a path is on when it lies under `/Volumes`, where macOS
-/// mounts removable and network volumes: `/Volumes/<name>`, or `/Volumes/*`
-/// for a root that is `/Volumes` itself and so covers every volume.
+/// The macOS volume a path is on, judged by its `/Volumes/<name>` prefix,
+/// where macOS mounts removable and network volumes; `/Volumes/*` for a root
+/// that is `/Volumes` itself and so covers every volume. Whether the volume
+/// is mounted is not checked.
 fn macos_volume(path: &std::path::Path) -> Option<String> {
     use std::path::Component;
 
