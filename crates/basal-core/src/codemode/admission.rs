@@ -89,7 +89,10 @@ pub struct Unavailable {
 #[derive(Debug)]
 pub struct Start {
     pub scope: RegisteredScope,
-    pub preset: Option<String>,
+    /// Core's catalog preset for the run, keyed by the provider modules whose
+    /// tool calls carry it: only providers that serve presets, since the
+    /// others refuse a tool call naming one. Empty when core chose no preset.
+    pub presets: BTreeMap<String, String>,
     pub tools: BTreeMap<String, Tool>,
     /// Dropped tools by name, never also in `tools`.
     pub unavailable: BTreeMap<String, Unavailable>,
@@ -226,7 +229,7 @@ pub fn admit(
                         })
                         .collect(),
                 },
-                preset: None,
+                presets: BTreeMap::new(),
                 tools,
                 unavailable: BTreeMap::new(),
                 limits,
@@ -700,11 +703,18 @@ pub fn admit_tool(
         let read = run_scope::CatalogRead {
             scope: &run_scope_selector,
             identity: &read_identity,
-            preset: opened.preset.as_deref(),
         };
         let resolved = run_scope::catalog(transport, &read, &daemon, &opened.catalog)
             .map_err(super::scope::error_value)?;
         let gaps = resolved.gaps;
+        let presets: BTreeMap<String, String> = match &opened.preset {
+            Some(preset) => resolved
+                .preset_modules
+                .into_iter()
+                .map(|module| (module, preset.clone()))
+                .collect(),
+            None => BTreeMap::new(),
+        };
         let resolved = super::models::add_catalog(&resolved.catalog)
             .map_err(|e| json!({"code":"invalid_catalog","message":e}))?;
         let tools = catalog(&resolved).map_err(|e| json!({"code":e.code,"message":e.message}))?;
@@ -739,7 +749,7 @@ pub fn admit_tool(
                     })
                     .collect(),
             },
-            preset: opened.preset,
+            presets,
             tools,
             unavailable,
             limits,

@@ -136,7 +136,6 @@ impl Transport for MockCore {
         module: &str,
         name: &str,
         arguments: Value,
-        _preset: Option<&str>,
     ) -> Result<Value, WireError> {
         self.tool(module, name, arguments, "")
     }

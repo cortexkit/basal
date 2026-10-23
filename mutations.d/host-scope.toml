@@ -609,7 +609,7 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
-old = "read_tool_catalog_on_run(\n            transport,\n            read.scope,\n            read.identity,\n            &entry.module,\n            read.preset,\n        )"
+old = "read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module)"
 new = "{ let _ = read; crate::subc_catalog::read_tool_catalog(transport, &entry.module) } // NON-VACUITY BREAK"
 
 [[control]]
@@ -713,8 +713,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
-old = "        let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments);\n        request.preset = preset.map(str::to_owned);"
-new = "        let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments);\n        request.call_key = Some(\"basal-catalog-read\".into()); // NON-VACUITY BREAK\n        request.preset = preset.map(str::to_owned);"
+old = "        // A role request names no call key and no preset in its envelope.\n        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(\n            name, arguments,\n        ))\n"
+new = "        let body = serde_json::to_vec(&tool_body(name, arguments, \"basal-catalog-read\")?) // NON-VACUITY BREAK\n"
 
 [[control]]
 id = "catalog-read-unknown-request-member"
@@ -730,8 +730,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
-old = "let mut request = serde_json::to_value(CatalogRequest::new(params))"
-new = "let mut request = serde_json::to_value(CatalogRequest::new(params)).map(|mut request| { request[\"modes\"] = json!([\"codemode\"]); request }) // NON-VACUITY BREAK"
+old = "let request = serde_json::to_value(CatalogRequest::new(params))"
+new = "let request = serde_json::to_value(CatalogRequest::new(params)).map(|mut request| { request[\"modes\"] = json!([\"codemode\"]); request }) // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-run-tool-call-unscoped"
@@ -803,7 +803,7 @@ new = "            cortexkit_role_tool_provider::errors::is_transient(code) // N
 
 [[control]]
 id = "codemode-run-tool-preset-forwarded"
-guards = "codemode run requests carry the core-selected catalog preset"
+guards = "a codemode tool call to a provider serving presets carries the core-selected catalog preset"
 file = "crates/basal-host/src/transport.rs"
 old = 'request["preset"] = Value::String(preset.clone());'
 new = 'request["preset"] = Value::Null; // NON-VACUITY BREAK'
@@ -812,11 +812,79 @@ test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
 runner = "cargo"
 package = "basal-host"
 target = "--lib"
-expect_red = ["transport::run_scope_wire_tests::core_selected_preset_reaches_catalog_reads_tool_calls_and_custody"]
+expect_red = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets"]
 only = true
 platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600
 
 [control.select]
-tests = ["transport::run_scope_wire_tests::core_selected_preset_reaches_catalog_reads_tool_calls_and_custody", "transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode"]
+tests = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets", "transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode"]
+
+[[control]]
+id = "catalog-read-preset-argument"
+guards = "a codemode tool.catalog read names no preset argument, which a provider without presets refuses"
+test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/subc_catalog.rs"
+old = "let request = serde_json::to_value(CatalogRequest::new(params))"
+new = "let request = serde_json::to_value(CatalogRequest::new(params)).map(|mut request| { request[\"preset\"] = json!(\"worker\"); request }) // NON-VACUITY BREAK"
+
+[[control]]
+id = "catalog-read-envelope-preset"
+guards = "codemode catalog role requests carry no envelope preset, which a cerebellum-like provider refuses"
+test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "        // A role request names no call key and no preset in its envelope.\n        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(\n            name, arguments,\n        ))\n"
+new = "        let body = serde_json::to_vec(&{ let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments); request.preset = Some(\"worker\".into()); request }) // NON-VACUITY BREAK\n"
+
+[[control]]
+id = "custody-envelope-preset"
+guards = "codemode custody requests carry no envelope preset, which a cerebellum-like provider refuses"
+test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "        // Custody requests carry no preset: the tool-provider role gives it\n        // no meaning on these ops.\n        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(\n            name, arguments,\n        ))\n"
+new = "        let body = serde_json::to_vec(&{ let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments); request.preset = options.preset.clone(); request }) // NON-VACUITY BREAK\n"
+
+[[control]]
+id = "run-scope-preset-provider-tag"
+guards = "only providers whose catalog answer has a code.read/v1 tool are recorded as serving presets"
+test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = '&& answer.as_ref().is_ok_and(provider_serves_presets)'
+new = '&& answer.is_ok() // NON-VACUITY BREAK'
