@@ -89,6 +89,9 @@ pub struct Manifest {
     /// and widening it needs a new version and a new approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<Audience>,
+    /// Extra model providers approved to receive private content, in manifest order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub private_content_providers: Vec<String>,
     /// Distinct target agents a run may call for.
     #[serde(default = "default_max_targets")]
     pub max_targets: u32,
@@ -692,13 +695,60 @@ impl Manifest {
                 cap: MAX_MANIFEST_BYTES,
             });
         }
+        // Check the provider list's shape separately so malformed grants use the
+        // same field-specific refusal as invalid provider identifiers. Decode
+        // the original bytes afterwards to retain duplicate-key refusals.
+        let value: serde_json::Value =
+            serde_json::from_str(text).map_err(|e| ManifestError::Decode(e.to_string()))?;
+        if let Some(providers) = value.get("private_content_providers") {
+            let providers = providers.as_array().ok_or_else(|| {
+                invalid("private_content_providers", "must be an array of strings")
+            })?;
+            if providers.iter().any(|provider| !provider.is_string()) {
+                return Err(invalid(
+                    "private_content_providers",
+                    "must be an array of strings",
+                ));
+            }
+        }
         serde_json::from_str(text).map_err(|e| ManifestError::Decode(e.to_string()))
     }
 
     /// Validates a new manifest without the catalog, including intake policy.
     pub fn check(&self) -> Result<(), ManifestError> {
+        // Validate literal provider ids before the template placeholder scan so
+        // even template grants get the field-specific invalid-id refusal.
+        self.check_private_content_providers()?;
         self.check_stored()?;
         self.check_intake()
+    }
+
+    fn check_private_content_providers(&self) -> Result<(), ManifestError> {
+        if self.private_content_providers.len() > 16 {
+            return Err(invalid("private_content_providers", "at most 16 entries"));
+        }
+        let mut providers = std::collections::HashSet::new();
+        for provider in &self.private_content_providers {
+            if provider.is_empty()
+                || provider.len() > 64
+                || !provider.as_bytes()[0].is_ascii_lowercase()
+                || !provider
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            {
+                return Err(invalid(
+                    "private_content_providers",
+                    "ids must be 1 to 64 bytes of a-z, 0-9 or -, starting with a letter",
+                ));
+            }
+            if !providers.insert(provider) {
+                return Err(invalid(
+                    "private_content_providers",
+                    "duplicate provider id",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn check_intake(&self) -> Result<(), ManifestError> {
@@ -1214,6 +1264,10 @@ impl Manifest {
         out
     }
 }
+
+#[cfg(test)]
+#[path = "private_content_providers_tests.rs"]
+mod private_content_providers_tests;
 
 #[cfg(test)]
 #[path = "board_read_tests.rs"]

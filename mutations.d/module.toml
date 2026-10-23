@@ -2955,3 +2955,19 @@ build_timeout_s = 3600
 
 [control.select]
 tests = ["running_reply_is_held_only_when_the_route_declared_both_capabilities", "running_reply_mirrors_the_consent_held_call_reason"]
+
+[[control]]
+id = "private-content-providers-bypasses-broca-caller"
+guards = "Only an attested unscoped broca module may read private-content provider approvals"
+test_file = "crates/basal-module/tests/private_content_providers.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test private_content_providers"
+expect_red = ["providers_op_requires_verified_unscoped_broca"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = 'if !matches!(caller, Caller::Module { module_id } if module_id == "broca") {'
+new = 'if false && !matches!(caller, Caller::Module { module_id } if module_id == "broca") { // NON-VACUITY BREAK'

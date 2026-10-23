@@ -21,6 +21,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `purpose` | string | yes | | 1 to 1024 bytes, no control characters except newline. Shown on the card. |
 | `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
 | `audience` | `{kind, id?}` | no | none | Approved delivery reach: global, workspace or agent. See below. |
+| `private_content_providers` | list of provider ids (strings) | no | `[]` | Extra model providers approved to receive private content, beyond local models and Anthropic. At most 16 distinct ids; see below. |
 | `max_targets` | integer | no | `64` | Maximum distinct agents a run may make `for:` module calls for; 1 to 1024. Shown on the card. Repeated calls for the same stable id use one slot. |
 | `sinks` | list of sink grants | no | `[]` | Agents whose digest the flow may write. |
 | `status` | list of agent names | no | `[]` | Agents whose status line the flow may set. |
@@ -75,6 +76,26 @@ reports boolean `state_reset` without changing stored values.
 Agent fields also accept the literal `$self` in [package manifests](packages.md). Registration permits only `$self`; activation resolves it to the instance's stable owner id. Ordinary `flow.install` refuses `$self` with `self_requires_package`.
 
 Every agent named by `sinks[].agent`, `status[]`, `board_read[]`, `board[].agent`, `claims[].agent` and `facts.targets[]` must be known to the catalog. Fields may use a display name or a stable `agent_id`; the catalog resolves both to that id. For an agent-owned flow, every resolved id must equal its author's stable id: the flow acts only for its owner. Install and dry run refuse a foreign target with `foreign_agent_target`, naming the field and agent, before recording an install or raising a consent card. The author's id comes from the daemon-stamped caller scope for an agent install, not the manifest. An operator installing in an agent's name uses that agent's stable id as the author and follows the same rule. Global flows authored as `operator` and local-caller installs authored as `local:unverified` may still name any known agent.
+
+### `private_content_providers`
+
+Private content includes pages from the operator's Chrome, desktop-app content,
+and logged-in sites. Local models and Anthropic form the base set of providers
+that may receive it. An absent `private_content_providers` field and an empty
+array both mean base set only. A nonempty list grants the named extra providers
+when the operator approves the install card. The install-card contract requires
+core to show the list as **“May send private content to: …”**. Basal sends core
+the exact manifest; core owns that presentation, and broca enforces the grant
+at model-call time.
+
+Each id is a broca provider id such as `openai`, `cloudflare-workers-ai` or
+`typesafe`: 1–64 bytes of lowercase ASCII `a-z`, `0-9` and `-`, starting with a
+letter. There may be at most 16 entries, with no duplicates. The list must be an
+array of strings. Order is kept as written, and the exact manifest bytes are
+hashed: changing the list requires a new version and approval. This field is
+literal even in templates; `$params` placeholders are not allowed or substituted.
+Basal exposes the approved list to broca through
+[`flow.private_content_providers`](ops.md#flowprivate_content_providers).
 
 ### `audience`
 
