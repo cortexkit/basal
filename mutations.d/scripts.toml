@@ -373,7 +373,7 @@ id = "rig-root-guard-allows-forbidden-storage"
 guards = "The rig root refuses the production store and removable volumes before rig paths are used"
 file = "script/flows-rig.sh"
 old = '''      /Volumes|/Volumes/*)
-        die "refusing: the rig root $RIG resolves under /Volumes; external disks are not supported" ;;'''
+        die "refusing: the rig root $RIG resolves under /Volumes; macOS external volumes are not supported" ;;'''
 new = '''      /Volumes|/Volumes/*)
         : # Permit the rig root to be located on an external disk
         ;;'''
