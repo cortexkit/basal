@@ -17,6 +17,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `id` | string | yes | | The flow id: 1 to 63 bytes of `a-z`, `0-9`, `-`, `_`. Stable across versions; `kv`, the token windows, the rate limits and the owner are per flow id. `flow.install` refuses ids ending in `_` followed by exactly 16 lowercase hex characters (`_[0-9a-f]{16}$`) with `flow_id_reserved`: this namespace belongs to [package instances](packages.md). |
 | `version` | integer | yes | | At least 1. A new install must be above the approved version. |
 | `state_epoch` | integer | no | `1` | From 1 to 2147483647. Declares which stored-value layout this version reads; valid for ordinary flows, packages and templates. Part of the hashed manifest and approval card. |
+| `title` | string | no | absent | Short, literal name for the install card, e.g. `"Build server health check"`. 1 to 80 Unicode scalar values, no control characters (including newline), not only whitespace, and no leading or trailing whitespace; refused rather than trimmed. |
 | `purpose` | string | yes | | 1 to 1024 bytes, no control characters except newline. Shown on the card. |
 | `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
 | `audience` | `{kind, id?}` | no | none | Approved delivery reach: global, workspace or agent. See below. |

@@ -27,6 +27,22 @@ fn with_parameter(decl: Value) -> Value {
 }
 
 #[test]
+fn template_titles_are_literal_and_survive_parameter_substitution() {
+    let mut m = with_parameter(json!({"type":"duration","min":"1m","max":"1h"}));
+    m["title"] = json!("Build server health check");
+    m["trigger"]["schedule"]["interval"] = json!("$params.value");
+    let mut manifest = parse(&m).unwrap();
+    assert_eq!(Manifest::parse_stored(&m.to_string()).unwrap(), manifest);
+
+    effective(&mut manifest, &json!({"value":"5m"}));
+    assert_eq!(manifest.title.as_deref(), Some("Build server health check"));
+    assert_eq!(
+        manifest.trigger.schedule.unwrap().interval.as_deref(),
+        Some("5m")
+    );
+}
+
+#[test]
 fn parameter_names_and_count_are_bounded() {
     for name in ["", "Upper", "hy-phen", "space name", &"a".repeat(33), "é"] {
         let mut m = base();
@@ -150,7 +166,7 @@ fn template_limits_and_lifetime_are_bounded_and_required() {
 #[test]
 fn placeholders_must_occupy_whole_strings_in_typed_slots_only() {
     let mut m = with_parameter(json!({"type":"path","under":[TMP]}));
-    for field in ["purpose", "placement"] {
+    for field in ["purpose", "placement", "title"] {
         m[field] = json!("$params.value");
         assert!(
             matches!(parse(&m),Err(ManifestError::TemplatePlaceholderInvalid { field:f }) if f==field)
