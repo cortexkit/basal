@@ -24,6 +24,8 @@ pub const MAX_FLOW_ID_BYTES: usize = 63;
 pub const MAX_NAME_BYTES: usize = basal_proto::MAX_NAME_BYTES;
 /// The longest purpose.
 pub const MAX_PURPOSE_BYTES: usize = 1024;
+/// The longest display title, in Unicode scalar values.
+pub const MAX_TITLE_CHARS: usize = 80;
 /// The largest token cap per window.
 pub const MAX_TOKEN_CAP: u64 = 1_000_000_000;
 /// The largest per-call output ceiling.
@@ -55,6 +57,13 @@ pub struct Manifest {
     /// Compatibility of this version with the flow's stored values.
     #[serde(default = "one")]
     pub state_epoch: u32,
+    /// A short, literal name for the install card.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_title"
+    )]
+    pub title: Option<String>,
     pub purpose: String,
     pub trigger: Trigger,
     /// Bounded values supplied by a template instance's creator.
@@ -121,6 +130,12 @@ pub struct Manifest {
     /// default when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline: Option<String>,
+}
+
+fn decode_title<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 /// What starts a run: module events or a schedule, never both.
@@ -717,6 +732,26 @@ impl Manifest {
         if self.state_epoch == 0 || self.state_epoch > i32::MAX as u32 {
             return Err(invalid("state_epoch", "must be from 1 to 2147483647"));
         }
+        if let Some(title) = &self.title {
+            if title.trim().is_empty() {
+                return Err(invalid("title", "must not be empty or only whitespace"));
+            }
+            if title.chars().count() > MAX_TITLE_CHARS {
+                return Err(invalid(
+                    "title",
+                    format!("longer than {MAX_TITLE_CHARS} Unicode scalar values"),
+                ));
+            }
+            if title.chars().any(char::is_control) {
+                return Err(invalid("title", "contains a control character"));
+            }
+            if title.trim() != title {
+                return Err(invalid(
+                    "title",
+                    "must not have leading or trailing whitespace",
+                ));
+            }
+        }
         if self.purpose.trim().is_empty() {
             return Err(invalid("purpose", "must not be empty"));
         }
@@ -1191,6 +1226,114 @@ mod board_sink_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn title_manifest() -> serde_json::Value {
+        serde_json::json!({
+            "id":"health", "version":1, "purpose":"Check the build server's health",
+            "trigger":{"events":[{"module":"broca","name":"run.started","version":1}]}
+        })
+    }
+
+    #[test]
+    fn titles_accept_one_to_eighty_unicode_scalars() {
+        let mut value = title_manifest();
+        for title in [
+            "A".to_string(),
+            "a".repeat(80),
+            "健".to_string(),
+            "🔧".repeat(80),
+            "e\u{301}".repeat(40),
+            "Build server health check".to_string(),
+        ] {
+            value["title"] = serde_json::json!(title);
+            let manifest = Manifest::parse(&value.to_string()).unwrap();
+            assert_eq!(manifest.title.as_deref(), Some(title.as_str()));
+        }
+    }
+
+    #[test]
+    fn titles_refuse_more_than_eighty_unicode_scalars() {
+        let mut value = title_manifest();
+        for title in ["a".repeat(81), "🔧".repeat(81)] {
+            value["title"] = serde_json::json!(title);
+            assert!(
+                matches!(
+                    Manifest::parse(&value.to_string()),
+                    Err(ManifestError::Invalid { ref field, .. }) if field == "title"
+                ),
+                "{title:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn titles_refuse_empty_whitespace_padded_and_control_text() {
+        let mut value = title_manifest();
+        for title in [
+            "",
+            " ",
+            "\u{2003}",
+            " \u{2003} ",
+            " health",
+            "health ",
+            "\u{2003}health",
+            "health\u{2003}",
+            "health\ncheck",
+            "health\tcheck",
+            "health\rcheck",
+            "health\0check",
+            "health\u{7f}check",
+            "health\u{85}check",
+        ] {
+            value["title"] = serde_json::json!(title);
+            assert!(
+                matches!(
+                    Manifest::parse(&value.to_string()),
+                    Err(ManifestError::Invalid { ref field, .. }) if field == "title"
+                ),
+                "{title:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn titles_refuse_non_strings() {
+        let mut value = title_manifest();
+        for title in [
+            serde_json::json!(null),
+            serde_json::json!(12),
+            serde_json::json!(true),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            value["title"] = title;
+            assert!(matches!(
+                Manifest::parse(&value.to_string()),
+                Err(ManifestError::Decode(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn stored_manifests_decode_with_or_without_a_title() {
+        let mut value = title_manifest();
+        let manifest = Manifest::parse_stored(&value.to_string()).unwrap();
+        assert_eq!(manifest.title, None);
+        assert!(
+            serde_json::to_value(&manifest)
+                .unwrap()
+                .get("title")
+                .is_none()
+        );
+
+        value["title"] = serde_json::json!("Build server health check");
+        let manifest = Manifest::parse_stored(&value.to_string()).unwrap();
+        assert_eq!(manifest.title.as_deref(), Some("Build server health check"));
+        assert_eq!(
+            serde_json::to_value(&manifest).unwrap()["title"],
+            value["title"]
+        );
+    }
 
     #[test]
     fn event_names_accept_one_to_four_tokens_within_total_byte_limit() {

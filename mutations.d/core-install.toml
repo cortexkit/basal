@@ -1,6 +1,30 @@
 # basal-core install: install flow, install policy, manifests and packages.
 
 [[control]]
+id = "manifest-title-80-scalar-limit"
+guards = "manifest titles reject more than 80 Unicode scalar values"
+file = "crates/basal-core/src/manifest.rs"
+old = "if title.chars().count() > MAX_TITLE_CHARS {"
+new = "if title.chars().count() > MAX_TITLE_CHARS + 1 { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/manifest.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["manifest::tests::titles_refuse_more_than_eighty_unicode_scalars"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[control.scope]
+after = "fn check_stored(&self) -> Result<(), ManifestError> {"
+before = "fn check_targets(&self) -> Result<(), ManifestError> {"
+
+[control.select]
+tests = ["manifest::tests::titles_refuse_more_than_eighty_unicode_scalars", "manifest::tests::titles_accept_one_to_eighty_unicode_scalars"]
+
+[[control]]
 id = "policy-matching-reply-never-confirms"
 guards = "a matching policy reply and active status approve without a card answer"
 test_file = "crates/basal-module/tests/install_policy.rs"
