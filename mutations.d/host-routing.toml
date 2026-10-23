@@ -1282,8 +1282,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
-old = 'found |= workspace_id == id;'
-new = 'found |= workspace_id == id || workspace["name"] == id; // NON-VACUITY BREAK'
+old = 'if workspace_id == id {'
+new = 'if workspace_id == id || workspace["name"] == id { // NON-VACUITY BREAK'
 
 [[control]]
 id = "audience-core-refusal-code-is-replaced"
@@ -1563,3 +1563,20 @@ file = "crates/basal-host/src/transport.rs"
 scope = { after = "fn open_scoped_handle_with_budget(", before = "\n    fn call_for_flow(" }
 old = "if let Some(budget) = budget {"
 new = "if let Some(budget) = None::<Duration> { // NON-VACUITY BREAK"
+
+[[control]]
+id = "phone-fleet-membership-ignores-agent-id"
+guards = "Entorhinal live placement matches the exact stable agent id after one management unwrap"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::tests::fleet_membership_reads_the_real_decoded_management_payload", "transport::tests::workspace_registry_reads_the_real_decoded_management_payload"] }
+expect_red = ["transport::tests::fleet_membership_reads_the_real_decoded_management_payload"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/subc_catalog.rs"
+old = 'if id == agent_id {'
+new = 'if false { // NON-VACUITY BREAK'

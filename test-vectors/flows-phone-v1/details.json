@@ -1,0 +1,70 @@
+{
+  "audience": null,
+  "disabled": null,
+  "flow_id": "flow-phone-owned",
+  "installs": [
+    {
+      "approval": {
+        "kind": "card"
+      },
+      "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "decided_at_ms": 1777593600001,
+      "requested_at_ms": 1777593600000,
+      "requested_by": "agent_phone_owner",
+      "state": "approved",
+      "version": 1
+    }
+  ],
+  "last_run": {
+    "at_ms": 1777593600002,
+    "outcome": "failed"
+  },
+  "manifest": {
+    "id": "flow-phone-owned",
+    "ops": [
+      {
+        "module": "mock",
+        "op": "echo"
+      },
+      {
+        "module": "mock",
+        "op": "send"
+      }
+    ],
+    "purpose": "A test flow.",
+    "sinks": [
+      {
+        "agent": "Target",
+        "digest_max": "piggyback"
+      }
+    ],
+    "title": "Synthetic flow",
+    "trigger": {
+      "events": [
+        {
+          "module": "plexus",
+          "name": "pull_request_review",
+          "version": 1
+        }
+      ]
+    },
+    "version": 1
+  },
+  "owner": "agent_phone_owner",
+  "purpose": "A test flow.",
+  "runs": [
+    {
+      "admitted_at_ms": 1777593600001,
+      "ended_at_ms": 1777593600002,
+      "error": "Synthetic failure second line",
+      "error_kind": "script",
+      "outcome": "failed",
+      "run_id": "run-phone-failed",
+      "trigger": "schedule"
+    }
+  ],
+  "state": "enabled",
+  "title": "Synthetic flow",
+  "trigger": "on plexus pull_request_review",
+  "version": 1
+}

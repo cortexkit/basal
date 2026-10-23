@@ -2892,4 +2892,56 @@ mod tests {
             assert_eq!(catalog.known_workspace("team").unwrap(), known);
         }
     }
+
+    #[test]
+    fn fleet_membership_reads_the_real_decoded_management_payload() {
+        use crate::Catalog;
+        struct FleetReply(Value);
+        impl Transport for FleetReply {
+            fn catalog(&self) -> Result<Value, WireError> {
+                Ok(
+                    serde_json::json!({"modules":[{"module_id":"entorhinal","roles":[{
+                        "role":"management_surface","operations":[{"name":"agent.fleet_identity","kind":"query"}],
+                        "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"
+                    }]}]}),
+                )
+            }
+            fn management(
+                &self,
+                module: &str,
+                op: &str,
+                params: Value,
+            ) -> Result<Value, WireError> {
+                assert_eq!((module, op), ("entorhinal", "agent.fleet_identity"));
+                assert_eq!(params, serde_json::json!({}));
+                decode_response(&serde_json::to_vec(&self.0).unwrap(), true)
+            }
+            fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+                panic!("membership must use management")
+            }
+        }
+        let payload = serde_json::json!({"agents":[
+            {"agentId":"agent_placed","displayName":"Placed","role":"engineer","tag":"P","labels":[],
+             "project":{"id":"project_synthetic","name":"Synthetic","canonicalRoot":null},
+             "workspace":{"id":"workspace_synthetic","name":"Synthetic workspace"}},
+            {"agentId":"agent_unplaced","displayName":"Unplaced","role":"engineer","tag":"U","labels":[]}
+        ],"generation":1,"incarnation":"synthetic","logPosition":1,"token":"synthetic","unchanged":false});
+        let catalog = crate::subc_catalog::SubcCatalog::new(std::sync::Arc::new(FleetReply(
+            serde_json::json!({"result":payload}),
+        )));
+        assert_eq!(
+            catalog.workspaces_of("agent_placed").unwrap(),
+            ["workspace_synthetic"]
+        );
+        assert!(catalog.workspaces_of("agent_unplaced").unwrap().is_empty());
+        assert!(catalog.workspaces_of("agent_unknown").unwrap().is_empty());
+        let double = crate::subc_catalog::SubcCatalog::new(std::sync::Arc::new(FleetReply(
+            serde_json::json!({"result":{"result":payload}}),
+        )));
+        assert!(double.workspaces_of("agent_placed").is_err());
+        let failed = crate::subc_catalog::SubcCatalog::new(std::sync::Arc::new(FleetReply(
+            serde_json::json!({"error":{"code":"offline","message":"unavailable"}}),
+        )));
+        assert!(failed.workspaces_of("agent_placed").is_err());
+    }
 }

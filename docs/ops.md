@@ -241,6 +241,9 @@ Reply:
 
 ## flow.list
 
+For operator-facing summaries and bounded history, use `flow.overview` and
+`flow.details` below. `flow.list` retains its existing agent-facing contract.
+
 Params:
 ```json
 {"flow_ids?":"array of string|null"}
@@ -258,6 +261,142 @@ Reply (machine-checked by `list_contract`):
 Template instance entries additionally contain `template`, `version`, canonical `params` and `expires_at` in Unix milliseconds. Persona and ordinary entries omit those keys. Expired and ended instances remain visible to their owner and the operator. The enable state is independent of ending and expiry; enabling cannot reopen an ended or expired instance.
 
 `install_cards` is always an array of `{version, attempt, state, rejected_reason, disposition}` records, including declined, expired and rejected requests; `rejected_reason` and `disposition` are null unless core reported a rejected status, and each is limited to 256 bytes. An attempt is null when no core card key was received. Both `flow.list` and `flow.health` also report `approval` for the current approved version: null when none is approved, `{kind: card}`, `{kind: policy, rule: string}`, or `{kind: unknown}` for approval whose provenance core did not supply. `install_checks` is always an array of `{version: integer, error: string}` records for pending versions whose last confirmation failed; a successful card raise or approval clears that version's error.
+
+## flow.overview
+
+Operator only: the daemon must attest the unscoped route as `reserved:callosum`.
+Core, agents and other modules receive `not_permitted`; an unverified local
+caller receives `operator_attestation_required`. These same refusals apply to
+`flow.details` and `flow.uninstall`, before parameter decoding.
+
+Params (an object with no other keys, or null for defaults):
+```json
+{"agent_id?":"agent_…","workspace_id?":"string","include_removed?":false}
+```
+
+Reply: `{as_of_ms, flows: [...]}`, ordered by `flow_id`. Times in these three
+phone operations are integer Unix epoch milliseconds, with `*_at_ms` names
+(the snapshot time is `as_of_ms`). Each flow contains:
+
+- `flow_id`, `title`, `purpose`, `version`, `owner`.
+  The approved manifest supplies purpose and version; otherwise the newest
+  installed request supplies them, including a declined or expired request
+  when no version was ever approved. Title prefers the approved title, then
+  the newest pending request's title, then the flow id. `owner` is that
+  version's author agent id, or null for an operator or unverified local
+  install. A row without any stored manifest has null purpose and trigger.
+- `audience`: `{kind:"global"}`, `{kind:"workspace", id, name}`,
+  `{kind:"agent", id}`, or null. The workspace display name is
+  `entorhinal.enumerate {workspaceId:id}`'s matching `workspaces[].name`.
+  An absent name or failed registry read becomes `name:null`, never a lost
+  flow or a failed list. Repeated workspace ids share one name lookup.
+- `state`: precedence is **removed**, **pending_approval** (no approved
+  version), **disabled**, **needs_reconcile** (any run needs reconciliation),
+  then **enabled**. A newer pending request does not hide a working approved
+  version. Declined/expired-only flows remain `pending_approval`; their
+  individual decisions appear in details, not as new overview states.
+- `disabled`: `{by, reason}` or null, using `flow.list`'s actor kinds
+  (`operator`, `owner`, `auto`, `core`). It can coexist with `removed`.
+- `trigger`: one plain line. Intervals render as `every 5 minutes`, cron as
+  `cron */5 * * * *, Europe/Madrid` (UTC when no zone is given), one-shot
+  template times as `at 2026-10-24 09:00:00 UTC`, and events as
+  `on plexus github_ci_job_failed (repo cortexkit/*)`. Multiple events are
+  joined with `; ` and header filters with `, `. Basal supports one schedule
+  per manifest, not a schedule array. Template timestamps are parameter-resolved.
+- `last_run`: `{at_ms, outcome}` for the latest finished run by finish time,
+  or null. No run output appears here.
+- Template instances additionally have `template` and `expires_at_ms`.
+
+Optional filters combine with AND. `include_removed` defaults to false.
+`workspace_id` selects only that workspace audience, not global reach.
+`agent_id` must be a stable `agent_…` id, not a display name; it selects global
+audiences, that agent's workspace audience, that agent audience, flows owned
+by the agent, and audience-less flows with a static digest sink reaching it.
+Static display-name targets resolve through Core's paginated `agent.list`,
+as at install; failed target registry reads return the existing retryable
+`agent_registry_unavailable` refusal rather than guessing a match.
+
+Workspace membership comes only from Entorhinal's live placement:
+`agent.fleet_identity {}` on its management query surface. Its raw wire reply
+is `{result:{agents:[{agentId,workspace?:{id,name},...}],...}}`; the transport
+unwraps `result` once. Only the exact `agentId` matches, and an absent agent
+or absent workspace means no membership. An agent belongs to at most one
+workspace. For an agent-filtered overview, this registry is read exactly once,
+before the store snapshot; Core's stored `workspace_id` is not used. If the
+read fails, the reply additionally contains `workspace_membership:"unavailable"`:
+workspace reach cannot match, but owner, static target, agent and global
+matches still work. The key is absent on success and on unfiltered overviews.
+Store reads take no write transaction; all registry calls happen outside the
+store snapshot and outside any write transaction.
+
+## flow.details
+
+Params:
+```json
+{"flow_id":"string","runs?":20}
+```
+`runs` is an integer from 1 through 50, default 20. Unknown flow ids return
+`not_found`. The reply is the overview entry (including removed flows), plus:
+
+- `manifest`: the approved manifest JSON, or the newest installed request
+  when nothing is approved. For package/template instances this is the
+  registered manifest, not script bytes or the parameter-resolved grant copy.
+- `installs`: newest version first, with `version`, `code_hash` (hex),
+  `requested_by` (author agent id, `operator` or `local`), `requested_at_ms`,
+  `approval:{kind:"card"|"policy"|"unknown",rule?}`, and
+  `state:"pending"|"approved"|"declined"|"expired"|"rejected"|"stale"`.
+  `decided_at_ms` is present only when stored on the card or install.
+  Superseded approvals remain `approved` history. A recorded card identifies
+  the card approval path even while pending; absent provenance is `unknown`.
+  Policy approval includes its stored rule. Package/template instances have
+  no per-instance install/card request records, so their `installs` is empty:
+  requester, request time and approval provenance are not fabricated from
+  package registration.
+- `runs`: newest admission first, bounded by `runs`, with `run_id`, `trigger`
+  (`schedule`, the event name, or `manual`), `admitted_at_ms`, `ended_at_ms`,
+  `outcome` (stored run state), `error_kind`, and `error`. Nullable values are
+  null for unfinished runs or absent failures. **Admission time is not script
+  start time**: it can be earlier when a run waits for its slot. Basal does not
+  store a script start timestamp, so no `started_at_ms` is claimed. Failure
+  detail is rendered as one plain line of at most 200 UTF-8 bytes, removing
+  terminal escape sequences and control characters. No script, run output,
+  result payload or call journal is returned.
+
+## flow.uninstall
+
+Params: `{"flow_id":"string"}`. Reply:
+```json
+{"flow_id":"string","removed":true,"changed":true}
+```
+An already removed flow returns `changed:false`. Unknown flows return
+`not_found`. Core-managed persona/package instances return `managed_by_core`;
+the operator must change the persona configuration instead of racing Core's
+reconciler. Template instances are ended just as by `flow.instance.end`,
+including their lifecycle event.
+
+Uninstall keeps all history, records operator removal, uses the normal disable
+path to stop schedules and subsequent calls from runs in flight, and refuses
+queued event receipts so they cannot replay even after a reinstall. New
+notices are not admitted. `flow.enable` returns `flow_removed` for an
+operator-uninstalled flow. Core-removed packages and owner-ended templates
+retain their existing independent enable switch; enabling them never reopens
+their removed instance. A new installed version remains removed until normal approval commits;
+approval clears removal and the uninstall's disable, but not a pre-existing
+operator pause whose reason was preserved. Like an operator disable, uninstall
+takes over owner/runtime pauses. Reapproving or reinstalling the
+same already approved version does not restore the flow.
+
+Migration **39** reuses the existing `flows.removed` bit and adds nullable
+`flows.removed_by` and `flows.removed_at` columns for the removal audit. Existing
+ordinary flows remain unremoved; existing removed instances keep their bit,
+with unknown audit fields left null. No history tables are rebuilt or deleted.
+Approval of a fresh ordinary version clears those audit fields with removal.
+
+Synthetic, handler-generated examples (including refusals and SHA-256 hashes)
+are in [`test-vectors/flows-phone-v1`](../test-vectors/flows-phone-v1/).
+`phone_vectors_match_real_dispatch_and_sha256sums` checks every byte against
+real dispatch. Set `BASAL_PRINT_PHONE_VECTORS=1` for that test with `--nocapture`
+to print the generated file map when intentionally updating the contract.
 
 ## Health and owner notices
 

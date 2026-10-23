@@ -1662,3 +1662,89 @@ build_timeout_s = 3600
 
 [control.select]
 tests = ["approving_v3_supersedes_an_older_pending_install_card", "startup_supersedes_stale_pending_card_without_checking_core_or_warning"]
+
+[[control]]
+id = "phone-uninstall-keeps-event-backlog"
+guards = "uninstall refuses queued notices permanently even after new approval"
+test_file = "crates/basal-module/tests/phone_flows.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test phone_flows"
+select = { tests = ["phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog", "phone_uninstall_stops_schedules_and_keeps_history"] }
+expect_red = ["phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = '''"UPDATE event_receipts SET state='refused' WHERE flow_id=?1 AND state='backlog'"'''
+new = '''"UPDATE event_receipts SET state='refused' WHERE flow_id=?1 AND state='never_backlog' /* NON-VACUITY BREAK */"'''
+
+[[control]]
+id = "phone-reapproval-keeps-removed"
+guards = "only normal approval of a fresh version restores an uninstalled flow"
+test_file = "crates/basal-module/tests/phone_flows.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test phone_flows"
+select = { tests = ["phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog", "phone_uninstall_stops_schedules_and_keeps_history"] }
+expect_red = ["phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = 'removed=0, removed_by=NULL, removed_at=NULL WHERE flow_id = ?1'
+new = 'removed=removed, removed_by=NULL, removed_at=NULL WHERE flow_id = ?1 /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "phone-enable-reopens-removed"
+guards = "enable refuses removed flows rather than reopening them"
+test_file = "crates/basal-module/tests/phone_flows.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test phone_flows"
+select = { tests = ["phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog", "phone_uninstall_stops_schedules_and_keeps_history"] }
+expect_red = ["phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-core/src/install.rs", old = "if uninstalled(tx, flow_id)? {\n        return Err(InstallError::FlowRemoved(flow_id.to_owned()));\n    }\n    if let Some(retirement)", new = "if false { // NON-VACUITY BREAK\n        return Err(InstallError::FlowRemoved(flow_id.to_owned()));\n    }\n    if let Some(retirement)" },
+  { file = "crates/basal-core/src/install.rs", old = "if uninstalled(tx, flow_id)? {\n        return Err(InstallError::FlowRemoved(flow_id.to_owned()));\n    }\n    let retirement", new = "if false { // NON-VACUITY BREAK\n        return Err(InstallError::FlowRemoved(flow_id.to_owned()));\n    }\n    let retirement" }
+]
+
+[[control]]
+id = "phone-uninstall-admits-core-managed-instance"
+guards = "operator uninstall cannot race core's package reconciler"
+test_file = "crates/basal-module/tests/phone_flows.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test phone_flows"
+select = { tests = ["phone_uninstall_ends_templates_but_refuses_core_packages", "phone_uninstall_stops_schedules_and_keeps_history"] }
+expect_red = ["phone_uninstall_ends_templates_but_refuses_core_packages"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = 'if package.is_some() && !template {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "phone-removal-migration-omits-audit"
+guards = "populated stores gain nullable operator removal audit without losing history"
+test_file = "crates/basal-core/tests/phone_migration.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test phone_migration"
+select = { tests = ["phone_removal_migration_preserves_populated_history", "phone_migration_keeps_the_version_chain_contiguous"] }
+expect_red = ["phone_removal_migration_preserves_populated_history"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schema.rs"
+old = 'ALTER TABLE flows ADD COLUMN removed_at INTEGER;'
+new = 'SELECT 1; /* NON-VACUITY BREAK */'

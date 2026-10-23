@@ -129,6 +129,19 @@ pub trait Catalog: Send + Sync {
             "workspace registry unavailable".into(),
         ))
     }
+    /// The display name from the workspace registry, not a caller's label.
+    fn workspace_name(&self, _id: &str) -> Result<Option<String>, crate::transport::WireError> {
+        Err(crate::transport::WireError::Unreadable(
+            "workspace registry unavailable".into(),
+        ))
+    }
+    /// Live placement from Entorhinal. An unplaced or absent agent has no
+    /// memberships; a failed read must not be mistaken for that answer.
+    fn workspaces_of(&self, _agent_id: &str) -> Result<Vec<String>, crate::transport::WireError> {
+        Err(crate::transport::WireError::Unreadable(
+            "workspace membership unavailable".into(),
+        ))
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -145,6 +158,9 @@ struct Entries {
     emits_events_reads: Vec<(String, String)>,
     agents: BTreeMap<String, String>,
     workspaces: BTreeSet<String>,
+    workspace_names: BTreeMap<String, String>,
+    memberships: BTreeMap<String, String>,
+    membership_failure: Option<crate::transport::WireError>,
     /// When set, every agent registry read fails with this error, as when
     /// core's `agent.list` cannot be read.
     agent_registry_failure: Option<crate::transport::WireError>,
@@ -302,6 +318,18 @@ impl MockCatalog {
     pub fn add_workspace(&self, id: &str) {
         self.write().workspaces.insert(id.to_owned());
     }
+    pub fn name_workspace(&self, id: &str, name: &str) {
+        self.add_workspace(id);
+        self.write().workspace_names.insert(id.into(), name.into());
+    }
+    pub fn place_agent(&self, agent: &str, workspace: &str) {
+        self.write()
+            .memberships
+            .insert(agent.into(), workspace.into());
+    }
+    pub fn fail_memberships(&self, error: Option<crate::transport::WireError>) {
+        self.write().membership_failure = error;
+    }
 
     pub fn add_named_agent(&self, agent_id: &str, name: &str) {
         let mut entries = self.write();
@@ -314,6 +342,21 @@ impl MockCatalog {
 
 #[cfg(any(test, feature = "test-support"))]
 impl Catalog for MockCatalog {
+    fn workspace_name(&self, id: &str) -> Result<Option<String>, crate::transport::WireError> {
+        Ok(self.read().workspace_names.get(id).cloned())
+    }
+    fn workspaces_of(&self, agent_id: &str) -> Result<Vec<String>, crate::transport::WireError> {
+        let entries = self.read();
+        if let Some(error) = &entries.membership_failure {
+            return Err(error.clone());
+        }
+        Ok(entries
+            .memberships
+            .get(agent_id)
+            .cloned()
+            .into_iter()
+            .collect())
+    }
     fn workspace_known(&self, id: &str) -> Result<bool, crate::transport::WireError> {
         Ok(self.read().workspaces.contains(id))
     }
