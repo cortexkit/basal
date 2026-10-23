@@ -602,11 +602,10 @@ pub(crate) fn running(id: &str, holds: &[Hold], consumer_capabilities: Option<&[
             .clone(),
     );
     if cortexkit_role_tool_provider::consumer_reads_held_reply_v1(consumer_capabilities) {
-        // Switch to the shared running reason constant once tool-provider publishes it.
         let reason = holds
             .iter()
             .find_map(|hold| hold.reason.as_deref())
-            .unwrap_or("running");
+            .unwrap_or(cortexkit_role_tool_provider::result::held_reasons::RUNNING);
         reply = reply.with_held(cortexkit_role_tool_provider::result::HeldReply::new(reason));
     }
     bounded_result(reply)

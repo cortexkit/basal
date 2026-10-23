@@ -489,22 +489,32 @@ fn the_schema_bounds_the_description() {
 }
 
 #[test]
-fn withdrawn_requires_a_sent_entered_person_held_call() {
+fn withdrawn_requires_a_sent_entered_held_call() {
     let t = temp_store();
     admit(&t.store, &new_run("withdrawal"));
-    for (position, intent, entered, held) in [
-        (0, None, None, 1),
-        (1, Some(100), None, 1),
-        (2, Some(100), Some(100), 0),
-        (3, Some(100), Some(100), 1),
+    // A provider can hold a call without a person (reason `running`), and
+    // withdrawing that call is as valid as withdrawing a person-held one.
+    for (position, intent, entered, held, person, allowed) in [
+        (0, None, None, 1, 1, false),
+        (1, Some(100), None, 1, 1, false),
+        (2, Some(100), Some(100), 0, 0, false),
+        (3, Some(100), Some(100), 1, 1, true),
+        (4, Some(100), Some(100), 1, 0, true),
     ] {
         t.store.write(|tx| {
-            tx.execute("INSERT INTO codemode_calls(run_id,position,tool,idempotency_key,input_bytes,intent_at,entered_at,waited_on_person,outcome) VALUES('withdrawal',?1,'browser_use',?2,0,?3,?4,?5,'pending')", params![position, format!("withdraw-{position}"),intent,entered,held])?;
+            tx.execute("INSERT INTO codemode_calls(run_id,position,tool,idempotency_key,input_bytes,intent_at,entered_at,held,waited_on_person,outcome) VALUES('withdrawal',?1,'browser_use',?2,0,?3,?4,?5,?6,'pending')", params![position, format!("withdraw-{position}"),intent,entered,held,person])?;
             let update = record_outcome(tx,"withdrawal",position,Outcome::Withdrawn,Some("withdrawn"),200);
-            if position == 3 { assert!(update?); } else { assert!(update.is_err(), "withdrawn requires dispatch and a person hold at position {position}"); }
+            if allowed { assert!(update?); } else { assert!(update.is_err(), "withdrawn requires dispatch and a hold at position {position}"); }
             Ok(())
         }).unwrap();
     }
+    t.store.write(|tx| {
+        assert!(
+            tx.execute("INSERT INTO codemode_calls(run_id,position,tool,idempotency_key,input_bytes,intent_at,entered_at,held,waited_on_person,outcome) VALUES('withdrawal',5,'browser_use','withdraw-5',0,100,100,0,1,'pending')", []).is_err(),
+            "a person wait is always a hold"
+        );
+        Ok(())
+    }).unwrap();
     let withdrawn = call(&t.store, "withdrawal", 3);
     assert_eq!(withdrawn.outcome, Outcome::Withdrawn);
     assert_eq!(withdrawn.intent_at, Some(100));
@@ -584,4 +594,137 @@ fn withdrawn_migration_preserves_calls_model_children_and_finality() {
         0
     );
     assert!(conn.execute("UPDATE codemode_calls SET outcome='error',code='changed' WHERE run_id='old' AND position=0",[]).is_err());
+}
+
+/// Migration 38 adds `held` to codemode_calls by rebuilding the table. The
+/// existing columns, the rows that reference calls, and every trigger must
+/// come through unchanged, and earlier holds, all of which were counted as
+/// person waits, become holds.
+#[test]
+fn held_migration_backfills_person_waits_and_preserves_calls_children_and_triggers() {
+    const OLD_COLUMNS: &str = "SELECT run_id,position,tool,idempotency_key,input_bytes,intent_at,outcome,code,duration_ms,entered_at,waited_on_person FROM codemode_calls ORDER BY position";
+    fn rows(conn: &rusqlite::Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut statement = conn.prepare(sql).unwrap();
+        let width = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..width)
+                    .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap()
+    }
+    const TRIGGERS: &str =
+        "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name";
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    for migration in crate::schema::MIGRATIONS.iter().filter(|m| m.version < 38) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    let tx = conn.transaction().unwrap();
+    insert_run(&tx, &new_run("old"), None).unwrap();
+    for (position, tool, intent, outcome, code, duration, entered, person) in [
+        (0, "model", Some(100), "ok", None, Some(10), Some(100), 0),
+        (
+            1,
+            "browser_use",
+            Some(100),
+            "withdrawn",
+            Some("withdrawn"),
+            Some(20),
+            Some(100),
+            1,
+        ),
+        (2, "read", Some(100), "pending", None, None, Some(100), 0),
+        (3, "read", Some(100), "pending", None, None, Some(100), 1),
+        (4, "read", None, "cancelled", None, None, None, 0),
+    ] {
+        tx.execute(
+            "INSERT INTO codemode_calls(run_id,position,tool,idempotency_key,input_bytes,intent_at,outcome,code,duration_ms,entered_at,waited_on_person) VALUES('old',?1,?2,?3,7,?4,?5,?6,?7,?8,?9)",
+            params![position, tool, format!("old-{position}"), intent, outcome, code, duration, entered, person],
+        )
+        .unwrap();
+    }
+    tx.execute(
+        "INSERT INTO codemode_models VALUES('old',0,17,11,'{\"model\":true}')",
+        [],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO codemode_broca_calls VALUES('send-1','old',0,'{\"pending\":true}')",
+        [],
+    )
+    .unwrap();
+    tx.execute("INSERT INTO broca_waits(send_id) VALUES('send-1')", [])
+        .unwrap();
+    tx.commit().unwrap();
+    let calls_before = rows(&conn, OLD_COLUMNS);
+    let triggers_before = rows(&conn, TRIGGERS);
+    conn.execute_batch(
+        crate::schema::MIGRATIONS
+            .iter()
+            .find(|m| m.version == 38)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    assert_eq!(rows(&conn, OLD_COLUMNS), calls_before);
+    assert_eq!(rows(&conn, TRIGGERS), triggers_before);
+    let held: Vec<i64> = conn
+        .prepare("SELECT held FROM codemode_calls ORDER BY position")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert_eq!(held, [0, 1, 0, 1, 0], "held starts as waited_on_person");
+    assert_eq!(
+        rows(&conn, "SELECT * FROM codemode_models"),
+        rows(&conn, "SELECT 'old',0,17,11,'{\"model\":true}'")
+    );
+    assert_eq!(
+        rows(&conn, "SELECT * FROM codemode_broca_calls"),
+        rows(&conn, "SELECT 'send-1','old',0,'{\"pending\":true}'")
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    // The checks the rebuild adds: a person wait is a hold, and withdrawal
+    // needs a hold but not a person.
+    assert!(
+        conn.execute(
+            "UPDATE codemode_calls SET waited_on_person=1 WHERE run_id='old' AND position=2",
+            []
+        )
+        .is_err()
+    );
+    assert!(conn.execute("UPDATE codemode_calls SET outcome='withdrawn',code='withdrawn',duration_ms=5 WHERE run_id='old' AND position=2", []).is_err());
+    conn.execute(
+        "UPDATE codemode_calls SET held=1 WHERE run_id='old' AND position=2",
+        [],
+    )
+    .unwrap();
+    conn.execute("UPDATE codemode_calls SET outcome='withdrawn',code='withdrawn',duration_ms=5 WHERE run_id='old' AND position=2", [])
+        .unwrap();
+    // The recreated triggers still act.
+    assert!(conn.execute("UPDATE codemode_calls SET outcome='error',code='changed' WHERE run_id='old' AND position=0", []).is_err());
+    conn.execute(
+        "DELETE FROM codemode_broca_calls WHERE send_id='send-1'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM broca_waits", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "deleting a codemode Broca call still forgets its wait"
+    );
 }
