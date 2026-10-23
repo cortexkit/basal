@@ -1,5 +1,7 @@
 @SUBC basal: a STOP-THE-WORLD UPDATE, stop ck-basal before replacing either binary
 
+macOS developer placement.
+
 **Card**
 - stage: @STAGE@ (both binaries)
 - ck-basal: @STAGE@/ck-basal, sha256 basal-digest; basal.current revision @SHA@
@@ -8,11 +10,11 @@
 - CI for that commit (push event): completed success, https://example.test/push
 - daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.30 module is known to run against.
 
-**Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
+**macOS signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=0x10000(runtime)
 - ck-basal-worker: Identifier=ck-basal-worker flags=0x10000(runtime)
-- no entitlements: the worker's QuickJS is an interpreter and needs no JIT; its sandbox is a Seatbelt profile it applies to itself.
-- smoke-tested on the signed files: ck-basal --manifest (module_id basal, provenance build_git_sha @SHA@); --version on both; the worker's sandbox self-check (script/sign-worker.sh verify: embedded profile, and a file read, a socket connect and a program launch all denied); lldb -p refused on both, with an unhardened ad-hoc copy of /bin/sleep as the control that did attach. Inode and flags unchanged across the run.
+- no entitlements: the worker's QuickJS is an interpreter and needs no JIT; macOS sandbox: a Seatbelt profile it applies to itself.
+- smoke-tested on the signed files: ck-basal --manifest (module_id basal, provenance build_git_sha @SHA@); --version on both; the worker's macOS sandbox self-check (script/sign-worker.sh verify: embedded profile, and a file read, a socket connect and a program launch all denied); macOS debugger hardening: lldb -p refused on both, with an unhardened ad-hoc copy of /bin/sleep as the control that did attach. Inode and flags unchanged across the run.
 
 **Marker and control** (strings table, checked against the live destinations)
 - ck-basal marker "new basal": staged 2 / live 0
@@ -41,6 +43,6 @@
 **Post-placement checks**
 - `ck --json provenance basal`: build_git_sha @SHA@, and after allowing up to five seconds for the ck-subc trampoline to exec, the observed pid's running image is the placed ck-basal (same inode); fail if it never becomes that file.
 - a worker's running image is the placed ck-basal-worker (same inode) once a flow runs; if it briefly reports the ck-subc trampoline, retry for up to five seconds and fail if it never becomes the placed file.
-- BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
+- macOS sandbox: BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
 - the store reads schema version 7 with its tables intact.
 - basal's flow.list answers.
