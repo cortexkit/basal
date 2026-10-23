@@ -2476,7 +2476,7 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-select = { tests = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call", "codemode::store::tests::held_migration_backfills_person_waits_and_preserves_calls_children_and_triggers"] }
+select = { tests = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call", "codemode::store::tests::held_migration_backfills_person_waits_and_preserves_calls_children_and_triggers", "codemode::store::tests::a_recorded_outcome_never_changes"] }
 expect_red = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call", "codemode::store::tests::held_migration_backfills_person_waits_and_preserves_calls_children_and_triggers"]
 only = true
 file = "crates/basal-core/src/schema.rs"
