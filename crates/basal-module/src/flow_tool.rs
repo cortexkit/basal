@@ -17,6 +17,8 @@ use subc_protocol::{
 
 use crate::{caller::Caller, module::Module, tool::Context};
 
+mod text;
+
 pub const DESCRIPTION: &str = "Manage your own flows; installs need operator approval before running.\ninstall: read script_path and manifest_path from your files and submit the exact bytes for approval, with a capture dry run.\ndry_run: preview flow_id with optional version and window (for example 6h) or a sample trigger; no live effects.\ndisable: stop flow_id, with an optional reason.\nenable: resume flow_id if you disabled it yourself.\nlist: show your flows, optionally filtered by flow_ids.\ninstantiate: create or extend a bounded template with params and expires_in; version is optional and defaults to the newest approved.\nend: end your template instance by flow_id.";
 
 const FILE_READ_EXCERPT_BYTES: usize = 200;
@@ -320,7 +322,7 @@ impl Module {
                 body
             })?;
         use cortexkit_role_tool_provider::result::{ContentPart, ToolResult};
-        let reply = ToolResult::new(vec![ContentPart::text(summary(action, &result))])
+        let reply = ToolResult::new(vec![ContentPart::text(text::summary(action, &result))])
             .with_structured_content(
                 result
                     .as_object()
@@ -328,41 +330,6 @@ impl Module {
                     .expect("flow op returns an object"),
             );
         serde_json::to_value(reply).map_err(storage)
-    }
-}
-
-fn summary(action: &str, result: &Value) -> String {
-    match action {
-        "install" => format!(
-            "Install {}: card {}, code hash {}.\nWarnings: {}\nDry run: {}",
-            result["flow_id"].as_str().unwrap_or(""),
-            result["card_id"],
-            result["code_hash"],
-            result["warnings"],
-            result["dry_run"]
-        ),
-        "list" => {
-            let lines: Vec<_> = result["flows"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|flow| {
-                    format!(
-                        "{}: {}; approved version {}; last run {}",
-                        flow["flow_id"].as_str().unwrap_or(""),
-                        flow["state"].as_str().unwrap_or(""),
-                        flow["approved_version"],
-                        flow["last_run"]
-                    )
-                })
-                .collect();
-            if lines.is_empty() {
-                "No flows.".into()
-            } else {
-                lines.join("\n")
-            }
-        }
-        _ => format!("{action}: {result}"),
     }
 }
 
