@@ -88,6 +88,11 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
         "Return the currently approved manifest's delivery audience; attested unscoped modules only.",
     ),
     (
+        "flow.private_content_providers",
+        ManagementOperationKind::Query,
+        "Return the approved extra private-content model providers, version and hash; broca only.",
+    ),
+    (
         "flow.health",
         ManagementOperationKind::Query,
         "Per-flow health (state, last run, overdue work, consecutive failures, runs needing reconcile) and the runtime's own figures.",

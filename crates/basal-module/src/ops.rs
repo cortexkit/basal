@@ -268,6 +268,7 @@ impl Module {
             "flow.dry_run" => self.op_dry_run(caller, params),
             "flow.health" => self.op_health(caller, params),
             "flow.audience" => self.op_audience(caller, params),
+            "flow.private_content_providers" => self.op_private_content_providers(caller, params),
             "flow.list" => self.op_list(caller, params),
             "flow.reconcile" => self.op_reconcile(caller, params),
             "flow.drain" => self.op_drain(caller, params),
@@ -1164,7 +1165,41 @@ impl Module {
         })
     }
 
-    // ---- flow.list -----------------------------------------------------
+    // ---- approved manifest queries -------------------------------------
+
+    fn op_private_content_providers(&self, caller: &Caller, params: Value) -> OpResult {
+        if !matches!(caller, Caller::Module { module_id } if module_id == "broca") {
+            return Err(OpError::new(
+                "not_permitted",
+                "flow.private_content_providers requires an attested unscoped broca route",
+            ));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            flow_id: String,
+        }
+        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        let approved = self
+            .rt
+            .store()
+            .read(|c| basal_core::install::approved(c, &p.flow_id))
+            .map_err(|e| self.core_error(e))?;
+        let Some(approved) = approved else {
+            return Err(OpError::new(
+                "flow_not_approved",
+                "no approved flow private-content providers",
+            ));
+        };
+        let parsed = Manifest::parse_stored(&approved.manifest)
+            .map_err(|e| OpError::new("internal", format!("approved manifest: {e}")))?;
+        Ok(json!({
+            "flow_id": p.flow_id,
+            "version": approved.version,
+            "code_hash": code_hash_hex(&approved.code_hash),
+            "providers": parsed.private_content_providers,
+        }))
+    }
 
     fn op_audience(&self, caller: &Caller, params: Value) -> OpResult {
         if !matches!(
@@ -1198,6 +1233,8 @@ impl Module {
             .map_err(|e| OpError::new("internal", format!("approved manifest: {e}")))?;
         Ok(json!({"audience": parsed.audience}))
     }
+
+    // ---- flow.list -----------------------------------------------------
 
     fn op_list(&self, caller: &Caller, params: Value) -> OpResult {
         let owner = match caller {

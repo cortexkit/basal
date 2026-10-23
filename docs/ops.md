@@ -153,6 +153,32 @@ The summary is the dry-run trace, including calls and sink writes. Its journal u
 ```
 A one-shot template replay has window shape `{"kind":"at","at":"string","replayed":1,"dry_run":true}`. A schedule's `covered` may be null when no fires are replayed. `partial` marks traces affected by simulated calls: capture rejects external reads and mutations rather than executing them, so subsequent script branches may differ from a live run. It does not imply live effects.
 
+## flow.private_content_providers
+
+Read-only management query for broca's private-content model-call gate. Only
+the daemon-attested module principal `reserved:broca` on a verified unscoped
+route may call it. Every other caller receives `not_permitted`, as for an
+unauthorized `flow.audience` call. Request parameters cannot supply identity.
+
+Params:
+```json
+{"flow_id":"string"}
+```
+
+Reply:
+```json
+{"flow_id":"string","version":"integer","code_hash":"string","providers":["string"]}
+```
+
+The list comes from the flow's currently approved version, in manifest order;
+an absent field returns `providers: []` (base set only). `version` and
+`code_hash` identify the approval for broca's per-version cache. Template
+instances return their template version's manifest list, not instance parameters.
+Unknown flows and flows without an approved version both receive
+`flow_not_approved`, without revealing which flows exist. The query takes no
+write lock and makes no network call. See the
+[`private_content_providers` manifest field](manifest.md#private_content_providers).
+
 ## flow.audience
 
 This management query is not agent-relayed. Only daemon-attested reserved
