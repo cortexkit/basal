@@ -97,6 +97,20 @@ rcgen = "0.13"
 [profile.release]
 opt-level = 3
 
+# Build basal's own code and its Rust dependencies at opt-level 1 in dev and
+# test builds (the test profile inherits dev). The suite is dominated by
+# running tests, not compiling them: on a 4-vCPU Linux host, a warm rebuild
+# and test of basal-module, or of basal-core and basal-module together, took
+# 24-35% less time, and the whole workspace's tests ran in about 180 s
+# instead of 290-550 s. The cost is compile time: a cold build takes roughly
+# 1.5-2 times as long, and a push touching only basal-core, whose tests are
+# quick, is a few seconds slower. Debug assertions and overflow checks do
+# not depend on opt-level; they are stated here so they stay on.
+[profile.dev]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
+
 # Optimise the bundled C engines in dev and test builds too. Every test store
 # open runs basal's whole SQLite migration chain, and every flow run executes
 # its script in QuickJS; unoptimised, those two dominated the serial test
