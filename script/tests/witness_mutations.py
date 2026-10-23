@@ -1,5 +1,7 @@
 """Mutation witnesses must observe the indexed mutant and a named test failure."""
+import contextlib
 import importlib.util
+import io
 from pathlib import Path
 import subprocess
 import tempfile
@@ -40,7 +42,85 @@ class MutationWitnessChecks(unittest.TestCase):
 
     def test_feature_flags_apply_to_the_named_cargo_oracle(self):
         self.assertEqual(WITNESS.command(self.row), ["cargo", "test", "--locked", "-p", "fixture",
-                         "--lib", "--features", "deviations", "--", "tests::guard", "--exact", "--nocapture"])
+                         "--lib", "--features", "deviations", "--", "tests::guard", "--exact", "--show-output"])
+
+    def cargo_with_sibling(self, args, **kwargs):
+        result = self.cargo(args, **kwargs)
+        if args[0] != "cargo":
+            return result
+        text = "test tests::sibling ... ok\n" + result.stdout
+        text = text.replace("0 passed; 1 failed", "1 passed; 1 failed")
+        text = text.replace("1 passed; 0 failed", "2 passed; 0 failed")
+        return subprocess.CompletedProcess(args, result.returncode, text)
+
+    def test_explicit_run_set_executes_and_records_the_passing_sibling(self):
+        self.row["select"] = {"tests": ["tests::guard", "tests::sibling"]}
+        self.row["only"] = True
+        console = io.StringIO()
+        def run(args, **kwargs):
+            if args[0] == "cargo":
+                self.assertEqual(args[-4:], ["tests::guard", "tests::sibling", "--exact", "--show-output"])
+                if "NON-VACUITY BREAK" in self.source.read_text():
+                    self.assertIn("+// NON-VACUITY BREAK", console.getvalue())
+                    self.assertIn("1 file changed", console.getvalue())
+            return self.cargo_with_sibling(args, **kwargs)
+        with contextlib.redirect_stdout(console), mock.patch.object(WITNESS.subprocess, "run", side_effect=run):
+            proof = WITNESS.witness(self.row, self.output)
+        self.assertEqual(proof["outcome"], "reddened")
+        self.assertIn("tests::guard: FAILED", proof["captured_output"])
+        self.assertIn("tests::sibling: ok", proof["captured_output"])
+        self.assertIn("test tests::sibling ... ok", (self.output / "guard-baseline.log").read_text())
+        self.assertIn("+// NON-VACUITY BREAK", (self.output / "guard-mutant.log").read_text())
+        self.assertIn("+// NON-VACUITY BREAK", (self.output / "guard-applied.diff").read_text())
+        self.assertIn("after: (empty)", (self.output / "guard-stats.log").read_text())
+        self.assertEqual(self.source.read_text(), "guard();\n")
+
+    def test_filter_run_set_runs_without_exact_and_records_its_sibling(self):
+        self.row["select"] = {"filter": "tests::"}
+        self.assertEqual(WITNESS.command(self.row)[-3:], ["--", "tests::", "--show-output"])
+        with mock.patch.object(WITNESS.subprocess, "run", side_effect=self.cargo_with_sibling):
+            proof = WITNESS.witness(self.row, self.output)
+        self.assertEqual(proof["outcome"], "reddened")
+        self.assertIn("tests::sibling: ok", proof["captured_output"])
+
+    def test_captured_test_output_is_not_a_libtest_status(self):
+        for heading in ["successes", "failures"]:
+            with self.subTest(heading=heading):
+                text = (f"test tests::guard ... ok\n\n{heading}:\n"
+                        "test tests::guard ... FAILED\ntest tests::sibling ... ok\n")
+                self.assertEqual(WITNESS.test_results(text), {"tests::guard": "ok"})
+
+    def test_a_missing_declared_sibling_is_refused_in_the_baseline(self):
+        self.row["select"] = {"tests": ["tests::guard", "tests::sibling"]}
+        with mock.patch.object(WITNESS.subprocess, "run", side_effect=self.cargo):
+            with self.assertRaisesRegex(SystemExit, "named baseline did not execute"):
+                WITNESS.witness(self.row, self.output)
+        self.assertEqual(self.source.read_text(), "guard();\n")
+
+    def test_a_missing_sibling_in_the_mutant_is_not_a_complete_catch(self):
+        self.row["select"] = {"tests": ["tests::guard", "tests::sibling"]}
+        def run(args, **kwargs):
+            if args[0] == "cargo" and "NON-VACUITY BREAK" in self.source.read_text():
+                return self.cargo(args, **kwargs)
+            return self.cargo_with_sibling(args, **kwargs)
+        with mock.patch.object(WITNESS.subprocess, "run", side_effect=run):
+            proof = WITNESS.witness(self.row, self.output)
+        self.assertEqual(proof["outcome"], "undefended")
+        self.assertEqual(self.source.read_text(), "guard();\n")
+
+    def test_a_failing_sibling_is_not_a_named_mutation_catch(self):
+        self.row["select"] = {"tests": ["tests::guard", "tests::sibling"]}
+        self.row["only"] = True
+        def run(args, **kwargs):
+            result = self.cargo_with_sibling(args, **kwargs)
+            if args[0] == "cargo" and "NON-VACUITY BREAK" in self.source.read_text():
+                return subprocess.CompletedProcess(args, 101, result.stdout.replace(
+                    "test tests::sibling ... ok", "test tests::sibling ... FAILED"))
+            return result
+        with mock.patch.object(WITNESS.subprocess, "run", side_effect=run):
+            proof = WITNESS.witness(self.row, self.output)
+        self.assertEqual(proof["outcome"], "undefended")
+        self.assertEqual(self.source.read_text(), "guard();\n")
 
     def test_witness_stages_live_source_and_restores_it_after_a_named_failure(self):
         self.source.write_text("guard();\n// live implementation\n")

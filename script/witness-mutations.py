@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Capture indexed source diffs and exact named-test failures for Cargo controls.
+"""Capture indexed source diffs and named-test run sets for Cargo controls.
 
-The pinned ckdev-mutate runner grades whether catalogue mutations are caught by
-their declared test targets. This script adds the applied/restored Git diff and
-an exact named-test failure; it does not replace that replay or coverage grading.
+The pinned ckdev-mutate runner replays catalogue mutations against their declared
+test targets. This script supplements that replay with applied/restored Git diffs,
+a named failure and any declared passing siblings. It does not replace the runner's
+catch or coverage grading. Rows without a run set use only their named oracle.
 """
 import argparse
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -30,7 +32,33 @@ def command(row):
         args.append("--no-default-features")
     if row.get("all_features"):
         args.append("--all-features")
-    return args + ["--", row["expect_red"][0], "--exact", "--nocapture"]
+    selection = row.get("select")
+    if isinstance(selection, dict) and "tests" in selection:
+        filters = [*selection["tests"], "--exact"]
+    elif isinstance(selection, dict) and "filter" in selection:
+        filters = [selection["filter"]]
+    else:
+        filters = [row["expect_red"][0], "--exact"]
+    # Keep test output captured until libtest finishes its status lines. Live
+    # output can interleave with those lines and make the results unparseable.
+    return args + ["--", *filters, "--show-output"]
+
+
+def test_results(text):
+    # With --show-output, captured test text follows these headings. Do not
+    # mistake a test's own output for libtest's status lines.
+    text = re.split(r"^(?:failures|successes):\s*$", text, maxsplit=1, flags=re.MULTILINE)[0]
+    return dict(re.findall(r"^test (\S+) \.\.\. (ok|FAILED|ignored)\b", text, re.MULTILINE))
+
+
+def complete_selection(row, results):
+    selection = row.get("select")
+    if isinstance(selection, dict) and "tests" in selection:
+        return set(results) == set(selection["tests"])
+    if isinstance(selection, dict) and "filter" in selection:
+        return (len(results) >= 2 and row["expect_red"][0] in results
+                and all(selection["filter"] in name for name in results))
+    return set(results) == {row["expect_red"][0]}
 
 
 def witness(row, output):
@@ -46,9 +74,12 @@ def witness(row, output):
     args = command(row)
     baseline = subprocess.run(args, cwd=ROOT, text=True, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, timeout=row.get("build_timeout_s", 3600))
+    (output / f"{row['id']}-baseline.log").write_text(baseline.stdout)
     test = row["expect_red"][0]
-    if baseline.returncode or f"test {test} ... ok" not in baseline.stdout:
-        (output / f"{row['id']}-baseline.log").write_text(baseline.stdout)
+    baseline_results = test_results(baseline.stdout)
+    if (baseline.returncode or baseline_results.get(test) != "ok"
+            or not complete_selection(row, baseline_results)
+            or any(status != "ok" for status in baseline_results.values())):
         raise SystemExit(f"{row['id']}: named baseline did not execute and pass")
     result = None
     try:
@@ -58,6 +89,10 @@ def witness(row, output):
         during = git("diff", "--stat")
         if not during:
             raise SystemExit("mutation safety: empty applied diff")
+        applied = git("diff", "--", row["file"])
+        (output / f"{row['id']}-applied.diff").write_text(applied + "\n")
+        prefix = f"Applied mutation {row['id']}:\n{applied}\nDuring diff stat:\n{during}\n"
+        print(prefix, flush=True)
         try:
             result = subprocess.run(args, cwd=ROOT, text=True, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, timeout=row.get("build_timeout_s", 3600))
@@ -70,14 +105,20 @@ def witness(row, output):
         after = git("diff", "--stat")
         if after:
             raise SystemExit("mutation safety: restored diff is not empty")
-    (output / f"{row['id']}-mutant.log").write_text(text)
-    expected = f"test {test} ... FAILED"
-    red = result is not None and result.returncode != 0 and expected in text and "0 passed; 1 failed" in text
-    reached = f"test {test} ..." in text
+        stats = f"during: {during}\nafter: {after or '(empty)'}\n"
+        (output / f"{row['id']}-stats.log").write_text(stats)
+        print(f"Restored {row['file']}: {after or '(empty)'}", flush=True)
+    (output / f"{row['id']}-mutant.log").write_text(prefix + text)
+    results = test_results(text)
+    red = (result is not None and result.returncode != 0 and results.get(test) == "FAILED"
+           and complete_selection(row, results)
+           and all(status == "ok" for name, status in results.items() if name != test))
+    reached = test in results
+    summary = "; ".join(f"{name}: {status}" for name, status in sorted(results.items()))
     proof = {
         "control": row["id"],
         "expected_red": test,
-        "captured_output": expected + "; 0 passed; 1 failed; all other tests filtered" if red else text[-400:],
+        "captured_output": summary if red else text[-400:],
         "applied_evidence": f"{row['file']}; during: {during}; after: {after or '(empty)'}",
         "outcome": "reddened" if red else "hung" if result is None else "not_reached" if not reached else "undefended",
     }
