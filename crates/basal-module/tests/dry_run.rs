@@ -176,10 +176,19 @@ fn protected_root_warning_is_returned_for_install_and_dry_run() {
         "the warning is not a refusal"
     );
     assert_eq!(installed["warnings"].as_array().unwrap().len(), 1);
-    assert_eq!(installed["warnings"][0]["kind"], "macos_protected_root");
+    assert_eq!(installed["warnings"][0]["kind"], "protected_root");
     assert_eq!(installed["warnings"][0]["field"], "fs.read");
     assert_eq!(installed["warnings"][0]["path"], manifest_root);
-    assert_eq!(installed["warnings"][0]["protected_folder"], "~/Desktop");
+    // Desktop is protected on macOS only; Windows Controlled Folder Access
+    // does not cover it by default.
+    assert_eq!(
+        installed["warnings"][0]["protections"],
+        json!([{
+            "os": "macos",
+            "folder": "~/Desktop",
+            "effect": "the first access asks the operator for permission",
+        }])
+    );
 
     let dry_run = f
         .module

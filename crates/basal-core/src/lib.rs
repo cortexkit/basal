@@ -84,7 +84,9 @@ pub use clock::Clock;
 pub use error::{CoreError, Result};
 pub use gate::{InstallGate, RevokeCause};
 pub use hooks::{Boundary, Hooks, NoHooks, Step};
-pub use install::{Actor, InstallError, InstallRequest, Installed, Warning};
+pub use install::{
+    Actor, InstallError, InstallRequest, Installed, ProtectingOs, Protection, Warning,
+};
 pub use kv::KvLimits;
 pub use manifest::{Manifest, ManifestError};
 pub use model::{CallRow, DispatchState, Run, RunState, StoredClass};

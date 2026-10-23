@@ -29,13 +29,29 @@ and template on this basal.
 
 ## Install and dry-run warnings
 
-Flow installs and dry runs report `macos_protected_root` when an `fs.read`,
-`fs.write`, `git.read` or template parameter `under` root is under
-`~/Desktop`, `~/Documents`, `~/Downloads` or `/Volumes/`. The warning includes
-the manifest `field`, original `path` and `protected_folder`; it does not refuse
-the flow. These locations are listed on every platform so manifests intended
-for macOS can be reviewed before their first access. On macOS, the first access
-to the protected root named by `path` will ask the operator for permission.
+Flow installs and dry runs report `protected_root` when an `fs.read`,
+`fs.write`, `git.read` or template parameter `under` root lies in a folder an
+operating system protects. The warning does not refuse the flow. It carries the
+manifest `field`, the original `path`, and `protections`: one entry per
+operating system whose protection covers the path, each with `os`, the
+protected `folder` and its `effect`. Its `text` gives one plain line per entry.
+A flow can run on any operating system, so both rules below are checked on
+every host:
+
+- **macOS** (`"os": "macos"`): `~/Desktop`, `~/Documents`, `~/Downloads` and
+  each volume under `/Volumes/` (removable and network volumes; a root at
+  `/Volumes` itself is reported as `/Volumes/*`, every volume). The first
+  access asks the operator for permission.
+- **Windows** (`"os": "windows"`): `~/Documents`, `~/Favorites`, `~/Music`,
+  `~/Pictures` and `~/Videos`, in any letter case, the profile folders that
+  Controlled Folder Access protects by default. Writes under them are blocked
+  while the operator has Controlled Folder Access on.
+- **Linux** has no general per-folder protection, so no entry names it.
+
+A root written with `~` gets the same warning on every host; an absolute root
+matches when it lies in the home folder of the host running basal, so its
+warning can differ between hosts. Paths are compared lexically (`.` is dropped
+and `..` collapsed): symlinks are not resolved and the folders need not exist.
 
 ## Revocation during a run
 

@@ -208,8 +208,8 @@ fn dry_run(report: &Value) -> Vec<String> {
 fn warnings(lines: &mut Vec<String>, sources: &[&Value]) {
     let mut seen = Vec::new();
     for warning in sources.iter().flat_map(|source| items(source)) {
-        let text = if let Some(message) = warning.as_str() {
-            short(message)
+        let texts = if let Some(message) = warning.as_str() {
+            vec![short(message)]
         } else {
             let context = if warning["module"].is_string() {
                 format!("{} {}", field(warning, "module"), field(warning, "op"))
@@ -225,19 +225,23 @@ fn warnings(lines: &mut Vec<String>, sources: &[&Value]) {
             } else {
                 format!("; {}", short(&context))
             };
-            format!(
-                "{}{}: {}",
-                field(warning, "kind"),
-                context,
-                warning["text"]
-                    .as_str()
-                    .unwrap_or("No description available.")
-                    .replace(['\n', '\r'], " ")
-            )
+            // A warning's text may hold several lines, such as one per
+            // operating system; each becomes its own warning line.
+            let text = warning["text"]
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or("No description available.");
+            text.split(['\n', '\r'])
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(|line| format!("{}{}: {}", field(warning, "kind"), context, line))
+                .collect()
         };
-        if !seen.contains(&text) {
-            lines.push(format!("Warning: {text}"));
-            seen.push(text);
+        for text in texts {
+            if !seen.contains(&text) {
+                lines.push(format!("Warning: {text}"));
+                seen.push(text);
+            }
         }
     }
 }

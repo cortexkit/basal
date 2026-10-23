@@ -99,7 +99,7 @@ fn warnings_are_plain_lines_with_context_and_duplicates_are_omitted() {
     let mut result = events();
     result["warnings"] = json!([
         {"kind":"private_text_with_outbound_op", "module":"mail", "op":"send", "text":"the flow reads private text and holds an op that can send data out"},
-        {"kind":"macos_protected_root", "path":"Documents/notes", "text":"On macOS this path is in a folder the system protects; the first access will ask the operator for permission."}
+        {"kind":"protected_root", "path":"~/Documents/notes", "text":"On macOS, the first access to ~/Documents asks the operator for permission.\nOn Windows, writes under ~/Documents are blocked while Controlled Folder Access is on."}
     ]);
     result["summary"]["warnings"] = result["warnings"].clone();
     assert_eq!(
@@ -107,7 +107,8 @@ fn warnings_are_plain_lines_with_context_and_duplicates_are_omitted() {
         "Preview for board-hygiene v15.\n\
          Dry run (capture mode): event window; no events were replayed because event replay needs the event plane. No replay window was covered.\n\
          Warning: private_text_with_outbound_op; mail send: the flow reads private text and holds an op that can send data out\n\
-         Warning: macos_protected_root; Documents/notes: On macOS this path is in a folder the system protects; the first access will ask the operator for permission."
+         Warning: protected_root; ~/Documents/notes: On macOS, the first access to ~/Documents asks the operator for permission.\n\
+         Warning: protected_root; ~/Documents/notes: On Windows, writes under ~/Documents are blocked while Controlled Folder Access is on."
     );
 }
 
