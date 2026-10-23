@@ -193,12 +193,13 @@ impl From<rusqlite::Error> for InstallError {
 /// Something the card must show, which does not refuse the install.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
-    /// A manifest root falls within a location macOS protects with a privacy
-    /// prompt on first access.
-    MacosProtectedRoot {
+    /// A manifest root falls within a folder that at least one operating
+    /// system protects; each entry of `protections` names one such OS, the
+    /// protected folder and what that protection does. Never empty.
+    ProtectedRoot {
         field: String,
         path: String,
-        protected_folder: String,
+        protections: Vec<Protection>,
     },
     /// The flow's audience-wide scope has no agent identity for an op that is
     /// not a query; writes through an agent's bot account will be refused.
@@ -220,6 +221,62 @@ pub enum Warning {
     /// The flow reads private text and may fetch from this host, which can
     /// carry that text out in a URL, a header or a body.
     PrivateTextWithNetFetch { host: String },
+}
+
+/// An operating system whose own folder protection can affect a flow root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectingOs {
+    Macos,
+    Windows,
+}
+
+impl ProtectingOs {
+    /// The wire value of the warning entry's `os` field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Macos => "macos",
+            Self::Windows => "windows",
+        }
+    }
+
+    /// The OS name as the operator reads it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Macos => "macOS",
+            Self::Windows => "Windows",
+        }
+    }
+}
+
+/// One operating system's protection over a manifest root: the protected
+/// folder, spelled as a manifest would write it, that contains the root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Protection {
+    pub os: ProtectingOs,
+    pub folder: String,
+}
+
+impl Protection {
+    /// What the protection does to a flow touching the folder.
+    pub fn effect(&self) -> &'static str {
+        match self.os {
+            ProtectingOs::Macos => "the first access asks the operator for permission",
+            ProtectingOs::Windows => "writes are blocked while Controlled Folder Access is on",
+        }
+    }
+
+    /// One plain sentence naming the OS, the folder and the effect.
+    pub fn text(&self) -> String {
+        let folder = &self.folder;
+        match self.os {
+            ProtectingOs::Macos => {
+                format!("On macOS, the first access to {folder} asks the operator for permission.")
+            }
+            ProtectingOs::Windows => format!(
+                "On Windows, writes under {folder} are blocked while Controlled Folder Access is on."
+            ),
+        }
+    }
 }
 
 fn agentless_audience_label(manifest: &Manifest) -> Option<&'static str> {
@@ -270,8 +327,10 @@ pub fn agentless_audience_warnings(manifest: &Manifest, catalog: &dyn Catalog) -
         .collect()
 }
 
-/// Warns about manifest roots under macOS privacy-protected folders without
-/// resolving symlinks or checking whether the paths exist.
+/// Warns about manifest roots under folders an operating system protects,
+/// without resolving symlinks or checking whether the paths exist. The rules
+/// do not depend on the host: a manifest can run on any OS, so every OS's
+/// protections are checked and each warning entry names its OS.
 pub fn protected_root_warnings(manifest: &Manifest) -> Vec<Warning> {
     let mut warnings = manifest
         .roots()
@@ -300,50 +359,112 @@ pub fn protected_root_warnings(manifest: &Manifest) -> Vec<Warning> {
 }
 
 fn protected_root_warning(field: &str, path: &str) -> Option<Warning> {
-    protected_folder(path).map(|protected_folder| Warning::MacosProtectedRoot {
+    let protections = protections(path);
+    (!protections.is_empty()).then(|| Warning::ProtectedRoot {
         field: field.to_owned(),
         path: path.to_owned(),
-        protected_folder: protected_folder.to_owned(),
+        protections,
     })
 }
 
-fn protected_folder(path: &str) -> Option<&'static str> {
-    let path = normalize_path(std::path::Path::new(path));
-    let volumes = std::path::Path::new("/Volumes");
-    if path.starts_with(volumes) {
-        return Some("/Volumes/");
-    }
+/// Folders in the home directory that macOS guards with a privacy prompt on
+/// first access. Matched with exact case, as written here.
+const MACOS_HOME_FOLDERS: [&str; 3] = ["Desktop", "Documents", "Downloads"];
 
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(path_text) = path.to_str()
-            && let Some(expanded) = basal_host::builtins::expand_home(path_text)
-            && let Some(home) = basal_host::builtins::expand_home("~")
+/// Folders in the user's profile that Windows Controlled Folder Access
+/// protects by default, as listed under "Default folders protected by CFA" in
+/// https://learn.microsoft.com/en-us/defender-endpoint/controlled-folder-access-overview
+/// (checked 2026-10). The Public folders on that list are outside the
+/// profile, so no `~` root can name them. Desktop is not on the default list.
+/// Windows paths ignore case, so these match any case and are reported in the
+/// spelling written here.
+const WINDOWS_HOME_FOLDERS: [&str; 5] = ["Documents", "Favorites", "Music", "Pictures", "Videos"];
+
+/// Every OS protection that covers `path`, macOS first.
+fn protections(path: &str) -> Vec<Protection> {
+    let mut found = Vec::new();
+    let normalized = normalize_path(std::path::Path::new(path));
+    if let Some(volume) = macos_volume(&normalized) {
+        found.push(Protection {
+            os: ProtectingOs::Macos,
+            folder: volume,
+        });
+    }
+    if let Some(first) = home_relative_first(path, &normalized) {
+        if let Some(folder) = MACOS_HOME_FOLDERS.iter().find(|f| **f == first) {
+            found.push(Protection {
+                os: ProtectingOs::Macos,
+                folder: format!("~/{folder}"),
+            });
+        }
+        if let Some(folder) = WINDOWS_HOME_FOLDERS
+            .iter()
+            .find(|f| f.eq_ignore_ascii_case(&first))
         {
-            let expanded = normalize_path(&expanded);
-            let home = normalize_path(&home);
-            for (folder, protected_folder) in [
-                ("Desktop", "~/Desktop"),
-                ("Documents", "~/Documents"),
-                ("Downloads", "~/Downloads"),
-            ] {
-                if expanded.starts_with(home.join(folder)) {
-                    return Some(protected_folder);
-                }
-            }
+            found.push(Protection {
+                os: ProtectingOs::Windows,
+                folder: format!("~/{folder}"),
+            });
         }
     }
+    found
+}
 
-    for (folder, protected_folder) in [
-        ("Desktop", "~/Desktop"),
-        ("Documents", "~/Documents"),
-        ("Downloads", "~/Downloads"),
-    ] {
-        if path.starts_with(std::path::Path::new("~").join(folder)) {
-            return Some(protected_folder);
+/// The macOS volume a path is on when it lies under `/Volumes`, where macOS
+/// mounts removable and network volumes: `/Volumes/<name>`, or `/Volumes/*`
+/// for a root that is `/Volumes` itself and so covers every volume.
+fn macos_volume(path: &std::path::Path) -> Option<String> {
+    use std::path::Component;
+
+    let mut components = path.components();
+    if components.next() != Some(Component::RootDir)
+        || components.next() != Some(Component::Normal("Volumes".as_ref()))
+    {
+        return None;
+    }
+    Some(match components.next() {
+        Some(volume) => format!("/Volumes/{}", volume.as_os_str().to_string_lossy()),
+        None => "/Volumes/*".to_owned(),
+    })
+}
+
+/// The first folder below the home directory that `path` lies in: the
+/// component after a leading `~`, or, for an absolute path, the component
+/// after this host's home as the `fs` built-in expands `~`. `None` for a path
+/// outside the home directory or naming the home directory itself.
+fn home_relative_first(path: &str, normalized: &std::path::Path) -> Option<String> {
+    let mut components = normalized.components();
+    if components.next().map(|c| c.as_os_str()) == Some("~".as_ref()) {
+        return components
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned());
+    }
+    if !normalized.is_absolute() {
+        return None;
+    }
+    let expanded = normalize_path(&basal_host::builtins::expand_home(path)?);
+    let home = normalize_path(&basal_host::builtins::expand_home("~")?);
+    let mut expanded = expanded.components();
+    for home_component in home.components() {
+        let component = expanded.next()?;
+        let (home_text, text) = (
+            home_component.as_os_str().to_string_lossy(),
+            component.as_os_str().to_string_lossy(),
+        );
+        // Windows paths ignore case, as the Windows `fs` built-in does when
+        // it opens a root; elsewhere a differently cased path is another path.
+        let same = if cfg!(windows) {
+            home_text.eq_ignore_ascii_case(&text)
+        } else {
+            home_text == text
+        };
+        if !same {
+            return None;
         }
     }
-    None
+    expanded
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
 }
 
 fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
@@ -436,48 +557,86 @@ mod protected_root_warning_tests {
         serde_json::from_value(value).expect("manifest decodes")
     }
 
+    fn macos(folder: &str) -> Protection {
+        Protection {
+            os: ProtectingOs::Macos,
+            folder: folder.into(),
+        }
+    }
+
+    fn windows(folder: &str) -> Protection {
+        Protection {
+            os: ProtectingOs::Windows,
+            folder: folder.into(),
+        }
+    }
+
+    fn warning(field: &str, path: &str, protections: Vec<Protection>) -> Warning {
+        Warning::ProtectedRoot {
+            field: field.into(),
+            path: path.into(),
+            protections,
+        }
+    }
+
     #[test]
-    fn each_macos_protected_prefix_warns_with_its_manifest_field() {
+    fn macos_protected_folders_warn_with_their_manifest_field() {
         let manifest = manifest(
             &["~/Desktop/project", "~/Downloads/archive"],
-            &["/Volumes/backup/repo"],
+            &["/Volumes/backup/repo", "/Volumes"],
             &["~/Documents/notes"],
             None,
         );
 
-        let actual = protected_root_warnings(&manifest)
-            .into_iter()
-            .map(|warning| match warning {
-                Warning::MacosProtectedRoot {
-                    field,
-                    path,
-                    protected_folder,
-                } => (field, path, protected_folder),
-                other => panic!("unexpected warning: {other:?}"),
-            })
-            .collect::<Vec<_>>();
         assert_eq!(
-            actual,
+            protected_root_warnings(&manifest),
             vec![
-                (
-                    "fs.read".into(),
-                    "~/Desktop/project".into(),
-                    "~/Desktop".into()
+                warning("fs.read", "~/Desktop/project", vec![macos("~/Desktop")]),
+                warning("fs.read", "~/Downloads/archive", vec![macos("~/Downloads")]),
+                warning(
+                    "fs.write",
+                    "/Volumes/backup/repo",
+                    vec![macos("/Volumes/backup")]
                 ),
-                (
-                    "fs.read".into(),
-                    "~/Downloads/archive".into(),
-                    "~/Downloads".into()
+                warning("fs.write", "/Volumes", vec![macos("/Volumes/*")]),
+                // Documents is protected on both systems: one entry per OS.
+                warning(
+                    "git.read",
+                    "~/Documents/notes",
+                    vec![macos("~/Documents"), windows("~/Documents")]
                 ),
-                (
-                    "fs.write".into(),
-                    "/Volumes/backup/repo".into(),
-                    "/Volumes/".into()
-                ),
-                (
-                    "git.read".into(),
-                    "~/Documents/notes".into(),
-                    "~/Documents".into()
+            ],
+        );
+    }
+
+    #[test]
+    fn windows_controlled_folders_warn_in_any_case() {
+        let manifest = manifest(
+            &[],
+            &[
+                "~/Pictures/export",
+                "~/music/library",
+                "~/FAVORITES",
+                "~/Videos/clips",
+                "~/documents/notes",
+            ],
+            &[],
+            None,
+        );
+
+        assert_eq!(
+            protected_root_warnings(&manifest),
+            vec![
+                warning("fs.write", "~/Pictures/export", vec![windows("~/Pictures")]),
+                warning("fs.write", "~/music/library", vec![windows("~/Music")]),
+                warning("fs.write", "~/FAVORITES", vec![windows("~/Favorites")]),
+                warning("fs.write", "~/Videos/clips", vec![windows("~/Videos")]),
+                // macOS folder names match with exact case, so only Windows
+                // claims a lower-case documents folder.
+                warning(
+                    "fs.write",
+                    "~/documents/notes",
+                    vec![windows("~/Documents")]
                 ),
             ],
         );
@@ -486,7 +645,14 @@ mod protected_root_warning_tests {
     #[test]
     fn work_temp_and_desktop_sibling_roots_do_not_warn() {
         let manifest = manifest(
-            &["~/Work/project", "/tmp/work", "~/DesktopX/project"],
+            &[
+                "~/Work/project",
+                "/tmp/work",
+                "~/DesktopX/project",
+                "~/PicturesX",
+                "~",
+                "/VolumesX/backup",
+            ],
             &[],
             &[],
             None,
@@ -495,23 +661,27 @@ mod protected_root_warning_tests {
         assert!(protected_root_warnings(&manifest).is_empty());
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn absolute_home_paths_match_without_checking_for_existence() {
         let home = basal_host::builtins::expand_home("~").expect("home is available");
-        let path = home
-            .join("Downloads/not-created-yet")
+        let downloads = home
+            .join("Downloads")
+            .join("not-created-yet")
             .to_string_lossy()
             .into_owned();
-        let manifest = manifest(&[&path], &[], &[], None);
+        let pictures = home
+            .join("Pictures")
+            .join("not-created-yet")
+            .to_string_lossy()
+            .into_owned();
+        let manifest = manifest(&[&downloads], &[&pictures], &[], None);
 
         assert_eq!(
             protected_root_warnings(&manifest),
-            vec![Warning::MacosProtectedRoot {
-                field: "fs.read".into(),
-                path,
-                protected_folder: "~/Downloads".into(),
-            }],
+            vec![
+                warning("fs.read", &downloads, vec![macos("~/Downloads")]),
+                warning("fs.write", &pictures, vec![windows("~/Pictures")]),
+            ],
         );
     }
 
@@ -528,11 +698,23 @@ mod protected_root_warning_tests {
 
         assert_eq!(
             protected_root_warnings(&manifest),
-            vec![Warning::MacosProtectedRoot {
-                field: "params.repository.under".into(),
-                path: "~/Desktop/template-repo".into(),
-                protected_folder: "~/Desktop".into(),
-            }],
+            vec![warning(
+                "params.repository.under",
+                "~/Desktop/template-repo",
+                vec![macos("~/Desktop")]
+            )],
+        );
+    }
+
+    #[test]
+    fn each_protection_reads_as_one_sentence_naming_its_os() {
+        assert_eq!(
+            macos("~/Desktop").text(),
+            "On macOS, the first access to ~/Desktop asks the operator for permission."
+        );
+        assert_eq!(
+            windows("~/Documents").text(),
+            "On Windows, writes under ~/Documents are blocked while Controlled Folder Access is on."
         );
     }
 }

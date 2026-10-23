@@ -16,16 +16,21 @@ pub fn code_hash_hex(hash: &[u8; 32]) -> String {
 
 pub(crate) fn warning(w: &Warning) -> Value {
     match w {
-        Warning::MacosProtectedRoot {
+        Warning::ProtectedRoot {
             field,
             path,
-            protected_folder,
+            protections,
         } => json!({
-            "kind": "macos_protected_root",
+            "kind": "protected_root",
             "field": field,
             "path": path,
-            "protected_folder": protected_folder,
-            "text": "On macOS this path is in a folder the system protects; the first access will ask the operator for permission.",
+            "protections": protections.iter().map(|p| json!({
+                "os": p.os.as_str(),
+                "folder": p.folder,
+                "effect": p.effect(),
+            })).collect::<Vec<_>>(),
+            // One sentence per OS, one per line.
+            "text": protections.iter().map(|p| p.text()).collect::<Vec<_>>().join("\n"),
         }),
         Warning::AgentlessAudienceOp {
             module,
@@ -174,19 +179,42 @@ mod warning_tests {
     use super::*;
 
     #[test]
-    fn macos_protected_root_warning_keeps_its_manifest_source() {
+    fn protected_root_warning_keeps_its_manifest_source_and_one_line_per_os() {
+        use basal_core::{ProtectingOs, Protection};
+
         assert_eq!(
-            warning(&Warning::MacosProtectedRoot {
+            warning(&Warning::ProtectedRoot {
                 field: "fs.read".into(),
-                path: "~/Desktop/project".into(),
-                protected_folder: "~/Desktop".into(),
+                path: "~/Documents/project".into(),
+                protections: vec![
+                    Protection {
+                        os: ProtectingOs::Macos,
+                        folder: "~/Documents".into(),
+                    },
+                    Protection {
+                        os: ProtectingOs::Windows,
+                        folder: "~/Documents".into(),
+                    },
+                ],
             }),
             json!({
-                "kind": "macos_protected_root",
+                "kind": "protected_root",
                 "field": "fs.read",
-                "path": "~/Desktop/project",
-                "protected_folder": "~/Desktop",
-                "text": "On macOS this path is in a folder the system protects; the first access will ask the operator for permission.",
+                "path": "~/Documents/project",
+                "protections": [
+                    {
+                        "os": "macos",
+                        "folder": "~/Documents",
+                        "effect": "the first access asks the operator for permission",
+                    },
+                    {
+                        "os": "windows",
+                        "folder": "~/Documents",
+                        "effect": "writes are blocked while Controlled Folder Access is on",
+                    },
+                ],
+                "text": "On macOS, the first access to ~/Documents asks the operator for permission.\n\
+                         On Windows, writes under ~/Documents are blocked while Controlled Folder Access is on.",
             }),
         );
     }

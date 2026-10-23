@@ -1620,28 +1620,63 @@ new = 'if false && declared == Ok(Some(false)) { // NON-VACUITY BREAK'
 
 [[control]]
 id = "install-protected-root-warning-disabled"
-guards = "macOS protected roots warn on install and dry run without filesystem resolution"
+guards = "roots in OS-protected folders warn on install and dry run without filesystem resolution"
 test_file = "crates/basal-core/src/install.rs"
 runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["install::protected_root_warning_tests::each_macos_protected_prefix_warns_with_its_manifest_field"]
+expect_red = ["install::protected_root_warning_tests::macos_protected_folders_warn_with_their_manifest_field"]
 only = true
-select = { tests = ["install::protected_root_warning_tests::each_macos_protected_prefix_warns_with_its_manifest_field", "install::protected_root_warning_tests::work_temp_and_desktop_sibling_roots_do_not_warn"] }
+select = { tests = ["install::protected_root_warning_tests::macos_protected_folders_warn_with_their_manifest_field", "install::protected_root_warning_tests::work_temp_and_desktop_sibling_roots_do_not_warn"] }
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
 old = '''fn protected_root_warning(field: &str, path: &str) -> Option<Warning> {
-    protected_folder(path).map(|protected_folder| Warning::MacosProtectedRoot {
+    let protections = protections(path);
+    (!protections.is_empty()).then(|| Warning::ProtectedRoot {
         field: field.to_owned(),
         path: path.to_owned(),
-        protected_folder: protected_folder.to_owned(),
+        protections,
     })
 }'''
 new = '''fn protected_root_warning(_field: &str, _path: &str) -> Option<Warning> {
     None // NON-VACUITY BREAK
 }'''
+
+[[control]]
+id = "install-protected-root-windows-rule-disabled"
+guards = "roots in the folders Windows Controlled Folder Access protects by default warn, in any letter case"
+test_file = "crates/basal-core/src/install.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["install::protected_root_warning_tests::windows_controlled_folders_warn_in_any_case"]
+only = true
+select = { tests = ["install::protected_root_warning_tests::windows_controlled_folders_warn_in_any_case", "install::protected_root_warning_tests::work_temp_and_desktop_sibling_roots_do_not_warn"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = '''            .find(|f| f.eq_ignore_ascii_case(&first))'''
+new = '''            .find(|_| false) // NON-VACUITY BREAK'''
+
+[[control]]
+id = "install-protected-root-windows-rule-case-sensitive"
+guards = "the Windows protected-folder rule ignores letter case, as Windows paths do"
+test_file = "crates/basal-core/src/install.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["install::protected_root_warning_tests::windows_controlled_folders_warn_in_any_case"]
+only = true
+select = { tests = ["install::protected_root_warning_tests::windows_controlled_folders_warn_in_any_case", "install::protected_root_warning_tests::work_temp_and_desktop_sibling_roots_do_not_warn"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = '''            .find(|f| f.eq_ignore_ascii_case(&first))'''
+new = '''            .find(|f| **f == first) // NON-VACUITY BREAK'''
 
 [[control]]
 id = "install-approval-supersedes-older-pending-card"
