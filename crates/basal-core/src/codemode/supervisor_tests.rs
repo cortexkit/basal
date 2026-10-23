@@ -929,6 +929,195 @@ fn per_call_checks_are_ordered_and_never_write_intent_before_readiness() {
 }
 
 #[test]
+fn invalid_input_names_schema_errors_and_fields_without_sending_or_storing_detail() {
+    let f = Fixture::new();
+    f.start(
+        &[(
+            "read",
+            "notes",
+            "read",
+            json!({"type":"object", "properties":{
+                "path":{"type":"string"}, "startLine":{"type":"integer"},
+                "endLine":{"type":"integer"}, "offset":{"type":"integer"},
+                "limit":{"type":"integer"}}, "required":["path"], "additionalProperties":false}),
+        )],
+        Limits::default(),
+        10_000,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.issue(0, "read", json!({"filePath":"Cargo.toml"}));
+    let delivery = f.delivery();
+    let value: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+    rejection(delivery, "read", "refused", "invalid_input");
+    let message = value["message"].as_str().unwrap();
+    assert!(message.starts_with("read: invalid input: "), "{message}");
+    assert!(
+        message.contains("\"path\" is a required property"),
+        "{message}"
+    );
+    assert!(message.contains("'filePath' was unexpected"), "{message}");
+    assert!(
+        message.contains("read takes: endLine, limit, offset, path (required), startLine."),
+        "{message}"
+    );
+    assert_eq!(value["detail"]["tool"], "read");
+    assert_eq!(
+        value["detail"]["properties"],
+        json!(["endLine", "limit", "offset", "path", "startLine"])
+    );
+    assert_eq!(value["detail"]["required"], json!(["path"]));
+    let errors = value["detail"]["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 2);
+    assert!(errors.iter().all(|error| error["path"] == ""));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error["message"].as_str().unwrap().contains("\"path\""))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error["message"].as_str().unwrap().contains("filePath"))
+    );
+    assert!(f.attempts.try_recv().is_err());
+    assert!(!f.host.events.lock().unwrap().iter().any(|e| e == "catalog"));
+    let calls = f.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].outcome, Outcome::Refused);
+    assert_eq!(calls[0].code.as_deref(), Some("invalid_input"));
+    assert!(calls[0].intent_at.is_none());
+    f.worker
+        .send(WorkerMessage::Finished {
+            activation_id: 1,
+            result: ActivationResult::Failed(Failure::ScriptHostRejection {
+                position: 0,
+                message: "HostError: invalid_input".into(),
+            }),
+        })
+        .unwrap();
+    let result = f.terminal();
+    assert_eq!(result["error"]["code"], "invalid_input");
+    assert_eq!(
+        result["error"]["message"],
+        format!("read (call 1) failed: {message}")
+    );
+    assert!(result["calls"][0].get("message").is_none());
+    assert!(result["calls"][0].get("detail").is_none());
+}
+
+#[test]
+fn invalid_input_detail_and_message_are_bounded_for_many_errors_and_unknown_properties() {
+    let properties: serde_json::Map<String, Value> = (0..50)
+        .map(|i| (format!("field_{i:02}_\n雪"), json!({"type":"integer"})))
+        .collect();
+    let required: Vec<_> = properties.keys().cloned().collect();
+    let schema = compile_input_schema(&json!({"type":"object", "properties":properties,
+        "required":required, "additionalProperties":false}))
+    .unwrap();
+    let unknown: serde_json::Map<String, Value> = (0..50)
+        .map(|i| (format!("unknown_{i}_{}", "雪\n".repeat(100)), json!(null)))
+        .collect();
+    let wrong_types: serde_json::Map<String, Value> = properties
+        .keys()
+        .map(|name| (name.clone(), json!("wrong type")))
+        .collect();
+    for input in [json!(unknown), json!(wrong_types)] {
+        let mapped = invalid_input(&"r".repeat(128), &schema, Some(&input));
+        let detail = mapped.detail.unwrap();
+        assert!(mapped.message.len() <= 1024, "{}", mapped.message.len());
+        assert!(
+            detail.to_string().len() <= 1024,
+            "{}",
+            detail.to_string().len()
+        );
+        let errors = detail["errors"].as_array().unwrap();
+        assert_eq!(errors.len(), 5);
+        for error in errors {
+            assert!(error["path"].to_string().len() <= 34);
+            assert!(error["message"].to_string().len() <= 82);
+        }
+        assert!(detail["properties"].as_array().unwrap().len() < 50);
+        assert!(detail["required"].as_array().unwrap().len() < 50);
+    }
+    let schema =
+        compile_input_schema(&json!({"properties":{"path":{}}, "additionalProperties":false}))
+            .unwrap();
+    let detail = invalid_input("read", &schema, Some(&json!(unknown)))
+        .detail
+        .unwrap();
+    assert!(detail.to_string().len() <= 1024);
+    assert_eq!(detail["errors"].as_array().unwrap().len(), 1);
+    assert!(
+        detail["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with('…')
+    );
+}
+
+#[test]
+fn invalid_input_lists_only_own_top_level_properties_and_required() {
+    let schema = compile_input_schema(&json!({
+        "$defs":{"args":{"properties":{"referenced":{}}, "required":["referenced"]}},
+        "$ref":"#/$defs/args",
+        "properties":{"own":{"properties":{"nested":{}}}}, "required":["own"]
+    }))
+    .unwrap();
+    let mapped = invalid_input("read", &schema, Some(&json!({})));
+    let detail = mapped.detail.unwrap();
+    assert_eq!(detail["properties"], json!(["own"]));
+    assert_eq!(detail["required"], json!(["own"]));
+    assert!(mapped.message.ends_with("read takes: own (required)."));
+}
+
+#[test]
+fn invalid_input_parse_failure_names_tool_without_sending() {
+    let f = Fixture::new();
+    f.standard();
+    f.worker
+        .send(WorkerMessage::HostCall(HostCall {
+            position: 0,
+            kind: CallKind::Tool {
+                name: "read".into(),
+            },
+            args: JsonText::new("{not JSON").unwrap(),
+        }))
+        .unwrap();
+    let delivery = f.delivery();
+    let value: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+    rejection(delivery, "read", "refused", "invalid_input");
+    assert_eq!(value["message"], "read: arguments are not valid JSON");
+    assert_eq!(
+        value["detail"],
+        json!({"tool":"read", "errors":[{"path":"", "message":"arguments are not valid JSON"}], "properties":[], "required":[]})
+    );
+    assert!(f.attempts.try_recv().is_err());
+    assert_eq!(f.calls()[0].outcome, Outcome::Refused);
+    assert!(f.calls()[0].intent_at.is_none());
+}
+
+#[test]
+fn valid_schema_input_dispatches_and_delivers_unchanged() {
+    let f = Fixture::new();
+    f.start(&[("read", "notes", "read", json!({"type":"object", "properties":{"path":{"type":"string"}}, "required":["path"], "additionalProperties":false}))], Limits::default(), 10_000);
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.issue(0, "read", json!({"path":"Cargo.toml"}));
+    f.attempt()
+        .reply
+        .send(Ok(json!({"text":"contents"})))
+        .unwrap();
+    let delivery = f.delivery();
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(
+        serde_json::from_str::<Value>(delivery.value.as_str()).unwrap(),
+        json!({"text":"contents"})
+    );
+    assert_eq!(f.calls()[0].outcome, Outcome::Ok);
+    f.finish("true");
+    assert_eq!(f.terminal()["status"], "completed");
+}
+
+#[test]
 fn two_hundred_refusals_count_and_the_next_invocation_has_no_row() {
     let f = Fixture::new();
     f.standard();

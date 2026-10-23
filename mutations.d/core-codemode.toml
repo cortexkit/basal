@@ -2696,3 +2696,29 @@ build_timeout_s = 3600
 
 [control.select]
 tests = ["codemode::supervisor::held::intake_tests::progress_before_result_on_the_same_key_is_consumed_without_malformed_logging", "codemode::supervisor::held::intake_tests::malformed_entry_does_not_poison_the_following_valid_entry"]
+
+[[control]]
+id = "codemode-invalid-input-diagnostic-message"
+guards = "invalid schema input names the tool, validation errors and accepted fields without sending the call"
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "&diagnostic_text(&message, INPUT_DIAGNOSTIC_BYTES),"
+new = '"invalid_input", // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::invalid_input_names_schema_errors_and_fields_without_sending_or_storing_detail"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[control.scope]
+after = "fn invalid_input("
+before = """
+
+struct Mapped"""
+
+[control.select]
+tests = ["codemode::supervisor::tests::invalid_input_names_schema_errors_and_fields_without_sending_or_storing_detail", "codemode::supervisor::tests::valid_schema_input_dispatches_and_delivers_unchanged"]
