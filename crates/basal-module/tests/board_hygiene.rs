@@ -325,7 +325,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 15);
+    assert_eq!(value["version"], 16);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -681,7 +681,12 @@ fn an_item_still_blocked_on_an_ended_wait_nudges_after_its_last_change() {
 fn plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner() {
     for (on, reference, recipient) in [
         ("ag_b", Value::Null, "ag_b"),
-        ("agent_peer", json!("peer:agent_peer"), "agent_peer"),
+        ("PEER", json!("peer:ag_b"), "ag_b"),
+        ("ag_b", json!("peer:agent_unknown"), "ag_a"),
+        ("ag_b", json!("peer:"), "ag_a"),
+        ("agent_unknown", Value::Null, "ag_a"),
+        ("PEER", Value::Null, "ag_a"),
+        ("ag_b", json!("work:x"), "ag_a"),
         ("work", json!("work:x"), "ag_a"),
     ] {
         let mut i = item("blocked", BASE);
@@ -690,7 +695,7 @@ fn plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner() {
         if !reference.is_null() {
             i["wait"]["ref"] = reference;
         }
-        let mut t = Test::new(vec![board("ag_a", vec![i])]);
+        let mut t = Test::new(vec![board("ag_a", vec![i]), board("ag_b", vec![])]);
         let writes = t.run(BASE + 6 * HOUR);
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0]["agent"], recipient);
@@ -1209,13 +1214,61 @@ fn a_wait_unchanged_for_a_day_without_an_eta_nudges_the_owner() {
 }
 
 #[test]
+fn an_open_ask_suppresses_overdue_and_stale_wait_nudges() {
+    for state in [Value::Null, json!("open"), json!("unknown")] {
+        for eta in [Value::Null, json!(BASE)] {
+            let mut waiting = item("blocked", BASE);
+            waiting["wait"] = json!({"on":"user","ref":"ask:ask_question","since_ms":BASE});
+            if !state.is_null() {
+                waiting["wait"]["ref_state"] = state.clone();
+            }
+            if !eta.is_null() {
+                waiting["eta_ms"] = eta.clone();
+            }
+            let mut t = Test::new(vec![board("ag_a", vec![waiting])]);
+            assert!(
+                t.run(BASE + 48 * HOUR).is_empty(),
+                "state {state}, ETA {eta}"
+            );
+            assert!(t.keys().is_empty());
+        }
+    }
+}
+
+#[test]
+fn an_answered_or_dismissed_ask_keeps_the_wait_ended_delay() {
+    let mut waiting = item("blocked", BASE);
+    waiting["eta_ms"] = json!(BASE);
+    waiting["wait"] =
+        json!({"on":"user","ref":"ask:ask_question","ref_state":"open","since_ms":BASE});
+    let mut t = Test::new(vec![board("ag_a", vec![waiting.clone()])]);
+    assert!(t.run(BASE + HOUR).is_empty());
+
+    // Answered and dismissed asks both arrive from core as terminal waits.
+    waiting["changed_at_ms"] = json!(BASE + HOUR);
+    waiting["wait"]["ref_state"] = json!("terminal");
+    waiting["wait"]["ref_terminal_at_ms"] = json!(BASE + HOUR);
+    t.item(waiting);
+    assert!(rule(&t.run(BASE + HOUR + 30 * MIN - 1), "wait_ended").is_empty());
+    let ended = rule(&t.run(BASE + HOUR + 30 * MIN), "wait_ended");
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0]["agent"], "ag_a");
+    assert_eq!(ended[0]["action"], "wake");
+    assert_eq!(
+        ended[0]["item"]["data"]["entries"][0]["ref"],
+        "ask:ask_question"
+    );
+    assert!(t.run(BASE + 3 * HOUR).is_empty());
+}
+
+#[test]
 fn a_declined_or_ended_peer_wait_nudges_the_owner_never_the_peer() {
     // When the waited-on peer declines, core makes the wait terminal and adds
     // declined_by; the overdue item is then the owner's to act on.
     for declined in [true, false] {
         let mut waiting = item("blocked", BASE);
         waiting["eta_ms"] = json!(BASE);
-        waiting["wait"] = json!({"on":"ag_b","ref":"peer:ag_b","since_ms":BASE});
+        waiting["wait"] = json!({"on":"PEER","ref":"peer:ag_b","since_ms":BASE});
         if declined {
             waiting["wait"]["declined_by"] = json!("ag_b");
         } else {
@@ -1230,6 +1283,39 @@ fn a_declined_or_ended_peer_wait_nudges_the_owner_never_the_peer() {
 }
 
 #[test]
+fn a_peer_ref_with_a_display_name_nudges_only_the_known_peer() {
+    for on in [json!("PEER"), json!("ag_c"), Value::Null] {
+        let mut waiting = item("blocked", BASE);
+        waiting["eta_ms"] = json!(BASE);
+        waiting["wait"] = json!({"on":on,"ref":"peer:ag_b","since_ms":BASE});
+        let mut t = Test::new(vec![
+            board("ag_a", vec![waiting]),
+            board("ag_b", vec![]),
+            board("ag_c", vec![]),
+        ]);
+        let writes = t.run(BASE + HOUR);
+        assert_eq!(writes.len(), 1, "on {on}");
+        assert_eq!(writes[0]["agent"], "ag_b");
+        assert_eq!(writes[0]["action"], "wake");
+        assert_eq!(writes[0]["replace_key"], "board_nudge:ag_b:eta_passed");
+        let data = &writes[0]["item"]["data"];
+        assert_eq!(data["agent_id"], "ag_b");
+        assert_eq!(data["total_count"], 1);
+        assert_eq!(data["entries"][0]["agent_id"], "ag_a");
+        assert_eq!(data["entries"][0]["item_wait"]["on"], on);
+        assert!(data["entries"][0].get("own_lane_id").is_none());
+        assert!(data["entries"][0].get("own_item_id").is_none());
+        assert!(
+            writes[0]["item"]["body"]
+                .as_str()
+                .unwrap()
+                .contains("ag_a waits on you")
+        );
+        assert!(t.run(BASE + 2 * HOUR).is_empty());
+    }
+}
+
+#[test]
 fn peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies() {
     for reference in [None, Some("peer:ag_b")] {
         let mut waiting = item("blocked", BASE);
@@ -1237,6 +1323,7 @@ fn peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies() {
         waiting["wait"] = json!({"on":"ag_b","since_ms":BASE});
         if let Some(reference) = reference {
             waiting["wait"]["ref"] = json!(reference);
+            waiting["wait"]["on"] = json!("PEER");
         }
         let mut t = Test::new(vec![
             board("ag_a", vec![waiting]),
@@ -1255,7 +1342,10 @@ fn peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies() {
         assert_eq!(entries[1]["item_id"], "item1");
         assert_eq!(entries[1]["item_text"], "Ship");
         assert_eq!(entries[1]["item_state"], "blocked");
-        assert_eq!(entries[1]["item_wait"]["on"], "ag_b");
+        assert_eq!(
+            entries[1]["item_wait"]["on"],
+            if reference.is_some() { "PEER" } else { "ag_b" }
+        );
         assert!(entries[1].get("own_item_id").is_none());
         let body = first[0]["item"]["body"].as_str().unwrap();
         assert!(body.contains("ag_a waits on you"));
