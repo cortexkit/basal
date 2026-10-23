@@ -308,7 +308,7 @@ fn mark_held_accounts_the_previous_person_interval_before_changing_state() {
                 .unwrap(),
                 targets: Default::default(),
             },
-            preset: None,
+            presets: Default::default(),
             tools: Default::default(),
             unavailable: Default::default(),
             limits: Limits::default(),

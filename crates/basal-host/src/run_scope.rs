@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cortexkit_role_tool_provider::catalog::{CatalogAnswer, check_modes, serves_call_mode};
 use cortexkit_role_tool_provider::{CALL_MODES_CAPABILITY, CallMode};
@@ -114,7 +114,6 @@ pub fn catalog_read_identity(
 pub struct CatalogRead<'a> {
     pub scope: &'a subc_protocol::scope::ScopeSelector,
     pub identity: &'a subc_protocol::BindIdentity,
-    pub preset: Option<&'a str>,
 }
 
 /// Whether a failed catalog read may succeed if the run is retried: the
@@ -209,6 +208,29 @@ pub struct ResolvedCatalog {
     /// result_format?}`, in the order core sent them.
     pub catalog: Value,
     pub gaps: Vec<CatalogGap>,
+    /// The providers with usable entries whose catalog answer shows they
+    /// serve catalog presets (see `provider_serves_presets`). Only tool calls
+    /// to these providers carry the run's preset.
+    pub preset_modules: BTreeSet<String>,
+}
+
+/// The tool capability tag that marks a provider as one serving catalog
+/// presets. The tool-provider contract does not yet declare which providers
+/// serve presets, so core and basal both use this tag as a stand-in: today
+/// only AFT's tools carry it. A provider that does not serve presets refuses
+/// a tool call naming one, so the tag decides who gets the run's preset.
+pub const PRESET_PROVIDER_TOOL_CAPABILITY: &str = "code.read/v1";
+
+/// Whether the provider that gave `answer` serves catalog presets: at least
+/// one of its tools carries `PRESET_PROVIDER_TOOL_CAPABILITY`. This is the
+/// one place that decision is made, from the catalog answer read when the
+/// run starts.
+pub fn provider_serves_presets(answer: &CatalogAnswer) -> bool {
+    answer.tools.iter().any(|tool| {
+        tool.capabilities
+            .iter()
+            .any(|tag| tag == PRESET_PROVIDER_TOOL_CAPABILITY)
+    })
 }
 
 /// Whether the provider serves `entry` in codemode, as it declares it. A
@@ -238,13 +260,7 @@ fn codemode_served(
         ));
     }
     let answer = answers.entry(entry.module.clone()).or_insert_with(|| {
-        read_tool_catalog_on_run(
-            transport,
-            read.scope,
-            read.identity,
-            &entry.module,
-            read.preset,
-        )
+        read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module)
     });
     let answer = answer.as_ref().map_err(|error| {
         let hint = if catalog_read_may_recover(error) {
@@ -384,6 +400,15 @@ pub fn catalog(
     let is_failed = |module: &str| failed.iter().any(|(failed, ..)| *failed == module);
     usable.retain(|(module, _)| !is_failed(module));
     gaps.retain(|gap| !is_failed(&gap.module));
+    let preset_modules = answers
+        .iter()
+        .filter(|(module, answer)| {
+            !is_failed(module)
+                && usable.iter().any(|(usable, _)| *usable == module.as_str())
+                && answer.as_ref().is_ok_and(provider_serves_presets)
+        })
+        .map(|(module, _)| module.clone())
+        .collect();
     for (module, reason, problem) in &failed {
         gaps.push(CatalogGap {
             reason: *reason,
@@ -399,6 +424,7 @@ pub fn catalog(
     Ok(ResolvedCatalog {
         catalog: Value::Array(usable.into_iter().map(|(_, tool)| tool).collect()),
         gaps,
+        preset_modules,
     })
 }
 
@@ -552,7 +578,6 @@ mod call_mode_tests {
             module: &str,
             name: &str,
             arguments: Value,
-            _preset: Option<&str>,
         ) -> Result<Value, WireError> {
             self.identities.lock().unwrap().push(identity.clone());
             self.scopes.lock().unwrap().push(scope.clone());
@@ -641,7 +666,6 @@ mod call_mode_tests {
         let read = CatalogRead {
             scope: &scope,
             identity: &identity,
-            preset: None,
         };
         catalog(provider, &read, daemon, entries)
     }

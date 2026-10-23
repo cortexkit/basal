@@ -89,10 +89,9 @@ pub fn read_tool_catalog(
     transport: &dyn Transport,
     module: &str,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    read_tool_catalog_with(
-        &mut |name, arguments| transport.tool(module, name, arguments, &role_call_key()),
-        None,
-    )
+    read_tool_catalog_with(&mut |name, arguments| {
+        transport.tool(module, name, arguments, &role_call_key())
+    })
 }
 
 /// `read_tool_catalog` for a codemode run: both requests go on a route
@@ -101,24 +100,30 @@ pub fn read_tool_catalog(
 /// carry no envelope call key. Providers such as AFT refuse a bind whose
 /// harness is not one they recognise, and providers such as cerebellum admit
 /// basal only on a codemode run scope.
+///
+/// Neither request carries the run's catalog preset, in the `tool.catalog`
+/// arguments or in the request envelope, even when core chose one for the
+/// run. The tool-provider role lets a provider that defines no presets refuse
+/// `CatalogRequest.preset`, and such providers do refuse it, which would drop
+/// all of their tools from the run. A provider that does define presets, such
+/// as AFT, answers a preset-less catalog read with its `head` catalog and
+/// enforces the run's preset when a tool is called, from the preset on the
+/// tool call's own request. So only the program's tool calls carry it, and
+/// only to providers that serve presets (see
+/// `run_scope::provider_serves_presets`).
 pub fn read_tool_catalog_on_run(
     transport: &dyn Transport,
     scope: &subc_protocol::scope::ScopeSelector,
     identity: &subc_protocol::BindIdentity,
     module: &str,
-    preset: Option<&str>,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    read_tool_catalog_with(
-        &mut |name, arguments| {
-            transport.role_on_run_scope(scope, identity, module, name, arguments, preset)
-        },
-        preset,
-    )
+    read_tool_catalog_with(&mut |name, arguments| {
+        transport.role_on_run_scope(scope, identity, module, name, arguments)
+    })
 }
 
 fn read_tool_catalog_with(
     send: &mut dyn FnMut(&str, Value) -> Result<Value, WireError>,
-    preset: Option<&str>,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
     use cortexkit_role_tool_provider::catalog::{
         CatalogAnswer, CatalogRequest, params_for_capabilities,
@@ -134,11 +139,8 @@ fn read_tool_catalog_with(
         Some(tags) => params_for_capabilities(tags),
         None => serde_json::Map::new(),
     };
-    let mut request = serde_json::to_value(CatalogRequest::new(params))
+    let request = serde_json::to_value(CatalogRequest::new(params))
         .map_err(|e| WireError::NeverSent(e.to_string()))?;
-    if let Some(preset) = preset {
-        request["preset"] = Value::String(preset.to_owned());
-    }
     let answer = send("tool.catalog", request)?;
     let answer: CatalogAnswer = serde_json::from_value(answer)
         .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))?;

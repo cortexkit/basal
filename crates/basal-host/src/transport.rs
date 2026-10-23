@@ -220,9 +220,8 @@ pub trait Transport: Send + Sync {
         module: &str,
         name: &str,
         arguments: Value,
-        preset: Option<&str>,
     ) -> Result<Value, WireError> {
-        let _ = (scope, identity, module, name, arguments, preset);
+        let _ = (scope, identity, module, name, arguments);
         Err(WireError::NeverSent(
             "run-scoped role requests unavailable".into(),
         ))
@@ -236,6 +235,8 @@ pub type RunScopeEnded = dyn Fn(&str) + Send + Sync;
 pub struct RunToolOptions {
     pub identity: BindIdentity,
     pub reply_timeout: Duration,
+    /// Core's catalog preset for the run. Only `tool_for_run` sends it, in
+    /// the tool call's `ToolCallRequest.preset`.
     pub preset: Option<String>,
 }
 
@@ -1008,9 +1009,12 @@ impl Transport for SubcTransport {
             options.identity.clone(),
             Some(custody_deadline.saturating_duration_since(std::time::Instant::now())),
         )?;
-        let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments);
-        request.preset = options.preset.clone();
-        let body = serde_json::to_vec(&request).map_err(|e| WireError::NeverSent(e.to_string()))?;
+        // Custody requests carry no preset: the tool-provider role gives it
+        // no meaning on these ops.
+        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(
+            name, arguments,
+        ))
+        .map_err(|e| WireError::NeverSent(e.to_string()))?;
         let remaining = custody_deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             return Err(WireError::TimedOut(
@@ -1083,13 +1087,12 @@ impl Transport for SubcTransport {
         module: &str,
         name: &str,
         arguments: Value,
-        preset: Option<&str>,
     ) -> Result<Value, WireError> {
-        // Role requests omit the envelope call key, but still carry the run's
-        // catalog preset.
-        let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments);
-        request.preset = preset.map(str::to_owned);
-        let body = serde_json::to_vec(&request).map_err(|e| WireError::NeverSent(e.to_string()))?;
+        // A role request names no call key and no preset in its envelope.
+        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(
+            name, arguments,
+        ))
+        .map_err(|e| WireError::NeverSent(e.to_string()))?;
         let options = || CallOptions {
             timeout: self.timeout,
             ..Default::default()
@@ -1688,7 +1691,7 @@ mod tests {
             );
             assert_eq!(
                 transport
-                    .role_on_run_scope(&scope, &identity, "aft", "echo", json!({"n":1}), None)
+                    .role_on_run_scope(&scope, &identity, "aft", "echo", json!({"n":1}))
                     .unwrap(),
                 json!({"n":1})
             );

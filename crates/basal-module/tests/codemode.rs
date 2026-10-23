@@ -31,9 +31,15 @@ struct Core {
     run_stamps: Mutex<std::collections::BTreeMap<String, (ScopeStamp, Value)>>,
     /// The scope each admission-time catalog read was sent under.
     catalog_scopes: Mutex<Vec<subc_protocol::scope::ScopeSelector>>,
-    catalog_presets: Mutex<Vec<Option<String>>>,
-    tool_presets: Mutex<Vec<Option<String>>>,
+    /// The arguments of each admission-time `tool.catalog` read.
+    catalog_arguments: Mutex<Vec<Value>>,
+    /// The provider module and envelope preset of each run tool call.
+    tool_presets: Mutex<Vec<(String, Option<String>)>>,
     preset: Mutex<Option<String>>,
+    /// Core's catalog for the run lists an AFT-like provider, whose tool
+    /// carries the `code.read/v1` capability, and a cerebellum-like one,
+    /// instead of `mock`.
+    two_providers: AtomicBool,
     store: Mutex<Option<Arc<basal_core::Store>>>,
     held_provider: AtomicBool,
     format_unreadable: AtomicBool,
@@ -82,18 +88,30 @@ impl Transport for Core {
             .lock()
             .unwrap()
             .push(options.identity.clone());
-        let expected_preset = self.preset.lock().unwrap().clone();
+        // Only the AFT-like provider serves presets. The others refuse a
+        // tool call naming one, as cerebellum does, rather than ignoring it.
+        let expected_preset = if module == "aft" {
+            self.preset.lock().unwrap().clone()
+        } else {
+            None
+        };
         if options.preset != expected_preset {
             return Err(WireError::Refused {
                 code: "invalid_request".into(),
-                message: "run tool request omitted its catalog preset".into(),
+                message: format!(
+                    "run tool request to {module} has preset {:?}, expected {expected_preset:?}",
+                    options.preset
+                ),
             });
         }
         self.tool_presets
             .lock()
             .unwrap()
-            .push(options.preset.clone());
+            .push((module.into(), options.preset.clone()));
         assert!(options.reply_timeout > Duration::from_secs(30));
+        if module != "mock" {
+            return Ok(input);
+        }
         if self.held_provider.load(Ordering::SeqCst) {
             assert_eq!((module, name), ("mock", "echo"));
             self.onward_keys.lock().unwrap().push(key.into());
@@ -120,9 +138,8 @@ impl Transport for Core {
         module: &str,
         name: &str,
         _: Value,
-        options: &basal_host::transport::RunToolOptions,
+        _: &basal_host::transport::RunToolOptions,
     ) -> Result<Value, WireError> {
-        assert_eq!(options.preset, *self.preset.lock().unwrap());
         assert!(self.held_provider.load(Ordering::SeqCst));
         assert_eq!(module, "mock");
         let (route, key, input) = self.onward.lock().unwrap().clone().unwrap();
@@ -159,6 +176,14 @@ impl Transport for Core {
         }
     }
     fn catalog(&self) -> Result<Value, WireError> {
+        if self.two_providers.load(Ordering::SeqCst) {
+            let module = |id: &str, tool: &str| {
+                json!({"module_id":id,"capabilities":{"provides":["agent-run-scopes/v1"]},"roles":[{
+                "role":"tool_provider","identity_scope":[],"concurrency":"module_managed","emits_push":false,"sub_supervises":false,
+                "tools":[{"name":tool,"execution_mode":"pure","schema":{"type":"object"}}]}]})
+            };
+            return Ok(json!({"modules":[module("aft","read"),module("cerebellum","recall")]}));
+        }
         Ok(
             json!({"modules":[{"module_id":"mock","capabilities":{"provides":["agent-run-scopes/v1"]},"roles":[{
             "role":"tool_provider","identity_scope":[],"concurrency":"module_managed","emits_push":false,"sub_supervises":false,
@@ -205,14 +230,24 @@ impl Transport for Core {
                 if let Some(error) = self.refusal.lock().unwrap().clone() {
                     return Err(error);
                 }
-                let mut opened = self.scopes.open(
-                    serde_json::from_value(params.clone()).unwrap(),
+                let entries = if self.two_providers.load(Ordering::SeqCst) {
+                    [("aft", "read"), ("cerebellum", "recall")]
+                        .map(|(module, op)| basal_host::run_scope::CatalogEntry {
+                            tool: format!("{module}_{op}"),
+                            module: module.into(),
+                            op: op.into(),
+                        })
+                        .into()
+                } else {
                     vec![basal_host::run_scope::CatalogEntry {
                         tool: "echo".into(),
                         module: "mock".into(),
                         op: "echo".into(),
-                    }],
-                )?;
+                    }]
+                };
+                let mut opened = self
+                    .scopes
+                    .open(serde_json::from_value(params.clone()).unwrap(), entries)?;
                 opened.preset = self.preset.lock().unwrap().clone();
                 Ok(serde_json::to_value(opened).unwrap())
             }
@@ -247,20 +282,8 @@ impl Transport for Core {
         module: &str,
         name: &str,
         arguments: Value,
-        preset: Option<&str>,
     ) -> Result<Value, WireError> {
-        assert_eq!(module, "mock");
-        let expected_preset = self.preset.lock().unwrap().clone();
-        if preset != expected_preset.as_deref() {
-            return Err(WireError::Refused {
-                code: "invalid_request".into(),
-                message: "catalog read omitted its catalog preset".into(),
-            });
-        }
-        self.catalog_presets
-            .lock()
-            .unwrap()
-            .push(preset.map(str::to_owned));
+        assert!(matches!(module, "mock" | "aft" | "cerebellum"), "{module}");
         self.catalog_scopes.lock().unwrap().push(scope.clone());
         // Like cerebellum, the provider admits basal only on a codemode run's
         // own scope: an ephemeral scope with run_id and no flow_id, owned by
@@ -310,12 +333,34 @@ impl Transport for Core {
                 json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],"stability":"alpha"}],"implementation_version":"test"}),
             ),
             "tool.catalog" => {
-                let mut expected = json!({"params":{}});
-                if let Some(preset) = expected_preset {
-                    expected["preset"] = json!(preset);
+                self.catalog_arguments
+                    .lock()
+                    .unwrap()
+                    .push(arguments.clone());
+                // Like a provider that defines no catalog presets, refuse
+                // any catalog member other than `params`, `preset` included.
+                if let Some(member) = arguments
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|members| members.keys())
+                    .find(|member| *member != "params")
+                {
+                    return Err(WireError::Refused {
+                        code: "invalid_request".into(),
+                        message: format!("unsupported catalog member or type: {member}"),
+                    });
                 }
-                assert_eq!(arguments, expected);
-                let mut tool = json!({"name":"echo","schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],"input_schema":{}});
+                assert_eq!(arguments, json!({"params":{}}));
+                let tool = match module {
+                    "aft" => "read",
+                    "cerebellum" => "recall",
+                    _ => "echo",
+                };
+                let mut tool = json!({"name":tool,"schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],"input_schema":{}});
+                if module == "aft" {
+                    // The tag basal reads as "this provider serves presets".
+                    tool["capabilities"] = json!(["code.read/v1"]);
+                }
                 if self.held_provider.load(Ordering::SeqCst) {
                     tool["result_format"] = json!("content/v1");
                 }
@@ -359,10 +404,23 @@ impl Drop for Rig {
 }
 fn rig(tag: &str, missing_worker: bool) -> Rig {
     let core = Arc::new(Core::default());
+    // The tools of the two providers `Core::two_providers` swaps in.
+    let catalog = MockCatalog::standard();
+    for (module, op) in [("aft", "read"), ("cerebellum", "recall")] {
+        catalog.set_op(
+            module,
+            op,
+            basal_host::OpDecl {
+                kind: Some(basal_host::OpKind::Query),
+                cause_echo: false,
+                shell_capable: false,
+            },
+        );
+    }
     let hosts = Hosts {
         host: Arc::new(core.host.clone()),
         transport: core.clone(),
-        catalog: Arc::new(MockCatalog::standard()),
+        catalog: Arc::new(catalog),
         consent: Arc::new(MockConsent::new()),
         hooks: Arc::new(NoHooks),
     };
@@ -1184,22 +1242,30 @@ fn admission_reads_catalogs_on_the_run_scope_core_opened() {
         "role.describe and tool.catalog both go over the run's own scope"
     );
     assert_eq!(
-        rig.core.catalog_presets.lock().unwrap().as_slice(),
-        [None, None],
-        "an older core reply keeps catalog reads without a preset"
+        rig.core.catalog_arguments.lock().unwrap().as_slice(),
+        [json!({"params":{}})],
+        "a catalog read without a core preset names none"
     );
-    assert_eq!(rig.core.tool_presets.lock().unwrap().as_slice(), [None]);
+    assert_eq!(
+        rig.core.tool_presets.lock().unwrap().as_slice(),
+        [("mock".to_owned(), None)]
+    );
 }
 
+/// Core chose a preset for the run. The catalog reads name none, and only the
+/// tool call to the provider that serves presets (its tool carries
+/// `code.read/v1`) carries it. The cerebellum-like provider refuses a preset,
+/// so the program completes only if its call goes without one.
 #[test]
-fn core_run_scope_preset_is_forwarded_to_catalog_reads_and_tool_calls() {
+fn core_run_scope_preset_reaches_only_tool_calls_to_providers_serving_presets() {
     let rig = rig("catalog-preset", false);
     *rig.core.preset.lock().unwrap() = Some("worker".into());
+    rig.core.two_providers.store(true, Ordering::SeqCst);
     rig.core.release();
     let result = call(
         &rig,
         "catalog-preset",
-        "return await tools.echo({n:1});",
+        "const a = await tools.aft_read({n:1}); const c = await tools.cerebellum_recall({n:2}); return [a, c];",
         Duration::from_secs(10),
     );
     assert_eq!(
@@ -1207,14 +1273,22 @@ fn core_run_scope_preset_is_forwarded_to_catalog_reads_and_tool_calls() {
         "{result}"
     );
     assert_eq!(
-        rig.core.catalog_presets.lock().unwrap().as_slice(),
-        [Some("worker".into()), Some("worker".into())],
-        "the core's preset reaches both catalog reads"
+        result["structuredContent"]["value"],
+        json!([{"n":1},{"n":2}]),
+        "{result}"
+    );
+    assert_eq!(
+        rig.core.catalog_arguments.lock().unwrap().as_slice(),
+        [json!({"params":{}}), json!({"params":{}})],
+        "neither catalog read names a preset"
     );
     assert_eq!(
         rig.core.tool_presets.lock().unwrap().as_slice(),
-        [Some("worker".into())],
-        "the same preset reaches the program's tool call"
+        [
+            ("aft".to_owned(), Some("worker".to_owned())),
+            ("cerebellum".to_owned(), None)
+        ],
+        "only the call to the provider serving presets carries the run's preset"
     );
 }
 

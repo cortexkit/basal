@@ -2722,3 +2722,20 @@ struct Mapped"""
 
 [control.select]
 tests = ["codemode::supervisor::tests::invalid_input_names_schema_errors_and_fields_without_sending_or_storing_detail", "codemode::supervisor::tests::valid_schema_input_dispatches_and_delivers_unchanged"]
+
+[[control]]
+id = "codemode-tool-preset-per-provider"
+guards = "a codemode run sends core's preset only on tool calls to providers that serve presets, never to one that refuses it"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+select = { tests = ["core_run_scope_preset_reaches_only_tool_calls_to_providers_serving_presets", "admission_reads_catalogs_on_the_run_scope_core_opened"] }
+expect_red = ["core_run_scope_preset_reaches_only_tool_calls_to_providers_serving_presets"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'preset: self.start.presets.get(&module).cloned(),'
+new = 'preset: self.start.presets.values().next().cloned(), // NON-VACUITY BREAK'
