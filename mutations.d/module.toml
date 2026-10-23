@@ -2971,3 +2971,54 @@ timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
 old = 'if !matches!(caller, Caller::Module { module_id } if module_id == "broca") {'
 new = 'if false && !matches!(caller, Caller::Module { module_id } if module_id == "broca") { // NON-VACUITY BREAK'
+
+[[control]]
+id = "phone-ops-admit-non-operator"
+guards = "phone overview details and uninstall require the attested operator"
+test_file = "crates/basal-module/tests/phone_flows.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test phone_flows"
+select = { tests = ["phone_ops_refuse_every_non_operator_and_invalid_params", "phone_details_fields_precedence_history_and_limits"] }
+expect_red = ["phone_ops_refuse_every_non_operator_and_invalid_params"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/phone_flows.rs"
+old = 'if !matches!(caller, Caller::Operator) {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "phone-overview-omits-workspace-reach"
+guards = "agent-filtered overview includes live workspace membership"
+test_file = "crates/basal-module/tests/phone_flows.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test phone_flows"
+select = { tests = ["phone_overview_filters_reach_and_registry_failure", "phone_details_fields_precedence_history_and_limits"] }
+expect_red = ["phone_overview_filters_reach_and_registry_failure"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/phone_flows.rs"
+old = 'Some(Audience::Workspace { id }) => workspaces.contains(id),'
+new = 'Some(Audience::Workspace { id: _ }) => false, // NON-VACUITY BREAK'
+
+[[control]]
+id = "phone-vectors-drift-from-dispatch"
+guards = "phone vectors pin real handler output and SHA256SUMS"
+test_file = "crates/basal-module/tests/phone_flows.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test phone_flows"
+select = { tests = ["phone_vectors_match_real_dispatch_and_sha256sums", "phone_ops_refuse_every_non_operator_and_invalid_params"] }
+expect_red = ["phone_vectors_match_real_dispatch_and_sha256sums"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/phone_flows.rs"
+old = 'let mut reply = json!({"as_of_ms":now,"flows":flows});'
+new = 'let mut reply = json!({"as_of_ms":now+1,"flows":flows}); // NON-VACUITY BREAK'

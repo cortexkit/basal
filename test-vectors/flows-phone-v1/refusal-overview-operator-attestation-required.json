@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "operator_attestation_required",
+    "message": "calling flow.overview is the operator's alone, and only a route the daemon attests as reserved:callosum is the operator"
+  }
+}

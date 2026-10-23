@@ -48,6 +48,9 @@ use crate::dryrun::{DryRunError, DryRunRequest, DryTrigger, Mode};
 use crate::fatal::{install_is_storage, is_storage};
 use crate::module::Module;
 
+#[path = "phone_flows.rs"]
+mod phone_flows;
+
 /// A refusal or failure, as the op's error frame carries it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpError {
@@ -235,6 +238,12 @@ impl Module {
                 format!("header {key} is not declared for event {module}.{name} v{version}"),
             ),
             InstallError::NoSuchFlow(f) => OpError::new("not_found", format!("no flow {f}")),
+            InstallError::FlowRemoved(f) => {
+                OpError::new("flow_removed", format!("flow {f} is removed"))
+            }
+            InstallError::ManagedByCore(f) => {
+                OpError::new("managed_by_core", format!("flow {f} is managed by core"))
+            }
             // Refused with the loop rule's `install_refused` code, plus a detail
             // saying the tool's emits_events declaration was unreadable rather
             // than absent or true, so the operator knows a retry may succeed.
@@ -267,6 +276,9 @@ impl Module {
             "flow.install_revoked" => self.op_install_revoked(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
             "flow.health" => self.op_health(caller, params),
+            "flow.overview" => self.op_overview(caller, params),
+            "flow.details" => self.op_details(caller, params),
+            "flow.uninstall" => self.op_uninstall(caller, params),
             "flow.audience" => self.op_audience(caller, params),
             "flow.private_content_providers" => self.op_private_content_providers(caller, params),
             "flow.list" => self.op_list(caller, params),

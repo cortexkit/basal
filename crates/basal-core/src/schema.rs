@@ -414,6 +414,10 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 38,
         statements: CODEMODE_HELD,
     },
+    Migration {
+        version: 39,
+        statements: "ALTER TABLE flows ADD COLUMN removed_by TEXT; ALTER TABLE flows ADD COLUMN removed_at INTEGER;",
+    },
 ];
 
 // Broca model calls learn their completion from Broca's bus events.

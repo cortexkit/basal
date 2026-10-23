@@ -163,6 +163,8 @@ pub enum InstallError {
         agent: String,
     },
     NoSuchFlow(String),
+    FlowRemoved(String),
+    ManagedByCore(String),
     /// A decision named a consent card basal never raised.
     NoSuchCard(String),
     Store(CoreError),
@@ -1012,8 +1014,9 @@ fn approve_with_resolved_agents(
         tx.execute("UPDATE flows SET agent_retirement=NULL, disabled_reason=CASE WHEN disabled_by='core' AND disabled_reason='agent_retired' THEN 'retirement_cleared' ELSE disabled_reason END WHERE flow_id=?1", [flow_id])?;
     }
     crate::grant_loss::clear(tx, flow_id, now_ms)?;
+    let was_removed = crate::packages::removed(tx, flow_id)?;
     tx.execute(
-        "UPDATE flows SET approved_version = ?2, owner = ?3, first_approved_at = COALESCE(first_approved_at, ?4) WHERE flow_id = ?1",
+        "UPDATE flows SET approved_version = ?2, owner = ?3, first_approved_at = COALESCE(first_approved_at, ?4), removed=0, removed_by=NULL, removed_at=NULL WHERE flow_id = ?1",
         params![flow_id, version_i64(version), author, now_ms],
     )?;
     let approval = schedule_approved(tx, flow_id, version, now_ms, schedule)?;
@@ -1028,10 +1031,21 @@ fn approve_with_resolved_agents(
     // refuses a call involving a retired agent. That stop stays unless the
     // new owner and manifest no longer involve the retired agent, as checked
     // above; changing code alone cannot bring a retired agent back.
+    // An operator uninstall is also version-specific: a fresh approval brings
+    // the flow back. An independent operator pause retains its original reason
+    // and is not undone by approving code.
     if flow(tx, flow_id)?.is_some_and(|f| {
         f.disabled_by.as_deref() == Some(CORE_ACTOR)
             && f.disabled_reason.as_deref() != Some("agent_retired")
     }) {
+        enable(tx, flow_id, now_ms)?;
+    }
+    if was_removed
+        && flow(tx, flow_id)?.is_some_and(|f| {
+            f.disabled_by.as_deref() == Some("operator:operator")
+                && f.disabled_reason.as_deref() == Some("uninstalled")
+        })
+    {
         enable(tx, flow_id, now_ms)?;
     }
     Ok(approval)
@@ -1472,6 +1486,55 @@ impl Runtime {
         Ok(changed)
     }
 
+    /// Removes an operator-managed flow without deleting its history. Disabling
+    /// uses the same call gate as a normal pause; queued events are refused so
+    /// approving a later version cannot replay notices queued before removal.
+    pub fn uninstall_flow(&self, flow_id: &str) -> std::result::Result<bool, InstallError> {
+        let now = self.config().clock.now_ms();
+        decide(self, |tx| {
+            let package: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT package FROM flows WHERE flow_id=?1",
+                    [flow_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(package) = package else {
+                return Err(InstallError::NoSuchFlow(flow_id.to_owned()));
+            };
+            let template: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?1)",
+                [flow_id],
+                |r| r.get(0),
+            )?;
+            if package.is_some() && !template {
+                return Err(InstallError::ManagedByCore(flow_id.to_owned()));
+            }
+            if crate::packages::removed(tx, flow_id)? {
+                return Ok(false);
+            }
+            disable(
+                tx,
+                flow_id,
+                &Actor::Operator("operator".into()),
+                "uninstalled",
+                now,
+            )?;
+            if template {
+                crate::templates::end(tx, flow_id, now)?;
+            }
+            tx.execute(
+                "UPDATE flows SET removed=1, removed_by='operator', removed_at=?2 WHERE flow_id=?1",
+                params![flow_id, now],
+            )?;
+            tx.execute(
+                "UPDATE event_receipts SET state='refused' WHERE flow_id=?1 AND state='backlog'",
+                [flow_id],
+            )?;
+            Ok(true)
+        })
+    }
+
     /// Enables a disabled flow again. Operator only.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enable_flow(&self, flow_id: &str) -> std::result::Result<bool, InstallError> {
@@ -1519,6 +1582,19 @@ impl Runtime {
 
 const RETIREMENT: &str = "SELECT COALESCE(agent_retirement,CASE WHEN disabled_reason='agent_retired' THEN '{}' END) FROM flows WHERE flow_id=?1";
 
+// Core removal and owner-ended templates retain an independent enable switch.
+// Only operator uninstall requires fresh approval instead of a simple enable.
+fn uninstalled(conn: &Connection, flow_id: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT removed=1 AND COALESCE(removed_by='operator',0) FROM flows WHERE flow_id=?1",
+            [flow_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
 /// Enables a disabled flow for `actor`, unless retirement still stands. An agent
 /// may undo its own disable, or a stopped grant-loss pause: a disable by
 /// the operator is the operator's stop, and an auto-disable is the loop
@@ -1535,6 +1611,9 @@ pub fn enable_as(
     let Some(record) = flow(tx, flow_id)? else {
         return Err(InstallError::NoSuchFlow(flow_id.to_owned()));
     };
+    if uninstalled(tx, flow_id)? {
+        return Err(InstallError::FlowRemoved(flow_id.to_owned()));
+    }
     if let Some(retirement) =
         tx.query_row(RETIREMENT, [flow_id], |r| r.get::<_, Option<String>>(0))?
     {
@@ -1589,6 +1668,9 @@ pub fn enable(
 ) -> std::result::Result<bool, InstallError> {
     if flow(tx, flow_id)?.is_none() {
         return Err(InstallError::NoSuchFlow(flow_id.to_owned()));
+    }
+    if uninstalled(tx, flow_id)? {
+        return Err(InstallError::FlowRemoved(flow_id.to_owned()));
     }
     let retirement: Option<String> = tx.query_row(RETIREMENT, [flow_id], |r| r.get(0))?;
     if let Some(retirement) = retirement {

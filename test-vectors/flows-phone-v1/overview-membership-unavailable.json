@@ -1,0 +1,35 @@
+{
+  "as_of_ms": 1777593600000,
+  "flows": [
+    {
+      "audience": {
+        "kind": "global"
+      },
+      "disabled": null,
+      "flow_id": "flow-phone-global",
+      "last_run": null,
+      "owner": null,
+      "purpose": "A test flow.",
+      "state": "enabled",
+      "title": "Synthetic flow",
+      "trigger": "on plexus pull_request_review",
+      "version": 1
+    },
+    {
+      "audience": null,
+      "disabled": null,
+      "flow_id": "flow-phone-owned",
+      "last_run": {
+        "at_ms": 1777593600002,
+        "outcome": "failed"
+      },
+      "owner": "agent_phone_owner",
+      "purpose": "A test flow.",
+      "state": "enabled",
+      "title": "Synthetic flow",
+      "trigger": "on plexus pull_request_review",
+      "version": 1
+    }
+  ],
+  "workspace_membership": "unavailable"
+}

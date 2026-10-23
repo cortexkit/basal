@@ -96,6 +96,23 @@ fn unreadable_workspace_registry_fails_closed() {
 }
 
 #[test]
+fn workspace_display_name_uses_the_exact_enumerate_entry() {
+    for (reply, expected) in [
+        (
+            json!({"workspaces":[{"workspaceId":"other","name":"Wrong"},{"workspaceId":"team","name":"Team display"}]}),
+            Some("Team display"),
+        ),
+        (json!({"workspaces":[{"workspaceId":"team"}]}), None),
+        (json!({"workspaces":[]}), None),
+    ] {
+        let catalog = SubcCatalog::new(Wire::new(Ok(reply)));
+        assert_eq!(catalog.workspace_name("team").unwrap().as_deref(), expected);
+    }
+    let catalog = SubcCatalog::new(Wire::new(Err(WireError::NeverSent("offline".into()))));
+    assert!(catalog.workspace_name("team").is_err());
+}
+
+#[test]
 fn audience_agent_registry_resolves_names_and_ids_and_fails_closed() {
     for reference in ["SYNAPSE", "agent_owner"] {
         let wire = Wire::new(Ok(

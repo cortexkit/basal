@@ -18,6 +18,21 @@ pub const MODULE_ID: &str = "basal";
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
+        "flow.overview",
+        ManagementOperationKind::Query,
+        "Summarize flows, optionally filtered by workspace or agent; operator only.",
+    ),
+    (
+        "flow.details",
+        ManagementOperationKind::Query,
+        "Read a flow's manifest, installs and bounded run history; operator only.",
+    ),
+    (
+        "flow.uninstall",
+        ManagementOperationKind::Mutate,
+        "Remove an operator-managed flow, retaining history; operator only.",
+    ),
+    (
         "flow.instance.live",
         ManagementOperationKind::Query,
         "Snapshot every unended template instance; prefrontal-core only.",

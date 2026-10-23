@@ -295,6 +295,10 @@ impl SubcCatalog {
     }
 
     pub fn known_workspace(&self, id: &str) -> Result<bool, WireError> {
+        Ok(self.workspace_entry(id)?.is_some())
+    }
+
+    fn workspace_entry(&self, id: &str) -> Result<Option<Value>, WireError> {
         let Some(op) = self.resolve("entorhinal", "enumerate")? else {
             return Err(WireError::Unreadable("entorhinal.enumerate missing".into()));
         };
@@ -309,7 +313,7 @@ impl SubcCatalog {
         let workspaces = reply["workspaces"].as_array().ok_or_else(|| {
             WireError::Unreadable("entorhinal.enumerate workspaces missing".into())
         })?;
-        let mut found = false;
+        let mut found = None;
         for workspace in workspaces {
             let workspace_id = workspace["workspaceId"]
                 .as_str()
@@ -317,7 +321,9 @@ impl SubcCatalog {
                 .ok_or_else(|| {
                     WireError::Unreadable("entorhinal.enumerate workspaceId missing".into())
                 })?;
-            found |= workspace_id == id;
+            if workspace_id == id {
+                found = Some(workspace.clone());
+            }
         }
         Ok(found)
     }
@@ -369,6 +375,62 @@ impl SubcCatalog {
     }
 }
 impl Catalog for SubcCatalog {
+    fn workspace_name(&self, id: &str) -> Result<Option<String>, WireError> {
+        Ok(self
+            .workspace_entry(id)?
+            .and_then(|entry| entry["name"].as_str().map(str::to_owned)))
+    }
+    fn workspaces_of(&self, agent_id: &str) -> Result<Vec<String>, WireError> {
+        let Some(op) = self.resolve("entorhinal", "agent.fleet_identity")? else {
+            return Err(WireError::Unreadable(
+                "entorhinal.agent.fleet_identity missing".into(),
+            ));
+        };
+        if op.surface != Surface::Management || op.declaration.kind != Some(OpKind::Query) {
+            return Err(WireError::Unreadable(
+                "entorhinal.agent.fleet_identity is not a management query".into(),
+            ));
+        }
+        // Transport already decodes the management result envelope. Decoding it
+        // again would hide a malformed double envelope or discard a valid reply.
+        let reply = self
+            .transport
+            .management("entorhinal", "agent.fleet_identity", json!({}))?;
+        let agents = reply["agents"]
+            .as_array()
+            .ok_or_else(|| WireError::Unreadable("agent.fleet_identity agents missing".into()))?;
+        let mut membership = Vec::new();
+        for entry in agents {
+            let id = entry["agentId"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    WireError::Unreadable("agent.fleet_identity agentId missing".into())
+                })?;
+            let workspace = match entry.get("workspace") {
+                None => None,
+                Some(value) => Some(
+                    value["id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| {
+                            WireError::Unreadable(
+                                "agent.fleet_identity workspace id missing".into(),
+                            )
+                        })?,
+                ),
+            };
+            if id == agent_id {
+                membership.extend(workspace.map(str::to_owned));
+            }
+        }
+        if membership.len() > 1 {
+            return Err(WireError::Unreadable(
+                "duplicate agent workspace placement".into(),
+            ));
+        }
+        Ok(membership)
+    }
     fn workspace_known(&self, id: &str) -> Result<bool, WireError> {
         self.known_workspace(id)
     }
