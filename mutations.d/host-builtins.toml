@@ -629,6 +629,40 @@ file = "crates/basal-host/src/builtins/git/windows.rs"
 old = "    let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };\n    // SAFETY: buffers, owned attribute payloads, handles and startup structure\n    // remain live through creation; lpApplicationName is the canonical image.\n    if unsafe {\n        CreateProcessW(\n            application.as_ptr(),\n            command_line.as_mut_ptr(),\n            std::ptr::null(),\n            std::ptr::null(),\n            1,\n            EXTENDED_STARTUPINFO_PRESENT\n                | CREATE_NO_WINDOW\n                | CREATE_UNICODE_ENVIRONMENT\n                | CREATE_SUSPENDED,\n            env.as_ptr().cast(),\n            cwd_pointer,\n            &startup.StartupInfo,\n            &mut process,\n        )\n    } == 0\n    {\n        return Err(native_error(\"start git\"));\n    }\n    #[cfg(test)]\n    spawn_lock_tests::created();\n    // The child now holds its own copies of its three standard handles, so\n    // the parent closes its copies before releasing the spawn lock. That\n    // also lets the pipes report end of file once git exits.\n    drop(attributes);\n    drop((stdin, stdout_writer, stderr_writer));\n    drop(spawn_lock);"
 new = "    drop(spawn_lock); // NON-VACUITY BREAK\n    let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };\n    // SAFETY: buffers, owned attribute payloads, handles and startup structure\n    // remain live through creation; lpApplicationName is the canonical image.\n    if unsafe {\n        CreateProcessW(\n            application.as_ptr(),\n            command_line.as_mut_ptr(),\n            std::ptr::null(),\n            std::ptr::null(),\n            1,\n            EXTENDED_STARTUPINFO_PRESENT\n                | CREATE_NO_WINDOW\n                | CREATE_UNICODE_ENVIRONMENT\n                | CREATE_SUSPENDED,\n            env.as_ptr().cast(),\n            cwd_pointer,\n            &startup.StartupInfo,\n            &mut process,\n        )\n    } == 0\n    {\n        return Err(native_error(\"start git\"));\n    }\n    #[cfg(test)]\n    spawn_lock_tests::created();\n    // The child now holds its own copies of its three standard handles, so\n    // the parent closes its copies before releasing the spawn lock. That\n    // also lets the pipes report end of file once git exits.\n    drop(attributes);\n    drop((stdin, stdout_writer, stderr_writer));\n"
 
+[[control]]
+id = "windows-handle-probe-exempts-every-nonduplicable-type"
+guards = "an unsupported duplicate is ignored only for EtwRegistration, never File or Pipe"
+file = "crates/basal-host/src/builtins/git/windows.rs"
+old = '&& kind == "EtwRegistration"'
+new = '&& { let _ = kind; true } /* NON-VACUITY BREAK */'
+test_file = "crates/basal-host/src/builtins/git/windows.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["windows"]
+target = "--lib"
+select = { tests = ["builtins::git::windows::spawn_lock_tests::windows_only_etw_registration_may_refuse_duplication", "builtins::git::windows::spawn_lock_tests::windows_pipe_objects_remain_inspectable"] }
+expect_red = ["builtins::git::windows::spawn_lock_tests::windows_only_etw_registration_may_refuse_duplication"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "windows-handle-probe-rejects-live-etw-registration"
+guards = "a live nonduplicable ETW registration is not mistaken for another child's pipe"
+file = "crates/basal-host/src/builtins/git/windows.rs"
+old = '|| (error == Some(ERROR_NOT_SUPPORTED as i32) && kind == "EtwRegistration")'
+new = '|| (false /* NON-VACUITY BREAK */ && kind == "EtwRegistration")'
+test_file = "crates/basal-host/src/builtins/git/windows.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["windows"]
+target = "--lib"
+select = { tests = ["builtins::git::windows::spawn_lock_tests::windows_etw_registration_duplication_probe", "builtins::git::windows::spawn_lock_tests::windows_pipe_objects_remain_inspectable"] }
+expect_red = ["builtins::git::windows::spawn_lock_tests::windows_etw_registration_duplication_probe"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
 # Windows filesystem path spelling, containment and replacement permissions;
 # Git config/hook isolation, output bounds and child-tree termination.
 

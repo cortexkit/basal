@@ -125,22 +125,101 @@ mod tests {
         }
     }
 
-    /// Against the real clock. The budget and the burns span several
-    /// scheduler ticks (about 15.6 ms on Windows, where the thread CPU clock
-    /// advances a tick at a time), so tick rounding cannot flip the outcome.
-    #[test]
-    fn time_outside_the_engine_is_not_counted() {
+    #[cfg(windows)]
+    fn native_sample() -> String {
+        use windows_sys::Win32::{
+            Foundation::FILETIME,
+            System::Threading::{GetCurrentThread, GetCurrentThreadId, GetThreadTimes},
+        };
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn QueryPerformanceCounter(counter: *mut i64) -> i32;
+            fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+            fn QueryThreadCycleTime(thread: *mut std::ffi::c_void, cycles: *mut u64) -> i32;
+        }
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut creation, mut exit, mut kernel, mut user) = (zero, zero, zero, zero);
+        let (mut qpc, mut frequency, mut cycles) = (0, 0, 0);
+        // SAFETY: all output pointers are live and the pseudo-handle names this
+        // test thread. These independent counters are diagnostic, not a clock
+        // conversion or part of the engine's measured interval.
+        unsafe {
+            assert_ne!(
+                GetThreadTimes(
+                    GetCurrentThread(),
+                    &mut creation,
+                    &mut exit,
+                    &mut kernel,
+                    &mut user
+                ),
+                0,
+                "{}",
+                std::io::Error::last_os_error()
+            );
+            assert_ne!(QueryPerformanceCounter(&mut qpc), 0);
+            assert_ne!(QueryPerformanceFrequency(&mut frequency), 0);
+            assert_ne!(QueryThreadCycleTime(GetCurrentThread(), &mut cycles), 0);
+        }
+        let units = |v: FILETIME| (u64::from(v.dwHighDateTime) << 32) | u64::from(v.dwLowDateTime);
+        format!(
+            "thread={} kernel_100ns={} user_100ns={} qpc={qpc} qpc_hz={frequency} cycles={cycles}",
+            unsafe { GetCurrentThreadId() },
+            units(kernel),
+            units(user)
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn native_sample() -> String {
+        format!("thread_cpu_time={:?}", thread_cpu_time())
+    }
+
+    fn engine_intervals(sample: usize) -> Duration {
+        let before = native_sample();
         let clock = JsClock::new(Duration::from_millis(150));
         clock.enter();
         burn(Duration::from_millis(30));
         clock.leave();
+        let after = native_sample();
+        let spent = clock.spent();
+        let details = format!("sample={sample} spent={spent:?} before=[{before}] after=[{after}]");
+        #[cfg(windows)]
+        println!("{details}");
         // Sleeping and burning CPU while left must not count.
         std::thread::sleep(Duration::from_millis(50));
         burn(Duration::from_millis(200));
-        assert!(!clock.over_budget(), "spent {:?}", clock.spent());
+        assert_eq!(clock.spent(), spent, "paused CPU time changed: {details}");
+        assert!(!clock.over_budget(), "{details}");
         clock.enter();
         burn(Duration::from_millis(200));
-        assert!(clock.over_budget());
+        assert!(
+            clock.over_budget(),
+            "entered CPU time was not charged: {details}"
+        );
+        spent
+    }
+
+    /// Exercise the real CPU source as well as the pause/resume bookkeeping.
+    /// Keep the upper-budget check: an oversized charge can also end a real
+    /// activation early, even if pausing itself preserves the recorded spend.
+    #[test]
+    fn time_outside_the_engine_is_not_counted() {
+        engine_intervals(0);
+    }
+
+    /// Compare the tick-accounted clock with wall time and raw thread cycles.
+    /// Keep every sample so a large accounting jump is visible in CI output.
+    #[cfg(windows)]
+    #[test]
+    fn windows_engine_interval_samples() {
+        let mut largest = Duration::ZERO;
+        for index in 0..512 {
+            largest = largest.max(engine_intervals(index));
+        }
+        println!("largest entered interval over 512 samples: {largest:?}");
     }
 
     thread_local! {
