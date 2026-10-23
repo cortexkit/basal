@@ -1,0 +1,94 @@
+{
+  "args_digest": "9dd2b8d0ae07e7c675e8eef937b6305c2f156da210f32982c88a060c2fdc132d",
+  "dedup_key": "flow_install:protected-root-sample:1",
+  "default": "decline",
+  "expires_in_ms": 86400000,
+  "facts": [],
+  "flow_install": {
+    "author": {
+      "operator": true
+    },
+    "code_hash": "9dd2b8d0ae07e7c675e8eef937b6305c2f156da210f32982c88a060c2fdc132d",
+    "dry_run_summary": {
+      "mode": "capture",
+      "partial": false,
+      "runs": [],
+      "warnings": [
+        {
+          "field": "fs.read",
+          "kind": "protected_root",
+          "path": "~/Documents/notes",
+          "protections": [
+            {
+              "effect": "the first access asks the operator for permission",
+              "folder": "~/Documents",
+              "os": "macos"
+            },
+            {
+              "effect": "writes are blocked while Controlled Folder Access is on",
+              "folder": "~/Documents",
+              "os": "windows"
+            }
+          ],
+          "text": "On macOS, the first access to ~/Documents asks the operator for permission.\nOn Windows, writes under ~/Documents are blocked while Controlled Folder Access is on."
+        }
+      ],
+      "window": {
+        "capped": true,
+        "covered": null,
+        "due_times_in_window": 24,
+        "due_times_is_lower_bound": false,
+        "kind": "schedule",
+        "replayed": 0,
+        "requested": {
+          "from": "2026-04-30T00:00:00Z",
+          "to": "2026-05-01T00:00:00Z"
+        }
+      }
+    },
+    "flow_id": "protected-root-sample",
+    "manifest_json": "{\"fs\":{\"read\":[\"~/Documents/notes\"]},\"id\":\"protected-root-sample\",\"purpose\":\"Sample flow reading notes under a protected folder\",\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"trigger\":{\"schedule\":{\"interval\":\"1h\"}},\"version\":1}",
+    "script": "return 1;\n",
+    "token_usage": {
+      "cache_read": 0,
+      "cache_write": 0,
+      "fresh_input": 0,
+      "output": 0,
+      "window": "1d"
+    },
+    "version": 1,
+    "warnings": [
+      {
+        "code": "protected_root",
+        "detail": "On macOS, the first access to ~/Documents asks the operator for permission.\nOn Windows, writes under ~/Documents are blocked while Controlled Folder Access is on."
+      }
+    ]
+  },
+  "kind": "flow_install",
+  "late_execution": "notify_only",
+  "material_damage": false,
+  "on_expiry": "deny",
+  "options": [
+    {
+      "effect": "grant",
+      "id": "approve",
+      "label": "Approve"
+    },
+    {
+      "effect": "decline",
+      "id": "decline",
+      "label": "Decline"
+    }
+  ],
+  "preview": {
+    "label": "Code",
+    "text": "return 1;\n"
+  },
+  "prompt": "Sample flow reading notes under a protected folder",
+  "target": {
+    "kind": "flow",
+    "label": "protected-root-sample v1"
+  },
+  "title": "Install flow protected-root-sample v1",
+  "urgency": "normal"
+}
