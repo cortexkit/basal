@@ -964,6 +964,7 @@ mod spawn_lock_tests {
     use windows_sys::Win32::{
         Foundation::{
             CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_INVALID_HANDLE,
+            ERROR_NOT_SUPPORTED,
         },
         System::Threading::GetCurrentProcess,
     };
@@ -1134,14 +1135,137 @@ fn main() {
             )
         } == 0
         {
-            assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(ERROR_INVALID_HANDLE as i32),
-                "could not inspect a child's handle table"
+            let error = std::io::Error::last_os_error().raw_os_error();
+            let kind = if error == Some(ERROR_NOT_SUPPORTED as i32) {
+                remote_object_type(process, value)
+            } else {
+                String::new()
+            };
+            assert!(
+                unrelated_handle(error, &kind),
+                "could not inspect a child's handle table: value={value:#x} error={error:?} type={kind}"
             );
             return None;
         }
         Some(OwnedHandle(duplicate))
+    }
+
+    fn unrelated_handle(error: Option<i32>, kind: &str) -> bool {
+        // Microsoft documents DuplicateHandle support for File and Pipe.
+        // The live EventRegister probe below observes ERROR_NOT_SUPPORTED for
+        // EtwRegistration, a separate object type, on both Windows CI images.
+        // Exempt only that type, never a File (which can be a pipe end).
+        error == Some(ERROR_INVALID_HANDLE as i32)
+            || (error == Some(ERROR_NOT_SUPPORTED as i32) && kind == "EtwRegistration")
+    }
+
+    #[test]
+    fn windows_only_etw_registration_may_refuse_duplication() {
+        let unsupported = Some(ERROR_NOT_SUPPORTED as i32);
+        assert!(unrelated_handle(unsupported, "EtwRegistration"));
+        for kind in ["File", "Pipe", "Event", "", "unknown type"] {
+            assert!(!unrelated_handle(unsupported, kind), "{kind} was exempted");
+        }
+        assert!(!unrelated_handle(Some(5), "EtwRegistration"));
+        assert!(!unrelated_handle(None, "EtwRegistration"));
+        assert!(unrelated_handle(Some(ERROR_INVALID_HANDLE as i32), ""));
+    }
+
+    #[test]
+    fn windows_pipe_objects_remain_inspectable() {
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: 0,
+        };
+        let (reader, writer) = pipe(&attributes).unwrap();
+        let process = unsafe { GetCurrentProcess() };
+        let value = reader.0 as usize;
+        assert_eq!(remote_object_type(process, value), "File");
+        assert!(holds(process, value, &reader));
+        assert!(!holds(process, writer.0 as usize, &reader));
+        assert!(object_at(process, 0).is_none());
+    }
+
+    /// Resolve a remote handle's type without duplicating that handle. The
+    /// process snapshot contains a type index; NtQueryObject supplies its name.
+    fn remote_object_type(process: HANDLE, value: usize) -> String {
+        use std::ffi::c_void;
+        #[link(name = "ntdll", kind = "raw-dylib")]
+        unsafe extern "system" {
+            fn NtQueryInformationProcess(
+                process: HANDLE,
+                class: u32,
+                buffer: *mut c_void,
+                length: u32,
+                returned: *mut u32,
+            ) -> i32;
+            fn NtQueryObject(
+                handle: HANDLE,
+                class: u32,
+                buffer: *mut c_void,
+                length: u32,
+                returned: *mut u32,
+            ) -> i32;
+        }
+        #[repr(C)]
+        struct UnicodeString {
+            length: u16,
+            maximum_length: u16,
+            buffer: *const u16,
+        }
+        fn query(run: impl Fn(*mut c_void, u32, *mut u32) -> i32) -> Vec<usize> {
+            let mut bytes = 64 * 1024u32;
+            for _ in 0..8 {
+                let mut buffer = vec![0usize; bytes as usize / 8];
+                let mut returned = 0;
+                let status = run(buffer.as_mut_ptr().cast(), bytes, &mut returned);
+                if matches!(status as u32, 0xc000_0004 | 0x8000_0005 | 0xc000_0023) {
+                    bytes = returned.max(bytes).saturating_mul(2);
+                    continue;
+                }
+                assert!(
+                    status >= 0,
+                    "handle type query: NTSTATUS {:#010x}",
+                    status as u32
+                );
+                assert!(returned <= bytes);
+                return buffer;
+            }
+            panic!("handle type query kept growing");
+        }
+        // The x64 ProcessHandleInformation layout has a two-word header and
+        // five-word entries; ObjectTypesInformation has a count followed by
+        // pointer-aligned type records.
+        assert_eq!(std::mem::size_of::<usize>(), 8);
+        let table = query(|buffer, bytes, returned| unsafe {
+            NtQueryInformationProcess(process, 51, buffer, bytes, returned)
+        });
+        let index = (0..table[0])
+            .find_map(|i| {
+                let entry = &table[2 + i * 5..2 + i * 5 + 5];
+                (entry[0] == value).then_some((entry[3] >> 32) as u8)
+            })
+            .expect("the unduplicable handle is still in the live child's table");
+        let types = query(|buffer, bytes, returned| unsafe {
+            NtQueryObject(std::ptr::null_mut(), 3, buffer, bytes, returned)
+        });
+        let base = types.as_ptr().cast::<u8>();
+        let mut offset = 8;
+        for _ in 0..types[0] as u32 {
+            assert!(offset + 104 <= types.len() * 8);
+            let name = unsafe { &*base.add(offset).cast::<UnicodeString>() };
+            if unsafe { *base.add(offset + 90) } == index {
+                let start = name.buffer as usize;
+                let end = start.checked_add(usize::from(name.length)).unwrap();
+                assert!(start >= base as usize && end <= base as usize + types.len() * 8);
+                return String::from_utf16_lossy(unsafe {
+                    std::slice::from_raw_parts(name.buffer, usize::from(name.length) / 2)
+                });
+            }
+            offset = (offset + 104 + usize::from(name.maximum_length)).next_multiple_of(8);
+        }
+        panic!("unknown object type index {index}");
     }
 
     /// Whether `process` holds `object` at `value`. A handle a child
@@ -1151,6 +1275,107 @@ fn main() {
     fn holds(process: HANDLE, value: usize, object: &OwnedHandle) -> bool {
         object_at(process, value)
             .is_some_and(|found| unsafe { CompareObjectHandles(found.0, object.0) } != 0)
+    }
+
+    /// Register a provider so the handle-type diagnostic does not depend on
+    /// another child's stdio value colliding with an ETW registration handle.
+    #[test]
+    fn windows_etw_registration_duplication_probe() {
+        use std::ffi::c_void;
+        #[link(name = "advapi32")]
+        unsafe extern "system" {
+            fn EventRegister(
+                provider: *const windows_sys::core::GUID,
+                callback: *const c_void,
+                context: *const c_void,
+                registration: *mut u64,
+            ) -> u32;
+            fn EventUnregister(registration: u64) -> u32;
+        }
+        #[link(name = "ntdll", kind = "raw-dylib")]
+        unsafe extern "system" {
+            fn NtQueryInformationProcess(
+                process: HANDLE,
+                class: u32,
+                buffer: *mut c_void,
+                length: u32,
+                returned: *mut u32,
+            ) -> i32;
+        }
+        struct Registration(u64);
+        impl Drop for Registration {
+            fn drop(&mut self) {
+                assert_eq!(unsafe { EventUnregister(self.0) }, 0);
+            }
+        }
+        let provider = windows_sys::core::GUID {
+            data1: 0xd9ca6e2b,
+            data2: 0xd6ad,
+            data3: 0x4658,
+            data4: [0x95, 0xc8, 0x0d, 0xca, 0x74, 0xe8, 0x21, 0xe4],
+        };
+        let mut registration = Registration(0);
+        assert_eq!(
+            unsafe {
+                EventRegister(
+                    &provider,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &mut registration.0,
+                )
+            },
+            0
+        );
+        let process = unsafe { GetCurrentProcess() };
+        let mut table = vec![0usize; 64 * 1024];
+        let mut returned = 0;
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process,
+                51,
+                table.as_mut_ptr().cast(),
+                (table.len() * 8) as u32,
+                &mut returned,
+            )
+        };
+        assert!(status >= 0, "handle snapshot: {status:#x}");
+        let mut unsupported = 0;
+        for i in 0..table[0] {
+            let value = table[2 + i * 5];
+            let mut duplicate = std::ptr::null_mut();
+            let ok = unsafe {
+                DuplicateHandle(
+                    process,
+                    value as HANDLE,
+                    process,
+                    &mut duplicate,
+                    0,
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            };
+            if ok == 0 {
+                let error = std::io::Error::last_os_error().raw_os_error();
+                if error != Some(ERROR_INVALID_HANDLE as i32) {
+                    let name = remote_object_type(process, value);
+                    println!(
+                        "registered ETW provider: value={value:#x} error={error:?} type={name}"
+                    );
+                    assert!(
+                        unrelated_handle(error, &name),
+                        "error={error:?} type={name}"
+                    );
+                    assert!(object_at(process, value).is_none());
+                    unsupported += 1;
+                }
+            } else {
+                drop(OwnedHandle(duplicate));
+            }
+        }
+        assert!(
+            unsupported > 0,
+            "ETW registration did not produce an unduplicable handle"
+        );
     }
 
     /// Many confined launches, plain spawns and git children started at
