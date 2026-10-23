@@ -122,7 +122,7 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/board-hygiene/flow.js"
-old = "if (wait?.ref_state === 'terminal' || wait?.declined_by != null) return false;"
+old = "if (wait?.ref_state === 'terminal' || wait?.declined_by != null) return null;"
 new = "// NON-VACUITY BREAK"
 
 [[control]]
@@ -256,6 +256,40 @@ timeout_s = 600
 file = "flows/board-hygiene/flow.js"
 old = "!itemRef(item.wait)"
 new = "true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "board-hygiene-open-ask-suppression"
+guards = "blocked items on open asks never create overdue or stale wait nudges"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["an_open_ask_suppresses_overdue_and_stale_wait_nudges", "a_declined_or_ended_peer_wait_nudges_the_owner_never_the_peer"] }
+expect_red = ["an_open_ask_suppresses_overdue_and_stale_wait_nudges"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "typeof item.wait?.ref === 'string' && item.wait.ref.startsWith('ask:')) continue;"
+new = "false /* NON-VACUITY BREAK */) continue;"
+
+[[control]]
+id = "board-hygiene-peer-ref-recipient"
+guards = "peer refs route overdue items to their known board owner regardless of the display name in on"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["a_peer_ref_with_a_display_name_nudges_only_the_known_peer", "a_declined_or_ended_peer_wait_nudges_the_owner_never_the_peer"] }
+expect_red = ["a_peer_ref_with_a_display_name_nudges_only_the_known_peer"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "const peer = wait.ref.slice('peer:'.length);"
+new = "const peer = wait.on; // NON-VACUITY BREAK"
 
 [[control]]
 id = "board-hygiene-replacement-fallback"

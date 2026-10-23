@@ -104,12 +104,16 @@ function boardLanes(board, skipped) {
   return lanes;
 }
 
-// A wait whose peer declined, or that has otherwise ended, is the owner's to
-// act on: never nudge the peer about it.
+// Resolve only board owners, never display names. A peer ref is authoritative;
+// legacy waits without a ref may still name a board owner's id in `on`.
+// Ended or declined waits belong to the waiting owner instead.
 function peerWait(wait) {
-  if (wait?.ref_state === 'terminal' || wait?.declined_by != null) return false;
-  return typeof wait?.on === 'string' && (boardOwners.has(wait.on) || /^(ag_|agent_)/.test(wait.on)) &&
-    (wait.ref == null || (typeof wait.ref === 'string' && wait.ref.startsWith('peer:')));
+  if (wait?.ref_state === 'terminal' || wait?.declined_by != null) return null;
+  if (typeof wait?.ref === 'string' && wait.ref.startsWith('peer:')) {
+    const peer = wait.ref.slice('peer:'.length);
+    return boardOwners.has(peer) ? peer : null;
+  }
+  return wait?.ref == null && boardOwners.has(wait?.on) ? wait.on : null;
 }
 
 // A duration for prose: minutes under an hour, hours under two days, then days.
@@ -497,6 +501,10 @@ async function run() {
     for (const lane of lanes) {
       if (lane.status === 'retired') continue;
       for (const item of lane.items) {
+        // An open ask already reaches the person and owns the wait's timing;
+        // no overdue or stale-item reminder can help its blocked owner.
+        if (item.state === 'blocked' && item.wait?.ref_state !== 'terminal' &&
+            typeof item.wait?.ref === 'string' && item.wait.ref.startsWith('ask:')) continue;
         // An item still blocked on a wait that has ended is the owner's to move,
         // even when it changed after the end or the wait was set on something
         // already finished. The 30 minutes count from the later of the end and
@@ -509,7 +517,7 @@ async function run() {
           terminal, 0, agent);
         await check('eta_passed', agent, lane, item,
           item.state !== 'done' && Number.isFinite(item.eta_ms) && !itemRef(item.wait),
-          item.eta_ms, 0, peerWait(item.wait) ? item.wait.on : agent);
+          item.eta_ms, 0, peerWait(item.wait) ?? agent);
         // A blocked item whose wait has not changed for a day, with no ETA to
         // bound it, may be waiting on something that went silent (a worker that
         // never finished, a peer that never answered). Ended or declined waits
