@@ -1486,9 +1486,10 @@ impl Runtime {
         Ok(changed)
     }
 
-    /// Removes an operator-managed flow without deleting its history. Disabling
-    /// uses the same call gate as a normal pause; queued events are refused so
-    /// approving a later version cannot replay notices queued before removal.
+    /// Removes an operator-managed flow without deleting its history. The normal
+    /// pause mechanism stops subsequent calls from runs already in flight.
+    /// Queued events are refused so approving a later version cannot replay
+    /// notices queued before removal.
     pub fn uninstall_flow(&self, flow_id: &str) -> std::result::Result<bool, InstallError> {
         let now = self.config().clock.now_ms();
         decide(self, |tx| {

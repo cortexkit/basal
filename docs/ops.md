@@ -381,8 +381,9 @@ notices are not admitted. `flow.enable` returns `flow_removed` for an
 operator-uninstalled flow. Core-removed packages and owner-ended templates
 retain their existing independent enable switch; enabling them never reopens
 their removed instance. A new installed version remains removed until normal approval commits;
-approval clears removal and the uninstall's disable, but not an independent
-operator/owner pause that predates uninstall. Reapproving or reinstalling the
+approval clears removal and the uninstall's disable, but not a pre-existing
+operator pause whose reason was preserved. Like an operator disable, uninstall
+takes over owner/runtime pauses. Reapproving or reinstalling the
 same already approved version does not restore the flow.
 
 Migration **39** reuses the existing `flows.removed` bit and adds nullable
