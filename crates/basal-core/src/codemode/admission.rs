@@ -9,13 +9,12 @@ use std::collections::BTreeMap;
 use basal_host::flow_scope::{FlowScope, RegisteredScope};
 use basal_host::{Host, ScopeStatus};
 use basal_proto::{MAX_NAME_BYTES, MAX_SCRIPT_BYTES};
-use jsonschema::Validator;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use subc_protocol::Principal;
 
-use super::catalog::{catalog_digest, compile_input_schema};
+use super::catalog::{InputSchema, catalog_digest, compile_input_schema};
 use super::store::{self, Budget, Lookup, NewRun, RunError, RunRecord, Status, Terminal};
 use crate::clock::Clock;
 use crate::error::{CoreError, Result};
@@ -69,7 +68,7 @@ impl Default for Limits {
 pub struct Tool {
     pub module: String,
     pub op: String,
-    pub input_schema: Validator,
+    pub input_schema: InputSchema,
     pub result_format: Option<cortexkit_role_tool_provider::result::ResultFormat>,
 }
 

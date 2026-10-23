@@ -31,6 +31,7 @@ use basal_proto::{
 use serde_json::{Value, json};
 
 use super::admission::Start;
+use super::catalog::InputSchema;
 use super::store::{
     self, Budget, CallStart, Lookup, Outcome, RunError, RunRecord, Status, Terminal,
 };
@@ -1391,10 +1392,14 @@ impl Driver {
         };
         let input: Value = match serde_json::from_str(call.args.as_str()) {
             Ok(value) => value,
-            Err(_) => return self.refuse(call, Outcome::Refused, "invalid_input", true),
+            Err(_) => {
+                let mapped = invalid_input(name, &tool.input_schema, None);
+                return self.refuse_input(call, mapped);
+            }
         };
         if !tool.input_schema.is_valid(&input) {
-            return self.refuse(call, Outcome::Refused, "invalid_input", true);
+            let mapped = invalid_input(name, &tool.input_schema, Some(&input));
+            return self.refuse_input(call, mapped);
         }
         if self.shared.transport.catalog().is_err() {
             return self.refuse(call, Outcome::ToolUnavailable, "tool_unavailable", true);
@@ -1444,6 +1449,17 @@ impl Driver {
             )?;
         }
         self.deliver(&call, Mapped::rejected(outcome, code, code))
+    }
+
+    fn refuse_input(&mut self, call: HostCall, mapped: Mapped) -> Result<()> {
+        self.insert(
+            &call,
+            CallStart::Settled {
+                outcome: Outcome::Refused,
+                code: Some("invalid_input"),
+            },
+        )?;
+        self.deliver(&call, mapped)
     }
 
     fn dispatch(&mut self, call: HostCall, queued: bool) -> Result<()> {
@@ -1839,6 +1855,105 @@ fn read_worker(
             }
         }
     }
+}
+
+// The five errors, two 96-byte name lists, and admission-capped 128-byte tool
+// name fit within one KiB, including JSON escaping and structural overhead.
+const INPUT_DIAGNOSTIC_BYTES: usize = 1024;
+const INPUT_ERRORS: usize = 5;
+
+fn diagnostic_text(text: &str, bytes: usize) -> String {
+    let mut result = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let cost = match c {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+            '\u{0}'..='\u{1f}' => 6,
+            _ => c.len_utf8(),
+        };
+        if used + cost > bytes - '…'.len_utf8() {
+            result.push('…');
+            return result;
+        }
+        result.push(c);
+        used += cost;
+    }
+    result
+}
+
+fn diagnostic_names(names: &[String]) -> Vec<String> {
+    let mut selected = Vec::new();
+    for name in names {
+        selected.push(name.clone());
+        if serde_json::to_string(&selected).unwrap().len() > 96 {
+            selected.pop();
+            break;
+        }
+    }
+    selected
+}
+
+fn invalid_input(name: &str, schema: &InputSchema, input: Option<&Value>) -> Mapped {
+    let tool = name;
+    let errors: Vec<Value> = match input {
+        Some(input) => schema
+            .iter_errors(input)
+            .take(INPUT_ERRORS)
+            .map(|error| {
+                json!({
+                    "path": diagnostic_text(&error.instance_path().to_string(), 32),
+                    "message": diagnostic_text(&error.to_string(), 72),
+                })
+            })
+            .collect(),
+        None => vec![json!({"path":"", "message":"arguments are not valid JSON"})],
+    };
+    let properties = diagnostic_names(&schema.properties);
+    let required = diagnostic_names(&schema.required);
+    let message = if input.is_some() {
+        let errors = errors
+            .iter()
+            .map(|error| {
+                let path = error["path"].as_str().unwrap();
+                let message = error["message"].as_str().unwrap();
+                if path.is_empty() {
+                    message.to_owned()
+                } else {
+                    format!("{path}: {message}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut names = properties
+            .iter()
+            .map(|property| {
+                if schema.required.contains(property) {
+                    format!("{property} (required)")
+                } else {
+                    property.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+        if properties.len() < schema.properties.len() {
+            names.push("…".into());
+        } else if names.is_empty() {
+            names.push("(no top-level properties declared)".into());
+        }
+        format!(
+            "{tool}: invalid input: {errors}. {tool} takes: {}.",
+            names.join(", ")
+        )
+    } else {
+        format!("{tool}: arguments are not valid JSON")
+    };
+    let mut mapped = Mapped::rejected(
+        Outcome::Refused,
+        "invalid_input",
+        &diagnostic_text(&message, INPUT_DIAGNOSTIC_BYTES),
+    );
+    mapped.detail =
+        Some(json!({"tool":tool, "errors":errors, "properties":properties, "required":required}));
+    mapped
 }
 
 struct Mapped {

@@ -7,6 +7,7 @@
 //! admission and checks every input the program sends to that tool.
 
 use std::fmt;
+use std::ops::Deref;
 
 use jsonschema::{Retrieve, Uri, Validator};
 use serde_json::Value;
@@ -82,6 +83,23 @@ impl fmt::Display for SchemaError {
 
 impl std::error::Error for SchemaError {}
 
+/// A validator and the schema's own top-level argument names. Keeping names
+/// from the source avoids presenting referenced or nested properties as inputs.
+#[derive(Debug)]
+pub struct InputSchema {
+    validator: Validator,
+    pub properties: Vec<String>,
+    pub required: Vec<String>,
+}
+
+impl Deref for InputSchema {
+    type Target = Validator;
+
+    fn deref(&self) -> &Validator {
+        &self.validator
+    }
+}
+
 /// Compiles a tool's input schema as JSON Schema draft 2020-12.
 ///
 /// A schema may refer only to itself: every `$ref` and `$dynamicRef` must be
@@ -97,11 +115,27 @@ impl std::error::Error for SchemaError {}
 /// The compiler never fetches anything: the crate is built without its HTTP
 /// and file loaders, and the retriever refuses every URI. Format keywords
 /// are annotations only, never assertions.
-pub fn compile_input_schema(schema: &Value) -> Result<Validator, SchemaError> {
+pub fn compile_input_schema(schema: &Value) -> Result<InputSchema, SchemaError> {
     check_members(schema)?;
-    options()
+    let validator = options()
         .build(schema)
-        .map_err(|e| SchemaError::Invalid(e.to_string()))
+        .map_err(|e| SchemaError::Invalid(e.to_string()))?;
+    Ok(InputSchema {
+        validator,
+        properties: schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .map(|properties| properties.keys().cloned().collect())
+            .unwrap_or_default(),
+        required: schema
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+    })
 }
 
 fn options() -> jsonschema::ValidationOptions<'static> {

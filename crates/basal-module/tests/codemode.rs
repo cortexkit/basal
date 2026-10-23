@@ -743,6 +743,38 @@ fn tool_manifest_description_and_schema_are_pinned_and_old_entries_are_gone() {
 }
 
 #[test]
+fn invalid_input_rejection_renders_the_schema_diagnostic_as_plain_text() {
+    let rig = rig("invalid-input-message", false);
+    rig.core.release();
+    let result = call(
+        &rig,
+        "invalid-input",
+        "return await tools.echo({});",
+        Duration::from_secs(10),
+    );
+    let run = &result["structuredContent"];
+    assert_eq!(run["status"], "failed");
+    assert_eq!(run["error"]["code"], "invalid_input");
+    let message = run["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("echo (call 1) failed: echo: invalid input: "),
+        "{message}"
+    );
+    assert!(
+        message.contains("\"n\" is a required property"),
+        "{message}"
+    );
+    assert!(message.ends_with("echo takes: n (required)."), "{message}");
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(message)
+    );
+    assert_eq!(rig.core.state.lock().unwrap().0, 0);
+}
+
+#[test]
 fn daemon_schema_not_program_arguments_governs_dispatch_and_result_renders() {
     let rig = rig("tool-schema", false);
     rig.core.release();
