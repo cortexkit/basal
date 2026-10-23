@@ -474,9 +474,12 @@ async function run() {
     collect(rule, agent, lane, item, since, recipient);
   }
 
+  // An active item untouched this long, while its owner has been working,
+  // is probably stalled (Ufuk chose 3 hours on 2026-10-23).
+  const STALE_ACTIVE_AFTER = 3 * HOUR;
   for (const {agent_id: agent, lanes} of owners) {
     const staleCandidate = lanes.some(lane => lane.items.some(item =>
-      item.state === 'active' && Number.isFinite(item.changed_at_ms) && now - item.changed_at_ms >= 6 * HOUR));
+      item.state === 'active' && Number.isFinite(item.changed_at_ms) && now - item.changed_at_ms >= STALE_ACTIVE_AFTER));
     let activity;
     if (staleCandidate) {
       try {
@@ -531,7 +534,7 @@ async function run() {
         await check('stale_active', agent, lane, item,
           item.state === 'active' && Number.isFinite(item.changed_at_ms) &&
             activity?.status === 'ok' && Number.isFinite(activity.value) && activity.value > item.changed_at_ms,
-          item.changed_at_ms, 6 * HOUR, agent);
+          item.changed_at_ms, STALE_ACTIVE_AFTER, agent);
       }
       const newest = Math.max(...lane.items.map(item => item.changed_at_ms ?? lane.updated_at_ms));
       await check('lane_done', agent, lane, null,

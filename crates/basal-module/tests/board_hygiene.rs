@@ -325,7 +325,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 14);
+    assert_eq!(value["version"], 15);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -454,7 +454,7 @@ fn each_rule_keeps_its_initial_age_threshold() {
     for (name, delay) in [
         ("wait_ended", 30 * MIN),
         ("eta_passed", 0),
-        ("stale_active", 6 * HOUR),
+        ("stale_active", 3 * HOUR),
         ("stale_pending", 6 * HOUR),
     ] {
         let mut t = active_test(vec![candidates(name, 1)]);
