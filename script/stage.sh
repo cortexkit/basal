@@ -1,5 +1,5 @@
 #!/bin/sh
-# stage.sh: build, sign, smoke-test and stage ck-basal and ck-basal-worker
+# stage.sh: build, sign, smoke-test and stage ck-basal and ck-basal-worker on macOS
 # for SUBC, who places every module binary with the fleet's
 # subconscious/scripts/fleet/place-module.sh. Nothing here places, restarts
 # or posts anything: it writes the stage and prints the card to hand over.
@@ -22,7 +22,7 @@
 #                 each marker must read staged >= 1 / live 0, and each control
 #                 must read >= 1 in both files, as the placement gate requires.
 # --verify        check an existing stage directory (both binaries' sidecars
-#                 and signatures) and print its revision; changes nothing.
+#                 and macOS code signatures) and print its revision; changes nothing.
 #                 script/flows-rig.sh place --from-stage uses it.
 set -eu
 
@@ -549,6 +549,8 @@ write_first_install_card() {
 cat > "$CARD" <<EOF
 @SUBC basal: a FIRST placement, two binaries, one card each (ck-basal, ck-basal-worker)
 
+macOS developer placement.
+
 **Card**
 - stage: $STAGE_DIR (both binaries)
 - ck-basal: $STAGE_DIR/ck-basal, sha256 $(sum_of ck-basal); basal.current revision $SHA
@@ -557,11 +559,11 @@ cat > "$CARD" <<EOF
 - CI for that commit: $(ci_of)
 - daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.30 module is known to run against.
 
-**Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
+**macOS signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=$(codesign_flags "$STAGE_DIR/ck-basal")
 - ck-basal-worker: Identifier=ck-basal-worker flags=$(codesign_flags "$STAGE_DIR/ck-basal-worker")
-- no entitlements: the worker's QuickJS is an interpreter and needs no JIT; its sandbox is a Seatbelt profile it applies to itself.
-- smoke-tested on the signed files: ck-basal --manifest (module_id basal, provenance build_git_sha $SHA); --version on both; the worker's sandbox self-check (script/sign-worker.sh verify: embedded profile, and a file read, a socket connect and a program launch all denied); lldb -p refused on both, with an unhardened ad-hoc copy of /bin/sleep as the control that did attach. Inode and flags unchanged across the run.
+- no entitlements: the worker's QuickJS is an interpreter and needs no JIT; macOS sandbox: a Seatbelt profile it applies to itself.
+- smoke-tested on the signed files: ck-basal --manifest (module_id basal, provenance build_git_sha $SHA); --version on both; the worker's macOS sandbox self-check (script/sign-worker.sh verify: embedded profile, and a file read, a socket connect and a program launch all denied); macOS debugger hardening: lldb -p refused on both, with an unhardened ad-hoc copy of /bin/sleep as the control that did attach. Inode and flags unchanged across the run.
 
 **Marker and control** (strings table)
 - marker: $SHA (the full commit, embedded by the build)
@@ -570,7 +572,7 @@ cat > "$CARD" <<EOF
 - control: a string every build of each binary carries
   - ck-basal "$(control_of ck-basal)": $(cat "$CONTROL_DIR/ck-basal.control")
   - ck-basal-worker "$(control_of ck-basal-worker)": $(cat "$CONTROL_DIR/ck-basal-worker.control")
-- This is a first install: there is no running basal, so place each binary with place-module.sh's \`--install\` mode and the marker above (\`--module basal --staged $STAGE_DIR/ck-basal --marker $SHA --install\`, then the same for ck-basal-worker with \`--dest ~/.local/share/cortexkit/bin/ck-basal-worker\`). It checks that the destination does not exist, that the binary is hardened with no get-task-allow, that its identifier matches the destination name, and that the marker is in the staged binary. No restart: basal starts on \`ck module rescan\` once its config entry exists.
+- This is a first install on macOS: there is no running basal, so place each binary with place-module.sh's \`--install\` mode and the marker above (\`--module basal --staged $STAGE_DIR/ck-basal --marker $SHA --install\`, then the same for ck-basal-worker with \`--dest ~/.local/share/cortexkit/bin/ck-basal-worker\`). It checks that the destination does not exist, that the binary is hardened with no get-task-allow, that its identifier matches the destination name, and that the marker is in the staged binary. No restart: basal starts on \`ck module rescan\` once its config entry exists.
 
 **Store and formats**
 - new module: no migration, no existing format, no format-floor.json. basal's store, <data_home>/cortexkit/basal/store.db, is created on first start. check-format-floors.sh finds no floors for basal and passes.
@@ -582,7 +584,7 @@ cat > "$CARD" <<EOF
 **Post-placement check** (mine)
 - \`ck --json provenance basal\`: build_git_sha $SHA, and after allowing up to five seconds for the ck-subc trampoline to exec, the observed pid's running image is the placed ck-basal (same inode); fail if it never becomes that file.
 - a worker's running image is the placed ck-basal-worker (same inode) once a flow runs; if it briefly reports the ck-subc trampoline, retry for up to five seconds and fail if it never becomes the placed file.
-- BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
+- macOS sandbox: BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
 - basal's flow.list answers (no flows yet).
 EOF
 }
@@ -595,6 +597,8 @@ else
 fi
 cat >> "$CARD" <<EOF
 
+macOS developer placement.
+
 **Card**
 - stage: $STAGE_DIR (both binaries)
 - ck-basal: $STAGE_DIR/ck-basal, sha256 $(sum_of ck-basal); basal.current revision $SHA
@@ -603,11 +607,11 @@ cat >> "$CARD" <<EOF
 - CI for that commit (push event): $(ci_of)
 - daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.30 module is known to run against.
 
-**Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
+**macOS signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=$(codesign_flags "$STAGE_DIR/ck-basal")
 - ck-basal-worker: Identifier=ck-basal-worker flags=$(codesign_flags "$STAGE_DIR/ck-basal-worker")
-- no entitlements: the worker's QuickJS is an interpreter and needs no JIT; its sandbox is a Seatbelt profile it applies to itself.
-- smoke-tested on the signed files: ck-basal --manifest (module_id basal, provenance build_git_sha $SHA); --version on both; the worker's sandbox self-check (script/sign-worker.sh verify: embedded profile, and a file read, a socket connect and a program launch all denied); lldb -p refused on both, with an unhardened ad-hoc copy of /bin/sleep as the control that did attach. Inode and flags unchanged across the run.
+- no entitlements: the worker's QuickJS is an interpreter and needs no JIT; macOS sandbox: a Seatbelt profile it applies to itself.
+- smoke-tested on the signed files: ck-basal --manifest (module_id basal, provenance build_git_sha $SHA); --version on both; the worker's macOS sandbox self-check (script/sign-worker.sh verify: embedded profile, and a file read, a socket connect and a program launch all denied); macOS debugger hardening: lldb -p refused on both, with an unhardened ad-hoc copy of /bin/sleep as the control that did attach. Inode and flags unchanged across the run.
 
 **Marker and control** (strings table, checked against the live destinations)
 - ck-basal marker "$BASAL_MARKER": $(cat "$CONTROL_DIR/ck-basal.marker")
@@ -668,7 +672,7 @@ fi
 cat >> "$CARD" <<EOF
 - \`ck --json provenance basal\`: build_git_sha $SHA, and after allowing up to five seconds for the ck-subc trampoline to exec, the observed pid's running image is the placed ck-basal (same inode); fail if it never becomes that file.
 - a worker's running image is the placed ck-basal-worker (same inode) once a flow runs; if it briefly reports the ck-subc trampoline, retry for up to five seconds and fail if it never becomes the placed file.
-- BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
+- macOS sandbox: BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
 - the store reads schema version $BUILD_SCHEMA with its tables intact.
 - basal's flow.list answers.
 EOF

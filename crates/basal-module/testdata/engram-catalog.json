@@ -5,7 +5,7 @@
     {
       "entry_id": "basal-store",
       "class": "portable",
-      "reason": "Restoring this database onto another Mac while this basal instance still runs would run its flows twice. Restore only onto a machine where this basal instance no longer runs.",
+      "reason": "Restoring this database onto another machine while this basal instance still runs would run its flows twice. Restore only onto a machine where this basal instance no longer runs.",
       "mechanism": "page-db",
       "path": "store.db",
       "writer_interaction": "read-transaction-live"
@@ -13,7 +13,7 @@
     {
       "entry_id": "basal-writer-lease",
       "class": "portable",
-      "reason": "Restore this writer lease only with the matching database and only onto a machine where this basal instance no longer runs; leaving basal running on both Macs would run its flows twice.",
+      "reason": "Restore this writer lease only with the matching database and only onto a machine where this basal instance no longer runs; leaving basal running on both machines would run its flows twice.",
       "mechanism": "filetree",
       "path": "a820ffc03d506451.lease"
     },

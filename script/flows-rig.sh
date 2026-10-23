@@ -1,5 +1,5 @@
 #!/bin/sh
-# flows-rig.sh: build, place and run basal's isolated test rig, ckdev-flows.
+# flows-rig.sh: build, place and run basal's isolated test rig, ckdev-flows, on macOS.
 #
 # The rig is a private subc daemon with its own port and XDG homes under the
 # default root ~/Work/Projects/CortexKit-scratch/ckdev-flows (override with
@@ -39,8 +39,8 @@
 #             change the versions of path dependencies on a sibling clone
 #             (claustrum builds against ../subconscious by path); the
 #             manifest then records its cargo_lock as sibling-refreshed.
-#   place     sign every binary by script/signing.sh under a ckdev-*
-#             identifier (basal keeps its production identifiers) and place it
+#   place     apply macOS code signatures by script/signing.sh under a ckdev-*
+#             identifier (basal keeps its production identifiers) and place each binary
 #             in bin/. The rig's ck-basal is built
 #             with the rig-kill-hook feature, which the contract suite's
 #             crash case needs.
@@ -138,7 +138,8 @@
 #     rig's connection file, and a PATH with every CortexKit directory
 #     removed, so no production variable or file under the real home
 #     reaches a rig module.
-#   - The rig root must resolve outside ~/.local/share/cortexkit/ and /Volumes/.
+#   - The rig root must resolve outside ~/.local/share/cortexkit/ and macOS
+#     external volumes (/Volumes/).
 #     Every rig path is also refused if its written or resolved form reaches
 #     the production CortexKit store.
 #   - The vault starts empty with its own key file, so the macOS keychain is
@@ -262,7 +263,7 @@ guard_all_paths() {
       "$CK_SHARE"|"$CK_SHARE"/*|"$CK_SHARE_PHYSICAL"|"$CK_SHARE_PHYSICAL"/*)
         die "refusing: the rig root $RIG resolves under production store $CK_SHARE" ;;
       /Volumes|/Volumes/*)
-        die "refusing: the rig root $RIG resolves under /Volumes; external disks are not supported" ;;
+        die "refusing: the rig root $RIG resolves under /Volumes; macOS external volumes are not supported" ;;
     esac
   done
   for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$BASAL_SOURCE" "$LOGS" "$RESULTS" "$STAGES" \
