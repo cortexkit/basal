@@ -126,7 +126,18 @@ async fn install_reads_exact_head_bytes_on_stamped_scope_and_deduplicates() {
     for field in ["card_id", "code_hash"] {
         assert!(text.contains(result[field].as_str().unwrap()));
     }
-    assert!(text.contains("Warnings:") && text.contains("Dry run:"));
+    assert_eq!(
+        text,
+        format!(
+            "Install requested for head-flow v1. The approval card is on the operator's phone ({}).\n\
+         Code hash (full): {expected}.\n\
+         Dry run (capture mode): event window; no events were replayed because event replay needs the event plane. No replay window was covered.",
+            result["card_id"].as_str().unwrap()
+        )
+    );
+    assert_eq!(result["warnings"], json!([]));
+    assert_eq!(result["dry_run"]["runs"], json!([]));
+    assert_eq!(result["dry_run"]["window"]["kind"], "events");
     assert_eq!(response(&route, request.clone()).await, reply);
     let reads = live.core.reads.lock().unwrap().clone();
     assert_eq!(reads.len(), 2);
@@ -146,6 +157,50 @@ async fn install_reads_exact_head_bytes_on_stamped_scope_and_deduplicates() {
     let route = content_route(&subject, &live, &stamp()).await;
     assert_eq!(response(&route, request).await, reply);
     assert!(live.core.reads.lock().unwrap().is_empty());
+    drop(live);
+    subject.join_stopped().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_summarizes_captured_replays_but_keeps_the_full_structured_report() {
+    let root = common::scratch("flow-capture-text");
+    let subject = Subject::default();
+    let live = subject.spawn(&root).await.unwrap();
+    let script = "return await ops.call('mock', 'echo', {due: trigger.due});";
+    let mut manifest = common::schedule_manifest("head-flow", json!({"interval":"5m"}));
+    manifest["sinks"][0]["agent"] = json!("agent");
+    {
+        let mut files = live.core.files.lock().unwrap();
+        files.insert("head.js".into(), Ok(read_reply(script.as_bytes())));
+        files.insert(
+            "head.json".into(),
+            Ok(read_reply(manifest.to_string().as_bytes())),
+        );
+    }
+    let route = content_route(&subject, &live, &stamp()).await;
+    let reply = call(&route, install()).await;
+    let result = &reply["structuredContent"];
+    assert_eq!(
+        reply["content"][0]["text"],
+        format!(
+            "Install requested for head-flow v1. The approval card is on the operator's phone ({}).\n\
+         Code hash (full): {}.\n\
+         Dry run (capture mode): 10 of 288 scheduled runs in the last 24 h replayed. Replay capped.\n\
+         Partial: captured results may leave later behavior untested.\n\
+         10 runs: stopped at mock echo, which the dry run captured and did not execute; partial.",
+            result["card_id"].as_str().unwrap(),
+            result["code_hash"].as_str().unwrap()
+        )
+    );
+    let runs = result["dry_run"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 10);
+    for run in runs {
+        assert_eq!(run["calls"][0]["args"]["due"], run["trigger"]["due"]);
+        assert_eq!(run["calls"][0]["outcome"]["rejected"], "captured");
+        assert_eq!(run["calls"][0]["action"], "captured");
+    }
+    assert_ne!(runs[0]["trigger"]["due"], runs[9]["trigger"]["due"]);
     drop(live);
     subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();
@@ -420,6 +475,16 @@ async fn all_flow_actions_reuse_ops_and_return_content_v1() {
     )
     .await;
     assert_eq!(dry["structuredContent"]["flow_id"], "head-flow");
+    assert_eq!(
+        dry["content"][0]["text"],
+        "Preview for head-flow v1.\n\
+         Dry run (capture mode): no replay window; 1 sample-trigger run replayed.\n\
+         1 run: succeeded; 0 calls."
+    );
+    assert_eq!(
+        dry["structuredContent"]["summary"]["runs"][0]["result"],
+        json!({"exact":"from head"})
+    );
     let disabled = call(
         &route,
         json!({"action":"disable","flow_id":"head-flow","reason":"paused"}),
@@ -429,11 +494,13 @@ async fn all_flow_actions_reuse_ops_and_return_content_v1() {
         disabled["structuredContent"],
         json!({"flow_id":"head-flow","state":"disabled","changed":true})
     );
+    assert_eq!(disabled["content"][0]["text"], "head-flow: disabled.");
     let enabled = call(&route, json!({"action":"enable","flow_id":"head-flow"})).await;
     assert_eq!(
         enabled["structuredContent"],
         json!({"flow_id":"head-flow","state":"enabled","changed":true})
     );
+    assert_eq!(enabled["content"][0]["text"], "head-flow: enabled.");
     let list = call(&route, json!({"action":"list","flow_ids":["head-flow"]})).await;
     let agent_ops = management(&subject, &live, &stamp()).await;
     assert_eq!(
@@ -445,7 +512,10 @@ async fn all_flow_actions_reuse_ops_and_return_content_v1() {
         .await["result"]
     );
     let text = list["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("head-flow: enabled; approved version 1; last run null"));
+    assert_eq!(
+        text,
+        "head-flow: enabled; approved version 1; last run none"
+    );
     let mut template = common::events_manifest("watch");
     template["sinks"][0]["agent"] = json!("$self");
     template["params"] = json!({"note":{"type":"string","max_bytes":100}});
@@ -478,6 +548,10 @@ async fn all_flow_actions_reuse_ops_and_return_content_v1() {
         .unwrap();
     let ended = call(&route, json!({"action":"end","flow_id":id})).await;
     assert_eq!(ended["structuredContent"]["flow_id"], id);
+    assert_eq!(
+        ended["content"][0]["text"],
+        format!("Instance {id}: ended.")
+    );
     live.core.approval_capability.store(false, Ordering::SeqCst);
     let explicit = call(&route, json!({"action":"instantiate","template":"watch","version":2,"params":{"note":"b"},"expires_in":"1h"})).await;
     assert_eq!(explicit["structuredContent"]["version"], 2);
