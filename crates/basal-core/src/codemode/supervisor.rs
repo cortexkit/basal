@@ -962,8 +962,8 @@ impl Driver {
     /// Whether a held call is waiting on a person. A provider's held reason
     /// decides: the tool-provider contract names the reasons that mean a
     /// person must act (`consent`, `login_handoff`, `login_capture`). Any
-    /// other reason, `running` included, means the provider's own work
-    /// continues, so the call spends ordinary wall time. A hold with no
+    /// other reason, including `running`, is treated as a hold without a
+    /// person, so the call spends ordinary wall time. A hold with no
     /// recorded reason is a person wait: `Supervisor::held` marks a person's
     /// approval, and a late result that overtakes its held reply proves a
     /// hold without saying why.
