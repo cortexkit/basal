@@ -2106,8 +2106,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/codemode/supervisor.rs"
-old = "self.held_positions.len() == self.in_flight"
-new = "!self.held_positions.is_empty() /* NON-VACUITY BREAK */"
+old = "person_holds == self.in_flight"
+new = "person_holds > 0 /* NON-VACUITY BREAK */"
 
 # codemode model tools: the controls from here to the next section check that
 # model calls cannot share conversation history, change a saved routing
@@ -2438,18 +2438,69 @@ new = 'true /* NON-VACUITY BREAK */'
 
 [[control]]
 id = "codemode-withdrawn-requires-dispatch"
-guards = "withdrawn cannot describe an unsent call even when its person-wait flag is set"
+guards = "withdrawn cannot describe an unsent call even when it is marked held"
 test_file = "crates/basal-core/src/codemode/store_tests.rs"
 runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-select = { tests = ["codemode::store::tests::withdrawn_requires_a_sent_entered_person_held_call", "codemode::store::tests::a_recorded_outcome_never_changes"] }
-expect_red = ["codemode::store::tests::withdrawn_requires_a_sent_entered_person_held_call"]
+select = { tests = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call", "codemode::store::tests::a_recorded_outcome_never_changes"] }
+expect_red = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call"]
 only = true
 file = "crates/basal-core/src/schema.rs"
-old = "CHECK (outcome <> 'withdrawn' OR (intent_at IS NOT NULL AND entered_at IS NOT NULL AND waited_on_person=1)),"
-new = "CHECK (outcome <> 'withdrawn' OR waited_on_person=1), -- NON-VACUITY BREAK"
+old = "CHECK (outcome <> 'withdrawn' OR (intent_at IS NOT NULL AND entered_at IS NOT NULL AND held = 1)),"
+new = "CHECK (outcome <> 'withdrawn' OR held = 1), -- NON-VACUITY BREAK"
+
+# Migration 38 rebuilds codemode_calls with a `held` column; withdrawal
+# needs a provider hold, and a person wait is always a hold.
+[[control]]
+id = "codemode-withdrawn-requires-hold"
+guards = "withdrawn cannot describe a sent call the provider never held"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call", "codemode::store::tests::a_recorded_outcome_never_changes"] }
+expect_red = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call"]
+only = true
+file = "crates/basal-core/src/schema.rs"
+old = "CHECK (outcome <> 'withdrawn' OR (intent_at IS NOT NULL AND entered_at IS NOT NULL AND held = 1)),"
+new = "CHECK (outcome <> 'withdrawn' OR (intent_at IS NOT NULL AND entered_at IS NOT NULL)), -- NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-person-wait-is-a-hold"
+guards = "a call recorded as waiting on a person is always recorded as held"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call", "codemode::store::tests::held_migration_backfills_person_waits_and_preserves_calls_children_and_triggers", "codemode::store::tests::a_recorded_outcome_never_changes"] }
+expect_red = ["codemode::store::tests::withdrawn_requires_a_sent_entered_held_call", "codemode::store::tests::held_migration_backfills_person_waits_and_preserves_calls_children_and_triggers"]
+only = true
+file = "crates/basal-core/src/schema.rs"
+old = "CHECK (waited_on_person = 0 OR held = 1),"
+new = "CHECK (waited_on_person IN (0,1)), -- NON-VACUITY BREAK"
+
+# Only the tool-provider person-wait reasons stop the wall clock and count
+# as waiting on a person; a `running` hold spends ordinary wall time.
+[[control]]
+id = "codemode-running-hold-is-not-a-person-wait"
+guards = "a provider hold whose reason is not a person wait neither pauses the wall clock nor records a person wait"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::running_hold_delivers_its_late_result_without_counting_as_a_person_wait", "codemode::supervisor::tests::running_hold_spends_wall_time_and_ends_at_the_wall_deadline", "codemode::supervisor::tests::consent_hold_pauses_the_wall_clock_and_spends_the_person_allowance"] }
+expect_red = ["codemode::supervisor::tests::running_hold_delivers_its_late_result_without_counting_as_a_person_wait", "codemode::supervisor::tests::running_hold_spends_wall_time_and_ends_at_the_wall_deadline"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = ".is_none_or(|reason| cortexkit_role_tool_provider::result::is_person_wait(reason))"
+new = ".is_none_or(|_| true) // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-early-not-started-records-hold"

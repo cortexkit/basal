@@ -42,6 +42,7 @@ fn published_held_reasons_and_unknown_reasons_all_remain_interim() {
         "consent",
         "login_handoff",
         "login_capture",
+        "running",
         "future_person_action",
     ] {
         let body = json!({"content":[{"type":"text","text":"Waiting"}],"held":{"reason":reason}});
@@ -514,7 +515,11 @@ fn published_093_held_reply_vectors_are_consumed_without_local_wire_rules() {
     let decode_invalid = vectors["decode_invalid"].as_array().unwrap();
     assert_eq!(
         (valid.len(), invalid.len(), decode_invalid.len()),
-        (4, 5, 3)
+        (5, 5, 3)
+    );
+    assert!(
+        valid.iter().any(|case| case["name"] == "held_running"),
+        "0.10.2 publishes a held reply for running work"
     );
     for case in valid {
         match held::classify(case["body"].clone(), Some(&ResultFormat::ContentV1)) {

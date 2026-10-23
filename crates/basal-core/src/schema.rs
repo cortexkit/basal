@@ -410,6 +410,10 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 37,
         statements: DECISION_PATHS_CONSENT_ONLY,
     },
+    Migration {
+        version: 38,
+        statements: CODEMODE_HELD,
+    },
 ];
 
 // Broca model calls learn their completion from Broca's bus events.
@@ -1648,6 +1652,70 @@ INSERT INTO codemode_models SELECT * FROM migration_35_models;
 INSERT INTO codemode_broca_calls SELECT * FROM migration_35_broca;
 DROP TABLE migration_35_models;
 DROP TABLE migration_35_broca;
+"#,
+    codemode_call_triggers!(),
+    codemode_end_trigger!()
+);
+
+// A provider may hold a call for reasons other than a person: `running`
+// means its own work continues. `held` records that the provider held the
+// call at all, and `waited_on_person` only that a person had to act, so a
+// person wait is always a hold but not every hold is a person wait.
+// Withdrawal needs a hold, not a person wait. Every hold recorded before
+// this migration was counted as a person wait, so `held` starts as
+// `waited_on_person`. Like migration 35, the rebuild first copies the
+// tables that reference codemode_calls, because dropping it would cascade
+// into them, and recreates the triggers dropped with the tables.
+const CODEMODE_HELD: &str = concat!(
+    r#"
+CREATE TABLE migration_38_models AS SELECT * FROM codemode_models;
+CREATE TABLE migration_38_broca AS SELECT * FROM codemode_broca_calls;
+DROP TABLE codemode_models;
+DROP TABLE codemode_broca_calls;
+DROP TRIGGER codemode_calls_outcome_is_final;
+DROP TRIGGER codemode_calls_only_while_running;
+DROP TRIGGER codemode_runs_end_with_no_pending_call;
+CREATE TABLE codemode_calls_new (
+    run_id TEXT NOT NULL REFERENCES codemode_runs(run_id), position INTEGER NOT NULL CHECK (position >= 0),
+    tool TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, input_bytes INTEGER NOT NULL CHECK (input_bytes >= 0),
+    intent_at INTEGER, outcome TEXT NOT NULL CHECK (outcome IN ('pending','ok','error','refused','denied',
+        'consent_unavailable','tool_unavailable','outcome_unknown','cancelled','withdrawn')),
+    code TEXT, duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    entered_at INTEGER CHECK (entered_at IS NULL OR intent_at IS NOT NULL),
+    waited_on_person INTEGER NOT NULL DEFAULT 0 CHECK (waited_on_person IN (0,1)),
+    held INTEGER NOT NULL DEFAULT 0 CHECK (held IN (0,1)),
+    PRIMARY KEY (run_id,position),
+    CHECK ((code IS NULL) = (outcome IN ('pending','ok','cancelled'))),
+    CHECK (outcome NOT IN ('ok','error','consent_unavailable','outcome_unknown') OR intent_at IS NOT NULL),
+    CHECK (outcome <> 'cancelled' OR intent_at IS NULL),
+    CHECK (waited_on_person = 0 OR held = 1),
+    CHECK (outcome <> 'withdrawn' OR (intent_at IS NOT NULL AND entered_at IS NOT NULL AND held = 1)),
+"#,
+    codemode_entered_duration!(),
+    r#");
+INSERT INTO codemode_calls_new (run_id,position,tool,idempotency_key,input_bytes,intent_at,outcome,code,
+    duration_ms,entered_at,waited_on_person,held)
+SELECT run_id,position,tool,idempotency_key,input_bytes,intent_at,outcome,code,
+    duration_ms,entered_at,waited_on_person,waited_on_person FROM codemode_calls;
+DROP TABLE codemode_calls;
+ALTER TABLE codemode_calls_new RENAME TO codemode_calls;
+CREATE TABLE codemode_models (
+    run_id TEXT NOT NULL, position INTEGER NOT NULL, reserved INTEGER NOT NULL, charged INTEGER, envelope TEXT,
+    PRIMARY KEY (run_id,position),
+    FOREIGN KEY (run_id,position) REFERENCES codemode_calls(run_id,position) ON DELETE CASCADE
+);
+CREATE TABLE codemode_broca_calls (
+    send_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, position INTEGER NOT NULL, snapshot TEXT NOT NULL,
+    FOREIGN KEY (run_id,position) REFERENCES codemode_calls(run_id,position) ON DELETE CASCADE
+);
+INSERT INTO codemode_models SELECT * FROM migration_38_models;
+INSERT INTO codemode_broca_calls SELECT * FROM migration_38_broca;
+DROP TABLE migration_38_models;
+DROP TABLE migration_38_broca;
+CREATE TRIGGER codemode_broca_calls_forget_wait AFTER DELETE ON codemode_broca_calls BEGIN
+    DELETE FROM broca_waits WHERE send_id = old.send_id;
+    DELETE FROM broca_wakes WHERE send_id = old.send_id;
+END;
 "#,
     codemode_call_triggers!(),
     codemode_end_trigger!()

@@ -583,7 +583,9 @@ struct Driver {
     /// The tool, provider code and message of each call that rejected, so a
     /// program ending on an uncaught rejection reports them as plain text.
     rejections: BTreeMap<u64, Rejection>,
-    /// The reason each provider gave when it held a call on a person.
+    /// The reason each provider gave when it held a call. Only the
+    /// tool-provider person-wait reasons mean a person must act; see
+    /// `waits_on_person`.
     hold_reasons: BTreeMap<u64, String>,
     /// Pending sleeps as (due time on the run's clock, position), earliest
     /// first. The driver's event wait ends at the earliest one.
@@ -920,7 +922,19 @@ impl Driver {
                     .mark_held(module, &self.run.run_id, position, held);
             }
             if held {
+                // Every held call stays in custody until its late result
+                // arrives and is recorded as held, which is what lets it be
+                // withdrawn. Only a person wait is also listed for the
+                // person, recorded as one, and able to stop the wall clock.
                 self.held_positions.insert(position);
+                let person = self.waits_on_person(position);
+                self.shared.store.write(|tx| {
+                    tx.execute("UPDATE codemode_calls SET held=1, waited_on_person=MAX(waited_on_person, ?3) WHERE run_id=?1 AND position=?2 AND outcome='pending'", rusqlite::params![self.run.run_id, position, person])?;
+                    Ok(())
+                })?;
+                if !person {
+                    return Ok(());
+                }
                 if let Some((_, call)) = self.tool_calls.get(&position)
                     && let CallKind::Tool { name } = &call.kind
                 {
@@ -937,16 +951,26 @@ impl Driver {
                             reason: self.hold_reasons.get(&position).cloned(),
                         });
                 }
-                self.shared.store.write(|tx| {
-                    tx.execute("UPDATE codemode_calls SET waited_on_person=1 WHERE run_id=?1 AND position=?2 AND outcome='pending'", rusqlite::params![self.run.run_id, position])?;
-                    Ok(())
-                })?;
             } else {
                 self.held_positions.remove(&position);
                 self.forget_hold(position);
             }
         }
         Ok(())
+    }
+
+    /// Whether a held call is waiting on a person. A provider's held reason
+    /// decides: the tool-provider contract names the reasons that mean a
+    /// person must act (`consent`, `login_handoff`, `login_capture`). Any
+    /// other reason, including `running`, is treated as a hold without a
+    /// person, so the call spends ordinary wall time. A hold with no
+    /// recorded reason is a person wait: `Supervisor::held` marks a person's
+    /// approval, and a late result that overtakes its held reply proves a
+    /// hold without saying why.
+    fn waits_on_person(&self, position: u64) -> bool {
+        self.hold_reasons
+            .get(&position)
+            .is_none_or(|reason| cortexkit_role_tool_provider::result::is_person_wait(reason))
     }
 
     fn forget_hold(&self, position: u64) {
@@ -1233,7 +1257,12 @@ impl Driver {
         if !self.sleeps.is_empty() {
             return false;
         }
-        self.blocked && self.in_flight > 0 && self.held_positions.len() == self.in_flight
+        let person_holds = self
+            .held_positions
+            .iter()
+            .filter(|position| self.waits_on_person(**position))
+            .count();
+        self.blocked && self.in_flight > 0 && person_holds == self.in_flight
     }
 
     /// Starts a program sleep. It is not a tool call: it has no call row and

@@ -41,8 +41,8 @@ cortexkit-test-support = "=0.1.10"
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
 cortexkit-store = { version = "=0.2.5", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
-cortexkit-role-tool-provider = "=0.10.1"
-cortexkit-role-tool-provider-conformance = "=0.10.0"
+cortexkit-role-tool-provider = "=0.10.4"
+cortexkit-role-tool-provider-conformance = "=0.10.1"
 # The provider-owned resource-busy refusal is shared across the fleet.
 cortexkit-resource-busy = { git = "https://github.com/cortexkit/commons", rev = "c46f324133c5df6411703714e4c147f7cc8554a0" }
 # The driver cortexkit-store is built on. basal-core writes its own queries
@@ -96,6 +96,20 @@ rcgen = "0.13"
 
 [profile.release]
 opt-level = 3
+
+# Build basal's own code and its Rust dependencies at opt-level 1 in dev and
+# test builds (the test profile inherits dev). The suite is dominated by
+# running tests, not compiling them: on a 4-vCPU Linux host, a warm rebuild
+# and test of basal-module, or of basal-core and basal-module together, took
+# 24-35% less time, and the whole workspace's tests ran in about 180 s
+# instead of 290-550 s. The cost is compile time: a cold build takes roughly
+# 1.5-2 times as long, and a push touching only basal-core, whose tests are
+# quick, is a few seconds slower. Debug assertions and overflow checks do
+# not depend on opt-level; they are stated here so they stay on.
+[profile.dev]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
 
 # Optimise the bundled C engines in dev and test builds too. Every test store
 # open runs basal's whole SQLite migration chain, and every flow run executes

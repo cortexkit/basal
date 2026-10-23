@@ -766,6 +766,9 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
             "user_commands_codemode_refused",
             "user_commands_flow_refused",
             "user_commands_accepted_late",
+            // basal's own catalog lists no presets, so the served-presets
+            // case has nothing to check.
+            "catalog_listed_presets_served",
             // The shared held-reply case requires provider-owned approval execution;
             // basal instead waits for providers and core to release their holds.
             "tool_result_held_reply_route_gating"

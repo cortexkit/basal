@@ -2398,13 +2398,25 @@ impl Fixture {
         attempt
     }
     fn provider_held(&self) -> (Attempt, CustodyAttempt) {
+        self.provider_held_with(held_reply(), FAR_DEADLINE)
+    }
+    /// Starts a run with the given wall deadline, issues one call, blocks the
+    /// program on it, and has the provider hold it with `reply`.
+    fn provider_held_with(&self, reply: Value, deadline: i64) -> (Attempt, CustodyAttempt) {
         self.host.content_results.store(true, Ordering::SeqCst);
         self.host.custody_controlled.store(true, Ordering::SeqCst);
-        let call = self.held_far_from_its_deadline();
+        self.start(
+            &[("read", "notes", "read", json!({}))],
+            Limits::default(),
+            deadline,
+        );
+        self.parent.recv_timeout(TIMEOUT).unwrap();
+        self.issue(0, "read", json!(null));
+        let call = self.attempt();
         self.worker
             .send(WorkerMessage::Blocked { awaiting: vec![0] })
             .unwrap();
-        call.reply.send(Ok(held_reply())).unwrap();
+        call.reply.send(Ok(reply)).unwrap();
         assert!(
             self.parent.recv_timeout(Duration::from_millis(75)).is_err(),
             "a held reply must not settle the program's await"
@@ -2457,6 +2469,85 @@ fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
             .recv_timeout(Duration::from_millis(75))
             .is_err()
     );
+}
+
+fn running_held_reply() -> Value {
+    json!({"content":[{"type":"text","text":"Still working; the result will arrive later."}],"held":{"reason":"running"}})
+}
+
+/// A `running` hold is not a person wait: the call stays in custody and its
+/// late result still settles it, but nobody is listed as waiting, the call
+/// is not recorded as having waited on a person, and the held time is not
+/// charged to the person-wait allowance.
+#[test]
+fn running_hold_delivers_its_late_result_without_counting_as_a_person_wait() {
+    let f = Fixture::new();
+    let (call, pull) = f.provider_held_with(running_held_reply(), FAR_DEADLINE);
+    assert!(f.parent.try_recv().is_err(), "held is not the final answer");
+    assert!(
+        f.supervisor.holds("r").is_empty(),
+        "a running hold is not listed as waiting on a person"
+    );
+    assert_eq!(
+        f.supervisor.result("r").unwrap().unwrap()["calls"][0]["waited_on_person"],
+        false
+    );
+    f.clock.set(1_100);
+    pull.reply.send(Ok(late_page("i1", 1, vec![late_entry(&call.key, "e1", json!({"content":[{"type":"text","text":"done"}],"structuredContent":{"answer":42}}))]))).unwrap();
+    let delivery = f.delivery();
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(delivery.value, JsonText::new(r#"{"answer":42}"#).unwrap());
+    f.custody_attempt("late_results.ack")
+        .reply
+        .send(Ok(json!({})))
+        .unwrap();
+    f.finish("42");
+    let result = f.terminal();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["person_wait_ms"], 0);
+    assert_eq!(result["calls"][0]["waited_on_person"], false);
+}
+
+/// With every call held and the program blocked, a consent hold stops the
+/// run's wall clock and spends the person-wait allowance instead, so the run
+/// outlives its wall deadline.
+#[test]
+fn consent_hold_pauses_the_wall_clock_and_spends_the_person_allowance() {
+    let f = Fixture::new();
+    let (call, pull) = f.provider_held_with(held_reply(), 10_100);
+    f.clock.set(20_100);
+    pull.reply.send(Ok(late_page("i1", 1, vec![late_entry(&call.key, "e1", json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}))]))).unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
+    f.custody_attempt("late_results.ack")
+        .reply
+        .send(Ok(json!({})))
+        .unwrap();
+    f.finish("42");
+    let result = f.terminal();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["person_wait_ms"], 20_000);
+    assert_eq!(result["calls"][0]["waited_on_person"], true);
+}
+
+/// The same hold with reason `running` keeps the wall clock going: the run
+/// ends at its wall deadline, the held call is withdrawn, and nothing is
+/// charged to the person-wait allowance.
+#[test]
+fn running_hold_spends_wall_time_and_ends_at_the_wall_deadline() {
+    let f = Fixture::new();
+    let (_, pull) = f.provider_held_with(running_held_reply(), 10_100);
+    f.clock.set(20_100);
+    let withdraw = f.custody_attempt("tool.withdraw");
+    withdraw
+        .reply
+        .send(Ok(json!({"answer":"withdrawn"})))
+        .unwrap();
+    let result = f.terminal();
+    assert_eq!(result["status"], "budget_exhausted:wall");
+    assert_eq!(result["person_wait_ms"], 0);
+    assert_eq!(result["calls"][0]["waited_on_person"], false);
+    assert_eq!(f.calls()[0].outcome, Outcome::Withdrawn);
+    drop(pull);
 }
 
 #[test]
