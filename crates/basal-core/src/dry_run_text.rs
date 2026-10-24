@@ -141,10 +141,35 @@ fn events_sentence(manifest: &Manifest) -> String {
         .iter()
         .map(|(module, names)| format!("{module} {} events", and_list(names)))
         .collect();
-    format!(
+    let mut sentence = format!(
         "Runs on {}; no events were replayed in the dry run.",
         and_list(&groups)
-    )
+    );
+    let ages: Vec<_> = events
+        .iter()
+        .map(|e| e.max_age.as_deref().and_then(crate::manifest::duration_ms))
+        .collect();
+    if let Some(age) = ages
+        .first()
+        .copied()
+        .flatten()
+        .filter(|age| ages.iter().all(|a| *a == Some(*age)))
+    {
+        sentence.push_str(&format!(" Ignores events older than {}.", span_words(age)));
+    } else {
+        for (event, age) in events.iter().zip(ages) {
+            if let Some(age) = age {
+                sentence.push_str(&format!(
+                    " Ignores {} {} v{} events older than {}.",
+                    event.module,
+                    event.name,
+                    event.version,
+                    span_words(age)
+                ));
+            }
+        }
+    }
+    sentence
 }
 
 fn schedule_sentence(manifest: &Manifest, window: &Value, runs: &[Value]) -> String {

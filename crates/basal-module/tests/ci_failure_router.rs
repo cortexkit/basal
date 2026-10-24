@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 12);
+    assert_eq!(value["version"], 13);
     assert!(
         value["purpose"]
             .as_str()
@@ -357,8 +357,8 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     assert_eq!(
         value["trigger"]["events"],
         json!([
-            {"module":"plexus", "name":"github_ci_job_failed", "version":2, "match":{"repo":"cortexkit/*"}},
-            {"module":"plexus", "name":"github_ci_run_completed", "version":2, "match":{"repo":"cortexkit/*"}}
+            {"module":"plexus", "name":"github_ci_job_failed", "version":2, "match":{"repo":"cortexkit/*"}, "max_age":"6h"},
+            {"module":"plexus", "name":"github_ci_run_completed", "version":2, "match":{"repo":"cortexkit/*"}, "max_age":"6h"}
         ])
     );
     assert_eq!(value["deadline"], "2m");

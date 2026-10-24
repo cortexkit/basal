@@ -186,6 +186,16 @@ impl Fixture {
     fn approve(&self, id: &str) {
         self.approve_version(id, 1);
     }
+    fn approve_max_age(&self, id: &str, max_age: &str) {
+        let mut request = self.request(id);
+        let mut manifest: serde_json::Value = serde_json::from_str(&request.manifest).unwrap();
+        manifest["trigger"]["events"][0]["max_age"] = json!(max_age);
+        request.manifest = manifest.to_string();
+        let installed = self.rt.install(&request).unwrap();
+        self.rt
+            .approve(id, 1, &installed.code_hash, "test-approved")
+            .unwrap();
+    }
     fn approve_version(&self, id: &str, version: u32) {
         self.catalog.set_event(
             "plexus",
@@ -473,6 +483,182 @@ fn header_filters_skip_before_receipts_runs_backlog_and_rate() {
     assert_eq!(f.rt.admit_events(&[accepted.clone()]).unwrap().admitted, 1);
     assert_eq!(f.rt.admit_events(&[accepted]).unwrap().duplicate, 1);
     assert_eq!(f.rt.flow_health().unwrap()[0].filtered_out, 205);
+}
+
+#[test]
+fn event_max_age_uses_publish_time_and_strict_boundary() {
+    let f = Fixture::new(60);
+    let mut value: serde_json::Value = serde_json::from_str(&f.request("flow").manifest).unwrap();
+    value["trigger"]["events"][0]["max_age"] = json!("6h");
+    let manifest = Manifest::parse(&value.to_string()).unwrap();
+    let now = 30_000_000;
+    for (published_at_ms, expected) in [
+        (now - 21_600_001, true),
+        (now - 21_600_000, false),
+        (now - 21_599_999, false),
+        (now, false),
+        (now + 1, false),
+        (0, false),
+    ] {
+        let mut event = notice(0);
+        event.published_at_ms = published_at_ms;
+        event
+            .headers
+            .insert("published_at_ms".into(), now.to_string());
+        assert_eq!(
+            stale(&manifest, &event, now).unwrap(),
+            expected,
+            "{published_at_ms}"
+        );
+    }
+    let mut other_version = notice(0);
+    other_version.subject = "ck.account.event.plexus.github_pr_changed.v2".into();
+    assert!(!stale(&manifest, &other_version, now).unwrap());
+    let unlimited = Manifest::parse(&f.request("flow").manifest).unwrap();
+    assert!(!stale(&unlimited, &notice(0), now).unwrap());
+}
+
+#[test]
+fn stale_backlog_never_charges_rate_windows_or_trips_the_breaker() {
+    let f = Fixture::new(1);
+    f.approve_max_age("flow", "6h");
+    let mut expected_health = f.rt.flow_health().unwrap()[0].clone();
+    for window in 0..3 {
+        f.rt.config.clock.set(21_602_000 + window * 60_000);
+        let notices: Vec<_> = (window * 100..(window + 1) * 100)
+            .map(|n| notice(n as u64))
+            .collect();
+        let report = f.rt.admit_events(&notices).unwrap();
+        assert_eq!(
+            report,
+            Report {
+                stale_dropped: 100,
+                ..Report::default()
+            }
+        );
+        expected_health.stale_dropped += 100;
+        assert_eq!(f.rt.flow_health().unwrap()[0], expected_health);
+    }
+    f.rt.store()
+        .read(|c| {
+            for table in [
+                "event_receipts",
+                "runs",
+                "trigger_inbox",
+                "rate_windows",
+                "token_windows",
+                "decision_cards",
+            ] {
+                let count: i64 =
+                    c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+                assert_eq!(count, 0, "{table}");
+            }
+            Ok(())
+        })
+        .unwrap();
+    let mut fresh = notice(300);
+    fresh.published_at_ms = 21_722_000;
+    let report = f.rt.admit_events(&[fresh.clone()]).unwrap();
+    assert_eq!(
+        report,
+        Report {
+            matched: 1,
+            admitted: 1,
+            ..Report::default()
+        }
+    );
+    f.rt.store()
+        .read(|c| {
+            let runs: Vec<String> = c
+                .prepare("SELECT trigger_id FROM runs")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            assert_eq!(runs, [fresh.trigger_id()]);
+            let rate: (i64, i64, i64) = c.query_row(
+                "SELECT SUM(runs),SUM(dispatches),SUM(saturated) FROM rate_windows",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            assert_eq!(rate, (1, 0, 0));
+            Ok(())
+        })
+        .unwrap();
+    let health = f.rt.flow_health().unwrap();
+    assert_eq!((health[0].stale_dropped, health[0].filtered_out), (300, 0));
+    assert!(health[0].enabled);
+}
+
+#[test]
+fn missing_publish_time_uses_first_approval_cutoff_not_stale_counter() {
+    let f = Fixture::new(1);
+    f.approve_max_age("flow", "6h");
+    f.rt.config.clock.set(30_000_000);
+    let mut missing: serde_json::Value = serde_json::to_value(notice(0)).unwrap();
+    missing.as_object_mut().unwrap().remove("published_at_ms");
+    let missing: Notice = serde_json::from_value(missing).unwrap();
+    assert_eq!(missing.published_at_ms, 0);
+    assert_eq!(
+        f.rt.admit_events(&[missing]).unwrap(),
+        Report {
+            skipped_before_install: 1,
+            ..Report::default()
+        }
+    );
+    let health = f.rt.flow_health().unwrap();
+    assert_eq!(
+        (health[0].skipped_before_install, health[0].stale_dropped),
+        (1, 0)
+    );
+    f.rt.store()
+        .read(|c| {
+            for table in ["runs", "rate_windows", "event_receipts"] {
+                let count: i64 =
+                    c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+                assert_eq!(count, 0, "{table}");
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn max_age_is_per_flow_and_backlog_is_rechecked_before_admission() {
+    let f = Fixture::new(1);
+    f.approve_max_age("flow", "1m");
+    f.approve("unlimited");
+    assert_eq!(
+        f.rt.admit_events(&[notice(0), notice(1)]).unwrap().queued,
+        2
+    );
+    f.rt.config.clock.set(61_001);
+    assert_eq!(f.rt.drain_event_backlog().unwrap(), 1);
+    let health = f.rt.flow_health().unwrap();
+    assert_eq!(
+        (
+            health[0].flow_id.as_str(),
+            health[0].stale_dropped,
+            health[0].event_backlog
+        ),
+        ("flow", 1, 0)
+    );
+    assert_eq!(
+        (
+            health[1].flow_id.as_str(),
+            health[1].stale_dropped,
+            health[1].event_backlog
+        ),
+        ("unlimited", 0, 0)
+    );
+    let report = f.rt.admit_events(&[notice(2)]).unwrap();
+    assert_eq!(
+        (
+            report.stale_dropped,
+            report.matched,
+            report.admitted,
+            report.queued
+        ),
+        (1, 1, 0, 1)
+    );
 }
 
 #[test]

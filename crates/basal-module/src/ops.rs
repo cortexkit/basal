@@ -1428,6 +1428,7 @@ impl Module {
                 "event_backlog": f.event_backlog,
                 "skipped_before_install": f.skipped_before_install,
                 "filtered_out": f.filtered_out,
+                "stale_dropped": f.stale_dropped,
                 "event_overflow": f.event_overflow,
                 "overflowed": f.event_overflow > 0,
                 "auto_disabled": f.auto_disabled,

@@ -298,6 +298,22 @@ fn a_local_caller_installs_only_its_own_flows_with_a_digest_sink() {
 }
 
 #[test]
+fn install_card_exposes_event_max_age_in_fields_and_plain_text() {
+    let f = fixture("ops-event-age-card", Options::default());
+    let mut manifest = events_manifest(FLOW);
+    manifest["trigger"]["events"][0]["max_age"] = json!("6h");
+    let reply = install(&f, &agent(OWNER), SCRIPT, &manifest);
+    let card = f.consent.card(reply["card_id"].as_str().unwrap()).unwrap();
+    assert_eq!(card.fields["trigger"]["events"][0]["max_age"], "6h");
+    assert!(
+        card.fields["dry_run_text"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Ignores events older than 6 hours.")
+    );
+}
+
+#[test]
 fn install_raises_one_card_per_version_and_its_decision_approves_or_rejects() {
     let f = fixture("ops-install", Options::default());
     let owner = agent(OWNER);

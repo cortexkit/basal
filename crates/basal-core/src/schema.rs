@@ -418,6 +418,10 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 39,
         statements: "ALTER TABLE flows ADD COLUMN removed_by TEXT; ALTER TABLE flows ADD COLUMN removed_at INTEGER;",
     },
+    Migration {
+        version: 40,
+        statements: "ALTER TABLE event_flow_health ADD COLUMN stale_dropped INTEGER NOT NULL DEFAULT 0;",
+    },
 ];
 
 // Broca model calls learn their completion from Broca's bus events.
