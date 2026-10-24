@@ -90,8 +90,10 @@ pub struct Unavailable {
 pub struct Start {
     pub scope: RegisteredScope,
     /// Core's catalog preset for the run, keyed by the provider modules whose
-    /// tool calls carry it: only providers that serve presets, since the
-    /// others refuse a tool call naming one. Empty when core chose no preset.
+    /// tool calls carry it: only providers whose preset-less catalog answer
+    /// lists that preset. A call to any other provider names none, which
+    /// selects that provider's default variant. Empty when core chose no
+    /// preset.
     pub presets: BTreeMap<String, String>,
     pub tools: BTreeMap<String, Tool>,
     /// Dropped tools by name, never also in `tools`.
@@ -704,8 +706,14 @@ pub fn admit_tool(
             scope: &run_scope_selector,
             identity: &read_identity,
         };
-        let resolved = run_scope::catalog(transport, &read, &daemon, &opened.catalog)
-            .map_err(super::scope::error_value)?;
+        let resolved = run_scope::catalog(
+            transport,
+            &read,
+            &daemon,
+            &opened.catalog,
+            opened.preset.as_deref(),
+        )
+        .map_err(super::scope::error_value)?;
         let gaps = resolved.gaps;
         let presets: BTreeMap<String, String> = match &opened.preset {
             Some(preset) => resolved

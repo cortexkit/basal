@@ -21,11 +21,11 @@
 //!   refused `invalid_request`. An envelope `preset` is refused too, as
 //!   `invalid_request` with `details.reason_code` set to `unknown_field` on a
 //!   role op or `unsupported_value` on a tool call.
-//! - `aft` refuses a bind whose harness is not a host harness name. When the
-//!   test sets the run's preset, it refuses a tool call whose envelope
-//!   `preset` does not name it. It reads no envelope preset on role ops, and a
-//!   `tool.catalog` without a `preset` argument gets its `head` catalog. Its
-//!   tools carry `code.read/v1`, the tag that marks a provider serving presets.
+//! - `aft` refuses a bind whose harness is not a host harness name, and
+//!   refuses a tool call whose envelope `preset` names something other than a
+//!   preset its preset-less `tool.catalog` answer lists (by default none). It
+//!   reads no envelope preset on role ops, and a `tool.catalog` without a
+//!   `preset` argument gets its `head` catalog.
 //! - `entorhinal` defines no catalog presets, so its `tool.catalog` refuses a
 //!   `preset` argument, and any other member the role does not define, as
 //!   `invalid_request`.
@@ -95,9 +95,10 @@ struct Daemon {
     head_routes: BTreeSet<String>,
     /// Bound routes by channel: provider and the bind's call mode.
     routes: BTreeMap<u16, (String, CallMode)>,
-    /// The run's preset, which the fake AFT requires on each tool call's
-    /// envelope, as AFT does.
-    required_preset: Option<String>,
+    /// The presets each fake provider lists in its preset-less `tool.catalog`
+    /// answer, as AFT lists `head`, `worker` and `reader`. A provider absent
+    /// here lists none and serves only its default variant.
+    served_presets: BTreeMap<String, Vec<String>>,
     received: Vec<Received>,
 }
 
@@ -218,14 +219,19 @@ impl Daemon {
                 | "late_results.ack"
                 | "tool.withdraw"
         );
-        if module == "aft"
-            && !role_op
-            && let Some(expected) = self.required_preset.as_deref()
-            && preset.as_deref() != Some(expected)
+        // Each fake provider serves only the presets its preset-less catalog
+        // answer lists, so a tool call naming any other preset is refused the
+        // way a real provider refuses one it does not define.
+        if !role_op
+            && let Some(preset) = preset.as_deref()
+            && !self
+                .served_presets
+                .get(&module)
+                .is_some_and(|served| served.iter().any(|listed| listed == preset))
         {
             return Err(error_body(
                 "invalid_request",
-                "a tool call on a route bound under a scope must name its catalog preset",
+                &format!("preset: unsupported_value {preset}"),
             ));
         }
         if module == "entorhinal" && name == "tool.catalog" {
@@ -283,17 +289,26 @@ impl Daemon {
             "role.describe" => json!({"majors":[{"version":"tool-provider/v1",
                 "ops":["role.describe","tool.catalog"],"stability":"alpha"}],"implementation_version":"1"}),
             "tool.catalog" => {
-                // AFT's tools carry `code.read/v1`, the tag basal reads as
-                // "this provider serves catalog presets".
-                let (tool, capabilities) = match module.as_str() {
-                    "cerebellum" => ("recall", json!([])),
-                    "entorhinal" => ("search", json!([])),
-                    _ => ("read", json!(["code.read/v1"])),
+                let tool = match module.as_str() {
+                    "cerebellum" => "recall",
+                    "entorhinal" => "search",
+                    _ => "read",
                 };
-                json!({"generation":"g","catalog_digest":"d","tools":[{"name":tool,
-                    "schema_digest":"0".repeat(64),"semantics":1,"capabilities":capabilities,
+                // A provider declares its presets only in the answer to a
+                // read that names none, so a read with a preset gets an answer
+                // without the list.
+                let listed = catalog_preset
+                    .is_none()
+                    .then(|| self.served_presets.get(&module).cloned())
+                    .flatten();
+                let mut answer = json!({"generation":"g","catalog_digest":"d","tools":[{"name":tool,
+                    "schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],
                     "input_schema":{"type":"object"},"modes":["classic","codemode"],
-                    "result_format":"content/v1"}]})
+                    "result_format":"content/v1"}]});
+                if let Some(listed) = listed {
+                    answer["presets"] = json!(listed);
+                }
+                answer
             }
             "late_results" => {
                 json!({"entries":[],"cursor":{"provider_incarnation":"fake","seq":0},"more":false})
@@ -436,6 +451,7 @@ fn entries() -> Vec<crate::run_scope::CatalogEntry> {
 fn read_catalogs(
     transport: &SubcTransport,
     scope: &ScopeSelector,
+    preset: Option<&str>,
 ) -> crate::run_scope::ResolvedCatalog {
     let identity =
         crate::run_scope::catalog_read_identity(std::path::Path::new("/agent/project"), RUN);
@@ -443,7 +459,7 @@ fn read_catalogs(
         scope,
         identity: &identity,
     };
-    crate::run_scope::catalog(transport, &read, &daemon_catalog(), &entries())
+    crate::run_scope::catalog(transport, &read, &daemon_catalog(), &entries(), preset)
         .expect("the catalog resolves")
 }
 
@@ -454,7 +470,7 @@ fn received(state: &Mutex<Daemon>) -> Vec<Received> {
 #[test]
 fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
     with_daemon("linked", |transport, state| {
-        let resolved = read_catalogs(&transport, &run_selector());
+        let resolved = read_catalogs(&transport, &run_selector(), None);
         assert!(resolved.gaps.is_empty(), "{:?}", resolved.gaps);
         let names: Vec<_> = resolved
             .catalog
@@ -544,84 +560,99 @@ fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
     });
 }
 
-/// Core chose a preset for the run. Only the program's tool call to AFT, the
-/// provider that serves presets, carries it, in its envelope. The catalog
-/// reads name no preset, so providers without presets (the fake entorhinal
-/// and cerebellum) still serve the run, and AFT serves its `head` catalog.
-/// Tool calls to the other providers and custody requests carry none, which
-/// cerebellum would refuse.
+/// Core chose a preset for the run. Only the program's tool call to a provider
+/// whose preset-less catalog answer lists that preset carries it, in its
+/// envelope. The catalog reads name no preset, so providers that serve none
+/// (the fake entorhinal and cerebellum) still serve the run, and AFT answers
+/// with its `head` catalog. Tool calls to the other providers and custody
+/// requests carry none, which a provider without presets refuses.
 #[test]
 fn core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets() {
-    with_daemon("linked", |transport, state| {
-        let preset = "worker";
-        state.lock().unwrap().required_preset = Some(preset.into());
-        let resolved = read_catalogs(&transport, &run_selector());
-        assert!(resolved.gaps.is_empty(), "{:?}", resolved.gaps);
-        // Only AFT's catalog answer has a tool tagged `code.read/v1`.
-        assert_eq!(
-            resolved.preset_modules,
-            BTreeSet::from(["aft".to_owned()]),
-            "{resolved:?}"
-        );
+    // AFT serves `worker`, so the run's `worker` reaches it. A provider that
+    // lists only `head` and `worker` serves no `reader`, so a `reader` run
+    // sends it none.
+    let cases: [(&str, &[&str]); 2] = [
+        ("worker", &["head", "worker", "reader"]),
+        ("reader", &["head", "worker"]),
+    ];
+    for (preset, served) in cases {
+        with_daemon("linked", |transport, state| {
+            state.lock().unwrap().served_presets.insert(
+                "aft".into(),
+                served.iter().map(|name| (*name).to_owned()).collect(),
+            );
+            let resolved = read_catalogs(&transport, &run_selector(), Some(preset));
+            assert!(resolved.gaps.is_empty(), "{:?}", resolved.gaps);
+            // AFT lists the preset only when the run's preset is among the
+            // presets its preset-less answer declares.
+            let expected: BTreeSet<String> = served
+                .contains(&preset)
+                .then(|| "aft".to_owned())
+                .into_iter()
+                .collect();
+            assert_eq!(resolved.preset_modules, expected, "{resolved:?}");
 
-        let flow = format!("codemode:{RUN}");
-        transport.configure_flow(
-            &flow,
-            Some(crate::flow_scope::RegisteredScope {
-                selector: crate::flow_scope::FlowScope {
-                    owner: core(),
-                    scope_ref: RUN.into(),
-                    epoch: 19,
-                },
-                targets: ["aft", "cerebellum", "entorhinal"].map(String::from).into(),
-            }),
-        );
-        // The program's calls, each carrying the preset only when its
-        // provider serves presets, as the run's supervisor decides it.
-        let options = |module: &str| RunToolOptions {
-            identity: BindIdentity::new("/agent/project", "opencode", "head-session"),
-            reply_timeout: Duration::from_secs(10),
-            preset: resolved
-                .preset_modules
-                .contains(module)
-                .then(|| preset.to_owned()),
-        };
-        for (module, op) in [
-            ("aft", "read"),
-            ("cerebellum", "recall"),
-            ("entorhinal", "search"),
-        ] {
-            transport
-                .tool_for_run(
-                    &flow,
-                    module,
-                    op,
-                    json!({"q":"hello"}),
-                    &format!("bk1-{module}"),
-                    &options(module),
-                )
-                .unwrap_or_else(|error| panic!("{module}.{op}: {error:?}"));
-        }
-        // Custody options may still hold a preset; the request never sends
-        // it, so cerebellum accepts the read.
-        transport
-            .role_for_run(
+            let flow = format!("codemode:{RUN}");
+            transport.configure_flow(
                 &flow,
-                "cerebellum",
-                "late_results",
-                json!({}),
-                &options("aft"),
-            )
-            .expect("custody reads without a preset");
+                Some(crate::flow_scope::RegisteredScope {
+                    selector: crate::flow_scope::FlowScope {
+                        owner: core(),
+                        scope_ref: RUN.into(),
+                        epoch: 19,
+                    },
+                    targets: ["aft", "cerebellum", "entorhinal"].map(String::from).into(),
+                }),
+            );
+            // The program's calls, each carrying the preset only when its
+            // provider serves it, as the run's supervisor decides it.
+            let options = |module: &str| RunToolOptions {
+                identity: BindIdentity::new("/agent/project", "opencode", "head-session"),
+                reply_timeout: Duration::from_secs(10),
+                preset: resolved
+                    .preset_modules
+                    .contains(module)
+                    .then(|| preset.to_owned()),
+            };
+            for (module, op) in [
+                ("aft", "read"),
+                ("cerebellum", "recall"),
+                ("entorhinal", "search"),
+            ] {
+                transport
+                    .tool_for_run(
+                        &flow,
+                        module,
+                        op,
+                        json!({"q":"hello"}),
+                        &format!("bk1-{module}"),
+                        &options(module),
+                    )
+                    .unwrap_or_else(|error| panic!("{module}.{op}: {error:?}"));
+            }
+            // Custody options may still hold a preset; the request never sends
+            // it, so cerebellum accepts the read.
+            transport
+                .role_for_run(
+                    &flow,
+                    "cerebellum",
+                    "late_results",
+                    json!({}),
+                    &options("aft"),
+                )
+                .expect("custody reads without a preset");
 
-        let received = received(&state);
-        assert_eq!(received.len(), 10);
-        for request in &received {
-            let expected = (request.module == "aft" && request.name == "read").then_some(preset);
-            assert_eq!(request.preset.as_deref(), expected, "{request:?}");
-            assert_eq!(request.catalog_preset, None, "{request:?}");
-        }
-    });
+            let received = received(&state);
+            assert_eq!(received.len(), 10);
+            for request in &received {
+                let expected =
+                    (request.module == "aft" && request.name == "read" && served.contains(&preset))
+                        .then_some(preset);
+                assert_eq!(request.preset.as_deref(), expected, "{request:?}");
+                assert_eq!(request.catalog_preset, None, "{request:?}");
+            }
+        });
+    }
 }
 
 #[test]
@@ -629,7 +660,7 @@ fn the_fake_cerebellum_refuses_reads_off_the_run_scope_or_without_a_live_parent(
     // Read on the head scope: the bind is classic, so cerebellum refuses it
     // permanently, while AFT and entorhinal still answer.
     with_daemon("linked", |transport, state| {
-        let resolved = read_catalogs(&transport, &head_selector());
+        let resolved = read_catalogs(&transport, &head_selector(), None);
         assert_eq!(resolved.gaps.len(), 1, "{:?}", resolved.gaps);
         let gap = &resolved.gaps[0];
         assert_eq!(gap.module, "cerebellum");
@@ -643,7 +674,7 @@ fn the_fake_cerebellum_refuses_reads_off_the_run_scope_or_without_a_live_parent(
     });
     // On the run scope, but the run's parent is not linked.
     with_daemon("pending", |transport, _| {
-        let resolved = read_catalogs(&transport, &run_selector());
+        let resolved = read_catalogs(&transport, &run_selector(), None);
         assert_eq!(resolved.gaps.len(), 1, "{:?}", resolved.gaps);
         assert_eq!(resolved.gaps[0].module, "cerebellum");
         assert!(
