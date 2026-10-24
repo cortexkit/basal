@@ -881,7 +881,7 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
 select = { tests = ["run_scope::call_mode_tests::a_provider_listing_the_runs_preset_serves_it", "run_scope::call_mode_tests::a_code_reading_tool_without_a_listed_preset_serves_none", "run_scope::call_mode_tests::a_provider_listing_other_presets_serves_none", "run_scope::call_mode_tests::a_provider_listing_no_presets_serves_none", "run_scope::call_mode_tests::a_run_without_a_preset_serves_none_whatever_the_answer_lists", "run_scope::call_mode_tests::catalog_reads_name_no_preset_even_when_the_run_has_one"] }
-expect_red = ["run_scope::call_mode_tests::a_code_reading_tool_without_a_listed_preset_serves_none"]
+expect_red = ["run_scope::call_mode_tests::a_provider_listing_the_runs_preset_serves_it", "run_scope::call_mode_tests::a_code_reading_tool_without_a_listed_preset_serves_none", "run_scope::call_mode_tests::catalog_reads_name_no_preset_even_when_the_run_has_one"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
