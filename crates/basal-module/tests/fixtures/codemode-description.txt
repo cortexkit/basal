@@ -21,3 +21,5 @@ try {
 ```
 
 The result lists each call with its outcome. A call whose outcome is unknown was never retried, so check before repeating it.
+
+To run many steps as one program instead of one call at a time, see knowhow(id="codemode-automation").
