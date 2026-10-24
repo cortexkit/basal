@@ -105,12 +105,13 @@ pub fn read_tool_catalog(
 /// arguments or in the request envelope, even when core chose one for the
 /// run. The tool-provider role lets a provider that defines no presets refuse
 /// `CatalogRequest.preset`, and such providers do refuse it, which would drop
-/// all of their tools from the run. A provider that does define presets, such
-/// as AFT, answers a preset-less catalog read with its `head` catalog and
+/// all of their tools from the run. The preset-less answer is also the one
+/// place a provider lists the presets it serves, and only that list decides
+/// which providers get the run's preset on their tool calls (see
+/// `run_scope::provider_serves_preset`). A provider that does define presets,
+/// such as AFT, answers a preset-less catalog read with its `head` catalog and
 /// enforces the run's preset when a tool is called, from the preset on the
-/// tool call's own request. So only the program's tool calls carry it, and
-/// only to providers that serve presets (see
-/// `run_scope::provider_serves_presets`).
+/// tool call's own request.
 pub fn read_tool_catalog_on_run(
     transport: &dyn Transport,
     scope: &subc_protocol::scope::ScopeSelector,

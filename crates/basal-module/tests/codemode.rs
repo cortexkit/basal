@@ -36,9 +36,9 @@ struct Core {
     /// The provider module and envelope preset of each run tool call.
     tool_presets: Mutex<Vec<(String, Option<String>)>>,
     preset: Mutex<Option<String>>,
-    /// Core's catalog for the run lists an AFT-like provider, whose tool
-    /// carries the `code.read/v1` capability, and a cerebellum-like one,
-    /// instead of `mock`.
+    /// Core's catalog for the run lists an AFT-like provider, which lists
+    /// `head`, `worker` and `reader` as the presets it serves, and a
+    /// cerebellum-like provider that lists none, instead of `mock`.
     two_providers: AtomicBool,
     store: Mutex<Option<Arc<basal_core::Store>>>,
     held_provider: AtomicBool,
@@ -357,14 +357,18 @@ impl Transport for Core {
                     _ => "echo",
                 };
                 let mut tool = json!({"name":tool,"schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],"input_schema":{}});
-                if module == "aft" {
-                    // The tag basal reads as "this provider serves presets".
-                    tool["capabilities"] = json!(["code.read/v1"]);
-                }
                 if self.held_provider.load(Ordering::SeqCst) {
                     tool["result_format"] = json!("content/v1");
                 }
-                Ok(json!({"generation":"test","catalog_digest":"test","tools":[tool]}))
+                let mut answer =
+                    json!({"generation":"test","catalog_digest":"test","tools":[tool]});
+                if module == "aft" {
+                    // The provider lists the presets it serves here, in its
+                    // preset-less answer, and that list alone decides which
+                    // tool calls carry the run's preset.
+                    answer["presets"] = json!(["head", "worker", "reader"]);
+                }
+                Ok(answer)
             }
             _ => panic!("unscoped action send"),
         }
@@ -1253,9 +1257,10 @@ fn admission_reads_catalogs_on_the_run_scope_core_opened() {
 }
 
 /// Core chose a preset for the run. The catalog reads name none, and only the
-/// tool call to the provider that serves presets (its tool carries
-/// `code.read/v1`) carries it. The cerebellum-like provider refuses a preset,
-/// so the program completes only if its call goes without one.
+/// tool call to the provider whose preset-less catalog answer lists that
+/// preset carries it. The cerebellum-like provider lists no presets and
+/// refuses one on a tool call, so the program completes only if its call goes
+/// without one.
 #[test]
 fn core_run_scope_preset_reaches_only_tool_calls_to_providers_serving_presets() {
     let rig = rig("catalog-preset", false);

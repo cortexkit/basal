@@ -208,29 +208,23 @@ pub struct ResolvedCatalog {
     /// result_format?}`, in the order core sent them.
     pub catalog: Value,
     pub gaps: Vec<CatalogGap>,
-    /// The providers with usable entries whose catalog answer shows they
-    /// serve catalog presets (see `provider_serves_presets`). Only tool calls
-    /// to these providers carry the run's preset.
+    /// The providers with usable entries whose preset-less catalog answer
+    /// lists the run's preset in `presets` (see `provider_serves_preset`).
+    /// Only tool calls to these providers carry the run's preset.
     pub preset_modules: BTreeSet<String>,
 }
 
-/// The tool capability tag that marks a provider as one serving catalog
-/// presets. The tool-provider contract does not yet declare which providers
-/// serve presets, so core and basal both use this tag as a stand-in: today
-/// only AFT's tools carry it. A provider that does not serve presets refuses
-/// a tool call naming one, so the tag decides who gets the run's preset.
-pub const PRESET_PROVIDER_TOOL_CAPABILITY: &str = "code.read/v1";
-
-/// Whether the provider that gave `answer` serves catalog presets: at least
-/// one of its tools carries `PRESET_PROVIDER_TOOL_CAPABILITY`. This is the
-/// one place that decision is made, from the catalog answer read when the
-/// run starts.
-pub fn provider_serves_presets(answer: &CatalogAnswer) -> bool {
-    answer.tools.iter().any(|tool| {
-        tool.capabilities
-            .iter()
-            .any(|tag| tag == PRESET_PROVIDER_TOOL_CAPABILITY)
-    })
+/// Whether the provider that gave `answer` serves `preset`: its preset-less
+/// catalog answer lists that preset in `presets`. Basal reads these answers
+/// when the run starts and always without a preset, which is the only place
+/// the contract allows the list to appear.
+///
+/// A provider that lists no presets, or lists other presets, gets no preset
+/// on its tool calls: the call then runs the provider's default variant,
+/// since an absent `preset` means exactly that (tool-provider contract §4.1),
+/// and a provider must serve every preset it lists (contract §4.3).
+pub fn provider_serves_preset(answer: &CatalogAnswer, preset: &str) -> bool {
+    answer.lists_preset(preset)
 }
 
 /// Whether the provider serves `entry` in codemode, as it declares it. A
@@ -322,11 +316,15 @@ fn codemode_served(
 /// (see `CatalogRead`). Each module is read once, with requests bounded by
 /// the transport timeout; callers must not hold a store lock across this
 /// function.
+///
+/// `preset` is core's preset for the run, when it chose one. It is never sent
+/// on these reads; it only decides which providers `preset_modules` names.
 pub fn catalog(
     transport: &dyn Transport,
     read: &CatalogRead<'_>,
     daemon: &Value,
     entries: &[CatalogEntry],
+    preset: Option<&str>,
 ) -> Result<ResolvedCatalog, WireError> {
     let modules = daemon["modules"]
         .as_array()
@@ -403,9 +401,15 @@ pub fn catalog(
     let preset_modules = answers
         .iter()
         .filter(|(module, answer)| {
+            let Some(preset) = preset else {
+                // Core chose no preset, so no tool call names one.
+                return false;
+            };
             !is_failed(module)
                 && usable.iter().any(|(usable, _)| *usable == module.as_str())
-                && answer.as_ref().is_ok_and(provider_serves_presets)
+                && answer
+                    .as_ref()
+                    .is_ok_and(|answer| provider_serves_preset(answer, preset))
         })
         .map(|(module, _)| module.clone())
         .collect();
@@ -667,7 +671,34 @@ mod call_mode_tests {
             scope: &scope,
             identity: &identity,
         };
-        catalog(provider, &read, daemon, entries)
+        catalog(provider, &read, daemon, entries, None)
+    }
+
+    /// A provider answer whose one tool serves codemode and whose answer
+    /// lists `presets`.
+    fn answer_listing(presets: &[&str]) -> Value {
+        let mut answer = answer(vec![tool("read", Some(json!(["codemode"])))]);
+        answer["presets"] = json!(presets);
+        answer
+    }
+
+    /// Resolve the catalog of `provider` for a run whose core preset is
+    /// `preset`.
+    fn preset_modules_for(provider: &Provider, preset: Option<&str>) -> BTreeSet<String> {
+        let (scope, identity) = (run_selector(), identity());
+        let read = CatalogRead {
+            scope: &scope,
+            identity: &identity,
+        };
+        catalog(
+            provider,
+            &read,
+            &daemon(&[CALL_MODES_CAPABILITY]),
+            &[entry("read")],
+            preset,
+        )
+        .expect("the catalog resolves")
+        .preset_modules
     }
 
     fn names(resolved: &ResolvedCatalog) -> Vec<&str> {
@@ -684,6 +715,54 @@ mod call_mode_tests {
     fn gap(resolved: &ResolvedCatalog) -> &CatalogGap {
         assert_eq!(resolved.gaps.len(), 1, "{:?}", resolved.gaps);
         &resolved.gaps[0]
+    }
+
+    #[test]
+    fn a_provider_listing_the_runs_preset_serves_it() {
+        let provider = Provider::answering(Ok(answer_listing(&["head", "worker", "reader"])));
+        assert_eq!(
+            preset_modules_for(&provider, Some("worker")),
+            BTreeSet::from(["mock".to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_provider_listing_other_presets_serves_none() {
+        let provider = Provider::answering(Ok(answer_listing(&["head", "worker"])));
+        assert!(preset_modules_for(&provider, Some("reader")).is_empty());
+    }
+
+    #[test]
+    fn a_provider_listing_no_presets_serves_none() {
+        let provider =
+            Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
+        assert!(preset_modules_for(&provider, Some("worker")).is_empty());
+    }
+
+    /// A tool tagged `code.read/v1` once marked a provider as serving presets.
+    /// That stand-in is gone: a preset must be listed in the answer.
+    #[test]
+    fn a_code_reading_tool_without_a_listed_preset_serves_none() {
+        let mut tagged = tool("read", Some(json!(["codemode"])));
+        tagged["capabilities"] = json!(["code.read/v1"]);
+        let provider = Provider::answering(Ok(answer(vec![tagged])));
+        assert!(preset_modules_for(&provider, Some("worker")).is_empty());
+    }
+
+    #[test]
+    fn a_run_without_a_preset_serves_none_whatever_the_answer_lists() {
+        let provider = Provider::answering(Ok(answer_listing(&["head", "worker", "reader"])));
+        assert!(preset_modules_for(&provider, None).is_empty());
+    }
+
+    /// Basal reads catalogs when the run starts, and this is the only request
+    /// whose answer may list presets, so the read never names the run's.
+    #[test]
+    fn catalog_reads_name_no_preset_even_when_the_run_has_one() {
+        let provider = Provider::answering(Ok(answer_listing(&["worker"])));
+        let resolved = preset_modules_for(&provider, Some("worker"));
+        assert_eq!(resolved, BTreeSet::from(["mock".to_owned()]));
+        assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
     }
 
     #[test]

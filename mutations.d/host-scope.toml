@@ -873,18 +873,27 @@ old = "        // Custody requests carry no preset: the tool-provider role gives
 new = "        let body = serde_json::to_vec(&{ let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments); request.preset = options.preset.clone(); request }) // NON-VACUITY BREAK\n"
 
 [[control]]
-id = "run-scope-preset-provider-tag"
-guards = "only providers whose catalog answer has a code.read/v1 tool are recorded as serving presets"
-test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+id = "run-scope-preset-listed"
+guards = "only providers whose preset-less catalog answer lists the run's preset are recorded as serving it"
+test_file = "crates/basal-host/src/run_scope.rs"
 runner = "cargo"
 package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
-select = { tests = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
-expect_red = ["transport::run_scope_wire_tests::core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets"]
+select = { tests = ["run_scope::call_mode_tests::a_provider_listing_the_runs_preset_serves_it", "run_scope::call_mode_tests::a_code_reading_tool_without_a_listed_preset_serves_none", "run_scope::call_mode_tests::a_provider_listing_other_presets_serves_none", "run_scope::call_mode_tests::a_provider_listing_no_presets_serves_none", "run_scope::call_mode_tests::a_run_without_a_preset_serves_none_whatever_the_answer_lists", "run_scope::call_mode_tests::catalog_reads_name_no_preset_even_when_the_run_has_one"] }
+expect_red = ["run_scope::call_mode_tests::a_code_reading_tool_without_a_listed_preset_serves_none"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
-old = '&& answer.as_ref().is_ok_and(provider_serves_presets)'
-new = '&& answer.is_ok() // NON-VACUITY BREAK'
+old = """pub fn provider_serves_preset(answer: &CatalogAnswer, preset: &str) -> bool {
+    answer.lists_preset(preset)
+}"""
+new = """pub fn provider_serves_preset(answer: &CatalogAnswer, preset: &str) -> bool {
+    let _ = answer.lists_preset(preset);
+    answer.tools.iter().any(|tool| {
+        tool.capabilities
+            .iter()
+            .any(|tag| tag == "code.read/v1") // NON-VACUITY BREAK
+    })
+}"""
