@@ -358,7 +358,7 @@ impl Transport for Core {
                 };
                 let mut tool = json!({"name":tool,"schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],"input_schema":{}});
                 if self.held_provider.load(Ordering::SeqCst) {
-                    tool["result_format"] = json!("content/v1");
+                    tool["result_format"] = json!("tool-result/v1");
                 }
                 let mut answer =
                     json!({"generation":"test","catalog_digest":"test","tools":[tool]});
@@ -461,7 +461,7 @@ fn call(rig: &Rig, key: &str, code: &str, wait: Duration) -> Value {
 
 fn held_context() -> Context {
     Context {
-        consumer_capabilities: Some(vec!["content/v1".into(), "held-reply/v1".into()]),
+        consumer_capabilities: Some(vec!["tool-result/v1".into(), "held-reply/v1".into()]),
         ..context()
     }
 }
@@ -483,7 +483,7 @@ fn running_reply_is_held_only_when_the_route_declared_both_capabilities() {
     for capabilities in [
         None,
         Some(vec![]),
-        Some(vec!["content/v1".into()]),
+        Some(vec!["tool-result/v1".into()]),
         Some(vec!["held-reply/v1".into()]),
         held_context().consumer_capabilities,
     ] {
@@ -1121,7 +1121,7 @@ fn catalog_generation_tracks_content_and_schema_pins_refuse_changes() {
     .unwrap();
     let empty = basal_module::tool::catalog(json!({"params":{}})).unwrap();
     assert_eq!(full["tools"][0]["name"], "flow");
-    assert_eq!(full["tools"][0]["result_format"], "content/v1");
+    assert_eq!(full["tools"][0]["result_format"], "tool-result/v1");
     assert_eq!(full["catalog_digest"], digest["catalog_digest"]);
     assert!(empty["tools"].as_array().unwrap().is_empty());
     assert_eq!(full["generation"], empty["generation"]);

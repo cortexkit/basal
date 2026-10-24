@@ -524,7 +524,7 @@ impl Fixture {
                         op: op.to_string(),
                         input_schema: compile_input_schema(schema).unwrap(),
                         result_format: self.host.content_results.load(Ordering::SeqCst).then_some(
-                            cortexkit_role_tool_provider::result::ResultFormat::ContentV1,
+                            cortexkit_role_tool_provider::result::ResultFormat::ToolResultV1,
                         ),
                     },
                 )

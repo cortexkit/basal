@@ -47,7 +47,7 @@ fn published_held_reasons_and_unknown_reasons_all_remain_interim() {
     ] {
         let body = json!({"content":[{"type":"text","text":"Waiting"}],"held":{"reason":reason}});
         assert!(matches!(
-            held::classify(body, Some(&ResultFormat::ContentV1)),
+            held::classify(body, Some(&ResultFormat::ToolResultV1)),
             held::Reply::Held { .. }
         ));
     }
@@ -56,7 +56,7 @@ fn published_held_reasons_and_unknown_reasons_all_remain_interim() {
         json!({"content":[{"type":"text","text":"bad"}],"held":{"reason":"consent"},"isError":true,"errorCode":"bad_reply"}),
     ] {
         assert!(matches!(
-            held::classify(body, Some(&ResultFormat::ContentV1)),
+            held::classify(body, Some(&ResultFormat::ToolResultV1)),
             held::Reply::Final(Err(_))
         ));
     }
@@ -68,7 +68,7 @@ fn malformed_held_detail_is_rejected_by_the_shared_decoder() {
         let body = json!({"content":[{"type":"text","text":"Waiting"}],"held":{"reason":"consent","detail":detail}});
         assert!(
             matches!(
-                held::classify(body, Some(&ResultFormat::ContentV1)),
+                held::classify(body, Some(&ResultFormat::ToolResultV1)),
                 held::Reply::Final(Err(_))
             ),
             "non-object detail must not become held"
@@ -522,7 +522,7 @@ fn published_093_held_reply_vectors_are_consumed_without_local_wire_rules() {
         "0.10.2 publishes a held reply for running work"
     );
     for case in valid {
-        match held::classify(case["body"].clone(), Some(&ResultFormat::ContentV1)) {
+        match held::classify(case["body"].clone(), Some(&ResultFormat::ToolResultV1)) {
             held::Reply::Held { detail, .. } => assert_eq!(
                 detail,
                 case["body"]["held"].get("detail").cloned(),
@@ -537,7 +537,7 @@ fn published_093_held_reply_vectors_are_consumed_without_local_wire_rules() {
     for case in invalid.iter().chain(decode_invalid) {
         assert!(
             matches!(
-                held::classify(case["body"].clone(), Some(&ResultFormat::ContentV1)),
+                held::classify(case["body"].clone(), Some(&ResultFormat::ToolResultV1)),
                 held::Reply::Final(Err(_))
             ),
             "published malformed body was accepted: {}",

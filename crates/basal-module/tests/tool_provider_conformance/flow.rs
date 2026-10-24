@@ -37,7 +37,7 @@ async fn refusal(route: &Route, arguments: Value) -> subc_protocol::ErrorBody {
 
 async fn content_route(subject: &Subject, live: &Live, stamp: &RouteStamp) -> Route {
     subject
-        .bind_route(live, stamp, None, None, Some(vec!["content/v1".into()]))
+        .bind_route(live, stamp, None, None, Some(vec!["tool-result/v1".into()]))
         .await
         .unwrap()
 }
@@ -86,7 +86,7 @@ fn flow_catalog_has_exact_capability_tag() {
         .find(|t| t["name"] == "flow")
         .unwrap();
     assert_eq!(flow["capabilities"], json!(["basal:flow.manage/v1"]));
-    assert_eq!(flow["result_format"], "content/v1");
+    assert_eq!(flow["result_format"], "tool-result/v1");
     assert!(
         flow["description"]
             .as_str()
@@ -410,7 +410,7 @@ async fn flow_caller_guard_uses_stamp_not_arguments() {
             &stamp(),
             None,
             Some(json!({"agent_id":"victim"})),
-            Some(vec!["content/v1".into()]),
+            Some(vec!["tool-result/v1".into()]),
         )
         .await
         .unwrap();
@@ -457,7 +457,7 @@ async fn flow_caller_guard_uses_stamp_not_arguments() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn all_flow_actions_reuse_ops_and_return_content_v1() {
+async fn all_flow_actions_reuse_ops_and_return_tool_result_v1() {
     let root = common::scratch("flow-actions");
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();

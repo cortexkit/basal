@@ -34,7 +34,7 @@ pub fn catalog_tool() -> CatalogTool {
         schema,
     );
     tool.description = Some(DESCRIPTION.into());
-    tool.result_format = Some(cortexkit_role_tool_provider::result::ResultFormat::ContentV1);
+    tool.result_format = Some(cortexkit_role_tool_provider::result::ResultFormat::ToolResultV1);
     tool.reply =
         Some(serde_json::from_value(json!({"max_ms":2_520_000})).expect("static reply deadline"));
     // Core offers a head only the tools whose tags its allowlist names, so this

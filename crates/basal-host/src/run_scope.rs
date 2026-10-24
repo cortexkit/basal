@@ -851,7 +851,7 @@ mod call_mode_tests {
     fn result_format_is_frozen_from_each_provider_tool_catalog() {
         for capability in [CALL_MODES_CAPABILITY, LEGACY_RUN_SCOPES_CAPABILITY] {
             let mut read = tool("read", Some(json!(["codemode"])));
-            read["result_format"] = json!("content/v1");
+            read["result_format"] = json!("tool-result/v1");
             let provider = Provider::answering(Ok(answer(vec![
                 read,
                 tool("write", Some(json!(["codemode"]))),
@@ -861,7 +861,7 @@ mod call_mode_tests {
                 &daemon(&[capability]),
                 &[entry("read"), entry("write")],
             );
-            assert_eq!(resolved.catalog[0]["result_format"], "content/v1");
+            assert_eq!(resolved.catalog[0]["result_format"], "tool-result/v1");
             assert!(resolved.catalog[1].get("result_format").is_none());
             assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
         }
@@ -869,7 +869,7 @@ mod call_mode_tests {
 
     #[test]
     fn an_unreadable_provider_is_dropped_while_another_provider_still_resolves() {
-        // Run routes advertise content/v1 and held-reply/v1, so even legacy
+        // Run routes advertise tool-result/v1 and held-reply/v1, so even legacy
         // providers must disclose each result_format: an unreadable one has
         // every entry dropped rather than a guessed format.
         let provider = Provider::answering_each([

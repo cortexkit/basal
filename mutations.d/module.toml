@@ -2918,7 +2918,7 @@ build_timeout_s = 3600
 
 [[control]]
 id = "codemode-running-held-route-gate"
-guards = "unfinished keyed calls are held only when the route declares both content/v1 and held-reply/v1"
+guards = "unfinished keyed calls are held only when the route declares both tool-result/v1 and held-reply/v1"
 file = "crates/basal-module/src/codemode.rs"
 old = "if cortexkit_role_tool_provider::consumer_reads_held_reply_v1(consumer_capabilities) {"
 new = "if cortexkit_role_tool_provider::consumer_reads_held_reply_v1(consumer_capabilities) || true { // NON-VACUITY BREAK"

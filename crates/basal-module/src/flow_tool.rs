@@ -75,7 +75,7 @@ pub fn catalog_tool() -> CatalogTool {
     .with_capabilities(vec!["basal:flow.manage/v1".into()])
     .with_modes(vec![CallMode::Classic]);
     tool.description = Some(DESCRIPTION.into());
-    tool.result_format = Some(cortexkit_role_tool_provider::result::ResultFormat::ContentV1);
+    tool.result_format = Some(cortexkit_role_tool_provider::result::ResultFormat::ToolResultV1);
     tool
 }
 
