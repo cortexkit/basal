@@ -523,19 +523,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 edits = [
-  { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\" # NON-VACUITY BREAK\n" },
-  { file = "Cargo.lock", old = " \"sha2\",\n \"subc-protocol\",\n \"tracing\",\n", new = " \"sha2\",\n \"subc-protocol 0.32.4\",\n \"tracing\",\n" },
-  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.32.4\",\n \"subc-transport\",\n" },
-  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n", new = " \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol 0.32.4\",\n \"subc-transport\",\n" },
-  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.32.4\",\n \"tokio\",\n" },
-  { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-protocol\",\n \"windows-sys 0.61.2\",\n", new = " \"serde_json\",\n \"subc-protocol 0.32.4\",\n \"windows-sys 0.61.2\",\n" },
-  { file = "Cargo.lock", old = " \"serde_json\",\n \"windows-sys 0.61.2\",\n", new = " \"serde_json\",\n \"subc-protocol 0.24.1\",\n \"windows-sys 0.61.2\",\n" },
-  { file = "Cargo.lock", old = " \"sha2\",\n \"subc-protocol\",\n]\n", new = " \"sha2\",\n \"subc-protocol 0.32.4\",\n]\n" },
-  { file = "Cargo.lock", old = " \"futures-util\",\n \"serde_json\",\n \"subc-protocol\",\n \"tokio\",\n]\n", new = " \"futures-util\",\n \"serde_json\",\n \"subc-protocol 0.32.4\",\n \"tokio\",\n]\n" },
-  { file = "Cargo.lock", old = " \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n", new = " \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.32.4\",\n \"subc-transport\",\n" },
-  { file = "Cargo.lock", old = " \"subc-os\",\n \"subc-protocol\",\n \"subtle\",\n", new = " \"subc-os\",\n \"subc-protocol 0.32.4\",\n \"subtle\",\n" },
-  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"subc-protocol 0.32.4\",\n]\n" },
-  { file = "Cargo.lock", old = " \"rustix\",\n \"windows-sys 0.61.2\",\n]\n", new = " \"rustix\",\n \"windows-sys 0.61.2\",\n]\n\n[[package]]\nname = \"subc-protocol\"\nversion = \"0.24.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"3b0fb1bc9305afe14d1202970b7e361253dba6108525b356a7e10274436bc80d\"\ndependencies = [\n \"serde\",\n \"serde_json\",\n]\n" },
+  { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol.workspace = true # NON-VACUITY BREAK\n" },
+  { file = "Cargo.lock", old = " \"serde_json\",\n \"windows-sys 0.61.2\",\n", new = " \"serde_json\",\n \"subc-protocol\",\n \"windows-sys 0.61.2\",\n" },
 ]
 
 [[control]]
