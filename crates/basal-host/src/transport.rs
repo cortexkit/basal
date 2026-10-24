@@ -1140,10 +1140,10 @@ impl Transport for SubcTransport {
 }
 
 /// The consumer capabilities every tool-provider route of a codemode run
-/// declares: content-format results and held replies.
+/// declares: tool-result/v1 results and held replies.
 fn run_tool_route_options(options: CallOptions) -> CallOptions {
     options
-        .with_consumer_capability("content/v1")
+        .with_consumer_capability(cortexkit_role_tool_provider::TOOL_RESULT_V1_CAPABILITY)
         .expect("static capability")
         .with_consumer_capability("held-reply/v1")
         .expect("static capability")
@@ -1847,7 +1847,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 opens.lock().unwrap()[0]["consumer_capabilities"],
-                json!(["content/v1", "held-reply/v1"])
+                json!(["held-reply/v1", "tool-result/v1"])
             );
             for name in ["late_results", "late_results.ack", "tool.withdraw"] {
                 transport

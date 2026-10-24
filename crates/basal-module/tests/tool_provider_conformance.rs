@@ -659,7 +659,7 @@ impl ToolProviderSubject for Subject {
     fn quick_call(&self) -> CallSpec {
         ("flow".into(), json!({"action":"list"}))
     }
-    fn content_v1_calls(&self) -> Vec<CallSpec> {
+    fn tool_result_v1_calls(&self) -> Vec<CallSpec> {
         vec![
             self.quick_call(),
             ("flow".into(), json!({"action":"list"})),
@@ -755,6 +755,7 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
         [
             "system_text_digests_match_text",
             "system_text_preflight_digest_stable",
+            "system_text_preset_optional_served",
             "catalog_disabled_tool_absent",
             "call_disabled_tool_refused_by_name",
             "late_results_cursor_round_trip",
@@ -782,7 +783,7 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
 
 async fn content_route(subject: &Subject, live: &Live, stamp: RouteStamp) -> Route {
     subject
-        .route_with_consumer_capabilities(live, &stamp, &["content/v1".into()])
+        .route_with_consumer_capabilities(live, &stamp, &["tool-result/v1".into()])
         .await
         .unwrap()
 }
@@ -797,9 +798,9 @@ async fn real_route_running_held_reply_uses_bind_capabilities_and_retains_final_
     let live = subject.spawn(&root).await.unwrap();
     for (index, caps) in [
         vec![],
-        vec!["content/v1".into()],
+        vec!["tool-result/v1".into()],
         vec!["held-reply/v1".into()],
-        vec!["held-reply/v1".into(), "content/v1".into()],
+        vec!["held-reply/v1".into(), "tool-result/v1".into()],
     ]
     .into_iter()
     .enumerate()
@@ -824,7 +825,7 @@ async fn real_route_running_held_reply_uses_bind_capabilities_and_retains_final_
             reply.get("held"),
             (index == 3).then(|| json!({"reason":"running"})).as_ref()
         );
-        if caps.contains(&"content/v1".into()) {
+        if caps.contains(&"tool-result/v1".into()) {
             assert_eq!(reply["structuredContent"]["status"], "running");
             assert!(
                 reply["content"][0]["text"]

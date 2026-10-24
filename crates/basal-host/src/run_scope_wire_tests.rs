@@ -304,7 +304,7 @@ impl Daemon {
                 let mut answer = json!({"generation":"g","catalog_digest":"d","tools":[{"name":tool,
                     "schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],
                     "input_schema":{"type":"object"},"modes":["classic","codemode"],
-                    "result_format":"content/v1"}]});
+                    "result_format":"tool-result/v1"}]});
                 if let Some(listed) = listed {
                     answer["presets"] = json!(listed);
                 }

@@ -2567,7 +2567,7 @@ new = "&& true /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "codemode-shared-held-detail-validation"
-guards = "content/v1 held detail must pass the shared tool-provider object validation"
+guards = "tool-result/v1 held detail must pass the shared tool-provider object validation"
 test_file = "crates/basal-core/src/codemode/custody_review_tests.rs"
 runner = "cargo"
 package = "basal-core"

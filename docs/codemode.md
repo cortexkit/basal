@@ -43,8 +43,8 @@ with `profile_violation`.
 
 ## Results
 
-`codemode` opts into the fleet tool-provider `content/v1` contract through its
-catalog entry's `result_format: "content/v1"`. Basal validates every result with
+`codemode` opts into the fleet tool-provider `tool-result/v1` contract through its
+catalog entry's `result_format: "tool-result/v1"`. Basal validates every result with
 `cortexkit_role_tool_provider::result::validate` before exposing it. Direct
 responses, completed withdrawal replies and retained late results use the same
 result body:
@@ -96,13 +96,13 @@ accounting fields, not a separate CPU or token measurement.
 
 A keyed call that exceeds the 25-second foreground wait returns an interim content
 result with `structuredContent: {"status": "running", "run_id": "codemode:..."}`.
-On a route that declared both `content/v1` and `held-reply/v1`, it also carries
+On a route that declared both `tool-result/v1` and `held-reply/v1`, it also carries
 `held: {"reason": "running"}` so the custodian retrieves the final answer through
 `late_results`. When person-held calls have provider reasons, basal instead mirrors
 the first available reason in call order, including open provider reasons such
 as `consent`, `login_handoff` and `login_capture`; if none has a reason, it uses `running`. `running` means work continues
 without asking the person or agent to act. Without both route declarations,
-basal keeps the unmarked running reply (and the legacy shape without `content/v1`).
+basal keeps the unmarked running reply (and the legacy shape without `tool-result/v1`).
 Keyless calls wait for the final answer and never receive a held reply. The interim
 text names each call held on a person, for example `Waiting on the person:
 browser_use (call 2) needs their consent. The program resumes when they answer;
@@ -152,7 +152,7 @@ summary still records the refusal. Persisted terminal run-scope failures also
 retain their codes and details in the content result.
 
 Budget stops map the existing `budget_exhausted:<budget>` code to
-`errorCode: "budget_exhausted"`, since content/v1 requires a snake_case code.
+`errorCode: "budget_exhausted"`, since tool-result/v1 requires a snake_case code.
 The original code remains in `structuredContent.error.code`, the status stays
 unchanged, and `structuredContent.budget` identifies the specific limit (for
 example `"js_cpu"` or `"tool_calls"`) without requiring string parsing. Other
@@ -196,8 +196,8 @@ rejects the promise.
 
 ## Consent, then a fresh call
 
-Basal decodes held replies with tool-provider 0.9.3 only when that specific tool
-opts into `result_format: "content/v1"`. A route capability is not a format guess:
+Basal decodes held replies with tool-provider 0.13.0 only when that specific tool
+opts into `result_format: "tool-result/v1"`. A route capability is not a format guess:
 legacy tools retain their original JSON bodies. If a provider catalog is unreadable,
 admission drops that provider's tools with a retry-may-succeed warning and the run
 starts with its other tools; there is no guessed raw fallback. `consent`, `login_handoff`,

@@ -229,7 +229,7 @@ impl BasalHandler {
         if let Err(error) = crate::tool::check_call_mode(&request.name, &context.call_mode) {
             return tool_error(error);
         }
-        let accepts_content_v1 = cortexkit_role_tool_provider::consumer_reads_content_v1(
+        let accepts_tool_result_v1 = cortexkit_role_tool_provider::consumer_reads_tool_result_v1(
             context.consumer_capabilities.as_deref(),
         );
         let module = match &*lock(&self.phase) {
@@ -244,7 +244,7 @@ impl BasalHandler {
         if request.name == "flow" {
             return tool_result_outcome(
                 tokio::task::spawn_blocking(move || module.flow_tool(&context, &request)).await,
-                accepts_content_v1,
+                accepts_tool_result_v1,
             );
         }
         if request.name != "codemode" {
@@ -277,8 +277,8 @@ impl BasalHandler {
         let waiting = tokio::task::spawn_blocking(move || codemode.wait(&waiting_id, timeout));
         tokio::select! {
             outcome = waiting => match outcome {
-                Ok(Ok(Some(result))) => tool_result_response(result, accepts_content_v1),
-                Ok(Ok(None)) if keyed => tool_result_response(module.codemode.running(&id, consumer_capabilities.as_deref()), accepts_content_v1),
+                Ok(Ok(Some(result))) => tool_result_response(result, accepts_tool_result_v1),
+                Ok(Ok(None)) if keyed => tool_result_response(module.codemode.running(&id, consumer_capabilities.as_deref()), accepts_tool_result_v1),
                 Ok(Ok(None)) => tool_error(subc_protocol::ErrorBody::new("outcome_unknown","keyless codemode reply was lost")),
                 Ok(Err(error)) => tool_error(error),
                 Err(error) => tool_error(subc_protocol::ErrorBody::new("internal",error.to_string())),
@@ -290,7 +290,7 @@ impl BasalHandler {
                     codemode.wait(&id, Duration::ZERO)
                 }).await;
                 match outcome {
-                    Ok(Ok(Some(result))) => tool_result_response(result, accepts_content_v1),
+                    Ok(Ok(Some(result))) => tool_result_response(result, accepts_tool_result_v1),
                     Ok(Ok(None)) => tool_error(subc_protocol::ErrorBody::new("cancelled","codemode cancelled")),
                     Ok(Err(error)) => tool_error(error),
                     Err(error) => tool_error(subc_protocol::ErrorBody::new("internal",error.to_string())),
@@ -579,8 +579,8 @@ fn tool_response(value: Value) -> HandlerOutcome {
     }
 }
 
-fn tool_result_response(value: Value, accepts_content_v1: bool) -> HandlerOutcome {
-    if accepts_content_v1 {
+fn tool_result_response(value: Value, accepts_tool_result_v1: bool) -> HandlerOutcome {
+    if accepts_tool_result_v1 {
         tool_response(value)
     } else {
         tool_response(legacy_tool_result(value))
@@ -608,10 +608,10 @@ fn legacy_tool_result(value: Value) -> Value {
 
 fn tool_result_outcome(
     outcome: Result<Result<Value, subc_protocol::ErrorBody>, tokio::task::JoinError>,
-    accepts_content_v1: bool,
+    accepts_tool_result_v1: bool,
 ) -> HandlerOutcome {
     match outcome {
-        Ok(Ok(value)) => tool_result_response(value, accepts_content_v1),
+        Ok(Ok(value)) => tool_result_response(value, accepts_tool_result_v1),
         Ok(Err(error)) => tool_error(error),
         Err(error) => tool_error(subc_protocol::ErrorBody::new("internal", error.to_string())),
     }

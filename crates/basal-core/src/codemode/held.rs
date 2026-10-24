@@ -17,14 +17,14 @@ pub(super) enum Reply {
     },
 }
 
-/// Decode only tools that explicitly negotiated content/v1; legacy JSON is
+/// Decode only tools that explicitly negotiated tool-result/v1; legacy JSON is
 /// opaque even when it has members named content or held.
 pub(super) fn classify(
     value: Value,
     format: Option<&cortexkit_role_tool_provider::result::ResultFormat>,
 ) -> Reply {
     use cortexkit_role_tool_provider::result::{ContentPart, ResultFormat, ToolResult};
-    if !matches!(format, Some(ResultFormat::ContentV1)) {
+    if !matches!(format, Some(ResultFormat::ToolResultV1)) {
         return Reply::Final(Ok(value));
     }
     let decoded = match serde_json::from_value::<ToolResult>(value) {

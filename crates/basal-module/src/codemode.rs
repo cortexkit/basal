@@ -704,7 +704,7 @@ fn bounded_result(mut reply: cortexkit_role_tool_provider::result::ToolResult) -
         }
         omitted.insert(key);
     }
-    validate(&reply).expect("bounded codemode content/v1 result");
+    validate(&reply).expect("bounded codemode tool-result/v1 result");
     serde_json::to_value(reply).expect("JSON result")
 }
 

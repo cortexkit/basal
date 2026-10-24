@@ -305,7 +305,7 @@ fn running_reply_names_each_held_call_and_what_the_person_must_do() {
 
 #[test]
 fn held_running_reply_preserves_open_person_wait_reasons() {
-    let caps = vec!["content/v1".into(), "held-reply/v1".into()];
+    let caps = vec!["tool-result/v1".into(), "held-reply/v1".into()];
     for reason in ["consent", "login_handoff", "login_capture", "site_review"] {
         let result = running(
             "codemode:example",

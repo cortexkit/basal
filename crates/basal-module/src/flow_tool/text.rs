@@ -1,4 +1,4 @@
-//! Short agent-facing replies; the content/v1 envelope retains the complete report.
+//! Short agent-facing replies; the tool-result/v1 envelope retains the complete report.
 
 use basal_core::dry_run_text::{CAPTURED_CODE, CAPTURED_MESSAGE};
 use serde_json::Value;
