@@ -378,6 +378,30 @@ fn an_event_triggered_flow_names_its_events_and_says_none_were_replayed() {
 }
 
 #[test]
+fn event_age_limits_are_shown_in_approval_dry_run_text() {
+    let mut value = json!({"id":"watch","version":1,"purpose":"Watch recent events",
+        "trigger":{"events":[
+            {"module":"plexus","name":"changed","version":1,"max_age":"6h"},
+            {"module":"plexus","name":"ended","version":2,"max_age":"6h"}]}});
+    let window = json!({"kind":"events","covered":null});
+    let text = render(&manifest(value.clone()), &summary(window.clone(), vec![]));
+    assert_eq!(
+        text.summary,
+        "Runs on plexus changed and ended events; no events were replayed in the dry run. Ignores events older than 6 hours."
+    );
+    value["trigger"]["events"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("max_age");
+    let text = render(&manifest(value), &summary(window, vec![]));
+    assert_eq!(
+        text.summary,
+        "Runs on plexus changed and ended events; no events were replayed in the dry run. Ignores plexus changed v1 events older than 6 hours."
+    );
+    assert_bounded(&text);
+}
+
+#[test]
 fn many_distinct_calls_are_cut_to_eight_lines_ending_in_and_n_more() {
     let calls: Vec<Value> = (0..12)
         .map(|i| op_call(i, "mock", &format!("op_{i}"), json!({})))

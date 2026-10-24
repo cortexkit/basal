@@ -13,6 +13,28 @@ fn snapshot(conn: &Connection, table: &str) -> Vec<Vec<Value>> {
 }
 
 #[test]
+fn stale_counter_migration_preserves_existing_event_health() {
+    let conn = Connection::open_in_memory().unwrap();
+    for migration in MIGRATIONS.iter().filter(|m| m.version < 40) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch("INSERT INTO flows(flow_id,created_at) VALUES ('f',1);
+        INSERT INTO event_flow_health(flow_id,skipped_before_install,filtered_out,overflow,last_overflow_at) VALUES ('f',3,4,5,6);").unwrap();
+    conn.execute_batch(
+        MIGRATIONS
+            .iter()
+            .find(|m| m.version == 40)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    let health: (i64, i64, i64, i64, i64) = conn.query_row(
+        "SELECT skipped_before_install,filtered_out,overflow,last_overflow_at,stale_dropped FROM event_flow_health WHERE flow_id='f'", [],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
+    assert_eq!(health, (3, 4, 5, 6, 0));
+}
+
+#[test]
 fn additive_health_indexes_preserve_populated_tables_in_every_state() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();

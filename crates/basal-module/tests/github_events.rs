@@ -334,7 +334,7 @@ fn pinned_reaction(kind: &str, event: usize) -> String {
 fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
     Manifest::parse(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 5);
+    assert_eq!(manifest["version"], 6);
     // Nothing beyond the trigger, the audience sink and the two ops: no
     // facts, board, status, claims or model grant.
     assert_eq!(
@@ -360,7 +360,7 @@ fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant
     assert_eq!(
         manifest["trigger"]["events"],
         json!(EVENTS.map(|name|
-        json!({"module":"plexus", "name":name, "version":2, "match":{"repo":"cortexkit/*"}})))
+        json!({"module":"plexus", "name":name, "version":2, "match":{"repo":"cortexkit/*"}, "max_age":"6h"})))
     );
     assert!(
         manifest["purpose"]

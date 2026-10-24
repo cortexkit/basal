@@ -69,6 +69,7 @@ pub struct LastRun {
 pub struct FlowHealth {
     pub skipped_before_install: u64,
     pub filtered_out: u64,
+    pub stale_dropped: u64,
     pub event_backlog: u64,
     pub event_overflow: u64,
     pub grant_losses: Vec<crate::grant_loss::GrantLoss>,
@@ -224,6 +225,14 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             filtered_out: conn
                 .query_row(
                     "SELECT filtered_out FROM event_flow_health WHERE flow_id=?1",
+                    [&flow_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0),
+            stale_dropped: conn
+                .query_row(
+                    "SELECT stale_dropped FROM event_flow_health WHERE flow_id=?1",
                     [&flow_id],
                     |r| r.get(0),
                 )

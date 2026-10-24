@@ -128,6 +128,12 @@ non-matching notices before any run, body lookup, receipt or backlog entry, and
 count skips in `filtered_out` health. Patterns use only `*` (including across
 `/`); `repo` compares ASCII-case-insensitively, other headers exactly, and every
 filtered header must be present and non-empty. See [manifest filters](manifest.md#trigger).
+Optional literal `trigger.events[].max_age` limits (1 minute to 7 days) skip
+stale notices before admission or rate accounting and count `stale_dropped`
+alongside `filtered_out` in health. They use the transport publish time, not a
+body timestamp; scripts may retain their own body-age checks. Missing publish
+times remain subject to the first-approval cutoff (`skipped_before_install`),
+not the age filter.
 Headers are publisher hints, **not authority**: a publisher may label wrongly.
 A filter only reduces cost; scripts must still check the verified body before
 deciding what to do. It never grants access to an otherwise invisible body.

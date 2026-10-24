@@ -95,7 +95,11 @@ pub fn fields(input: &CardInput<'_>) -> Value {
                         basal_host::EventOrigin::External => "external",
                         basal_host::EventOrigin::Internal => "internal",
                     });
-                json!({ "module": e.module, "name": e.name, "version": e.version, "origin": origin })
+                let mut fields = json!({ "module": e.module, "name": e.name, "version": e.version, "origin": origin });
+                if let Some(max_age) = &e.max_age {
+                    fields["max_age"] = json!(max_age);
+                }
+                fields
             }).collect::<Vec<_>>(),
         }),
         (None, None) => Value::Null,

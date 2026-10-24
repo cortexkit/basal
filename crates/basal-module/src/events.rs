@@ -35,6 +35,7 @@ const EVENT_KEY: &str = "event_key";
 pub struct Health {
     pub skipped_before_install: u64,
     pub filtered_out: u64,
+    pub stale_dropped: u64,
     pub connected: bool,
     pub error: Option<String>,
     pub retry_in_ms: u64,
@@ -579,6 +580,7 @@ async fn reader_loop(
                 h.malformed += malformed as u64;
                 h.skipped_before_install += report.skipped_before_install as u64;
                 h.filtered_out += report.filtered_out as u64;
+                h.stale_dropped += report.stale_dropped as u64;
             }
             Ok::<_, String>(())
         }.await;

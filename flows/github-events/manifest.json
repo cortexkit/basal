@@ -1,13 +1,13 @@
 {
   "format": 1,
   "id": "github-events",
-  "version": 5,
+  "version": 6,
   "purpose": "Deliver GitHub issue, PR and release events to each repository's owning agent, waking it for newly opened issues and PRs, and add an eyes reaction as that owner on each newly opened one; no other GitHub writes.",
   "trigger": {
     "events": [
-      {"module": "plexus", "name": "github_issue_changed", "version": 2, "match": {"repo": "cortexkit/*"}},
-      {"module": "plexus", "name": "github_pr_changed", "version": 2, "match": {"repo": "cortexkit/*"}},
-      {"module": "plexus", "name": "github_release_published", "version": 2, "match": {"repo": "cortexkit/*"}}
+      {"module": "plexus", "name": "github_issue_changed", "version": 2, "match": {"repo": "cortexkit/*"}, "max_age": "6h"},
+      {"module": "plexus", "name": "github_pr_changed", "version": 2, "match": {"repo": "cortexkit/*"}, "max_age": "6h"},
+      {"module": "plexus", "name": "github_release_published", "version": 2, "match": {"repo": "cortexkit/*"}, "max_age": "6h"}
     ]
   },
   "audience": {"kind": "global"},

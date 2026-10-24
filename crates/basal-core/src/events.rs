@@ -127,6 +127,7 @@ pub fn parse_subject_identity(subject: &str) -> Result<(&str, &str, u32)> {
 pub struct Report {
     pub skipped_before_install: usize,
     pub filtered_out: usize,
+    pub stale_dropped: usize,
     pub matched: usize,
     pub admitted: usize,
     pub duplicate: usize,
@@ -221,6 +222,30 @@ fn matches(manifest: &Manifest, notice: &Notice, flow_id: &str) -> Result<Header
             HeaderMatch::Filtered
         },
     )
+}
+
+fn stale(manifest: &Manifest, notice: &Notice, now: i64) -> Result<bool> {
+    // Zero means unknown, not ancient. The separate first-approval cutoff
+    // still rejects such notices; an age limit cannot prove they are stale.
+    if notice.published_at_ms == 0 {
+        return Ok(false);
+    }
+    let (module, name, version) = notice.identity()?;
+    Ok(manifest.trigger.events.iter().flatten().any(|event| {
+        event.module == module
+            && event.name == name
+            && event.version == version
+            && event
+                .max_age
+                .as_deref()
+                .and_then(crate::manifest::duration_ms)
+                .is_some_and(|max_age| now.saturating_sub(notice.published_at_ms) > max_age)
+    }))
+}
+
+fn count_stale_drop(tx: &Transaction, flow: &str) -> Result<()> {
+    tx.execute("INSERT INTO event_flow_health(flow_id,stale_dropped) VALUES (?1,1) ON CONFLICT(flow_id) DO UPDATE SET stale_dropped=stale_dropped+1", [flow])?;
+    Ok(())
 }
 
 fn receipt(tx: &Transaction, flow: &str, notice: &Notice, state: &str, now: i64) -> Result<()> {
@@ -370,6 +395,11 @@ impl Runtime {
                             report.skipped_before_install += 1;
                             continue;
                         }
+                        if stale(manifest, notice, ctx.now_ms)? {
+                            count_stale_drop(tx, flow)?;
+                            report.stale_dropped += 1;
+                            continue;
+                        }
                         offer(tx, &store_id, flow, notice, &ctx, &mut report)?;
                     }
                 }
@@ -401,10 +431,14 @@ impl Runtime {
                     continue;
                 }
                 let approved = install::approved(tx, &flow)?;
-                let eligible = approved.as_ref().map(|a| {
-                    matches(&effective_manifest(tx, &a.manifest, &flow)?, &notice, &flow)
-                }).transpose()?;
+                let manifest = approved.as_ref().map(|a| effective_manifest(tx, &a.manifest, &flow)).transpose()?;
+                let eligible = manifest.as_ref().map(|m| matches(m, &notice, &flow)).transpose()?;
                 if eligible != Some(HeaderMatch::Accepted) {
+                    tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;
+                    continue;
+                }
+                if manifest.as_ref().map(|m| stale(m, &notice, ctx.now_ms)).transpose()?.unwrap_or(false) {
+                    count_stale_drop(tx, &flow)?;
                     tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;
                     continue;
                 }

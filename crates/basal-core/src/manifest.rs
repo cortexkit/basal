@@ -169,6 +169,9 @@ pub struct EventRef {
         deserialize_with = "crate::templates::decode_header_match"
     )]
     pub header_match: std::collections::BTreeMap<String, String>,
+    /// A literal age limit on the transport's stored publish time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<String>,
 }
 
 /// Patterns have only one operator: `*` consumes any run, including `/`.
@@ -754,6 +757,16 @@ impl Manifest {
     fn check_intake(&self) -> Result<(), ManifestError> {
         // Never apply intake policy to stored rows: older approved manifests
         // may predate a required grant and must remain readable.
+        for event in self.trigger.events.iter().flatten() {
+            if let Some(age) = &event.max_age
+                && !duration_ms(age).is_some_and(|ms| (60_000..=604_800_000).contains(&ms))
+            {
+                return Err(invalid(
+                    "trigger.events.max_age",
+                    "must be a literal duration from 1m to 7d",
+                ));
+            }
+        }
         let reads_boards = self.lists_op("prefrontal-core", "board.read");
         if reads_boards && self.board_read.is_empty() {
             return Err(invalid(
@@ -1509,6 +1522,78 @@ mod tests {
                 ),
                 "{root} was accepted"
             );
+        }
+    }
+
+    #[test]
+    fn event_max_age_is_a_bounded_literal_duration_including_in_templates() {
+        let mut value = serde_json::json!({
+            "id":"ages", "version":1, "purpose":"Ignore stale notices",
+            "trigger":{"events":[{"module":"plexus","name":"changed","version":1}]}
+        });
+        let no_limit = Manifest::parse(&value.to_string()).unwrap();
+        assert_eq!(no_limit.trigger.events.as_ref().unwrap()[0].max_age, None);
+        assert!(
+            serde_json::to_value(&no_limit).unwrap()["trigger"]["events"][0]
+                .get("max_age")
+                .is_none()
+        );
+        for template in [false, true] {
+            if template {
+                value["params"] =
+                    serde_json::json!({"age":{"type":"duration","min":"1m","max":"7d"}});
+                value["template"] = serde_json::json!({"max_per_agent":10,"max_lifetime":"1d"});
+            }
+            for age in ["60s", "1m", "6h", "7d", "604800s"] {
+                value["trigger"]["events"][0]["max_age"] = age.into();
+                let parsed = Manifest::parse(&value.to_string()).unwrap();
+                assert_eq!(
+                    parsed.trigger.events.as_ref().unwrap()[0]
+                        .max_age
+                        .as_deref(),
+                    Some(age)
+                );
+                assert_eq!(
+                    serde_json::to_value(parsed).unwrap()["trigger"]["events"][0]["max_age"],
+                    age
+                );
+            }
+            for age in [
+                "59s",
+                "0m",
+                "8d",
+                "604801s",
+                "",
+                "6 hours",
+                "1.5h",
+                "-1m",
+                "1w",
+                "6H",
+                "1é",
+                "9999999999d",
+                "$params.age",
+                "prefix-$params.age",
+            ] {
+                value["trigger"]["events"][0]["max_age"] = age.into();
+                assert!(
+                    Manifest::parse(&value.to_string()).is_err(),
+                    "{age}, template={template}"
+                );
+                if !age.contains("$params.") {
+                    assert!(
+                        Manifest::parse_stored(&value.to_string()).is_ok(),
+                        "stored {age}"
+                    );
+                }
+            }
+            for age in [
+                serde_json::json!(1),
+                serde_json::json!({"duration":"6h"}),
+                serde_json::json!(["6h"]),
+            ] {
+                value["trigger"]["events"][0]["max_age"] = age;
+                assert!(Manifest::parse(&value.to_string()).is_err());
+            }
         }
     }
 

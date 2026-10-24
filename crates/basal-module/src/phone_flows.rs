@@ -429,6 +429,9 @@ fn render_trigger(trigger: &Trigger) -> String {
             );
             line.push(')');
         }
+        if let Some(max_age) = &event.max_age {
+            line.push_str(&format!(" (ignores events older than {max_age})"));
+        }
         parts.push(line);
     }
     one_line(&parts.join("; "), usize::MAX)
@@ -466,6 +469,12 @@ mod tests {
                 {"module":"broca","name":"run.ended","version":1}
             ]})),
             "on plexus github_ci_job_failed (repo cortexkit/*); on broca run.ended"
+        );
+        assert_eq!(
+            render(
+                json!({"events":[{"module":"plexus","name":"changed","version":1,"max_age":"6h"}]})
+            ),
+            "on plexus changed (ignores events older than 6h)"
         );
     }
 

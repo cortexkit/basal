@@ -746,6 +746,42 @@ old = "if !(6..=9).contains(&parts.len())"
 new = """if parts.len() == 5 { return Ok((parts[3], parts[4], 1)); } // NON-VACUITY BREAK
         if !(6..=9).contains(&parts.len())"""
 
+# Stale notices are filtered before run admission and rate accounting.
+[[control]]
+id = "event-max-age-comparison-inverted"
+guards = "age limits compare transport publish time strictly and admit the exact boundary"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["events::tests::event_max_age_uses_publish_time_and_strict_boundary", "events::tests::header_patterns_match_only_present_nonempty_values"] }
+expect_red = ["events::tests::event_max_age_uses_publish_time_and_strict_boundary"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "now.saturating_sub(notice.published_at_ms) > max_age"
+new = "now.saturating_sub(notice.published_at_ms) <= max_age /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "event-stale-drop-charges-rate-window"
+guards = "stale backlog does not consume runs or saturate consecutive rate windows"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["events::tests::stale_backlog_never_charges_rate_windows_or_trips_the_breaker", "events::tests::event_max_age_uses_publish_time_and_strict_boundary"] }
+expect_red = ["events::tests::stale_backlog_never_charges_rate_windows_or_trips_the_breaker"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "report.stale_dropped += 1;"
+new = """report.stale_dropped += 1;
+                            crate::rate::take(tx, flow, crate::rate::Kind::Run, ctx.now_ms, &ctx.rate)?; // NON-VACUITY BREAK"""
+
 # Nonmatching notice headers prevent creation of a receipt, backlog entry or run.
 [[control]]
 id = "event-header-filter-admission-bypassed"

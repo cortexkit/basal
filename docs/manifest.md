@@ -191,7 +191,7 @@ and only queries may retry.
 
 ### `trigger`
 
-- `{ "events": [ { "module": "plexus", "name": "github_pr_changed", "version": 1, "match": { "repo": "cortexkit/*" } }, ... ] }`: at least one event. Each entry has `module`, `name`, `version`, and an optional `match` object. Install refuses an event or version the catalog does not declare, an event whose `resolve_op` is not a query, or a resolver absent from `ops`. For Plexus notices grant `{ "module": "plexus", "op": "events_get" }`, its separate read-only body tool. The broader `events` tool can change subscriptions, so it is not a safe body resolver. Matching uses the module, name and version, the optional header filters, and the flow-targeting rule below.
+- `{ "events": [ { "module": "plexus", "name": "github_pr_changed", "version": 1, "match": { "repo": "cortexkit/*" }, "max_age": "6h" }, ... ] }`: at least one event. Each entry has `module`, `name`, `version`, an optional `match` object, and an optional `max_age` duration. Install refuses an event or version the catalog does not declare, an event whose `resolve_op` is not a query, or a resolver absent from `ops`. For Plexus notices grant `{ "module": "plexus", "op": "events_get" }`, its separate read-only body tool. The broader `events` tool can change subscriptions, so it is not a safe body resolver. Matching uses the module, name and version, the optional header and age filters, and the flow-targeting rule below.
 - `{ "schedule": { ... } }`: the scheduler's `ScheduleSpec` (`crates/basal-core/src/schedule/spec.rs`), decoded with unknown fields refused and compiled by `schedule::validate` when the manifest is checked. Exactly one of `cron`, `interval`, or a template-only `at`:
 
   A template's `at` is the whole-string placeholder `"$params.<name>"` for a `timestamp` parameter. It fires once, including one catch-up after downtime, and ends the instance after that run regardless of outcome. Only default or explicit `missed: "once"` is permitted; `tz`, `each_cap`, `skip` and `each` are refused with `template_placeholder_invalid`, naming the field. A literal timestamp is not permitted in the registered manifest. [Templates](templates.md#one-shot-schedules) specifies creation-time timestamp validation and normalization.
@@ -226,6 +226,28 @@ flow's cumulative `filtered_out` health counter (and the reader's delivery
 counter). Like `skipped_before_install`, redelivery after a lost acknowledgment
 may count a skip again. Filters and their placeholders are part of the exact
 hashed manifest bytes shown on the approval card.
+
+`max_age` is a literal duration string: a positive whole number followed by
+`s`, `m`, `h` or `d`, from **1 minute** through **7 days** inclusive (the event
+deduplication and retention horizon). For example, `"6h"` ignores notices whose
+JetStream publish time is more than six hours before admission; exactly six
+hours old is still eligible, as is a future publish time. Omit the field for
+no age limit. Templates accept literal limits too, but `$params` substitution
+is never allowed. Intake validates the bounds without imposing new intake
+policy on stored manifests.
+
+The age check runs after the first-approval cutoff and header matching, before
+any run, receipt, backlog insertion, quota charge or rate-window accounting.
+It also rechecks waiting notices when draining the backlog. Stale notices
+increment the durable, cumulative `stale_dropped` health counter alongside
+`filtered_out`, and the reader's delivery counter, without changing failure
+health or triggering the rate breaker. Redeliveries may count a drop again.
+An absent publish timestamp (stored as zero) is unknown, not proof of age, so
+`max_age` itself does not reject it; the existing first-approval cutoff still
+rejects it and increments `skipped_before_install`, not `stale_dropped`.
+Approval cards and dry-run text show the declared age limits. These limits use
+transport publish time, not body timestamps; keep body-age checks where needed
+as defense in depth.
 
 **Headers remain hints, not authority.** A publisher can mislabel a notice.
 Filters can only skip work to reduce cost; they never establish authorization,
