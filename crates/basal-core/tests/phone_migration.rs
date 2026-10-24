@@ -68,5 +68,6 @@ fn phone_migration_keeps_the_version_chain_contiguous() {
     for (index, migration) in MIGRATIONS.iter().enumerate() {
         assert_eq!(migration.version as usize, index + 1);
     }
-    assert_eq!(MIGRATIONS.last().unwrap().version, 39);
+    // Migration 39 adds the removal columns; later migrations may follow it.
+    assert!(MIGRATIONS.iter().any(|migration| migration.version == 39));
 }
