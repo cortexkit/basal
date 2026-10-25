@@ -248,6 +248,7 @@ pub(crate) struct Shared {
     /// activation never sends these again: their thread will record the
     /// outcome.
     pub(crate) inflight: Mutex<HashSet<(String, u64)>>,
+    pub(crate) flow_routes: Mutex<()>,
     /// Runs whose install gate got no answer from core, with when they may
     /// be checked again. In memory: a restart checks every run at once.
     pub(crate) gate_backoff: Mutex<HashMap<String, crate::gate::Backoff>>,
@@ -372,6 +373,7 @@ impl Runtime {
             hooks,
             source,
             inflight: Mutex::new(HashSet::new()),
+            flow_routes: Mutex::new(()),
             gate_backoff: Mutex::new(HashMap::new()),
             event_scope_warnings: Mutex::new(EventScopeWarnings::default()),
             signal: Signal {
@@ -624,6 +626,7 @@ impl Runtime {
     /// activations acknowledging the same intent concurrently. A crash may
     /// redeliver an intent, as the host's acknowledgement API allows.
     pub(crate) fn flush_refusals(&self) -> Result<()> {
+        self.release_unused_flow_routes()?;
         let _flush = lock(&self.shared.refusal_flush);
         let rows = self.store().read(|c| {
             let mut stmt = c.prepare(
@@ -778,6 +781,7 @@ impl Runtime {
 
     pub(crate) fn unregister(&self, run_id: &str, position: u64) {
         lock(&self.shared.inflight).remove(&(run_id.to_owned(), position));
+        let _ = self.release_unused_flow_routes();
     }
 
     pub(crate) fn mark_event_scope_warning(&self, run_id: &str) -> bool {
@@ -1112,6 +1116,7 @@ impl Runtime {
     /// The request for a journaled call.
     pub(crate) fn request(run: &Run, row: &CallRow, attempt: u32) -> CallRequest {
         CallRequest {
+            flow_version: run.flow_version,
             flow_id: run.flow_id.clone(),
             run_id: run.run_id.clone(),
             position: row.position,

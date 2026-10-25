@@ -37,9 +37,19 @@ use wire::*;
 pub struct Route {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_version: Option<u32>,
     pub project_root: String,
     pub harness: String,
     pub session: String,
+}
+
+impl Route {
+    pub fn route_key(&self) -> Option<String> {
+        self.flow_id
+            .as_ref()
+            .map(|flow| crate::flow_scope::route_key(flow, self.flow_version))
+    }
 }
 
 pub fn codemode_session(run_id: &str, position: u64) -> String {
@@ -87,6 +97,7 @@ pub trait Transport: Send + Sync {
         Ok(())
     }
     fn configure_flow(&self, _flow_id: &str, _scope: Option<crate::flow_scope::RegisteredScope>) {}
+    fn retain_flow_routes(&self, _live: &std::collections::HashSet<String>) {}
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError>;
     /// `send.status`: what became of an accepted send, asked on the call's
     /// own route. Returns the management `result` as JSON, decoded by
@@ -688,6 +699,7 @@ impl BrocaHost {
         Ok(StoredCall {
             deferred: false,
             route: Route {
+                flow_version: request.flow_version,
                 flow_id: Some(request.flow_id.clone()),
                 project_root: self.project_root.clone(),
                 harness: self.harness.clone(),
@@ -1176,6 +1188,7 @@ impl BrocaHost {
             && let Some(identity) = self.store.identity(&call.basal_run_id)?
         {
             call.route.flow_id = Some(identity.flow_id.clone());
+            call.route.flow_version = Some(identity.version);
             self.transport.refresh_flow(&identity)?;
         }
         Ok(true)
@@ -1413,6 +1426,9 @@ impl Host for BrocaHost {
     }
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
         self.transport.configure_flow(flow_id, scope);
+    }
+    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
+        self.transport.retain_flow_routes(live);
     }
     fn classify(&self, _: &CallKind) -> CallClass {
         CallClass::Mutation {

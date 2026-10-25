@@ -129,7 +129,7 @@ impl ModuleOpsHost {
                     .map_err(|e| WireError::NeverSent(e.to_string()))?;
                 (self.transport.target_flow(request, &call)?, call.args)
             } else {
-                (request.flow_id.clone(), args)
+                (request.route_key(), args)
             };
             match decl.surface {
                 Surface::Management if carrier => self.transport.management(module, op, args),
@@ -157,12 +157,13 @@ impl Host for ModuleOpsHost {
     fn grant_would_ask(
         &self,
         flow_id: &str,
+        version: u32,
         agent_id: Option<&str>,
         provider: &str,
         grant: &str,
     ) -> Result<bool, TransportError> {
         self.transport
-            .grant_would_ask(flow_id, agent_id, provider, grant)
+            .grant_would_ask(flow_id, version, agent_id, provider, grant)
             .map_err(|e| match e {
                 WireError::Typed(refusal) => TransportError::Refused(refusal),
                 other => TransportError::unsent(format!("grant diagnostic: {other:?}")),
@@ -185,6 +186,9 @@ impl Host for ModuleOpsHost {
     }
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
         self.transport.configure_flow(flow_id, scope);
+    }
+    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
+        self.transport.retain_flow_routes(live);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
         if let CallKind::Op { module, op } | CallKind::OpFor { module, op } = kind
@@ -260,11 +264,13 @@ impl Host for RoutingHost {
     fn grant_would_ask(
         &self,
         flow_id: &str,
+        version: u32,
         agent_id: Option<&str>,
         provider: &str,
         grant: &str,
     ) -> Result<bool, TransportError> {
-        self.ops.grant_would_ask(flow_id, agent_id, provider, grant)
+        self.ops
+            .grant_would_ask(flow_id, version, agent_id, provider, grant)
     }
     fn provider_ready(
         &self,
@@ -310,6 +316,10 @@ impl Host for RoutingHost {
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
         self.ops.configure_flow(flow_id, scope.clone());
         self.model.configure_flow(flow_id, scope);
+    }
+    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
+        self.ops.retain_flow_routes(live);
+        self.model.retain_flow_routes(live);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
         self.target(kind).classify(kind)

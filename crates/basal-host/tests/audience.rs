@@ -168,6 +168,7 @@ fn core_audience_refusal_and_recipient_are_preserved() {
             },
         );
         let request = CallRequest {
+            flow_version: None,
             flow_id: "flow".into(),
             run_id: "run".into(),
             position: 0,

@@ -1587,6 +1587,8 @@ fn decide<T>(
         })
         .map_err(InstallError::Store)?;
     rt.shared.signal.bump();
+    rt.release_unused_flow_routes()
+        .map_err(InstallError::Store)?;
     result
 }
 

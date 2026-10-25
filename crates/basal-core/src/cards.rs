@@ -278,6 +278,8 @@ impl Runtime {
             })
             .map_err(InstallError::Store)?;
         self.shared.signal.bump();
+        self.release_unused_flow_routes()
+            .map_err(InstallError::Store)?;
         outcome.unwrap_or_else(|| {
             Err(InstallError::Store(CoreError::Store(
                 "the card decision produced no outcome".into(),

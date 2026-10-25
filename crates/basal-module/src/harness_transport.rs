@@ -10,6 +10,7 @@ pub(super) struct HarnessTransport(pub MockHost);
 impl HarnessTransport {
     fn invoke(&self, kind: CallKind, args: Value, key: String) -> Result<Value, WireError> {
         let request = CallRequest {
+            flow_version: None,
             flow_id: args["flow_id"].as_str().unwrap_or("harness").into(),
             run_id: args["run_id"].as_str().unwrap_or("harness").into(),
             position: args["call_position"].as_u64().unwrap_or(0),

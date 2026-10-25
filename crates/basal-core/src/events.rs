@@ -722,6 +722,7 @@ impl Runtime {
             Ok(())
         })?;
         let request = CallRequest {
+            flow_version: run.flow_version,
             flow_id: run.flow_id.clone(),
             run_id: run.run_id.clone(),
             position: u64::MAX,
@@ -733,7 +734,7 @@ impl Runtime {
             idempotency_key: format!("event-body:{}", run.run_id),
             attempt: u32::try_from(attempt).unwrap_or(u32::MAX),
         };
-        let dispatched = match self.shared.host.provider_ready(&run.flow_id, &kind) {
+        let dispatched = match self.shared.host.provider_ready(&request.route_key(), &kind) {
             Ok(()) => self
                 .shared
                 .host

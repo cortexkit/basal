@@ -126,6 +126,7 @@ pub trait Transport: Send + Sync {
     fn grant_would_ask(
         &self,
         _flow: &str,
+        _version: u32,
         _agent: Option<&str>,
         _module: &str,
         _grant: &str,
@@ -143,6 +144,7 @@ pub trait Transport: Send + Sync {
         Ok(())
     }
     fn configure_flow(&self, _flow: &str, _scope: Option<crate::flow_scope::RegisteredScope>) {}
+    fn retain_flow_routes(&self, _live: &std::collections::HashSet<String>) {}
     fn management_for_flow(
         &self,
         _flow: &str,
@@ -827,7 +829,7 @@ impl Transport for SubcTransport {
             .routes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .targets(&request.flow_id)
+            .targets(&request.route_key())
             .ok_or_else(|| WireError::NeverSent("flow scope targets unavailable".into()))?;
         let key = scope.route_key();
         self.configure_flow(
@@ -842,6 +844,7 @@ impl Transport for SubcTransport {
     fn grant_would_ask(
         &self,
         flow: &str,
+        version: u32,
         agent: Option<&str>,
         module: &str,
         grant: &str,
@@ -851,7 +854,7 @@ impl Transport for SubcTransport {
             params["agent_id"] = json!(agent);
         }
         let reply = self.call_for_flow(
-            flow,
+            &crate::flow_scope::flow_route_key(flow, version),
             RouteTarget::ManagementSurface {
                 module_id: module.into(),
             },
@@ -886,6 +889,18 @@ impl Transport for SubcTransport {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .configure(flow, scope);
+        for handle in dropped {
+            let _ = self
+                .handle
+                .block_on(self.consumer.close_handle(&handle, Default::default()));
+        }
+    }
+    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
+        let dropped = self
+            .routes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain_flow_routes(live);
         for handle in dropped {
             let _ = self
                 .handle
@@ -1717,16 +1732,16 @@ mod tests {
         with_scoped_transport(|transport, opens, calls, _| {
             assert!(
                 transport
-                    .grant_would_ask("flow-a", Some("owner"), "mock", "g1.ref")
+                    .grant_would_ask("flow-a", 1, Some("owner"), "mock", "g1.ref")
                     .is_err()
             );
             assert!(opens.lock().unwrap().is_empty());
             let mut scope = registered();
             scope.targets.insert("mock".into());
-            transport.configure_flow("flow-a", Some(scope));
+            transport.configure_flow(&crate::flow_scope::flow_route_key("flow-a", 1), Some(scope));
             assert!(
                 transport
-                    .grant_would_ask("flow-a", Some("owner"), "mock", "g1.ref")
+                    .grant_would_ask("flow-a", 1, Some("owner"), "mock", "g1.ref")
                     .unwrap()
             );
             let opens = opens.lock().unwrap();
@@ -1742,6 +1757,68 @@ mod tests {
                 poll.1["params"],
                 json!({"agent_id":"owner","flow_id":"flow-a","items":[{"grant":"g1.ref"}]})
             );
+        });
+    }
+
+    #[test]
+    fn model_reads_and_releases_keep_their_installed_version_route() {
+        use crate::broca::{Route, Transport as _};
+        with_scoped_transport(|transport, opens, calls, _| {
+            let mut v1 = registered();
+            v1.targets.insert("broca".into());
+            v1.selector.scope_ref = "approved-v1".into();
+            let mut v2 = v1.clone();
+            v2.selector.scope_ref = "approved-v2".into();
+            let broca =
+                crate::broca::subc::SubcBrocaTransport::new(transport.clone(), "broca".into());
+            let first = Route {
+                flow_id: Some("flow-a".into()),
+                flow_version: Some(1),
+                project_root: "/".into(),
+                harness: "basal".into(),
+                session: "v1-call".into(),
+            };
+            let second = Route {
+                flow_version: Some(2),
+                session: "v2-call".into(),
+                ..first.clone()
+            };
+            transport.configure_flow(&crate::flow_scope::flow_route_key("flow-a", 1), Some(v1));
+            broca.send(&first, br#"{"send_id":"v1"}"#).unwrap();
+            transport.configure_flow(&crate::flow_scope::flow_route_key("flow-a", 2), Some(v2));
+            broca.send(&second, br#"{"send_id":"v2"}"#).unwrap();
+            broca.send(&first, br#"{"send_id":"v1-again"}"#).unwrap();
+            broca
+                .send_status(
+                    &first,
+                    &crate::broca::wire::SendStatusParams {
+                        send_id: "v1".into(),
+                    },
+                )
+                .unwrap();
+            let opened = opens.lock().unwrap();
+            assert_eq!(opened.len(), 2);
+            assert_eq!(opened[0]["scope"]["ref"], "approved-v1");
+            assert_eq!(opened[1]["scope"]["ref"], "approved-v2");
+            drop(opened);
+            let sent: Vec<_> = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, body)| body["method"] == "session.send")
+                .map(|(channel, _)| *channel)
+                .collect();
+            assert_eq!(sent, vec![11, 12, 11]);
+            assert!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(channel, body)| *channel == 11 && body["method"] == "send.status")
+            );
+            broca.release(&first);
+            broca.send(&second, br#"{"send_id":"v2-again"}"#).unwrap();
+            assert_eq!(opens.lock().unwrap().len(), 2);
         });
     }
 
@@ -2268,7 +2345,7 @@ mod tests {
                 "basal".into(),
                 selector_client.clone(),
             );
-            let request=crate::CallRequest {flow_id:"flow-a".into(),run_id:"run-a".into(),position:0,kind:basal_proto::CallKind::Primitive(basal_proto::Primitive::Llm),args:basal_proto::JsonText::new(json!({"send_id":"send-1","work_class":"flow:flow-a","session":"basal:flow-flow-a:run-a:0","op":"llm","max_output":16,"request":{"prompt":"hello"},"selection":selection}).to_string()).unwrap(),idempotency_key:"send-1".into(),attempt:1};
+            let request=crate::CallRequest { flow_version: None, flow_id: "flow-a".into(), run_id:"run-a".into(),position:0,kind:basal_proto::CallKind::Primitive(basal_proto::Primitive::Llm),args:basal_proto::JsonText::new(json!({"send_id":"send-1","work_class":"flow:flow-a","session":"basal:flow-flow-a:run-a:0","op":"llm","max_output":16,"request":{"prompt":"hello"},"selection":selection}).to_string()).unwrap(),idempotency_key:"send-1".into(),attempt:1 };
             model_host.dispatch_model(&request).unwrap();
             drop(model_host);
             let recovered_host = crate::broca::BrocaHost::new(
@@ -2417,6 +2494,7 @@ mod tests {
             broca.set_unscoped_send_hook(Arc::new(|route| route.session == "unscoped"));
             for session in ["unscoped", "scoped"] {
                 let route = Route {
+                    flow_version: None,
                     flow_id: Some("armed".into()),
                     project_root: "/".into(),
                     harness: "basal".into(),
@@ -2467,12 +2545,10 @@ mod tests {
             } else {
                 json!({"prompt":"hello"})
             };
-            requests.push(crate::CallRequest {
-                flow_id: "flow-a".into(), run_id: run.into(), position,
-                kind: CallKind::Primitive(primitive),
-                args: JsonText::new(json!({"send_id":send,"work_class":"flow:flow-a","session":session,"op":primitive.name(),"max_output":16,"request":args,"selection":chosen}).to_string()).unwrap(),
-                idempotency_key: send, attempt: 1,
-            });
+            requests.push(crate::CallRequest { flow_version: None, flow_id: "flow-a".into(), run_id: run.into(), position,
+            kind: CallKind::Primitive(primitive),
+            args: JsonText::new(json!({"send_id":send,"work_class":"flow:flow-a","session":session,"op":primitive.name(),"max_output":16,"request":args,"selection":chosen}).to_string()).unwrap(),
+            idempotency_key: send, attempt: 1, });
         }
         requests
     }
@@ -2631,6 +2707,7 @@ mod tests {
             let recorded_calls = calls.lock().unwrap().clone();
             assert_recovered_model_calls(&recorded_opens, &recorded_calls, expected[0]);
             broca.release(&crate::broca::Route {
+                flow_version: None,
                 flow_id: Some("flow-a".into()),
                 project_root: "/".into(),
                 harness: "basal".into(),

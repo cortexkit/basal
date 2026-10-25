@@ -188,6 +188,7 @@ impl CallClass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallRequest {
     pub flow_id: String,
+    pub flow_version: Option<u32>,
     pub run_id: String,
     pub position: u64,
     pub kind: CallKind,
@@ -199,6 +200,12 @@ pub struct CallRequest {
     pub idempotency_key: String,
     /// 1 for the first send, counting every later send of the same call.
     pub attempt: u32,
+}
+
+impl CallRequest {
+    pub fn route_key(&self) -> String {
+        flow_scope::route_key(&self.flow_id, self.flow_version)
+    }
 }
 
 /// How a host took a call.
@@ -512,6 +519,7 @@ pub trait Host: Send + Sync {
     fn grant_would_ask(
         &self,
         _flow_id: &str,
+        _version: u32,
         _agent_id: Option<&str>,
         _provider: &str,
         _grant: &str,
@@ -539,9 +547,13 @@ pub trait Host: Send + Sync {
     /// when recovering pending calls. Offline simulations can disable these
     /// checks when they have no core connection.
     fn scope_checks(&self, _enabled: bool) {}
-    /// Registers authority under a route key (a flow id or `codemode:<run_id>`).
+    /// Registers authority under a route key (`flow_route_key` for an installed
+    /// flow version, or `codemode:<run_id>` for a codemode run).
     /// Passing no scope releases the key, including one never registered.
     fn configure_flow(&self, _flow_id: &str, _scope: Option<flow_scope::RegisteredScope>) {}
+    /// Retires ordinary version keys absent from both installs and live runs.
+    /// Codemode and target-scope keys have independent lifetimes.
+    fn retain_flow_routes(&self, _live: &std::collections::HashSet<String>) {}
     /// Whether the call only reads, and if not whether it honours
     /// idempotency keys.
     fn classify(&self, kind: &CallKind) -> CallClass;

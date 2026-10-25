@@ -5,7 +5,7 @@ use basal_core::channel::WorkerChannel;
 use basal_core::{Clock, Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
 use basal_host::core_host::CoreHost;
 use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
-use basal_host::flow_scope::{FlowScope, RegisteredScope, ScopedRoutes};
+use basal_host::flow_scope::{FlowScope, RegisteredScope, ScopedRoutes, flow_route_key};
 use basal_host::routing::{ModuleOpsHost, RoutingHost};
 use basal_host::subc_catalog::SubcCatalog;
 use basal_host::transport::{Transport, WireError, management_body, tool_body};
@@ -20,6 +20,9 @@ use subc_protocol::{Principal, RouteTarget};
 
 #[derive(Default)]
 struct Wire {
+    installs: Mutex<std::collections::HashMap<u32, (String, RegisteredScope)>>,
+    stall: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    closed: Mutex<Vec<u64>>,
     scope: Mutex<Option<RegisteredScope>>,
     hash: Mutex<String>,
     routes: Mutex<ScopedRoutes<u64>>,
@@ -40,6 +43,13 @@ impl Wire {
             .lock()
             .unwrap()
             .push((route, module.into(), body.clone()));
+        if module == "mock" {
+            let stall = self.stall.lock().unwrap().take();
+            if let Some((entered, release)) = stall {
+                entered.send(()).unwrap();
+                release.recv_timeout(ACTIVATION_WAIT).unwrap();
+            }
+        }
         if let Some(refusal) = self.refusals.lock().unwrap().pop_front() {
             if matches!(refusal, WireError::ScopeCut(_))
                 && let Some(route) = route
@@ -85,7 +95,7 @@ impl Transport for Wire {
             .routes
             .lock()
             .unwrap()
-            .targets(&request.flow_id)
+            .targets(&request.route_key())
             .unwrap();
         self.configure_flow(
             &key,
@@ -100,7 +110,12 @@ impl Transport for Wire {
         self.routes.lock().unwrap().ready(flow, module, action)
     }
     fn configure_flow(&self, flow: &str, scope: Option<RegisteredScope>) {
-        self.routes.lock().unwrap().configure(flow, scope);
+        let dropped = self.routes.lock().unwrap().configure(flow, scope);
+        self.closed.lock().unwrap().extend(dropped);
+    }
+    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
+        let dropped = self.routes.lock().unwrap().retain_flow_routes(live);
+        self.closed.lock().unwrap().extend(dropped);
     }
     fn catalog(&self) -> Result<Value, WireError> {
         let mut modules = vec![
@@ -129,7 +144,19 @@ impl Transport for Wire {
         }
         if op == "flow.install_status" {
             let mut value = json!({"state":"active","code_hash":*self.hash.lock().unwrap()});
-            if let Some(scope) = self.scope.lock().unwrap().as_ref() {
+            let install = self
+                .installs
+                .lock()
+                .unwrap()
+                .get(&(params["version"].as_u64().unwrap() as u32))
+                .cloned();
+            let scope = if let Some((hash, scope)) = install {
+                value["code_hash"] = json!(hash);
+                Some(scope)
+            } else {
+                self.scope.lock().unwrap().clone()
+            };
+            if let Some(scope) = scope {
                 value["scope"] = serde_json::to_value(&scope.selector).unwrap();
                 value["flow_scope_targets"] = json!(scope.targets);
             }
@@ -411,6 +438,130 @@ impl Fixture {
     }
 }
 const SCRIPT: &str = "return await ops.call('mock','send',{value:7});";
+
+fn approve_second_version(f: &Fixture, shared: bool) {
+    f.wire
+        .installs
+        .lock()
+        .unwrap()
+        .insert(1, (f.wire.hash.lock().unwrap().clone(), scope(1)));
+    let mut manifest = test_manifest();
+    manifest.as_object_mut().unwrap().remove("llm");
+    manifest["version"] = json!(2);
+    manifest["ops"] = json!([{"module":"mock","op":"send"}]);
+    let installed =
+        f.rt.install(&InstallRequest {
+            script: SCRIPT.into(),
+            manifest: manifest.to_string(),
+            author: "ALF".into(),
+            loop_override: false,
+        })
+        .unwrap();
+    f.wire.installs.lock().unwrap().insert(
+        2,
+        (
+            basal_core::ids::hex(&installed.code_hash),
+            scope(if shared { 1 } else { 2 }),
+        ),
+    );
+    f.rt.approve("flow-test", 2, &installed.code_hash, "approval-2")
+        .unwrap();
+}
+
+#[test]
+fn cancelled_v1_dispatch_keeps_its_route_after_v2_activates() {
+    for shared in [false, true] {
+        let f = Fixture::new("version-overlap", SCRIPT, true, true);
+        let (entered, waiting) = mpsc::channel();
+        let (release, stalled) = mpsc::channel();
+        *f.wire.stall.lock().unwrap() = Some((entered, stalled));
+        let first = f.admit("v1");
+        let rt = f.rt.clone();
+        let first_id = first.clone();
+        let activation = std::thread::spawn(move || rt.resume(&first_id).unwrap());
+        waiting.recv_timeout(ACTIVATION_WAIT).unwrap();
+        assert_eq!(
+            f.wire.opens.lock().unwrap().as_slice(),
+            &[scope(1).selector]
+        );
+        approve_second_version(&f, shared);
+        f.wire.configure_flow(
+            &flow_route_key("flow-test", 2),
+            Some(scope(if shared { 1 } else { 2 })),
+        );
+        assert!(f.wire.closed.lock().unwrap().is_empty());
+        f.rt.cancel(&first, "operator").unwrap();
+        let second = f.admit("v2");
+        f.rt.resume(&second).unwrap();
+        assert_eq!(f.rt.run(&second).unwrap().state, RunState::Succeeded);
+        assert_eq!(f.rt.run(&first).unwrap().state, RunState::Cancelled);
+        assert!(f.wire.closed.lock().unwrap().is_empty());
+        let target = RouteTarget::ManagementSurface {
+            module_id: "mock".into(),
+        };
+        assert_eq!(
+            f.wire
+                .route(&flow_route_key("flow-test", 1), &target)
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            f.wire
+                .route(&flow_route_key("flow-test", 2), &target)
+                .unwrap(),
+            Some(if shared { 1 } else { 2 })
+        );
+        release.send(()).unwrap();
+        activation.join().unwrap();
+        f.rt.quiesce();
+        assert!(matches!(
+            f.wire.route(&flow_route_key("flow-test", 1), &target),
+            Err(WireError::Typed(_))
+        ));
+        assert_eq!(
+            *f.wire.closed.lock().unwrap(),
+            if shared { vec![] } else { vec![1] }
+        );
+        f.rt.uninstall_flow("flow-test").unwrap();
+        assert_eq!(
+            *f.wire.closed.lock().unwrap(),
+            if shared { vec![1] } else { vec![1, 2] }
+        );
+    }
+}
+
+#[test]
+fn needs_reconcile_v1_keeps_its_route_when_v2_scope_registers() {
+    let f = Fixture::new("version-reconcile", SCRIPT, true, true);
+    f.wire
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(WireError::Unknown("reply lost".into()));
+    let first = f.admit("v1");
+    f.activate(&first);
+    assert_eq!(f.rt.run(&first).unwrap().state, RunState::NeedsReconcile);
+    approve_second_version(&f, false);
+    f.wire
+        .configure_flow(&flow_route_key("flow-test", 2), Some(scope(2)));
+    let second = f.admit("v2");
+    assert!(matches!(
+        f.rt.resume(&second).unwrap(),
+        basal_core::ActivationEnd::Waiting { .. }
+    ));
+    let target = RouteTarget::ManagementSurface {
+        module_id: "mock".into(),
+    };
+    assert_eq!(
+        f.wire
+            .route(&flow_route_key("flow-test", 1), &target)
+            .unwrap(),
+        Some(1)
+    );
+    assert!(f.wire.closed.lock().unwrap().is_empty());
+    f.rt.cancel(&first, "operator").unwrap();
+    assert_eq!(*f.wire.closed.lock().unwrap(), vec![1]);
+}
 
 #[test]
 fn instance_provider_uses_the_selector_core_returns_for_its_flow_id() {
@@ -973,6 +1124,7 @@ fn other_core_flow_ops_require_a_scope_and_never_change_script_arguments() {
     let host = ModuleOpsHost::new(wire.clone(), Arc::new(SubcCatalog::new(wire.clone())));
     let args = json!({"agent":"ALF","limit":3});
     let request = CallRequest {
+        flow_version: None,
         flow_id: "flow-a".into(),
         run_id: "run-a".into(),
         position: 0,
@@ -1282,6 +1434,7 @@ fn work_unsettled_never_uses_a_flow_scoped_route() {
     let wire = Arc::new(Wire::default());
     let host = ModuleOpsHost::new(wire.clone(), Arc::new(SubcCatalog::new(wire.clone())));
     let request = |op: &str| CallRequest {
+        flow_version: None,
         flow_id: "flow-a".into(),
         run_id: "run-a".into(),
         position: 0,
@@ -1574,6 +1727,7 @@ fn target_request(run: &str, deadline: i64) -> (CallRequest, basal_host::target_
         replay: false,
     };
     let request = CallRequest {
+        flow_version: None,
         flow_id: "flow-test".into(),
         run_id: run.into(),
         position: 0,

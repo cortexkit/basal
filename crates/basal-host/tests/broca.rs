@@ -24,7 +24,7 @@ fn request(p: Primitive, position: u64, args: Value) -> CallRequest {
             send_id: key.clone(),
         })
         .unwrap();
-    CallRequest { flow_id: "f".into(), run_id: "r".into(), position, kind: CallKind::Primitive(p),
+    CallRequest { flow_version: None, flow_id: "f".into(), run_id: "r".into(), position, kind: CallKind::Primitive(p),
         args: JsonText::new(json!({"send_id": key, "work_class": "flow:f", "session": format!("basal:flow-f:r:{position}"), "op": p.name(), "max_output": 12, "request": args, "selection":selection}).to_string()).unwrap(),
         idempotency_key: key, attempt: 1 }
 }
@@ -101,6 +101,7 @@ fn exact_send_contract_and_parallel_sessions() {
     assert_eq!(
         sends[0].0,
         basal_host::broca::Route {
+            flow_version: None,
             flow_id: Some("f".into()),
             project_root: "/project".into(),
             harness: "basal".into(),

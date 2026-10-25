@@ -1017,6 +1017,7 @@ impl Activation<'_> {
                     position: call.position,
                 })?;
                 let request = basal_host::CallRequest {
+                    flow_version: self.run.flow_version,
                     flow_id,
                     run_id,
                     position: call.position,
@@ -1309,7 +1310,10 @@ impl Activation<'_> {
             self.rt
                 .shared
                 .host
-                .provider_ready(&self.run.flow_id, &call.kind)
+                .provider_ready(
+                    &basal_host::flow_scope::route_key(&self.run.flow_id, self.run.flow_version),
+                    &call.kind,
+                )
                 .map_err(|refusal| {
                     let mut rejected = Refusal::new(refusal.reason.as_str(), refusal.message());
                     rejected.module = Some(refusal.provider);

@@ -107,6 +107,8 @@ fn decide<T>(
         })
         .map_err(PackageError::Store)?;
     rt.shared.signal.bump();
+    rt.release_unused_flow_routes()
+        .map_err(PackageError::Store)?;
     result
 }
 
