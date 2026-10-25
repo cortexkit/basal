@@ -111,7 +111,9 @@ only; no private configuration records or real comment text are included.
   updates to `piggyback`. Flow sinks go through core's delivery planner:
   manifest `digest_max` and the recipient's wake policy may downgrade the action.
 - **Rescan age.** Preserve the router's six-hour guard on
-  `completed_at ?? updated_at`. Every stale drop is visible with
+  `completed_at ?? updated_at`, measured to the body's `observed_at` (when
+  Plexus first stored the item) so a delayed publish is not stale; bodies
+  without `observed_at` measure to the run's clock. Every stale drop is visible with
   `suppressed_reason: "stale"`. Core does not age-drop otherwise deliverable
   events; its pruning targets undeliverable rows
   (runtime.rs:904-915; external_events.rs:778-799). This is intentional.

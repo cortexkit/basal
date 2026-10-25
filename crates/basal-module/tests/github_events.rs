@@ -334,7 +334,7 @@ fn pinned_reaction(kind: &str, event: usize) -> String {
 fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
     Manifest::parse(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 6);
+    assert_eq!(manifest["version"], 7);
     // Nothing beyond the trigger, the audience sink and the two ops: no
     // facts, board, status, claims or model grant.
     assert_eq!(
@@ -1039,6 +1039,78 @@ fn stale_drops_are_visible_and_six_hour_boundary_and_unknown_times_deliver() {
     body["updated_at"] = json!("2026-10-16T06:00:00Z");
     assert_eq!(t.event(body)["delivered"], 1);
     assert_eq!(t.event(item("issue", "updated"))["delivered"], 1);
+}
+
+fn set_clock(t: &Test, at: &str) {
+    t.f.clock
+        .set(at.parse::<jiff::Timestamp>().unwrap().as_millisecond());
+}
+
+/// Built from a real outage: an issue was opened and stored by Plexus at
+/// 02:28:14Z, but the event bus only published it at 08:49:42Z. Plexus saw it
+/// within the six-hour window, so the publish delay must not make it stale.
+#[test]
+fn item_observed_promptly_is_delivered_after_a_long_publish_delay() {
+    let t = Test::new();
+    set_clock(&t, "2026-10-25T08:49:42Z");
+    let mut body = item("issue", "opened");
+    body["updated_at"] = json!("2026-10-25T02:28:14Z");
+    body["observed_at"] = json!("2026-10-25T02:28:14.000Z");
+    let result = t.event(body);
+    assert_eq!(result["events"][0]["suppressed_reason"], Value::Null);
+    assert_eq!(result["delivered"], 1);
+}
+
+/// A rescan: Plexus first stored the item more than six hours after it
+/// happened. It stays stale even though the run is only moments later.
+#[test]
+fn item_observed_long_after_its_activity_is_stale_even_when_published_promptly() {
+    let t = Test::new();
+    set_clock(&t, "2026-10-25T12:00:05Z");
+    for field in ["completed_at", "updated_at"] {
+        let mut body = item("issue", "updated");
+        body[field] = json!("2026-10-25T05:59:59Z");
+        body["observed_at"] = json!("2026-10-25T12:00:00.000Z");
+        let result = t.event(body);
+        assert_eq!(result["events"][0]["suppressed_reason"], "stale");
+        assert_eq!(result["delivered"], 0);
+    }
+}
+
+/// Exactly six hours between activity and first observation is not stale;
+/// one millisecond more is. The run clock is well past both.
+#[test]
+fn observed_six_hour_boundary_delivers_and_one_millisecond_more_is_stale() {
+    let t = Test::new();
+    set_clock(&t, "2026-10-25T13:00:00Z");
+    let mut body = item("issue", "updated");
+    body["updated_at"] = json!("2026-10-25T06:00:00Z");
+    body["observed_at"] = json!("2026-10-25T12:00:00.000Z");
+    assert_eq!(t.event(body)["delivered"], 1);
+    let mut body = item("issue", "updated");
+    body["updated_at"] = json!("2026-10-25T06:00:00Z");
+    body["observed_at"] = json!("2026-10-25T12:00:00.001Z");
+    assert_eq!(t.event(body)["events"][0]["suppressed_reason"], "stale");
+}
+
+/// Bodies Plexus stored before it added observed_at, or with an unreadable
+/// one, keep measuring age against the run's clock.
+#[test]
+fn missing_or_unparseable_observed_at_measures_age_at_run_time() {
+    let t = Test::new();
+    set_clock(&t, "2026-10-25T12:00:00Z");
+    for observed in [None, Some(json!("not a time")), Some(json!(null))] {
+        let mut stale = item("issue", "updated");
+        stale["updated_at"] = json!("2026-10-25T05:59:59Z");
+        let mut fresh = item("issue", "updated");
+        fresh["updated_at"] = json!("2026-10-25T11:00:00Z");
+        if let Some(observed) = observed {
+            stale["observed_at"] = observed.clone();
+            fresh["observed_at"] = observed;
+        }
+        assert_eq!(t.event(stale)["events"][0]["suppressed_reason"], "stale");
+        assert_eq!(t.event(fresh)["delivered"], 1);
+    }
 }
 
 #[test]
