@@ -125,6 +125,35 @@ mod tests {
         }
     }
 
+    /// This thread's kernel plus user time as Windows charges it, read
+    /// independently of `JsClock`.
+    #[cfg(windows)]
+    fn os_thread_time() -> Duration {
+        use windows_sys::Win32::{
+            Foundation::FILETIME,
+            System::Threading::{GetCurrentThread, GetThreadTimes},
+        };
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut creation, mut exit, mut kernel, mut user) = (zero, zero, zero, zero);
+        // SAFETY: all output pointers are live and the pseudo-handle names
+        // this test thread.
+        let ok = unsafe {
+            GetThreadTimes(
+                GetCurrentThread(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        };
+        assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+        let units = |v: FILETIME| (u64::from(v.dwHighDateTime) << 32) | u64::from(v.dwLowDateTime);
+        Duration::from_nanos((units(kernel) + units(user)) * 100)
+    }
+
     #[cfg(windows)]
     fn native_sample() -> String {
         use windows_sys::Win32::{
@@ -178,21 +207,37 @@ mod tests {
     }
 
     fn engine_intervals(sample: usize) -> Duration {
+        const BUDGET: Duration = Duration::from_millis(150);
         let before = native_sample();
-        let clock = JsClock::new(Duration::from_millis(150));
+        #[cfg(windows)]
+        let os_before = os_thread_time();
+        let clock = JsClock::new(BUDGET);
         clock.enter();
         burn(Duration::from_millis(30));
         clock.leave();
+        #[cfg(windows)]
+        let os_after = os_thread_time();
         let after = native_sample();
         let spent = clock.spent();
         let details = format!("sample={sample} spent={spent:?} before=[{before}] after=[{after}]");
         #[cfg(windows)]
         println!("{details}");
+        // The clock charges what the OS charged this thread while entered,
+        // and nothing more. The amount itself isn't bounded: on a virtual
+        // machine the host can stall the thread mid-interval, and Windows
+        // charges that stall to the thread (one CI sample charged 171.875 ms
+        // of kernel time for 30 ms of work, matching the 171.9 ms of wall
+        // time the performance counter measured).
+        #[cfg(windows)]
+        assert!(
+            spent <= os_after.saturating_sub(os_before),
+            "the clock charged more than the OS: {details}"
+        );
         // Sleeping and burning CPU while left must not count.
         std::thread::sleep(Duration::from_millis(50));
         burn(Duration::from_millis(200));
         assert_eq!(clock.spent(), spent, "paused CPU time changed: {details}");
-        assert!(!clock.over_budget(), "{details}");
+        assert_eq!(clock.over_budget(), spent > BUDGET, "{details}");
         clock.enter();
         burn(Duration::from_millis(200));
         assert!(
@@ -203,8 +248,9 @@ mod tests {
     }
 
     /// Exercise the real CPU source as well as the pause/resume bookkeeping.
-    /// Keep the upper-budget check: an oversized charge can also end a real
-    /// activation early, even if pausing itself preserves the recorded spend.
+    /// On Windows, also check that an entered interval never charges more
+    /// than the OS charged the thread, since an oversized charge would end a
+    /// real activation early.
     #[test]
     fn time_outside_the_engine_is_not_counted() {
         engine_intervals(0);
