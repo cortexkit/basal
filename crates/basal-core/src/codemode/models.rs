@@ -44,12 +44,6 @@ pub fn add_catalog(catalog: &Value) -> Result<Value, &'static str> {
         .as_array()
         .ok_or("catalog must be an array")?
         .clone();
-    if entries
-        .iter()
-        .any(|t| matches!(t["name"].as_str(), Some("model" | "classify")))
-    {
-        return Err("model and classify are reserved tool names");
-    }
     entries.extend(self::catalog().as_array().unwrap().iter().cloned());
     Ok(Value::Array(entries))
 }

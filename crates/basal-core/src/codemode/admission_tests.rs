@@ -625,25 +625,81 @@ fn tool_and_output_limits_accept_the_cap_and_refuse_cap_plus_one() {
 }
 
 #[test]
-fn catalog_array_and_exact_entry_keys_are_required() {
+fn catalog_must_be_an_array() {
     let t = temp_store();
     let h = host("agent");
-    for catalog in [
-        json!(null),
-        json!({}),
-        json!([false]),
-        json!([{"name":"read"}]),
-        json!([{"name":"read", "module":"notes", "op":"list", "extra":true}]),
-        {
-            let mut e = entry("read");
-            e["extra"] = json!(true);
-            json!([e])
-        },
-    ] {
+    for catalog in [json!(null), json!({})] {
         let mut req = request("run", "agent");
         req["catalog"] = catalog;
         refused(&t.store, &h, &req, "invalid_catalog");
     }
+}
+
+fn dropped_entry(bad: Value, reason: &str) {
+    let t = temp_store();
+    let h = host("agent");
+    let mut req = request("run", "agent");
+    req["catalog"] = json!([bad, entry("good")]);
+    let (run, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
+    let start = start.unwrap();
+    assert_eq!(start.tools.len(), 3);
+    assert!(start.tools.contains_key("good"));
+    let warnings: Vec<Value> = serde_json::from_str(&run.warnings).unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["code"], "tool_entry_invalid");
+    assert!(warnings[0]["reason"].as_str().unwrap().contains(reason));
+    let name = req["catalog"][0]["name"].as_str();
+    assert_eq!(
+        warnings[0]["tool"],
+        name.map_or(json!(0), |name| json!(name))
+    );
+    assert_eq!(
+        warnings[0].get("module"),
+        req["catalog"][0].get("module").filter(|v| v.is_string())
+    );
+    if let Some(name) = name {
+        assert!(!start.tools.contains_key(name));
+        assert_eq!(
+            start.unavailable.contains_key(name),
+            check_name(name).is_ok()
+        );
+        if let Some(unavailable) = start.unavailable.get(name) {
+            assert_eq!(unavailable.reason, warnings[0]["reason"].as_str().unwrap());
+        }
+    }
+    let callable = super::super::models::add_catalog(&json!([entry("good")])).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&run.catalog).unwrap(),
+        callable
+    );
+    assert_eq!(run.catalog_digest, catalog_digest(&callable).unwrap());
+}
+
+#[test]
+fn malformed_catalog_entries_are_dropped_individually() {
+    dropped_entry(json!(false), "must be an object");
+    for bad in [
+        json!({"name":"read"}),
+        json!({"name":"read", "module":"notes", "op":"list", "extra":true}),
+        {
+            let mut e = entry("read");
+            e["extra"] = json!(true);
+            e
+        },
+    ] {
+        dropped_entry(
+            bad,
+            "expected name, input_schema, module, op and optional result_format",
+        );
+    }
+    let mut bad = entry("read");
+    bad["name"] = json!(false);
+    dropped_entry(bad, "name must be a string");
+}
+
+#[test]
+fn a_slash_in_one_tool_name_does_not_refuse_the_catalog() {
+    dropped_entry(entry("llm.classify/v1"), "invalid tool name");
 }
 
 #[test]
@@ -657,9 +713,7 @@ fn tool_names_are_ascii_identifiers_of_at_most_128_bytes() {
         "é".to_owned(),
         "x".repeat(129),
     ] {
-        let mut req = request("run", "agent");
-        req["catalog"] = json!([entry(&name)]);
-        refused(&t.store, &h, &req, "invalid_catalog");
+        dropped_entry(entry(&name), "invalid tool name");
     }
     let mut req = request("run", "agent");
     req["catalog"] = json!([entry(&"x".repeat(128)), entry("_A0")]);
@@ -668,59 +722,126 @@ fn tool_names_are_ascii_identifiers_of_at_most_128_bytes() {
 }
 
 #[test]
-fn reserved_tool_names_are_refused_and_named_in_the_message() {
-    let t = temp_store();
-    let h = host("agent");
+fn reserved_tool_names_are_dropped_and_never_exposed() {
     for name in ["__proto__", "constructor", "prototype", "tools", "console"] {
-        let mut req = request("run", "agent");
-        req["catalog"] = json!([entry(name)]);
-        let Admission::Refused(refusal) = accept(&t.store, &h, &Clock::manual(NOW), &req) else {
-            panic!("reserved name {name} was admitted");
-        };
-        assert_eq!(refusal.code, "invalid_catalog");
-        assert!(refusal.message.contains(name));
-        assert_eq!(row_count(&t.store), 0);
+        dropped_entry(entry(name), "reserved tool name");
     }
 }
 
 #[test]
-fn duplicate_tool_names_are_refused() {
+fn duplicate_tool_names_drop_every_claim_and_warn_once() {
     let t = temp_store();
     let h = host("agent");
     let mut req = request("run", "agent");
-    req["catalog"] = json!([entry("read"), entry("read")]);
-    refused(&t.store, &h, &req, "invalid_catalog");
+    let mut other = entry("read");
+    other["module"] = json!("calendar");
+    req["catalog"] = json!([entry("read"), other, entry("good")]);
+    let (run, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
+    let start = start.unwrap();
+    assert!(!start.tools.contains_key("read"));
+    assert!(start.tools.contains_key("good"));
+    assert_eq!(start.unavailable["read"].reason, "duplicate tool name");
+    let warnings: Vec<Value> = serde_json::from_str(&run.warnings).unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["tool"], "read");
+    assert_eq!(warnings[0]["reason"], "duplicate tool name");
+    let callable = super::super::models::add_catalog(&json!([entry("good")])).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&run.catalog).unwrap(),
+        callable
+    );
+    assert_eq!(run.catalog_digest, catalog_digest(&callable).unwrap());
 }
 
 #[test]
 fn module_and_op_are_nonempty_strings_with_a_128_byte_cap() {
-    let t = temp_store();
-    let h = host("agent");
     for field in ["module", "op"] {
         for value in [json!(""), json!("x".repeat(129)), json!(null)] {
             let mut e = entry("read");
             e[field] = value;
-            let mut req = request("run", "agent");
-            req["catalog"] = json!([e]);
-            refused(&t.store, &h, &req, "invalid_catalog");
+            dropped_entry(e, &format!("invalid {field}"));
         }
     }
 }
 
 #[test]
-fn schema_failures_and_external_refs_refuse_before_insertion() {
-    let t = temp_store();
-    let h = host("agent");
-    for schema in [
-        json!({"type":"uncompilable"}),
-        json!({"$ref":"https://example.org/schema"}),
-        json!({"$ref":"file:///etc/schema.json"}),
+fn model_name_collisions_drop_both_the_provider_and_builtin() {
+    for name in ["model", "classify"] {
+        let resolved =
+            super::super::models::add_catalog(&json!([entry(name), entry("good")])).unwrap();
+        let catalog = catalog(&resolved, &[]).unwrap();
+        assert!(!catalog.tools.contains_key(name));
+        assert!(catalog.tools.contains_key("good"));
+        assert_eq!(catalog.unavailable[name].reason, "duplicate tool name");
+        assert_eq!(catalog.warnings.len(), 1);
+        assert_eq!(catalog.warnings[0]["tool"], name);
+    }
+}
+
+#[test]
+fn unavailable_names_are_checked_and_collisions_drop_every_claim() {
+    use basal_host::run_scope::{CatalogGap, RefusalReason};
+    let gap = |module: &str, names: &[&str]| CatalogGap {
+        module: module.into(),
+        tools: names.iter().map(|name| (*name).into()).collect(),
+        reason: RefusalReason::CatalogUnreadable,
+        problem: "provider catalog refused".into(),
+    };
+    let gaps = [
+        gap(
+            "aft",
+            &[
+                "llm.classify/v1",
+                "constructor",
+                "good",
+                "repeated",
+                "malformed",
+                "lost",
+            ],
+        ),
+        gap("other", &["repeated"]),
+    ];
+    let mut malformed = entry("malformed");
+    malformed["op"] = json!(false);
+    let catalog = catalog(&json!([entry("good"), malformed, entry("retained")]), &gaps).unwrap();
+    assert_eq!(catalog.tools.keys().collect::<Vec<_>>(), vec!["retained"]);
+    assert!(!catalog.unavailable.contains_key("llm.classify/v1"));
+    assert!(!catalog.unavailable.contains_key("constructor"));
+    for name in ["good", "repeated", "malformed"] {
+        assert_eq!(catalog.unavailable[name].reason, "duplicate tool name");
+        assert_eq!(
+            catalog
+                .warnings
+                .iter()
+                .filter(|warning| warning["tool"] == name)
+                .count(),
+            1
+        );
+    }
+    assert_eq!(catalog.unavailable["lost"].reason, "catalog_unreadable");
+    assert_eq!(catalog.warnings.len(), 5);
+    assert_eq!(catalog.callable, json!([entry("retained")]));
+}
+
+#[test]
+fn schema_failures_and_external_refs_drop_only_the_bad_entry() {
+    for (schema, reason) in [
+        (
+            json!({"type":"uncompilable"}),
+            "the schema does not compile:",
+        ),
+        (
+            json!({"$ref":"https://example.org/schema"}),
+            "not a same-document fragment",
+        ),
+        (
+            json!({"$ref":"file:///etc/schema.json"}),
+            "not a same-document fragment",
+        ),
     ] {
         let mut e = entry("read");
         e["input_schema"] = schema;
-        let mut req = request("run", "agent");
-        req["catalog"] = json!([e]);
-        refused(&t.store, &h, &req, "invalid_catalog");
+        dropped_entry(e, reason);
     }
 }
 
@@ -889,7 +1010,7 @@ fn invalid_catalog_precedes_busy() {
     let h = host("agent");
     seed(&t.store, "agent", 2);
     let mut req = request("run", "agent");
-    req["catalog"] = json!([entry("console")]);
+    req["catalog"] = json!(null);
     refused(&t.store, &h, &req, "invalid_catalog");
 }
 
@@ -900,7 +1021,8 @@ fn per_tool_result_format_is_optional_typed_and_preserved() {
     content["result_format"] = json!("tool-result/v1");
     let mut future = entry("read_future");
     future["result_format"] = json!("future/v2");
-    let tools = catalog(&json!([legacy, content, future])).unwrap();
+    let catalog = catalog(&json!([legacy, content, future]), &[]).unwrap();
+    let tools = catalog.tools;
     assert!(tools["read"].result_format.is_none());
     assert_eq!(
         tools["read_content"].result_format,
@@ -914,5 +1036,5 @@ fn per_tool_result_format_is_optional_typed_and_preserved() {
     );
     let mut invalid = entry("invalid");
     invalid["result_format"] = json!(true);
-    assert!(catalog(&json!([invalid])).is_err());
+    dropped_entry(invalid, "result_format must be a string");
 }

@@ -227,6 +227,26 @@ pub fn provider_serves_preset(answer: &CatalogAnswer, preset: &str) -> bool {
     answer.lists_preset(preset)
 }
 
+fn catalog_read_error(error: &WireError) -> String {
+    match error {
+        WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. } => {
+            format!("refused ({code}): {message}")
+        }
+        WireError::Typed(refusal) => {
+            format!(
+                "refused ({}): {}",
+                refusal.reason.as_str(),
+                refusal.message()
+            )
+        }
+        WireError::NeverSent(message) => format!("not sent: {message}"),
+        WireError::Unknown(message) => format!("outcome unknown: {message}"),
+        WireError::ScopeCut(message) => format!("scope closed: {message}"),
+        WireError::TimedOut(message) => format!("timed out: {message}"),
+        WireError::Unreadable(message) => format!("unreadable reply: {message}"),
+    }
+}
+
 /// Whether the provider serves `entry` in codemode, as it declares it. A
 /// provider declaring the legacy capability serves every tool. A provider
 /// declaring `call-modes/v1` serves the tools whose `modes`, in its own
@@ -264,7 +284,10 @@ fn codemode_served(
         };
         (
             RefusalReason::CatalogUnreadable,
-            format!("its tool.catalog could not be read: {error:?}{hint}"),
+            format!(
+                "its tool.catalog could not be read: {}{hint}",
+                catalog_read_error(error)
+            ),
         )
     })?;
     // An invalid modes list on any tool makes the whole answer invalid, not
@@ -933,6 +956,34 @@ mod call_mode_tests {
                 recoverable,
                 "{failure:?}: {}",
                 dropped.message()
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_catalog_read_has_a_plain_warning() {
+        let code = "invalid_request";
+        let message = "broca does not serve this route target";
+        for failure in [
+            WireError::Refused {
+                code: code.into(),
+                message: message.into(),
+            },
+            WireError::RefusedDetails {
+                code: code.into(),
+                message: message.into(),
+                detail: json!({"route":"tool.catalog"}),
+            },
+        ] {
+            let provider = Provider::answering(Err(failure));
+            let resolved = resolve(
+                &provider,
+                &daemon(&[CALL_MODES_CAPABILITY]),
+                &[entry("read")],
+            );
+            assert_eq!(
+                gap(&resolved).message(),
+                "codemode can't use mock_read from provider mock: its tool.catalog could not be read: refused (invalid_request): broca does not serve this route target"
             );
         }
     }

@@ -1869,7 +1869,7 @@ fn a_tool_dropped_at_admission_rejects_typed_and_named_while_others_still_run() 
         "apply_patch".to_owned(),
         Unavailable {
             module: "aft".into(),
-            reason: "catalog_unreadable",
+            reason: "catalog_unreadable".into(),
             message: "codemode can't use apply_patch from provider aft: unreadable".into(),
         },
     )]

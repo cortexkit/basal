@@ -128,6 +128,22 @@ that provider for `catalog_unreadable` or `invalid_answer`) and records a
 A program call to a dropped tool rejects with `tool_unavailable` and
 `detail: {"reason": "<reason>", "module": "<provider>"}`; nothing is sent.
 
+An invalid individual catalog entry also does not refuse the run. Admission
+drops entries with malformed fields, invalid names or uncompileable input
+schemas and records a `tool_entry_invalid` warning for each, with the readable
+module, tool name (or zero-based entry index), reason and a plain-language
+message. Duplicate names drop every claim to that name and produce one warning
+per name; basal never picks an arbitrary provider. A dropped entry with a safe
+identifier remains callable only to reject with `tool_unavailable`, naming the
+reason. This also applies when a provider claims `model` or `classify`: the
+provider entry and basal's built-in entry are both dropped, and that name only
+rejects as unavailable. Invalid identifiers and reserved names (`__proto__`, `constructor`,
+`prototype`, `tools`, `console`) are never exposed, even as unavailable tools.
+Unavailable-provider names receive the same checks. These warnings appear in
+both result text and `structuredContent.warnings`; the catalog digest covers
+only retained usable entries. A catalog that is not an array still refuses the
+whole run with `invalid_catalog`.
+
 A terminal program failure, uncaught tool refusal, budget stop or cancellation
 is a content result with `isError: true` and a stable `errorCode`. Its model text
 keeps partial output and known call outcomes.
