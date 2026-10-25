@@ -4,7 +4,7 @@
 //! refusals and runs already at their deadline cannot register a scope or
 //! start a worker. The caller consumes the token after this transaction ends.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use basal_host::flow_scope::{FlowScope, RegisteredScope};
 use basal_host::{Host, ScopeStatus};
@@ -62,8 +62,8 @@ impl Default for Limits {
     }
 }
 
-/// A catalog tool with its compiled input validator. Compiling before the run
-/// row commits refuses invalid schemas before any worker can call the tool.
+/// A catalog tool with its compiled input validator. Invalid schemas are
+/// dropped before any worker can call the tool.
 #[derive(Debug)]
 pub struct Tool {
     pub module: String,
@@ -73,14 +73,14 @@ pub struct Tool {
 }
 
 /// A tool core put in the run's catalog that basal dropped because its
-/// provider does not serve it in codemode or its catalog could not be used.
+/// provider does not serve it in codemode or its catalog entry could not be used.
 /// The program still sees the name; calling it rejects with
 /// `tool_unavailable`, naming the provider and the reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unavailable {
     pub module: String,
-    /// The `run_scope::RefusalReason` code, such as `catalog_unreadable`.
-    pub reason: &'static str,
+    /// A provider refusal code or the reason its catalog entry was dropped.
+    pub reason: String,
     pub message: String,
 }
 
@@ -156,15 +156,16 @@ pub fn admit(
         let limits = limits(request.get("limits"))?;
         let resolved = super::models::add_catalog(fields.catalog)
             .map_err(|e| Refusal::new("invalid_catalog", e))?;
-        let tools = catalog(&resolved)?;
-        Ok((scope, agent_id, fields, limits, tools, resolved))
+        let catalog = catalog(&resolved, &[])?;
+        Ok((scope, agent_id, fields, limits, catalog))
     })();
-    let (scope, agent_id, fields, limits, tools, resolved) = match checked {
+    let (scope, agent_id, fields, limits, catalog) = match checked {
         Ok(checked) => checked,
         Err(refusal) => return Ok(Admission::Refused(refusal)),
     };
-    let catalog_text = resolved.to_string();
-    let digest = catalog_digest(&resolved).map_err(|e| CoreError::Invalid(e.to_string()))?;
+    let catalog_text = catalog.callable.to_string();
+    let digest =
+        catalog_digest(&catalog.callable).map_err(|e| CoreError::Invalid(e.to_string()))?;
     let limits_text =
         serde_json::to_string(&limits).map_err(|e| CoreError::Invalid(e.to_string()))?;
     let scope_text =
@@ -194,7 +195,7 @@ pub fn admit(
                 message: "the run's deadline has already elapsed".into(),
             }),
             output: String::new(),
-            warnings: "[]".into(),
+            warnings: serde_json::to_string(&catalog.warnings).unwrap(),
         });
         let new = NewRun {
             run_id: fields.run_id,
@@ -213,6 +214,15 @@ pub fn admit(
                 "admission lost its transaction's run id".into(),
             ));
         }
+        if ended.is_none() {
+            tx.execute(
+                "UPDATE codemode_runs SET warnings=?2 WHERE run_id=?1",
+                rusqlite::params![
+                    fields.run_id,
+                    serde_json::to_string(&catalog.warnings).unwrap()
+                ],
+            )?;
+        }
         let Lookup::Found(run) = store::lookup(tx, fields.run_id)? else {
             return Err(CoreError::Corrupt("admitted run is missing".into()));
         };
@@ -220,7 +230,8 @@ pub fn admit(
             Box::new(Start {
                 scope: RegisteredScope {
                     selector: scope,
-                    targets: tools
+                    targets: catalog
+                        .tools
                         .values()
                         .map(|tool| {
                             if super::models::is_local(&tool.module, &tool.op) {
@@ -232,8 +243,8 @@ pub fn admit(
                         .collect(),
                 },
                 presets: BTreeMap::new(),
-                tools,
-                unavailable: BTreeMap::new(),
+                tools: catalog.tools,
+                unavailable: catalog.unavailable,
                 limits,
                 wall_deadline_ms,
             })
@@ -418,71 +429,126 @@ fn limits(value: Option<&Value>) -> Checked<Limits> {
     Ok(limits)
 }
 
-fn catalog(value: &Value) -> Checked<BTreeMap<String, Tool>> {
+#[derive(Debug, Default)]
+struct Catalog {
+    tools: BTreeMap<String, Tool>,
+    unavailable: BTreeMap<String, Unavailable>,
+    warnings: Vec<Value>,
+    callable: Value,
+    warned_duplicates: BTreeSet<String>,
+}
+
+impl Catalog {
+    fn drop_entry(&mut self, name: Option<&str>, module: Option<&str>, index: usize, reason: &str) {
+        if reason == "duplicate tool name"
+            && !self.warned_duplicates.insert(name.unwrap().to_owned())
+        {
+            return;
+        }
+        let tool = name.map_or_else(|| Value::from(index), Value::from);
+        let label = name.map_or_else(|| index.to_string(), |name| format!("{name:?}"));
+        let message = format!("Catalog entry {label} was dropped: {reason}.");
+        let mut warning = serde_json::json!({
+            "code":"tool_entry_invalid", "tool":tool, "reason":reason, "message":message
+        });
+        if let Some(module) = module {
+            warning["module"] = Value::from(module);
+        }
+        self.warnings.push(warning);
+        // Only safe identifiers reach the worker's namespace, including names
+        // whose calls reject locally rather than routing to a provider.
+        if let Some(name) = name.filter(|name| check_name(name).is_ok()) {
+            self.unavailable.insert(
+                name.to_owned(),
+                Unavailable {
+                    module: module.unwrap_or_default().to_owned(),
+                    reason: reason.to_owned(),
+                    message,
+                },
+            );
+        }
+    }
+}
+
+fn catalog(value: &Value, gaps: &[basal_host::run_scope::CatalogGap]) -> Checked<Catalog> {
     let entries = value
         .as_array()
         .ok_or_else(|| Refusal::new("invalid_catalog", "catalog must be an array"))?;
-    let mut tools = BTreeMap::new();
+    // Count claims before validating entries: even a malformed claim makes
+    // routing that name ambiguous, including claims from unavailable providers.
+    let mut claims = BTreeMap::<&str, usize>::new();
+    for name in entries
+        .iter()
+        .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+        .chain(
+            gaps.iter()
+                .flat_map(|gap| gap.tools.iter().map(String::as_str)),
+        )
+    {
+        *claims.entry(name).or_default() += 1;
+    }
+    let mut catalog = Catalog::default();
+    let mut callable = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let name = entry.get("name").and_then(Value::as_str);
-        let invalid = |reason: &str| {
-            Refusal::new(
-                "invalid_catalog",
-                format!(
-                    "catalog entry {}: {reason}",
-                    name.map_or_else(|| index.to_string(), |n| format!("{n:?}"))
-                ),
-            )
-        };
-        let fields = entry
-            .as_object()
-            .ok_or_else(|| invalid("must be an object"))?;
-        if fields.len() != 4 + usize::from(fields.contains_key("result_format"))
-            || !["name", "input_schema", "module", "op"]
-                .iter()
-                .all(|k| fields.contains_key(*k))
-        {
-            return Err(invalid(
-                "expected name, input_schema, module, op and optional result_format",
-            ));
-        }
-        let name = name.ok_or_else(|| invalid("name must be a string"))?;
-        check_name(name).map_err(invalid)?;
-        if tools.contains_key(name) {
-            return Err(invalid("duplicate tool name"));
-        }
-        let module = fields["module"]
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)
-            .ok_or_else(|| invalid("invalid module"))?;
-        let op = fields["op"]
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)
-            .ok_or_else(|| invalid("invalid op"))?;
-        let input_schema =
-            compile_input_schema(&fields["input_schema"]).map_err(|e| invalid(&e.to_string()))?;
-        let result_format = fields
-            .get("result_format")
-            .map(|format| {
-                format
-                    .as_str()
-                    .map(|format| {
-                        cortexkit_role_tool_provider::result::ResultFormat::from(format.to_owned())
-                    })
-                    .ok_or_else(|| invalid("result_format must be a string"))
-            })
-            .transpose()?;
-        tools.insert(
-            name.to_owned(),
-            Tool {
+        let module = entry.get("module").and_then(Value::as_str);
+        let checked = (|| -> std::result::Result<Tool, String> {
+            if name.is_some_and(|name| claims[name] > 1) {
+                return Err("duplicate tool name".into());
+            }
+            let fields = entry.as_object().ok_or("must be an object")?;
+            if fields.len() != 4 + usize::from(fields.contains_key("result_format"))
+                || !["name", "input_schema", "module", "op"]
+                    .iter()
+                    .all(|k| fields.contains_key(*k))
+            {
+                return Err(
+                    "expected name, input_schema, module, op and optional result_format".into(),
+                );
+            }
+            let name = name.ok_or("name must be a string")?;
+            check_name(name)?;
+            let module = fields["module"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)
+                .ok_or("invalid module")?;
+            let op = fields["op"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)
+                .ok_or("invalid op")?;
+            let input_schema =
+                compile_input_schema(&fields["input_schema"]).map_err(|e| e.to_string())?;
+            let result_format = fields
+                .get("result_format")
+                .map(|format| {
+                    format
+                        .as_str()
+                        .map(|format| {
+                            cortexkit_role_tool_provider::result::ResultFormat::from(
+                                format.to_owned(),
+                            )
+                        })
+                        .ok_or("result_format must be a string")
+                })
+                .transpose()?;
+            Ok(Tool {
                 module: module.to_owned(),
                 op: op.to_owned(),
                 input_schema,
                 result_format,
-            },
-        );
+            })
+        })();
+        match checked {
+            Ok(tool) => {
+                catalog.tools.insert(name.unwrap().to_owned(), tool);
+                callable.push(entry.clone());
+            }
+            Err(reason) => catalog.drop_entry(name, module, index, &reason),
+        }
     }
-    Ok(tools)
+    unavailable_tools(gaps, &claims, &mut catalog);
+    catalog.callable = Value::Array(callable);
+    Ok(catalog)
 }
 
 /// The names a program may use for a tool: a JavaScript identifier that is
@@ -500,37 +566,34 @@ fn check_name(name: &str) -> std::result::Result<(), &'static str> {
     Ok(())
 }
 
-/// The dropped tools by name. Their names reach the program just as usable
-/// tools' names do, so they pass the same name checks and may not repeat a
-/// usable tool's name.
+/// Unavailable providers' names must be safe and unambiguous too; a bad name
+/// must not prevent unrelated tools from running.
 fn unavailable_tools(
     gaps: &[basal_host::run_scope::CatalogGap],
-    tools: &BTreeMap<String, Tool>,
-) -> Checked<BTreeMap<String, Unavailable>> {
-    let mut unavailable = BTreeMap::new();
+    claims: &BTreeMap<&str, usize>,
+    catalog: &mut Catalog,
+) {
     for gap in gaps {
         for name in &gap.tools {
-            let invalid = |reason: &str| {
-                Refusal::new(
-                    "invalid_catalog",
-                    format!("catalog entry {name:?}: {reason}"),
-                )
+            let reason = if claims[name.as_str()] > 1 {
+                Some("duplicate tool name")
+            } else {
+                check_name(name).err()
             };
-            check_name(name).map_err(invalid)?;
-            if tools.contains_key(name) || unavailable.contains_key(name) {
-                return Err(invalid("duplicate tool name"));
+            if let Some(reason) = reason {
+                catalog.drop_entry(Some(name), Some(&gap.module), 0, reason);
+                continue;
             }
-            unavailable.insert(
+            catalog.unavailable.insert(
                 name.clone(),
                 Unavailable {
                     module: gap.module.clone(),
-                    reason: gap.reason.code(),
+                    reason: gap.reason.code().into(),
                     message: gap.message(),
                 },
             );
         }
     }
-    Ok(unavailable)
 }
 
 fn valid_name(name: &str) -> bool {
@@ -725,28 +788,29 @@ pub fn admit_tool(
         };
         let resolved = super::models::add_catalog(&resolved.catalog)
             .map_err(|e| json!({"code":"invalid_catalog","message":e}))?;
-        let tools = catalog(&resolved).map_err(|e| json!({"code":e.code,"message":e.message}))?;
-        let unavailable = unavailable_tools(&gaps, &tools)
-            .map_err(|e| json!({"code":e.code,"message":e.message}))?;
-        let warnings: Vec<Value> = gaps
+        let catalog =
+            catalog(&resolved, &gaps).map_err(|e| json!({"code":e.code,"message":e.message}))?;
+        let mut warnings: Vec<Value> = gaps
             .iter()
             .map(|gap| {
                 json!({"code":"tools_unavailable","module":gap.module,"reason":gap.reason.code(),
                     "tools":gap.tools,"message":gap.message()})
             })
             .collect();
+        warnings.extend(catalog.warnings);
         // The digest covers only the tools the program can call; dropped
         // tools are reported in the warnings instead.
-        let digest = catalog_digest(&resolved).unwrap();
+        let digest = catalog_digest(&catalog.callable).unwrap();
         store.write(|tx| {
             tx.execute("UPDATE codemode_runs SET catalog=?2,catalog_digest=?3,scope=?4,warnings=?5 WHERE run_id=?1 AND status='running'",
-                rusqlite::params![invocation.run_id,resolved.to_string(),digest,serde_json::to_string(&selector).unwrap(),serde_json::to_string(&warnings).unwrap()])?;
+                rusqlite::params![invocation.run_id,catalog.callable.to_string(),digest,serde_json::to_string(&selector).unwrap(),serde_json::to_string(&warnings).unwrap()])?;
             Ok(())
         }).map_err(|e| json!({"code":"storage_unavailable","message":e.to_string()}))?;
         Ok(Start {
             scope: RegisteredScope {
                 selector,
-                targets: tools
+                targets: catalog
+                    .tools
                     .values()
                     .map(|t| {
                         if super::models::is_local(&t.module, &t.op) {
@@ -758,8 +822,8 @@ pub fn admit_tool(
                     .collect(),
             },
             presets,
-            tools,
-            unavailable,
+            tools: catalog.tools,
+            unavailable: catalog.unavailable,
             limits,
             wall_deadline_ms: started.saturating_add(limits.wall_ms.unwrap_or(run_scope::WALL_MS)),
         })

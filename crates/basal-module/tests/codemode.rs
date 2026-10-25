@@ -43,6 +43,7 @@ struct Core {
     store: Mutex<Option<Arc<basal_core::Store>>>,
     held_provider: AtomicBool,
     format_unreadable: AtomicBool,
+    extra_entries: Mutex<Vec<basal_host::run_scope::CatalogEntry>>,
     consent_provider: AtomicBool,
     onward_keys: Mutex<Vec<String>>,
     onward: Mutex<Option<(String, String, Value)>>,
@@ -230,7 +231,7 @@ impl Transport for Core {
                 if let Some(error) = self.refusal.lock().unwrap().clone() {
                     return Err(error);
                 }
-                let entries = if self.two_providers.load(Ordering::SeqCst) {
+                let mut entries = if self.two_providers.load(Ordering::SeqCst) {
                     [("aft", "read"), ("cerebellum", "recall")]
                         .map(|(module, op)| basal_host::run_scope::CatalogEntry {
                             tool: format!("{module}_{op}"),
@@ -245,6 +246,7 @@ impl Transport for Core {
                         op: "echo".into(),
                     }]
                 };
+                entries.extend(self.extra_entries.lock().unwrap().iter().cloned());
                 let mut opened = self
                     .scopes
                     .open(serde_json::from_value(params.clone()).unwrap(), entries)?;
@@ -1407,7 +1409,10 @@ fn an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts() {
     // The provider refused the read permanently, so the warning does not
     // suggest retrying the run.
     let message = warnings[0]["message"].as_str().unwrap();
-    assert!(message.contains("principal_denied"), "{message}");
+    assert_eq!(
+        message,
+        "codemode can't use echo from provider mock: its tool.catalog could not be read: refused (principal_denied): provider catalog refused"
+    );
     assert!(
         !message.contains("retrying the run may succeed"),
         "{message}"
@@ -1422,4 +1427,96 @@ fn an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts() {
         0,
         "the dropped tool was never sent"
     );
+}
+
+#[test]
+fn a_bad_catalog_entry_does_not_stop_valid_tool_calls_and_renders_a_warning() {
+    let rig = rig("bad-catalog-entry", false);
+    for name in [
+        "llm.classify/v1",
+        "__proto__",
+        "constructor",
+        "prototype",
+        "tools",
+        "console",
+    ] {
+        rig.core
+            .extra_entries
+            .lock()
+            .unwrap()
+            .push(basal_host::run_scope::CatalogEntry {
+                tool: name.into(),
+                module: "mock".into(),
+                op: "echo".into(),
+            });
+    }
+    rig.core.release();
+    let result = call(
+        &rig,
+        "bad-catalog-entry",
+        r#"
+        const blocked = ["llm.classify/v1", "__proto__", "constructor", "prototype", "tools", "console"];
+        const reachable = blocked.filter(name => name in tools);
+        return {echo: await tools.echo({n:42}), reachable};
+    "#,
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(
+        result["structuredContent"]["value"],
+        json!({"echo":{"n":42}, "reachable":[]})
+    );
+    assert_eq!(rig.core.state.lock().unwrap().0, 1);
+    let warnings = result["structuredContent"]["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 6, "{warnings:?}");
+    let warning = &warnings[0];
+    assert_eq!(warning["code"], "tool_entry_invalid");
+    assert_eq!(warning["module"], "mock");
+    assert_eq!(warning["tool"], "llm.classify/v1");
+    assert_eq!(warning["reason"], "invalid tool name");
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("Warning: Catalog entry \"llm.classify/v1\" was dropped: invalid tool name."),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_duplicate_catalog_name_is_unavailable_and_never_sent() {
+    let rig = rig("duplicate-catalog-entry", false);
+    rig.core
+        .extra_entries
+        .lock()
+        .unwrap()
+        .push(basal_host::run_scope::CatalogEntry {
+            tool: "echo".into(),
+            module: "mock".into(),
+            op: "echo".into(),
+        });
+    rig.core.release();
+    let result = call(
+        &rig,
+        "duplicate-catalog-entry",
+        r#"
+        try { await tools.echo({n:42}); }
+        catch (error) { return [error.code, error.detail.reason, error.detail.module]; }
+        return "sent";
+    "#,
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(
+        result["structuredContent"]["value"],
+        json!(["tool_unavailable", "duplicate tool name", "mock"])
+    );
+    assert_eq!(rig.core.state.lock().unwrap().0, 0);
+    let warnings = result["structuredContent"]["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0]["reason"], "duplicate tool name");
 }

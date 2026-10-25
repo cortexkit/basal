@@ -277,9 +277,6 @@ fn model_catalog_is_basal_owned_and_inputs_are_closed() {
     let catalog = models::add_catalog(&json!([])).unwrap();
     assert_eq!(catalog[0]["name"], "model");
     assert_eq!(catalog[1]["name"], "classify");
-    assert!(
-        models::add_catalog(&json!([{"name":"model","module":"foreign","op":"read"}])).is_err()
-    );
     let f = ModelFixture::new();
     for (i, input) in [
         json!({"prompt":"hi","tools":[]}),

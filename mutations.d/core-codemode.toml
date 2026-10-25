@@ -711,7 +711,7 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required"]
+expect_red = ["codemode::admission::tests::malformed_catalog_entries_are_dropped_individually"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = 'fields.len() != 4 + usize::from(fields.contains_key("result_format"))'
@@ -725,7 +725,7 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["codemode::admission::tests::tool_names_are_ascii_identifiers_of_at_most_128_bytes"]
+expect_red = ["codemode::admission::tests::tool_names_are_ascii_identifiers_of_at_most_128_bytes", "codemode::admission::tests::a_slash_in_one_tool_name_does_not_refuse_the_catalog", "codemode::admission::tests::unavailable_names_are_checked_and_collisions_drop_every_claim"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = "if !valid_name(name) {"
@@ -753,7 +753,7 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["codemode::admission::tests::reserved_tool_names_are_refused_and_named_in_the_message"]
+expect_red = ["codemode::admission::tests::reserved_tool_names_are_dropped_and_never_exposed", "codemode::admission::tests::unavailable_names_are_checked_and_collisions_drop_every_claim"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = '''if matches!(
@@ -770,11 +770,11 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["codemode::admission::tests::duplicate_tool_names_are_refused"]
+expect_red = ["codemode::admission::tests::duplicate_tool_names_drop_every_claim_and_warn_once", "codemode::admission::tests::model_name_collisions_drop_both_the_provider_and_builtin", "codemode::admission::tests::unavailable_names_are_checked_and_collisions_drop_every_claim"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
-old = "if tools.contains_key(name) {"
-new = "if tools.contains_key(name) && false { // NON-VACUITY BREAK"
+old = "if name.is_some_and(|name| claims[name] > 1) {"
+new = "if name.is_some_and(|name| claims[name] > 1) && false { // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-admission-module-bound"
@@ -788,8 +788,8 @@ expect_red = ["codemode::admission::tests::module_and_op_are_nonempty_strings_wi
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = '''let module = fields["module"]
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
 new = '''let module = fields["module"].as_str() /* NON-VACUITY BREAK */'''
 
 [[control]]
@@ -804,8 +804,8 @@ expect_red = ["codemode::admission::tests::module_and_op_are_nonempty_strings_wi
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = '''let op = fields["op"]
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
 new = '''let op = fields["op"].as_str() /* NON-VACUITY BREAK */'''
 
 [[control]]
@@ -816,7 +816,7 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["codemode::admission::tests::schema_failures_and_external_refs_refuse_before_insertion"]
+expect_red = ["codemode::admission::tests::schema_failures_and_external_refs_drop_only_the_bad_entry", "codemode::admission::tests::same_document_schema_compiles_once_and_scope_targets_come_from_modules"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = 'compile_input_schema(&fields["input_schema"])'
@@ -928,7 +928,7 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required"]
+expect_red = ["codemode::admission::tests::catalog_must_be_an_array", "codemode::admission::tests::invalid_catalog_precedes_busy"]
 only = false
 file = "crates/basal-core/src/codemode/models.rs"
 # Built-in model tools are appended to the supplied catalog before the combined catalog is validated.
@@ -960,17 +960,17 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required"]
+expect_red = ["codemode::admission::tests::malformed_catalog_entries_are_dropped_individually"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = '''!["name", "input_schema", "module", "op"]
-                .iter()
-                .all(|k| fields.contains_key(*k))'''
+                    .iter()
+                    .all(|k| fields.contains_key(*k))'''
 new = "false /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "codemode-admission-module-bytes"
-guards = "a module name of 129 bytes is refused even when nonempty"
+guards = "an entry with a module name of 129 bytes is dropped even when nonempty"
 test_file = "crates/basal-core/src/codemode/admission_tests.rs"
 runner = "cargo"
 package = "basal-core"
@@ -980,13 +980,13 @@ expect_red = ["codemode::admission::tests::module_and_op_are_nonempty_strings_wi
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = '''let module = fields["module"]
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
 new = '''let module = fields["module"].as_str().filter(|s| !s.is_empty()) /* NON-VACUITY BREAK */'''
 
 [[control]]
 id = "codemode-admission-op-bytes"
-guards = "an op name of 129 bytes is refused even when nonempty"
+guards = "an entry with an op name of 129 bytes is dropped even when nonempty"
 test_file = "crates/basal-core/src/codemode/admission_tests.rs"
 runner = "cargo"
 package = "basal-core"
@@ -996,8 +996,8 @@ expect_red = ["codemode::admission::tests::module_and_op_are_nonempty_strings_wi
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = '''let op = fields["op"]
-            .as_str()
-            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
 new = '''let op = fields["op"].as_str().filter(|s| !s.is_empty()) /* NON-VACUITY BREAK */'''
 
 [[control]]
@@ -2790,3 +2790,35 @@ timeout_s = 600
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = 'preset: self.start.presets.get(&module).cloned(),'
 new = 'preset: self.start.presets.values().next().cloned(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-bad-entry-refuses-whole-run"
+guards = "a malformed catalog entry is dropped without refusing unrelated tools"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::malformed_catalog_entries_are_dropped_individually", "codemode::admission::tests::a_slash_in_one_tool_name_does_not_refuse_the_catalog", "codemode::admission::tests::tool_names_are_ascii_identifiers_of_at_most_128_bytes", "codemode::admission::tests::reserved_tool_names_are_dropped_and_never_exposed", "codemode::admission::tests::duplicate_tool_names_drop_every_claim_and_warn_once", "codemode::admission::tests::module_and_op_are_nonempty_strings_with_a_128_byte_cap", "codemode::admission::tests::schema_failures_and_external_refs_drop_only_the_bad_entry", "codemode::admission::tests::per_tool_result_format_is_optional_typed_and_preserved", "codemode::admission::tests::model_name_collisions_drop_both_the_provider_and_builtin", "codemode::admission::tests::unavailable_names_are_checked_and_collisions_drop_every_claim"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "Err(reason) => catalog.drop_entry(name, module, index, &reason),"
+new = 'Err(reason) => return Err(Refusal::new("invalid_catalog", reason)), // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-duplicate-keeps-one-entry"
+guards = "every claim to a duplicate name is dropped rather than routing an arbitrary winner"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::duplicate_tool_names_drop_every_claim_and_warn_once", "codemode::admission::tests::model_name_collisions_drop_both_the_provider_and_builtin", "codemode::admission::tests::unavailable_names_are_checked_and_collisions_drop_every_claim"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "*claims.entry(name).or_default() += 1;"
+new = "claims.insert(name, 1); // NON-VACUITY BREAK"
