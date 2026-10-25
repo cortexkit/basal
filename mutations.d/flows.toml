@@ -594,6 +594,23 @@ old = "if (stale) {"
 new = "if (false && stale) { // NON-VACUITY BREAK"
 
 [[control]]
+id = "ci-failure-router-stale-measured-to-observed-at"
+guards = "a completion Plexus observed promptly is not stale however late the bus publishes it"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["job_observed_promptly_wakes_after_a_long_publish_delay", "job_observed_long_after_completion_is_stale_even_when_published_promptly", "observed_six_hour_boundary_wakes_and_one_millisecond_more_is_stale", "missing_or_unparseable_observed_at_measures_completion_age_at_run_time", "stale_job_completion_sends_nothing_and_creates_no_run_entry", "recent_job_completion_wakes"] }
+expect_red = ["job_observed_promptly_wakes_after_a_long_publish_delay", "observed_six_hour_boundary_wakes_and_one_millisecond_more_is_stale"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "  if (Number.isFinite(observed)) return observed - activity > maxAgeMs;"
+new = "  // NON-VACUITY BREAK: observed_at ignored, age measured at run time"
+
+[[control]]
 id = "ci-failure-router-superseded-attempts"
 guards = "superseded attempts send no digest now or on later events"
 test_file = "crates/basal-module/tests/ci_failure_router.rs"
@@ -795,6 +812,23 @@ timeout_s = 600
 file = "flows/github-events/flow.js"
 old = "await sink.digest(owner, item, comparison.would_action, { replace_key: key });"
 new = "await sink.digest('agent_fff43bb5f4bea20b', item, comparison.would_action, { replace_key: key }); // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-events-stale-measured-to-observed-at"
+guards = "an item Plexus observed promptly is not stale however late the bus publishes it"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["item_observed_promptly_is_delivered_after_a_long_publish_delay", "item_observed_long_after_its_activity_is_stale_even_when_published_promptly", "observed_six_hour_boundary_delivers_and_one_millisecond_more_is_stale", "missing_or_unparseable_observed_at_measures_age_at_run_time", "stale_drops_are_visible_and_six_hour_boundary_and_unknown_times_deliver"] }
+expect_red = ["item_observed_promptly_is_delivered_after_a_long_publish_delay", "observed_six_hour_boundary_delivers_and_one_millisecond_more_is_stale"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "  if (Number.isFinite(observed)) return observed - activity > maxAgeMs;"
+new = "  // NON-VACUITY BREAK: observed_at ignored, age measured at run time"
 
 [[control]]
 id = "ci-failure-router-never-started-job-wakes"

@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 13);
+    assert_eq!(value["version"], 14);
     assert!(
         value["purpose"]
             .as_str()
@@ -547,6 +547,92 @@ fn stale_run_completion_sends_nothing() {
     t.ci(body);
 
     assert!(t.writes().is_empty());
+}
+
+fn set_host_clock(t: &Test, at: &str) {
+    let ms = at.parse::<jiff::Timestamp>().unwrap().as_millisecond();
+    t.host.mock.set_clock(ms as f64);
+}
+
+/// Built from a real outage: Plexus stored an item at 02:28:14Z, but the event
+/// bus only published it at 08:49:42Z. Plexus saw the completion within the
+/// six-hour window, so the publish delay must not make it stale.
+#[test]
+fn job_observed_promptly_wakes_after_a_long_publish_delay() {
+    let t = Test::new();
+    set_host_clock(&t, "2026-10-25T08:49:42Z");
+    let mut body = job("cortexkit/basal", 101);
+    body["completed_at"] = json!("2026-10-25T02:28:14Z");
+    body["observed_at"] = json!("2026-10-25T02:28:14.000Z");
+    t.ci(body);
+
+    let writes = t.writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["action"], "wake");
+}
+
+/// A rescan: Plexus first stored the completion more than six hours after it
+/// happened. It stays stale even though the run is only moments later.
+#[test]
+fn job_observed_long_after_completion_is_stale_even_when_published_promptly() {
+    let t = Test::new();
+    set_host_clock(&t, "2026-10-25T12:00:05Z");
+    let mut body = job("cortexkit/basal", 101);
+    body["completed_at"] = json!("2026-10-25T05:59:59Z");
+    body["observed_at"] = json!("2026-10-25T12:00:00.000Z");
+    t.ci(body);
+
+    assert!(t.writes().is_empty());
+    assert!(t.memory()["runs"].as_object().unwrap().is_empty());
+}
+
+/// Exactly six hours between completion and first observation is not stale;
+/// one millisecond more is. The run clock is well past both.
+#[test]
+fn observed_six_hour_boundary_wakes_and_one_millisecond_more_is_stale() {
+    let t = Test::new();
+    set_host_clock(&t, "2026-10-25T13:00:00Z");
+    let mut late = job("cortexkit/basal", 101);
+    late["completed_at"] = json!("2026-10-25T06:00:00Z");
+    late["observed_at"] = json!("2026-10-25T12:00:00.001Z");
+    t.ci(late);
+    assert!(t.writes().is_empty());
+
+    let mut boundary = job("cortexkit/basal", 102);
+    boundary["completed_at"] = json!("2026-10-25T06:00:00Z");
+    boundary["observed_at"] = json!("2026-10-25T12:00:00.000Z");
+    t.ci(boundary);
+    let writes = t.writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["action"], "wake");
+}
+
+/// Bodies Plexus stored before it added observed_at, or with an unreadable
+/// one, keep measuring age against the run's clock.
+#[test]
+fn missing_or_unparseable_observed_at_measures_completion_age_at_run_time() {
+    for observed in [None, Some(json!("not a time")), Some(json!(null))] {
+        let t = Test::new();
+        set_host_clock(&t, "2026-10-25T12:00:00Z");
+        let mut stale = job("cortexkit/basal", 101);
+        stale["completed_at"] = json!("2026-10-25T05:59:59Z");
+        if let Some(observed) = &observed {
+            stale["observed_at"] = observed.clone();
+        }
+        t.ci(stale);
+        assert!(t.writes().is_empty(), "stale with observed_at {observed:?}");
+
+        set_host_clock(&t, "2026-10-25T12:00:00Z");
+        let mut fresh = job("cortexkit/basal", 102);
+        fresh["completed_at"] = json!("2026-10-25T11:00:00Z");
+        if let Some(observed) = &observed {
+            fresh["observed_at"] = observed.clone();
+        }
+        t.ci(fresh);
+        let writes = t.writes();
+        assert_eq!(writes.len(), 1, "fresh with observed_at {observed:?}");
+        assert_eq!(writes[0]["action"], "wake");
+    }
 }
 
 #[test]

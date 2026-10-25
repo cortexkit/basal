@@ -147,6 +147,21 @@ function boundedDigest(title, body, fields, observed, links = []) {
   return item;
 }
 
+// Plexus rescans can republish old news long after it happened. Plexus stamps
+// observed_at when it first stores an item, so an item is stale when it
+// happened more than maxAgeMs before Plexus first saw it. A later delay before
+// the event is published (an event bus outage) never makes it stale; the
+// manifest's max_age separately limits how long a published event may wait.
+// Bodies stored before Plexus added observed_at fall back to the item's age
+// at run time. An unknown or unparseable activity time is never stale.
+function staleActivity(activityText, observedText, maxAgeMs) {
+  const activity = Date.parse(activityText);
+  if (!Number.isFinite(activity)) return false;
+  const observed = typeof observedText === 'string' ? Date.parse(observedText) : NaN;
+  if (Number.isFinite(observed)) return observed - activity > maxAgeMs;
+  return Date.now() - activity > maxAgeMs;
+}
+
 function bytes(text) {
   return text.replace(/[\u0080-\u07ff]|[\ud800-\udbff][\udc00-\udfff]|[\u0800-\uffff]/g,
     ch => ch.length === 2 ? 'xxxx' : ch.charCodeAt(0) <= 0x7ff ? 'xx' : 'xxx').length;
@@ -256,8 +271,7 @@ if (bytes(key) > 200 || /[\u0000-\u001f\u007f]/.test(key)) return drop('invalid_
 // Deliberate difference from core: drop rescan events older than six hours, as
 // the CI router does, and expose each drop in the comparison result. Core has
 // no corresponding deliverable-event cutoff (runtime.rs:904-915).
-const timestamp = Date.parse(body.completed_at ?? body.updated_at);
-if (Number.isFinite(timestamp) && Date.now() - timestamp > MAX_AGE_MS) return drop('stale');
+if (staleActivity(body.completed_at ?? body.updated_at, body.observed_at, MAX_AGE_MS)) return drop('stale');
 const memory = await kv.get('github-events') ?? { items: {}, unmapped: 0 };
 if (!owner) {
   memory.unmapped = Math.min(Number.MAX_SAFE_INTEGER, memory.unmapped + 1);
