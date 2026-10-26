@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
-        assert_eq!(PROTOCOL_VERSION, 12);
+        assert_eq!(PROTOCOL_VERSION, 13);
         // Checked at run time, not in a const block, so lowering the ceiling
         // fails this test instead of the build.
         let ceiling = std::hint::black_box(CODEMODE_ADDRESS_SPACE_BYTES);
@@ -321,8 +321,8 @@ mod tests {
     }
 
     fn confinement_payload(suffix: &[u8]) -> Vec<u8> {
-        // A version-12 Welcome with an empty engine name and two zero hashes.
-        let mut payload = vec![101, 0, 0, 0, 12, 0, 0, 0, 0];
+        // A version-13 Welcome with an empty engine name and two zero hashes.
+        let mut payload = vec![101, 0, 0, 0, 13, 0, 0, 0, 0];
         payload.extend_from_slice(&[0; 64]);
         payload.extend_from_slice(suffix);
         payload

@@ -208,16 +208,23 @@ impl DigestAction {
 pub enum SinkGrant {
     Digest(DigestGrant),
     Wait(WaitGrant),
+    Room(RoomGrant),
 }
 
 // Choose the variant by the presence of `kind` rather than trying each in
 // turn: an untagged attempt would replace a precise "unknown field" error in a
-// digest grant with serde's generic "did not match any variant".
+// digest grant with serde's generic "did not match any variant". A room grant
+// is picked by its kind so another kind never loses its own refusal to a room
+// field error.
 impl<'de> Deserialize<'de> for SinkGrant {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         let value = serde_json::Value::deserialize(deserializer)?;
-        if value.get("kind").is_some() {
+        if value["kind"] == "room" {
+            RoomGrant::deserialize(value)
+                .map(Self::Room)
+                .map_err(D::Error::custom)
+        } else if value.get("kind").is_some() {
             WaitGrant::deserialize(value)
                 .map(Self::Wait)
                 .map_err(D::Error::custom)
@@ -233,6 +240,28 @@ impl<'de> Deserialize<'de> for SinkGrant {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WaitGrant {
     Wait {},
+}
+
+/// One room the flow may post to, and the agent ids it may mention there.
+/// The room is named by its core room id and mentions by stable agent ids,
+/// never by a title or display name: the grant is approved as written, so it
+/// cannot depend on a name that may later belong to someone else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoomGrant {
+    /// Always `"room"`. It chooses this grant when the manifest is read and
+    /// is written back, so the stored manifest is the one that was approved.
+    pub kind: RoomTag,
+    pub room_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<String>,
+}
+
+/// The only `kind` a room grant may carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomTag {
+    Room,
 }
 
 /// An agent whose digest the flow may write, and the most intrusive action
@@ -613,6 +642,21 @@ fn agent_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')
 }
 
+/// A core room id: `rm_` followed by 1 to 67 characters of the shape core
+/// issues.
+pub(crate) fn check_room_id(field: &str, value: &str) -> Result<(), ManifestError> {
+    let Some(rest) = value.strip_prefix("rm_") else {
+        return Err(invalid(
+            field,
+            format!("{value:?} is not a room id (a room id starts with rm_)"),
+        ));
+    };
+    if rest.is_empty() || value.len() > 70 {
+        return Err(invalid(field, "a room id is rm_ and 1 to 67 characters"));
+    }
+    check_name(field, value, 70, agent_byte)
+}
+
 pub(crate) fn valid_status_label(value: &str) -> bool {
     (1..=4).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_uppercase())
 }
@@ -952,6 +996,7 @@ impl Manifest {
         if self.lists_op(basal_host::subc_catalog::CORE, "sink.wait_resolve") && !self.wait_sink() {
             return Err(invalid("sinks", "sink.wait_resolve requires a wait grant"));
         }
+        self.check_room_grants()?;
         for a in &self.status {
             check_sink("status", a)?;
         }
@@ -1023,6 +1068,45 @@ impl Manifest {
             check_list("facts.targets", facts.targets.iter().cloned())?;
         }
         self.check_host_grants()
+    }
+
+    /// A room post is authored by the flow's one agent, so the grant needs an
+    /// agent audience; core posts as that agent and refuses a flow with any
+    /// other audience. Rooms and mentions are stable ids, the same rule as
+    /// `audience.id`.
+    fn check_room_grants(&self) -> Result<(), ManifestError> {
+        let rooms: Vec<&RoomGrant> = self.room_sinks().collect();
+        if rooms.is_empty() {
+            if self.lists_op(basal_host::subc_catalog::CORE, "sink.room.post") {
+                return Err(invalid("sinks", "sink.room.post requires a room grant"));
+            }
+            return Ok(());
+        }
+        if !matches!(self.audience, Some(Audience::Agent { .. })) {
+            return Err(invalid(
+                "sinks.room_id",
+                "a room post needs the flow's own agent as its audience",
+            ));
+        }
+        let mut room_ids = Vec::new();
+        for room in rooms {
+            check_room_id("sinks.room_id", &room.room_id)?;
+            room_ids.push(room.room_id.clone());
+            check_list("sinks.mentions", room.mentions.iter().cloned())?;
+            for mention in &room.mentions {
+                if mention.starts_with('$') {
+                    return Err(invalid(
+                        "sinks.mentions",
+                        format!(
+                            "{mention:?} is a manifest placeholder; name the agent id to mention"
+                        ),
+                    ));
+                }
+                check_name("sinks.mentions", mention, MAX_NAME_BYTES, agent_byte)?;
+            }
+        }
+        check_list("sinks.room_id", room_ids.into_iter())?;
+        Ok(())
     }
 
     fn check_host_grants(&self) -> Result<(), ManifestError> {
@@ -1186,7 +1270,7 @@ impl Manifest {
     pub fn digest_sinks(&self) -> impl Iterator<Item = &DigestGrant> {
         self.sinks.iter().filter_map(|sink| match sink {
             SinkGrant::Digest(grant) => Some(grant),
-            SinkGrant::Wait(_) => None,
+            SinkGrant::Wait(_) | SinkGrant::Room(_) => None,
         })
     }
 
@@ -1194,6 +1278,22 @@ impl Manifest {
         self.sinks
             .iter()
             .any(|sink| matches!(sink, SinkGrant::Wait(_)))
+    }
+
+    pub fn room_sinks(&self) -> impl Iterator<Item = &RoomGrant> {
+        self.sinks.iter().filter_map(|sink| match sink {
+            SinkGrant::Room(grant) => Some(grant),
+            SinkGrant::Digest(_) | SinkGrant::Wait(_) => None,
+        })
+    }
+
+    /// The agent ids the flow may mention in `room_id`, or `None` when it has
+    /// no grant for that room. Widening mentions needs a new approved
+    /// version, so a call can never ask for more than this.
+    pub fn room_mentions(&self, room_id: &str) -> Option<&[String]> {
+        self.room_sinks()
+            .find(|room| room.room_id == room_id)
+            .map(|room| room.mentions.as_slice())
     }
 
     /// The scope the manifest grants a built-in call, or `None` when the

@@ -229,7 +229,10 @@ pub fn op_label(kind: &CallKind) -> String {
     match kind {
         CallKind::Op { module, op } | CallKind::OpFor { module, op } => format!("{module}.{op}"),
         CallKind::Primitive(
-            p @ (Primitive::SinkDigest | Primitive::SinkStatus | Primitive::SinkBoard),
+            p @ (Primitive::SinkDigest
+            | Primitive::SinkStatus
+            | Primitive::SinkBoard
+            | Primitive::SinkRoomPost),
         ) => {
             format!("{}.{}", subc_catalog::CORE, p.name())
         }

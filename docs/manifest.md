@@ -344,6 +344,36 @@ permissions. A manifest listing `prefrontal-core/sink.wait_resolve` in `ops`
 without the wait grant is invalid. JavaScript is not statically inspected;
 calling the sink without the grant is refused unsent at runtime.
 
+A room grant lets the flow post to one room through
+[`sink.room.post`](script.md#posting-to-a-room):
+
+```json
+{ "sinks": [
+    { "kind": "room", "room_id": "rm_fleet", "mentions": ["ag_other", "ag_test"] }
+] }
+```
+
+`room_id` is core's room id (it starts with `rm_`), never the room's title.
+`mentions` lists the stable agent ids the flow may mention in that room; it is
+optional, and an empty list is the same as leaving it out. Both are stable ids,
+the same rule as `audience.id`: a display name is refused at install and dry
+run with a message naming the id to use. One flow may grant several rooms, each
+once. The grant is independent of digest sinks, status, board lanes, waits and
+audience targets; it grants none of those permissions. Duplicate rooms, a room
+id that is not a core room id, a mention that is not an agent id or starts with
+`$` (placeholders belong in grants, not in mentions) are refused at install and
+dry run.
+
+A room post appears in the room as the flow's own agent, so the grant needs an
+audience of exactly one agent: `{"kind": "agent", "id": "ag_…"}`. A manifest
+with a room grant and no audience, a global one or a workspace one is refused at
+install and dry run, because core would refuse every post the flow makes. A
+manifest listing `prefrontal-core/sink.room.post` in `ops` without a room grant
+is invalid; a room grant needs no `ops` line, like the wait and board grants.
+Core also checks that the agent is still a member of the room, and posts carry
+core's per-flow, per-room rate limit. JavaScript is not statically inspected;
+calling the sink for a room without a grant is refused unsent at runtime.
+
 ### Board lane grant
 
 `"board": [{"agent": "SYNAPSE", "title": "Build work"}]` authorizes the flow to

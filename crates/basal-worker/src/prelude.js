@@ -27,7 +27,8 @@
     FS_LIST = 13, FS_STAT = 14, FS_WRITE = 15, GIT_LOG = 16, GIT_REV_PARSE = 17,
     GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21, INSTANCE_END = 24,
     SINK_BOARD = 25,
-    SINK_WAIT_RESOLVE = 26;
+    SINK_WAIT_RESOLVE = 26,
+    SINK_ROOM_POST = 28;
 
   const G = globalThis;
   const ObjectDefineProperty = Object.defineProperty;
@@ -49,6 +50,7 @@
   const WeakMapCtor = WeakMap;
   const weakMapGet = WeakMap.prototype.get;
   const weakMapSet = WeakMap.prototype.set;
+  const ArrayIsArray = Array.isArray;
   const SetCtor = Set;
   const arrayPush = Array.prototype.push;
   const NativeDate = Date;
@@ -278,6 +280,24 @@
     }
   }
 
+  // Copies the arguments the script passed as a plain array of strings. The
+  // journal stores these bytes, so an inherited or accessor property is never
+  // read; the parent and core still decide what each id may be.
+  function stringList(value, what) {
+    if (typeof value !== 'object' || !ArrayIsArray(value) || value.length > 64) {
+      throw new TypeErrorCtor(what + ' must be an array of at most 64 strings');
+    }
+    const items = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      if (typeof item !== 'string') {
+        throw new TypeErrorCtor(what + ' must be an array of strings');
+      }
+      ReflectApply(arrayPush, items, [item]);
+    }
+    return items;
+  }
+
   function digest(agent, item, action, options) {
     return callPrimitive(SINK_DIGEST, { agent, item, action, options });
   }
@@ -333,6 +353,29 @@
       wait: {
         resolve(outcome, note) {
           return callPrimitive(SINK_WAIT_RESOLVE, { outcome, note });
+        },
+      },
+      room: {
+        // Posts one message to a granted room. The script supplies the room,
+        // the text and at most who to mention; the parent adds the approved
+        // flow identity and the call's receipt key before anything is sent.
+        post(roomId, text, options) {
+          requireName(roomId, 'room_id');
+          if (typeof text !== 'string') {
+            throw new TypeErrorCtor('text must be a string');
+          }
+          let mentions = null;
+          if (options !== undefined && options !== null) {
+            if (typeof options !== 'object') {
+              throw new TypeErrorCtor('post options must contain only mentions');
+            }
+            const keys = ObjectKeys(options);
+            if (keys.length !== 1 || keys[0] !== 'mentions') {
+              throw new TypeErrorCtor('post options must contain only mentions');
+            }
+            mentions = stringList(options.mentions, 'mentions');
+          }
+          return callPrimitive(SINK_ROOM_POST, { room_id: roomId, text, mentions });
         },
       },
     },

@@ -243,6 +243,7 @@ impl RoutingHost {
                 | Primitive::SinkStatus
                 | Primitive::SinkBoard
                 | Primitive::SinkWaitResolve
+                | Primitive::SinkRoomPost
                 | Primitive::Facts,
             ) => self.core.as_ref(),
             CallKind::Primitive(p) if p.is_builtin() => self.builtins.as_ref(),
@@ -290,6 +291,7 @@ impl Host for RoutingHost {
                     | Primitive::SinkStatus
                     | Primitive::SinkBoard
                     | Primitive::SinkWaitResolve
+                    | Primitive::SinkRoomPost
                     | Primitive::Facts
             )
         {

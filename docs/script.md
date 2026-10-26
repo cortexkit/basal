@@ -185,6 +185,58 @@ item: its owner must update the item. Core owns the consent card's `Waits` fact
 (“Can mark your board waits on this flow as met or failed”) and the terminal wait
 markers, including `ended_without_resolving` when a flow ends without resolving.
 
+## Posting to a room
+
+`sink.room.post(room_id, text, {mentions})` posts one message to a room the
+manifest grants. The room is named by core's room id, and `mentions` is an
+optional array of at most 32 stable agent ids the grant approves for that room:
+
+```js
+const { room_id, seq, replayed } = await sink.room.post(
+  'rm_fleet', 'Boat spend: $12\nDaily total', { mentions: ['ag_other'] });
+```
+
+The post appears in the room as the flow's own agent, attributed to the flow.
+`text` is 1 to 2000 UTF-8 bytes with no control characters other than newline.
+A post may never mention all members: text containing `@all` (in any case) is
+refused unsent, and there is no way to ask for an urgent post. Scripts cannot
+supply the author, the flow identity, version or code hash, or the receipt key.
+The reply is core's `{room_id, seq, replayed}`, where `seq` is the sequence
+number of the room event the post created.
+
+Grant rooms with `"sinks": [{"kind":"room","room_id":"rm_fleet","mentions":["ag_other"]}]`,
+and only in a flow whose audience is exactly one agent, as
+[the manifest rules](manifest.md#sink-grant) describe. Basal journals the
+approved install stamp, room, text and mentions before sending
+`sink.room.post` through its daemon-attested core carrier, and uses the
+journal's `bk1-…` idempotency key as `receipt_key`. A retry, including one after
+a crash before the reply was recorded, reuses the frozen request and that key;
+core answers a recorded key with `replayed: true` and the original `seq`
+instead of posting twice. Core must advertise `flow-room-post/v1`; without it,
+a post is refused unsent with `room_post_unsupported`.
+
+Refusals reach the script as `error.data.code`:
+
+- `sink_flow_not_installed`, `sink_flow_hash_mismatch` and `sink_principal_refused`:
+  the install or the carrier is not what core approved.
+- `room_post_requires_agent_flow`, `room_author_not_member`, `room_not_granted`
+  and `room_mention_not_granted`: core's own checks of the audience, membership
+  and grant, which basal also makes before sending.
+- `room_not_found` and `room_closed`: the room is gone or adjourned.
+- `text_invalid`, `room_all_mention_refused`, `receipt_mismatch` and
+  `sink_item_invalid`: the post itself is not something core accepts.
+- `room_post_rate_limited`: core allows 4 posts per rolling hour and 24 per day
+  for each flow and room. It is a final refusal, not a queue: the call fails
+  with `error.data.detail.retry_after_ms`, and a refused post is never sent
+  again automatically. A flow that wants to post again after the window must
+  make a new call, in a later run.
+
+`sink_store_failed` is the one retryable room refusal: core refused it before
+recording the key, so basal defers the call with bounded backoff under the same
+receipt, up to the run deadline, and a lost grant or an expired call records the
+typed unsent refusal. Capture and live dry runs record that the flow would post,
+with the room and any mentions, and never send the post.
+
 ## Board lanes
 
 `sink.board` writes only the flow's own lane on an agent's board:

@@ -1,0 +1,258 @@
+[
+  {
+    "name": "success",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "receipt_replay",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "receipt_mismatch",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Different payload"
+    }
+  },
+  {
+    "name": "room_not_granted",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "room_mention_not_granted",
+    "params": {
+      "mentions": [
+        "ag_unapproved"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "room_all_mention_refused",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Hello @all"
+    }
+  },
+  {
+    "name": "room_post_requires_agent_flow",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "room_author_not_member",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "room_not_found",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "room_closed",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "text_invalid",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": ""
+    }
+  },
+  {
+    "name": "sink_principal_refused",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "sink_flow_hash_mismatch",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "sink_flow_not_installed",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 2
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "room_post_rate_limited",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "storage_failure",
+    "params": {
+      "mentions": [
+        "ag_other"
+      ],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  }
+]

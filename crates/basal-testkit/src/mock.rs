@@ -167,6 +167,14 @@ impl ScriptHost {
                 | Primitive::SinkWaitResolve => {
                     ready(Settlement::Fulfilled, text(&json!({"accepted": true})))
                 }
+                Primitive::SinkRoomPost => ready(
+                    Settlement::Fulfilled,
+                    text(&json!({
+                        "room_id": args.get("room_id"),
+                        "seq": 1,
+                        "replayed": false,
+                    })),
+                ),
                 Primitive::KvGet => ready(Settlement::Fulfilled, JsonText::null()),
                 Primitive::KvSet | Primitive::KvDelete => {
                     ready(Settlement::Fulfilled, text(&json!(true)))

@@ -77,6 +77,49 @@ pub mod codes {
     /// The refusal code when a script names a manifest placeholder such as
     /// `$audience` as a call's recipient instead of a concrete agent.
     pub const SINK_TARGET_PLACEHOLDER: &str = "sink_target_placeholder";
+    pub const ROOM_POST_UNSUPPORTED: &str = "room_post_unsupported";
+    pub const ROOM_NOT_GRANTED: &str = "room_not_granted";
+    pub const ROOM_MENTION_NOT_GRANTED: &str = "room_mention_not_granted";
+    /// A room post the script built wrong: no room id, no text, text core
+    /// would not accept, or mentions that are not a list of agent ids.
+    /// Malformed mentions could name a member basal cannot check, which is
+    /// why they are refused here rather than sent for core to judge.
+    pub const ROOM_POST_INVALID: &str = "sink_item_invalid";
+    pub const ROOM_ALL_MENTION_REFUSED: &str = "room_all_mention_refused";
+}
+
+/// The most members one post may mention.
+pub const MAX_ROOM_MENTIONS: usize = 32;
+/// The bytes one room post may carry, as core accepts them.
+pub const MAX_ROOM_TEXT_BYTES: usize = 2000;
+/// Told to the script when its text is not something core would accept.
+pub const ROOM_TEXT_RULE: &str = "a room post is 1 to 2000 UTF-8 bytes without control characters other than newline";
+
+/// Whether core would accept this as post text: at least one byte, at most
+/// [`MAX_ROOM_TEXT_BYTES`], and only newline among the control characters.
+pub fn valid_room_text(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= MAX_ROOM_TEXT_BYTES
+        && !text
+            .chars()
+            .any(|c| c.is_control() && c != '\n')
+}
+
+/// Whether the text asks to mention every member with `@all`, which a flow
+/// may never do. Core also refuses it, as `room_all_mention_refused`; basal
+/// checks first so a live run never posts and a preview says the same.
+pub fn mentions_all_members(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("@all")
+}
+
+/// Whether an id is a stable agent id: the agent name alphabet agent ids are
+/// drawn from, so a display name with a space in it cannot pass as one.
+pub fn valid_mention_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= basal_proto::MAX_NAME_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
 /// The module ops a flow may never call, even when its manifest lists
@@ -167,6 +210,7 @@ pub fn placeholder_target(
                 | Primitive::SinkStatus
                 | Primitive::SinkBoard
                 | Primitive::SinkWaitResolve
+                | Primitive::SinkRoomPost
                 | Primitive::Facts
         )
     ) {
@@ -459,6 +503,82 @@ pub fn check(
                         "wait resolution needs met or failed and an optional note of at most 500 UTF-8 bytes without control characters",
                     ))
                 }
+            }
+            Primitive::SinkRoomPost => {
+                // The script supplies only these three; identity, receipt and
+                // the approved stamp are added after this check, so a payload
+                // carrying them is a call basal did not build.
+                let valid = args.as_object().is_some_and(|object| {
+                    object.keys().all(|key| {
+                        matches!(key.as_str(), "room_id" | "text" | "mentions")
+                    })
+                });
+                if !valid {
+                    return Err(Refusal::new(
+                        codes::ROOM_POST_INVALID,
+                        "a room post carries only a room id, text and mentions",
+                    ));
+                }
+                let Some(text) = args["text"].as_str() else {
+                    return Err(Refusal::new(
+                        codes::ROOM_POST_INVALID,
+                        "a room post needs a room id and text",
+                    ));
+                };
+                let Some(allowed) = args["room_id"]
+                    .as_str()
+                    .and_then(|room_id| manifest.room_mentions(room_id))
+                else {
+                    return Err(Refusal::new(
+                        codes::ROOM_NOT_GRANTED,
+                        "the manifest grants no room with that id",
+                    ));
+                };
+                if !valid_room_text(text) {
+                    return Err(Refusal::new(codes::ROOM_POST_INVALID, ROOM_TEXT_RULE));
+                }
+                // The room's members see the mention, so writing every member
+                // is never a thing a flow may ask core for.
+                if mentions_all_members(text) {
+                    return Err(Refusal::new(
+                        codes::ROOM_ALL_MENTION_REFUSED,
+                        "a flow cannot mention every member of a room",
+                    ));
+                }
+                let Some(mentions) = args.get("mentions") else {
+                    return Err(Refusal::new(
+                        codes::ROOM_POST_INVALID,
+                        "mentions must be a list of agent ids",
+                    ));
+                };
+                if mentions.is_null() {
+                    return Ok(());
+                }
+                let listed = mentions
+                    .as_array()
+                    .filter(|listed| listed.len() <= MAX_ROOM_MENTIONS)
+                    .filter(|listed| {
+                        listed
+                            .iter()
+                            .all(|id| id.as_str().is_some_and(valid_mention_id))
+                    });
+                let Some(listed) = listed else {
+                    return Err(Refusal::new(
+                        codes::ROOM_POST_INVALID,
+                        "mentions must be a list of agent ids",
+                    ));
+                };
+                for id in listed {
+                    if !allowed.iter().any(|approved| Some(approved.as_str()) == id.as_str()) {
+                        return Err(Refusal::new(
+                            codes::ROOM_MENTION_NOT_GRANTED,
+                            format!(
+                                "{id} is not an agent id the manifest approves for mentioning in that room"
+                            ),
+                        ));
+                    }
+                }
+                Ok(())
             }
             Primitive::SinkBoard => {
                 let agent = agent_arg(args, *p)?;
