@@ -99,7 +99,19 @@ async fn broca_run_ended_commits_a_wake_before_its_ack_and_other_events_are_only
 
     let rt = runtime(&path);
     let mut consumer = bind(&server.bus, STREAM).await.unwrap();
-    let redelivery = pull(&consumer).await.unwrap();
+    // Each unacknowledged notice comes back once its own ack wait expires, so
+    // on a slow runner one pull can return only part of them. Keep pulling
+    // until all three are back; the deadline only stops a hang.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut redelivery = Vec::new();
+    while redelivery.len() < 3 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "only {} of 3 notices redelivered",
+            redelivery.len()
+        );
+        redelivery.extend(pull(&consumer).await.unwrap());
+    }
     assert_eq!(redelivery.len(), 3);
     assert!(redelivery[0].info().unwrap().delivered >= 2);
     commit_batch(rt.clone(), &redelivery, true).await.unwrap();
