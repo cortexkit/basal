@@ -147,6 +147,10 @@ struct Shared {
     before_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     before_reader_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Called by a driver after it handled the worker's `Blocked` frame, so a
+    /// test can send frames that must follow that handling.
+    #[cfg(test)]
+    after_block: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Called by a driver just before it blocks waiting for its next event.
     #[cfg(test)]
     before_wait: Mutex<Option<ParkedHook>>,
@@ -267,6 +271,8 @@ impl Supervisor {
             before_exit: Mutex::new(None),
             #[cfg(test)]
             before_reader_exit: Mutex::new(None),
+            #[cfg(test)]
+            after_block: Mutex::new(None),
             #[cfg(test)]
             before_wait: Mutex::new(None),
             #[cfg(test)]
@@ -867,8 +873,13 @@ impl Driver {
         let sleep = self.sleeps.first().map_or(i64::MAX, |(due, _)| {
             due.saturating_sub(self.shared.clock.now_ms())
         });
-        let remaining = deadline.min(sleep).max(0);
-        let wait = Duration::from_millis(remaining as u64);
+        let remaining = deadline.min(sleep);
+        // A wait of zero means something is due, but a countdown that reaches
+        // zero does not: `wall` decides the deadline after adding the
+        // person-wait allowance back, so nothing may actually be due. A
+        // zero-length receive returns at once without blocking on the events,
+        // so the driver needs this floor to keep waiting either way.
+        let wait = Duration::from_millis(remaining.max(1) as u64);
         #[cfg(test)]
         {
             let hook = self.shared.before_wait.lock().unwrap().clone();
@@ -1399,7 +1410,14 @@ impl Driver {
                 "engine_error",
                 "worker called after reporting completion",
             )),
-            WorkerMessage::Blocked { .. } => Ok(()), // Keep this worker alive until a provider reply can settle its promises.
+            WorkerMessage::Blocked { .. } => {
+                #[cfg(test)]
+                if let Some(hook) = self.shared.after_block.lock().unwrap().clone() {
+                    hook();
+                }
+                // Keep this worker alive until a provider reply can settle its promises.
+                Ok(())
+            }
             WorkerMessage::Finished {
                 activation_id: 1,
                 result,

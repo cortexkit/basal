@@ -2107,6 +2107,15 @@ impl Fixture {
         }
     }
 
+    /// Reports once the driver has handled the worker's next `Blocked` frame.
+    fn block_handled(&self) -> mpsc::Receiver<()> {
+        let (handled, reports) = mpsc::channel();
+        *self.supervisor.0.after_block.lock().unwrap() = Some(Arc::new(move || {
+            let _ = handled.send(());
+        }));
+        reports
+    }
+
     /// Reports every time the driver is about to block for its next event.
     fn parked(&self) -> mpsc::Receiver<Parked> {
         let (parked, reports) = mpsc::channel();
@@ -2478,9 +2487,15 @@ impl Fixture {
         self.parent.recv_timeout(TIMEOUT).unwrap();
         self.issue(0, "read", json!(null));
         let call = self.attempt();
+        // The provider's answer is sent only after the driver has handled the
+        // program's block, so a run this test moves past its wall deadline is
+        // ended by the hold it knows the program waits on, never by the interval
+        // before the worker reported that wait.
+        let handled = self.block_handled();
         self.worker
             .send(WorkerMessage::Blocked { awaiting: vec![0] })
             .unwrap();
+        handled.recv_timeout(TIMEOUT).unwrap();
         call.reply.send(Ok(reply)).unwrap();
         // The driver starts late-result intake only after it has handled the
         // reply as held, so the first pull shows that handling is done.
@@ -2583,6 +2598,8 @@ fn running_hold_delivers_its_late_result_without_counting_as_a_person_wait() {
 fn consent_hold_pauses_the_wall_clock_and_spends_the_person_allowance() {
     let f = Fixture::new();
     let (call, pull) = f.provider_held_with(held_reply(), 10_100);
+    // The person's wait carries the clock past the run's wall deadline while
+    // the call is held.
     f.clock.set(20_100);
     pull.reply.send(Ok(late_page("i1", 1, vec![late_entry(&call.key, "e1", json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}))]))).unwrap();
     assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
