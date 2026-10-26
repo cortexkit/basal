@@ -787,16 +787,14 @@ fn module_and_op_are_nonempty_strings_with_a_128_byte_cap() {
 
 #[test]
 fn model_name_collisions_drop_both_the_provider_and_builtin() {
-    for name in ["model"] {
-        let resolved =
-            super::super::models::add_catalog(&json!([entry(name), entry("good")])).unwrap();
-        let catalog = catalog(&resolved, &[]).unwrap();
-        assert!(!catalog.tools.contains_key(name));
-        assert!(catalog.tools.contains_key("good"));
-        assert_eq!(catalog.unavailable[name].reason, "duplicate tool name");
-        assert_eq!(catalog.warnings.len(), 1);
-        assert_eq!(catalog.warnings[0]["tool"], name);
-    }
+    let name = "model";
+    let resolved = super::super::models::add_catalog(&json!([entry(name), entry("good")])).unwrap();
+    let catalog = catalog(&resolved, &[]).unwrap();
+    assert!(!catalog.tools.contains_key(name));
+    assert!(catalog.tools.contains_key("good"));
+    assert_eq!(catalog.unavailable[name].reason, "duplicate tool name");
+    assert_eq!(catalog.warnings.len(), 1);
+    assert_eq!(catalog.warnings[0]["tool"], name);
 }
 
 #[test]
