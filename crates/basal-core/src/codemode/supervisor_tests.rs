@@ -2070,33 +2070,58 @@ impl Fixture {
     fn wakes(&self) -> usize {
         self.supervisor.0.wakes.load(Ordering::SeqCst)
     }
+
+    /// Sends a console line and waits until the driver has stored it. The
+    /// worker's frames reach the driver one at a time, so every frame sent
+    /// before this line has been processed once it returns.
+    fn console_handshake(&self, line: &str) {
+        self.worker
+            .send(WorkerMessage::Console { line: line.into() })
+            .unwrap();
+        let until = Instant::now() + TIMEOUT;
+        while !self.supervisor.result("r").unwrap().unwrap()["output"]
+            .as_str()
+            .is_some_and(|output| output.ends_with(line))
+        {
+            assert!(Instant::now() < until, "the console line was not stored");
+            thread::yield_now();
+        }
+    }
+
+    /// Reports every time the driver is about to block for its next event.
+    fn parked(&self) -> mpsc::Receiver<Parked> {
+        let (parked, reports) = mpsc::channel();
+        *self.supervisor.0.before_wait.lock().unwrap() = Some(Arc::new(move |state: &Parked| {
+            let _ = parked.send(*state);
+        }));
+        reports
+    }
 }
 
 #[test]
 fn a_run_waiting_on_a_held_tool_sleeps_until_the_answer_wakes_it() {
     let f = Fixture::new();
+    let parked = f.parked();
     let held = f.held_far_from_its_deadline();
-    // The worker's frames reach the driver one at a time, so once this line
-    // is stored the driver has finished with the call and counted the wake
-    // that brought the line. Nothing else is due before the answer.
-    f.worker
-        .send(WorkerMessage::Console {
-            line: "idle\n".into(),
-        })
-        .unwrap();
-    let until = Instant::now() + TIMEOUT;
-    while f.supervisor.result("r").unwrap().unwrap()["output"] != "idle\n" {
-        assert!(Instant::now() < until, "the console line was not stored");
-        thread::yield_now();
-    }
+    // Once the console line is stored, the driver has processed that console
+    // event and counted its wake. Nothing else is due before the answer.
+    f.console_handshake("idle\n");
     let idle = f.wakes();
-    // Give a driver that polls on a timer time to wake. The assertion is on
-    // the wake count, not on how long anything took.
-    thread::sleep(Duration::from_millis(250));
+    // The driver reports how long it will block before every wait. The wait
+    // that follows the `idle`-th wake must run all the way to the wall
+    // deadline: a driver polling on a timer would block for less.
+    let wait = loop {
+        let report = parked
+            .recv_timeout(TIMEOUT)
+            .expect("the driver did not go back to waiting after the console line");
+        if report.wakes == idle {
+            break report.wait;
+        }
+    };
     assert_eq!(
-        f.wakes(),
-        idle,
-        "the driver woke while the provider was held"
+        wait,
+        Duration::from_millis((FAR_DEADLINE - 100) as u64),
+        "the driver must sleep until its deadline while the provider is held"
     );
     held.reply.send(Ok(json!(1))).unwrap();
     assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
@@ -2438,12 +2463,15 @@ impl Fixture {
             .send(WorkerMessage::Blocked { awaiting: vec![0] })
             .unwrap();
         call.reply.send(Ok(reply)).unwrap();
-        assert!(
-            self.parent.recv_timeout(Duration::from_millis(75)).is_err(),
-            "a held reply must not settle the program's await"
-        );
+        // The driver starts late-result intake only after it has handled the
+        // reply as held, so the first pull shows that handling is done.
         let pull = self.custody_attempt("late_results");
         assert_eq!(pull.input["since"], Value::Null);
+        assert!(
+            matches!(self.parent.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "a held reply must not settle the program's await"
+        );
+        assert_eq!(self.calls()[0].outcome, Outcome::Pending);
         (call, pull)
     }
 }
@@ -2711,10 +2739,15 @@ fn no_late_results_traffic_without_a_provider_held_reply() {
     f.worker
         .send(WorkerMessage::Blocked { awaiting: vec![0] })
         .unwrap();
+    f.console_handshake("blocked\n");
     assert!(
-        f.custody_attempts
-            .recv_timeout(Duration::from_millis(75))
-            .is_err()
+        !f.supervisor.0.custody.has_held("codemode:r", "notes"),
+        "blocking on a call must not put it in custody"
+    );
+    assert_eq!(
+        f.host.custody_count.load(Ordering::SeqCst),
+        0,
+        "a blocked program without a held reply made custody requests"
     );
     call.reply.send(Ok(json!(123))).unwrap();
     f.delivery();

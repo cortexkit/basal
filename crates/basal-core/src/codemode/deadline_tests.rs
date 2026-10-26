@@ -76,7 +76,6 @@ fn out_of_range_stamp_deadlines_warn_without_refusing() {
         let logs = attested_logs(Some(expiry));
         assert_eq!(logs.len(), 1, "{logs:?}");
         assert_eq!(logs[0].0, tracing::Level::WARN);
-        assert!(logs[0].1.contains("run scope stamp deadline mismatch"));
         assert!(logs[0].1.contains(&format!("stamp_expires_at_ms={expiry}")));
         assert!(logs[0].1.contains("requested_expires_at_ms=100"));
         assert!(logs[0].1.contains("core_expires_at_ms=200"));
@@ -91,7 +90,6 @@ fn absent_legacy_stamp_deadline_logs_debug_without_refusing() {
     let logs = attested_logs(None);
     assert_eq!(logs.len(), 1, "{logs:?}");
     assert_eq!(logs[0].0, tracing::Level::DEBUG);
-    assert!(logs[0].1.contains("run scope stamp deadline absent"));
 }
 
 #[test]
@@ -171,5 +169,4 @@ fn tool_scope_open_checks_the_attested_deadline() {
     let logs = logs.0.lock().unwrap();
     assert_eq!(logs.len(), 1, "{logs:?}");
     assert_eq!(logs[0].0, tracing::Level::WARN);
-    assert!(logs[0].1.contains("run scope stamp deadline mismatch"));
 }

@@ -107,6 +107,7 @@ fn transient_pull_failure_keeps_the_run_live_and_withdrawable() {
 #[test]
 fn final_run_completion_waits_for_a_successful_late_ack() {
     let f = Fixture::new();
+    let parked = f.parked();
     let (call, pull) = f.provider_held();
     pull.reply
         .send(Ok(late_page(
@@ -122,16 +123,20 @@ fn final_run_completion_waits_for_a_successful_late_ack() {
     f.delivery();
     let ack = f.custody_attempt("late_results.ack");
     f.finish("1");
-    assert!(
-        f.supervisor
-            .wait("r", Duration::from_millis(50))
-            .unwrap()
-            .is_none(),
-        "the run route must survive until page acknowledgement"
-    );
+    // The driver has taken the program's result but must keep waiting while
+    // the page is unacknowledged. Wait for it to block in exactly that state.
+    loop {
+        let report = parked
+            .recv_timeout(TIMEOUT)
+            .expect("the driver did not wait for the page acknowledgement");
+        if report.completion_pending {
+            break;
+        }
+    }
     assert_eq!(
         f.supervisor.result("r").unwrap().unwrap()["status"],
-        "running"
+        "running",
+        "the run route must survive until page acknowledgement"
     );
     ack.reply
         .send(Err(WireError::TimedOut("lost ack".into())))

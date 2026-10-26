@@ -215,13 +215,38 @@ impl Drop for Fixture {
 
 #[test]
 fn completed_thread_handles_are_reaped_during_normal_spawning() {
+    const JOBS: usize = 32;
+    // Generous deadlock watchdog only; the test never waits on wall-clock
+    // time to decide whether the jobs have run.
+    const WATCHDOG: Duration = Duration::from_secs(30);
     let f = Fixture::new(100);
-    for _ in 0..32 {
-        f.rt.spawn(|| {});
+    // The jobs block on `release` until all have been spawned, so none can
+    // finish early, then each reports through `done` that its body returned.
+    let release = Arc::new(std::sync::Barrier::new(JOBS + 1));
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    for job in 0..JOBS {
+        let release = release.clone();
+        let done_tx = done_tx.clone();
+        f.rt.spawn(move || {
+            release.wait();
+            done_tx.send(job).unwrap();
+        });
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
+    assert!(
+        lock(&f.rt.shared.threads).len() >= JOBS,
+        "running handles were dropped"
+    );
+    release.wait();
+    for _ in 0..JOBS {
+        done_rx
+            .recv_timeout(WATCHDOG)
+            .expect("a dispatch job did not report completion");
+    }
+    // A job's body has returned, but its thread finishes just after that;
+    // wait for every handle to report finished before provoking the reap.
+    let deadline = Instant::now() + WATCHDOG;
     while lock(&f.rt.shared.threads).iter().any(|h| !h.is_finished()) {
-        assert!(Instant::now() < deadline, "dispatch threads did not finish");
+        assert!(Instant::now() < deadline, "dispatch threads did not exit");
         thread::yield_now();
     }
     f.rt.spawn(|| {});

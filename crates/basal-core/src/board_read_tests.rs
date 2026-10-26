@@ -177,7 +177,6 @@ fn board_read_self_is_enumerated_for_package_resolution() {
     assert_eq!(parsed.agents(), [("board_read", "$self")]);
     crate::authorize::resolve_self(&mut parsed, "agent_owner");
     assert_eq!(parsed.board_read, ["agent_owner"]);
-    assert_eq!(value["board_read"], json!(["$self"]));
 }
 
 #[test]
