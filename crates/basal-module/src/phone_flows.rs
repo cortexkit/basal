@@ -513,7 +513,10 @@ mod tests {
 
     #[test]
     fn list_failure_line_is_one_line_and_cut_with_an_ellipsis() {
-        assert_eq!(failure_line("HostError: no\n    at run"), "HostError: no at run");
+        assert_eq!(
+            failure_line("HostError: no\n    at run"),
+            "HostError: no at run"
+        );
         let exact = "é".repeat(FAILURE_LINE_CHARS);
         assert_eq!(failure_line(&exact), exact);
         let cut = failure_line(&format!("{exact}x"));

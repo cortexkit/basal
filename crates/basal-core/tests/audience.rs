@@ -208,10 +208,7 @@ fn audience_writes_check_declared_sink_kind_not_recipient() {
 
 #[test]
 fn placeholder_recipients_are_refused_for_every_targeted_call() {
-    let workspace = parse(&manifest(Some(
-        json!({"kind":"workspace","id":"team"}),
-    )))
-    .unwrap();
+    let workspace = parse(&manifest(Some(json!({"kind":"workspace","id":"team"})))).unwrap();
     let agent = parse(&manifest(Some(json!({"kind":"agent","id":"agent_cloud"})))).unwrap();
     let plain = parse(&manifest(None)).unwrap();
     for kind in [
@@ -241,7 +238,11 @@ fn placeholder_recipients_are_refused_for_every_targeted_call() {
                 )
             );
         }
-        for args in [json!({"agent":"agent_cloud"}), json!({"agent":"SYNAPSE"}), json!({})] {
+        for args in [
+            json!({"agent":"agent_cloud"}),
+            json!({"agent":"SYNAPSE"}),
+            json!({}),
+        ] {
             authorize::placeholder_target(&agent, &kind, &args).unwrap();
         }
     }

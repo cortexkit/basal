@@ -304,8 +304,7 @@ pub(super) fn summary(action: &str, result: &Value) -> String {
             .map(|flow| {
                 let run = &flow["last_run"];
                 let last = if run.is_object() {
-                    let mut last =
-                        format!("{} ({})", field(run, "state"), field(run, "run_id"));
+                    let mut last = format!("{} ({})", field(run, "state"), field(run, "run_id"));
                     // `flow.list` sets `error_kind` only for runs that did
                     // not succeed; a successful run's line stays as it was.
                     if let Some(kind) = run["error_kind"].as_str() {

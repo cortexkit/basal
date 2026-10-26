@@ -314,3 +314,48 @@ fn list_declined_card_and_reconciliation() {
     assert_eq!(raw["flows"][1]["needs_reconcile"], true);
     assert!(raw["flows"][1]["last_run"].is_null());
 }
+
+/// A flow whose last run failed shows why: the error kind and the stored
+/// detail flattened to one line, cut to 200 characters with an ellipsis.
+#[test]
+fn list_last_run_carries_the_failure_on_one_bounded_line() {
+    let f = populated("list-failure");
+    let detail = format!(
+        "HostError: flow a: target $audience is not in audience\n    at run (flow.js:3)\n{}",
+        "x".repeat(300)
+    );
+    f.module
+        .rt
+        .store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at,ended_at,admit_seq,error_kind,error_detail)
+                 VALUES ('run-failed','a','run-failed',1,'{}','return 1;','{}',zeroblob(32),'failed',?1,?2,1,'script',?3)",
+                rusqlite::params![T0, T0 + 5, detail],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let raw = list(&f, &agent("A"), json!({}));
+    let last = &raw["flows"][0]["last_run"];
+    assert_eq!(last["run_id"], "run-failed");
+    assert_eq!(last["state"], "failed");
+    assert_eq!(last["ended_at"], T0 + 5);
+    assert_eq!(last["error_kind"], "script");
+    let error = last["error"].as_str().expect("error line");
+    assert!(
+        error.starts_with(
+            "HostError: flow a: target $audience is not in audience at run (flow.js:3) xxx"
+        ),
+        "{error}"
+    );
+    assert_eq!(error.chars().count(), 200, "{error}");
+    assert!(error.ends_with('…'), "{error}");
+    let doc = include_str!("../../../docs/ops.md");
+    let section = doc
+        .split("Reply (machine-checked by `list_contract`):\n```json\n")
+        .nth(1)
+        .expect("documented reply");
+    let shape: Value = serde_json::from_str(section.split("\n```").next().unwrap()).unwrap();
+    matches_shape(&raw, &shape, false);
+}
