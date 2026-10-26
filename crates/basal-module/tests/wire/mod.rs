@@ -214,6 +214,11 @@ impl Fake {
                 Some("append") => json!({"lane_id":"virtual:flow:host-flow","item_id":"item_1"}),
                 _ => json!({"ok":true}),
             }),
+            "sink.room.post" => Ok(json!({
+                "room_id": params["room_id"],
+                "seq": 3,
+                "replayed": false,
+            })),
             "sink.status" => Ok(
                 json!({"disposition":"published","accepted_revision":params["revision"],"segment":"flow:host-flow","scope":"session:ses-author","replayed":false}),
             ),

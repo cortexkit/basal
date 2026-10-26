@@ -1,0 +1,134 @@
+[
+  {
+    "name": "success",
+    "reply": {
+      "result": {
+        "replayed": false,
+        "room_id": "rm_fleet",
+        "seq": 3
+      }
+    }
+  },
+  {
+    "name": "receipt_replay",
+    "reply": {
+      "result": {
+        "replayed": true,
+        "room_id": "rm_fleet",
+        "seq": 3
+      }
+    }
+  },
+  {
+    "name": "receipt_mismatch",
+    "reply": {
+      "error": {
+        "code": "receipt_mismatch"
+      }
+    }
+  },
+  {
+    "name": "room_not_granted",
+    "reply": {
+      "error": {
+        "code": "room_not_granted"
+      }
+    }
+  },
+  {
+    "name": "room_mention_not_granted",
+    "reply": {
+      "error": {
+        "code": "room_mention_not_granted"
+      }
+    }
+  },
+  {
+    "name": "room_all_mention_refused",
+    "reply": {
+      "error": {
+        "code": "room_all_mention_refused"
+      }
+    }
+  },
+  {
+    "name": "room_post_requires_agent_flow",
+    "reply": {
+      "error": {
+        "code": "room_post_requires_agent_flow"
+      }
+    }
+  },
+  {
+    "name": "room_author_not_member",
+    "reply": {
+      "error": {
+        "code": "room_author_not_member"
+      }
+    }
+  },
+  {
+    "name": "room_not_found",
+    "reply": {
+      "error": {
+        "code": "room_not_found"
+      }
+    }
+  },
+  {
+    "name": "room_closed",
+    "reply": {
+      "error": {
+        "code": "room_closed"
+      }
+    }
+  },
+  {
+    "name": "text_invalid",
+    "reply": {
+      "error": {
+        "code": "text_invalid"
+      }
+    }
+  },
+  {
+    "name": "sink_principal_refused",
+    "reply": {
+      "error": {
+        "code": "sink_principal_refused"
+      }
+    }
+  },
+  {
+    "name": "sink_flow_hash_mismatch",
+    "reply": {
+      "error": {
+        "code": "sink_flow_hash_mismatch"
+      }
+    }
+  },
+  {
+    "name": "sink_flow_not_installed",
+    "reply": {
+      "error": {
+        "code": "sink_flow_not_installed"
+      }
+    }
+  },
+  {
+    "name": "room_post_rate_limited",
+    "reply": {
+      "error": {
+        "code": "room_post_rate_limited"
+      }
+    }
+  },
+  {
+    "name": "storage_failure",
+    "reply": {
+      "error": {
+        "code": "sink_store_failed"
+      }
+    }
+  }
+]

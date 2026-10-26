@@ -1,0 +1,439 @@
+[
+  {
+    "name": "success",
+    "precondition": "Default fixture.",
+    "reply": {
+      "result": {
+        "replayed": false,
+        "room_id": "rm_fleet",
+        "seq": 3
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "receipt_replay",
+    "precondition": "The original success request has already committed.",
+    "reply": {
+      "result": {
+        "replayed": true,
+        "room_id": "rm_fleet",
+        "seq": 3
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "receipt_mismatch",
+    "precondition": "The original success request has already committed.",
+    "reply": {
+      "error": {
+        "code": "receipt_mismatch",
+        "message": "This receipt key was already used for a different request."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Different payload"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "room_not_granted",
+    "precondition": "The approved manifest contains no room sink.",
+    "reply": {
+      "error": {
+        "code": "room_not_granted",
+        "message": "This flow has no approved sink for that room."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "room_mention_not_granted",
+    "precondition": "The mention is absent from the approved grant.",
+    "reply": {
+      "error": {
+        "code": "room_mention_not_granted",
+        "message": "The mention is not approved or is not a current room member."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_unapproved"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "room_all_mention_refused",
+    "precondition": "Default fixture.",
+    "reply": {
+      "error": {
+        "code": "room_all_mention_refused",
+        "message": "Flow posts cannot mention all members."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Hello @all"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "room_post_requires_agent_flow",
+    "precondition": "The approved flow has a global audience.",
+    "reply": {
+      "error": {
+        "code": "room_post_requires_agent_flow",
+        "message": "Room posts require a flow with one agent audience."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "room_author_not_member",
+    "precondition": "The author is no longer a member.",
+    "reply": {
+      "error": {
+        "code": "room_author_not_member",
+        "message": "The flow's agent is not a current room member."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "room_not_found",
+    "precondition": "The granted room no longer exists.",
+    "reply": {
+      "error": {
+        "code": "room_not_found",
+        "message": "The room does not exist."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "room_closed",
+    "precondition": "The granted room is adjourned.",
+    "reply": {
+      "error": {
+        "code": "room_closed",
+        "message": "The room is closed."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "text_invalid",
+    "precondition": "Default fixture.",
+    "reply": {
+      "error": {
+        "code": "text_invalid",
+        "message": "Text must be 1 to 2000 UTF-8 bytes without controls except newline."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": ""
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "sink_principal_refused",
+    "precondition": "The caller is not the attested Basal carrier.",
+    "reply": {
+      "error": {
+        "code": "sink_principal_refused",
+        "message": "sink_principal_refused"
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:plexus"
+    }
+  },
+  {
+    "name": "sink_flow_hash_mismatch",
+    "precondition": "The approved code hash is 64 zeroes.",
+    "reply": {
+      "error": {
+        "code": "sink_flow_hash_mismatch",
+        "message": "The requested code does not match the approved flow version."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "sink_flow_not_installed",
+    "precondition": "Only version 1 is approved.",
+    "reply": {
+      "error": {
+        "code": "sink_flow_not_installed",
+        "message": "This flow version is not installed or its approval was revoked."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 2
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "room_post_rate_limited",
+    "precondition": "Four distinct receipts have posted at time 100 in this flow and room.",
+    "reply": {
+      "error": {
+        "code": "room_post_rate_limited",
+        "detail": {
+          "retry_after_ms": 3600000
+        },
+        "message": "This flow's room posts are rate limited."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "storage_failure",
+    "precondition": "The receipt table is unavailable.",
+    "reply": {
+      "error": {
+        "code": "sink_store_failed",
+        "message": "The board operation could not be completed because of a storage error."
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [
+          "ag_other"
+        ],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  }
+]

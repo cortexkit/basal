@@ -363,7 +363,12 @@ fn capture_stop(run: &Value) -> Option<&Value> {
 fn is_write(call: &Value) -> bool {
     match call["kind"].as_str() {
         Some(
-            "sink.digest" | "sink.status" | "sink.board" | "sink.wait.resolve" | "fs.write"
+            "sink.digest"
+            | "sink.status"
+            | "sink.board"
+            | "sink.wait.resolve"
+            | "sink.room.post"
+            | "fs.write"
             | "instance.end" | "llm" | "classify" | "sh" | "kv.set" | "kv.delete"
             | "unsupported_tool",
         ) => true,
@@ -483,6 +488,29 @@ fn describe(manifest: &Manifest, call: &Value) -> Option<String> {
             "Resolve its board waits as {}",
             quote(&string_or(args, "outcome"))
         ),
+        "sink.room.post" => match text_field(args, &["room_id"]) {
+            Some(room) => {
+                let mentioned = call["args"]["mentions"]
+                    .as_array()
+                    .filter(|ids| !ids.is_empty());
+                match mentioned {
+                    Some(ids) => {
+                        let names: Vec<String> = ids
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(quote)
+                            .collect();
+                        format!(
+                            "Post to the room {} mentioning {}",
+                            quote(&room),
+                            and_list(&names)
+                        )
+                    }
+                    None => format!("Post to the room {}", quote(&room)),
+                }
+            }
+            None => "Post to one of its rooms".into(),
+        },
         "sink.board" => {
             let agent = text_field(args, &["agent"]).unwrap_or_default();
             match text_field(args, &["operation", "op"]).as_deref() {

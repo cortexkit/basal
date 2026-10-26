@@ -13,6 +13,7 @@ pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
 pub const FLOW_DIGEST_WITHDRAW_V1: &str = "flow-digest-withdraw/v1";
 pub const FLOW_OWNER_NOTICE_V1: &str = "flow-owner-notice/v1";
 pub const FLOW_WAIT_RESOLVE_V1: &str = "flow-wait-resolve/v1";
+pub const FLOW_ROOM_POST_V1: &str = "flow-room-post/v1";
 
 /// Manifest-declared ops that core accepts from `reserved:basal`, checking a
 /// `{flow_id, flow_version, code_hash}` stamp against the approved install.
@@ -310,7 +311,8 @@ impl Host for CoreHost {
                 Primitive::SinkDigest
                 | Primitive::SinkStatus
                 | Primitive::SinkBoard
-                | Primitive::SinkWaitResolve,
+                | Primitive::SinkWaitResolve
+                | Primitive::SinkRoomPost,
             ) => CallClass::Mutation {
                 honours_idempotency_keys: true,
             },
@@ -327,6 +329,9 @@ impl Host for CoreHost {
             CallKind::Primitive(Primitive::SinkWaitResolve) => {
                 (Primitive::SinkWaitResolve, "sink.wait_resolve")
             }
+            CallKind::Primitive(Primitive::SinkRoomPost) => {
+                (Primitive::SinkRoomPost, "sink.room.post")
+            }
             CallKind::Primitive(Primitive::Facts) => (Primitive::Facts, "agent.facts"),
             _ => return outcome(Err(WireError::NeverSent("not a core call".into()))),
         };
@@ -336,6 +341,12 @@ impl Host for CoreHost {
             return outcome(Err(WireError::Refused {
                 code: "wait_resolve_unsupported".into(),
                 message: "core does not advertise flow-wait-resolve/v1".into(),
+            }));
+        }
+        if p == Primitive::SinkRoomPost && !self.supports_capability(FLOW_ROOM_POST_V1) {
+            return outcome(Err(WireError::Refused {
+                code: "room_post_unsupported".into(),
+                message: "core does not advertise flow-room-post/v1".into(),
             }));
         }
         let params = serde_json::from_str(request.args.as_str())
@@ -350,7 +361,10 @@ impl Host for CoreHost {
                     message: "core does not advertise flow-digest-withdraw/v1".into(),
                 });
             }
-            if matches!(p, Primitive::SinkBoard | Primitive::SinkWaitResolve) {
+            if matches!(
+                p,
+                Primitive::SinkBoard | Primitive::SinkWaitResolve | Primitive::SinkRoomPost
+            ) {
                 v["receipt_key"] = json!(request.idempotency_key);
             }
             let withdrawal = p == Primitive::SinkDigest && v["withdraw"] == true;
@@ -363,6 +377,8 @@ impl Host for CoreHost {
                         board_refusal(e)
                     } else if p == Primitive::SinkWaitResolve {
                         wait_refusal(e)
+                    } else if p == Primitive::SinkRoomPost {
+                        room_refusal(e)
                     } else {
                         e
                     }
@@ -372,6 +388,8 @@ impl Host for CoreHost {
                         validate_board_reply(operation.as_deref(), v)
                     } else if p == Primitive::SinkWaitResolve {
                         validate_wait_reply(v)
+                    } else if p == Primitive::SinkRoomPost {
+                        validate_room_reply(v)
                     } else {
                         validate_reply(p, v, withdrawal)
                     }
@@ -439,6 +457,27 @@ fn validate_wait_reply(value: Value) -> Result<Value, WireError> {
     }
 }
 
+/// Core's room-post refusals reach the script under core's own code, so the
+/// script can tell a lost room from a rate limit. The storage failure is the
+/// only one retried: core refused it before recording the receipt, so the
+/// same call may be sent again later under the same key, exactly like the
+/// board sink. Core's rate limit is final and never retried: a failure it
+/// reported as retryable could otherwise post the same message twice.
+fn room_refusal(error: WireError) -> WireError {
+    match &error {
+        WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. }
+            if code == "sink_store_failed" =>
+        {
+            WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                crate::flow_refusal::RefusalReason::SinkStoreFailed,
+                CORE,
+                "sink.room.post",
+            ))
+        }
+        _ => error,
+    }
+}
+
 fn wait_refusal(error: WireError) -> WireError {
     match &error {
         WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. }
@@ -451,6 +490,27 @@ fn wait_refusal(error: WireError) -> WireError {
             ))
         }
         _ => error,
+    }
+}
+
+/// A stored post answers with the room it landed in (`rm_…`) and the
+/// sequence number of its event. `replayed` is true when core returned an
+/// earlier post saved under the same receipt instead of writing a new one.
+fn validate_room_reply(value: Value) -> Result<Value, WireError> {
+    let valid = value.as_object().is_some_and(|object| {
+        object.len() == 3
+            && value["replayed"].is_boolean()
+            && value["room_id"]
+                .as_str()
+                .is_some_and(|room| room.starts_with("rm_"))
+            && value["seq"].as_u64().is_some_and(|seq| seq > 0)
+    });
+    if valid {
+        Ok(value)
+    } else {
+        Err(WireError::Unreadable(
+            "unrecognised sink.room.post reply".into(),
+        ))
     }
 }
 

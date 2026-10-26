@@ -1295,6 +1295,18 @@ impl Activation<'_> {
                 "prefrontal-core does not currently advertise flow-wait-resolve/v1",
             ));
         }
+        if matches!(call.kind, CallKind::Primitive(Primitive::SinkRoomPost))
+            && !self
+                .rt
+                .shared
+                .host
+                .supports_core_capability(basal_host::core_host::FLOW_ROOM_POST_V1)
+        {
+            return Err(Refusal::new(
+                codes::ROOM_POST_UNSUPPORTED,
+                "prefrontal-core does not currently advertise flow-room-post/v1",
+            ));
+        }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
             && args.get("withdraw").and_then(Value::as_bool) != Some(true)
             && args
@@ -1543,6 +1555,31 @@ impl Activation<'_> {
                 if let Some(note) = args.get("note") {
                     value["note"] = note.clone();
                 }
+                Ok(Prepared {
+                    request: Some(
+                        JsonText::new(value.to_string())
+                            .map_err(|e| Refusal::new(codes::TOO_LARGE, e.to_string()))?,
+                    ),
+                    ..Prepared::default()
+                })
+            }
+            CallKind::Primitive(Primitive::SinkRoomPost) => {
+                let version = self
+                    .run
+                    .flow_version
+                    .ok_or_else(|| Refusal::denied("core calls require an installed version"))?;
+                // Freeze the approved identity, room, text and mentions before
+                // sending, so a retry after a lost reply posts the same
+                // message under the same receipt instead of a newer install's.
+                let mut mentions = args.get("mentions").cloned().unwrap_or(Value::Null);
+                if mentions.as_array().is_some_and(Vec::is_empty) {
+                    mentions = Value::Null;
+                }
+                let value = serde_json::json!({
+                    "stamp": {"flow_id":self.run.flow_id, "flow_version":version,
+                        "code_hash":crate::ids::hex(&self.run.code_hash)},
+                    "room_id":args["room_id"], "text":args["text"], "mentions":mentions,
+                });
                 Ok(Prepared {
                     request: Some(
                         JsonText::new(value.to_string())
