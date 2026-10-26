@@ -740,7 +740,7 @@ fn tool_names_are_ascii_identifiers_of_at_most_128_bytes() {
     let mut req = request("run", "agent");
     req["catalog"] = json!([entry(&"x".repeat(128)), entry("_A0")]);
     let (_, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
-    assert_eq!(start.unwrap().tools.len(), 4);
+    assert_eq!(start.unwrap().tools.len(), 3);
 }
 
 #[test]

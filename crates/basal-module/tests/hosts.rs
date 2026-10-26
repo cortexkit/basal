@@ -369,6 +369,56 @@ fn catalog_install_refuses_missing_ops_and_events_and_marks_mutations() {
     let fields: Value = serde_json::from_str(&cards[0].card).unwrap();
     assert_eq!(fields["ops"][1]["kind"], "mutate");
 }
+
+#[test]
+fn shared_wire_fake_serves_current_tool_provider_metadata() {
+    let fake = Fake::new();
+    let answer = basal_host::subc_catalog::read_tool_catalog(fake.as_ref(), "mock").unwrap();
+    let tools = answer
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(tools, ["send", "read", "shell"]);
+    assert_eq!(fake.calls("role.describe").len(), 1);
+    assert_eq!(fake.calls("tool.catalog").len(), 1);
+}
+
+#[test]
+fn unreadable_tool_provider_metadata_refuses_install_and_names_provider() {
+    for (op, response) in [
+        (
+            "role.describe",
+            Err(WireError::TimedOut("provider offline".into())),
+        ),
+        ("role.describe", Ok(json!({}))),
+        (
+            "tool.catalog",
+            Err(WireError::Unreadable("bad provider reply".into())),
+        ),
+        ("tool.catalog", Ok(json!({}))),
+    ] {
+        let fake = Fake::new();
+        fake.enqueue(op, vec![response]);
+        let f = fixture(
+            fake.clone(),
+            Arc::new(CoreConsent::new(fake.clone())),
+            "unreadable-tool-metadata",
+        );
+        let error = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "flow.install",
+                json!({"script":"return 1;","manifest":manifest().to_string()}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "tool_contract_unreadable");
+        assert!(error.message.contains("mock.send"), "{error}");
+        assert!(f.module.rt.flow("host-flow").unwrap().is_none());
+        assert!(fake.calls("flow.install_request").is_empty());
+    }
+}
 /// The caller basal decides for a route under core's owner-authorized
 /// session scope `scope_ref`, naming `agent`, as the daemon stamps it.
 fn agent_on_scope(agent: &str, scope_ref: &str) -> Caller {
