@@ -504,8 +504,8 @@ impl Harness {
             }
         });
         // Drain the child continuously, but print its diagnostics from the
-        // test thread so libtest captures them instead of corrupting status
-        // lines consumed by mutation reports.
+        // test thread so libtest captures them instead of corrupting its
+        // status lines.
         let mut stderr = child.stderr.take().expect("stderr");
         let stderr = std::thread::spawn(move || {
             let mut bytes = Vec::new();

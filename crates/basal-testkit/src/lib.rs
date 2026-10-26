@@ -4,8 +4,6 @@
 //! basal-core's driver; the journal cut harness; the test parent binary the
 //! kill harness `kill -9`s (`src/bin/basal-test-parent.rs`); worker and journal
 //! benchmarks; and a local HTTPS server for the `net.fetch` tests (`https`).
-//! The mutation controls proving these tests catch broken rules are listed in
-//! `mutations.d/` at the repository root, and `ckdev-mutate` replays them.
 
 #![cfg(any(test, feature = "test-support"))]
 

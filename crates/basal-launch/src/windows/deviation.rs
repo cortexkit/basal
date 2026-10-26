@@ -13,8 +13,8 @@ use super::launch::MITIGATION_POLICY;
 ///   target or a broken probe;
 /// - one variant per confinement check, each building the full recipe with
 ///   exactly one property broken, so that exactly that check must refuse it.
-///   A check's refusal test and its mutation control share this one
-///   definition of what the check is meant to catch.
+///   A check's refusal test and its deviation share this one definition of
+///   what the check is meant to catch.
 ///
 /// For a worker check, the parent's own checks expect the broken property, so
 /// the worker gets to start and must refuse by itself. For a parent check,

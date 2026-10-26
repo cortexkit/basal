@@ -39,5 +39,5 @@ syn's Rust parser instead of line matching, follows both inline and external
 modules, and treats unknown platform/feature cfg conditions as possibly
 production. This avoids hiding other platforms' production code while allowing
 test modules, test-support features, comments and strings. Unreferenced source
-files are scanned too. Planted-use tests and mutation catalogue rows exercise
-both the source fence and the production pragma check.
+files are scanned too. Planted-use tests exercise both the source fence and the
+production pragma check.
