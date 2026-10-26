@@ -1260,8 +1260,9 @@ fn run_tool_route_options(options: CallOptions) -> CallOptions {
 /// sent after receiving the request, is returned without a resend: that
 /// request may have reached the provider.
 ///
-/// A refusal is returned as [`run_scope_error`] maps it, so the program reads
-/// the provider's own code and message.
+/// A refusal of the sent request is returned as [`run_scope_error`] maps it,
+/// so the program reads the provider's own code and message; a refused bind is
+/// mapped by [`bind_error`] where the route is opened.
 fn send_run_request<H: Copy>(
     mut open: impl FnMut() -> Result<H, WireError>,
     mut send: impl FnMut(H) -> Result<Vec<u8>, CallError>,
