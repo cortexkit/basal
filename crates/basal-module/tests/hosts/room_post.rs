@@ -99,7 +99,13 @@ fn room_post_vectors_are_byte_pinned() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|entry| entry["name"].as_str().or(entry["code"].as_str()).unwrap().to_owned())
+            .map(|entry| {
+                entry["name"]
+                    .as_str()
+                    .or(entry["code"].as_str())
+                    .unwrap()
+                    .to_owned()
+            })
             .collect();
         if list != "refusals.json" {
             assert_eq!(named, published, "{list}");
@@ -186,7 +192,9 @@ fn room_post_dispatch_gate_refuses_without_the_core_capability() {
     let fake = Fake::new();
     fake.enqueue(
         "sink.room.post",
-        vec![Ok(pinned("replies.json", "success")["reply"]["result"].clone())],
+        vec![Ok(
+            pinned("replies.json", "success")["reply"]["result"].clone()
+        )],
     );
     let host = CoreHost::new(fake.clone());
     let Dispatched::Completed(outcome) = host
@@ -278,7 +286,10 @@ fn room_grants_decode_and_install_only_for_an_agent_audience_with_stable_ids() {
     assert_eq!(parsed.room_mentions("rm_other"), None);
     assert_eq!(parsed.digest_sinks().count(), 0);
     assert!(!parsed.wait_sink());
-    assert_eq!(serde_json::to_value(&parsed).unwrap()["sinks"], manifest["sinks"]);
+    assert_eq!(
+        serde_json::to_value(&parsed).unwrap()["sinks"],
+        manifest["sinks"]
+    );
 
     // The grant is refused at install unless the flow is authored by exactly
     // one agent, named by its stable id.
@@ -381,7 +392,9 @@ fn room_script_sends_the_pinned_request_and_never_picks_its_own_identity() {
     approve(&fake, &f.module);
     fake.enqueue(
         "sink.room.post",
-        vec![Ok(pinned("replies.json", "success")["reply"]["result"].clone())],
+        vec![Ok(
+            pinned("replies.json", "success")["reply"]["result"].clone()
+        )],
     );
     let (run, result) = run_once(&f, "room-script");
     assert_eq!(result, pinned("replies.json", "success")["reply"]["result"]);
@@ -533,7 +546,10 @@ fn room_authorization_accepts_only_the_granted_shape() {
             json!({"room_id":"rm_fleet","text":"hi","mentions":[7]}),
             "sink_item_invalid",
         ),
-        (json!({"room_id":"rm_other","text":"hi"}), "room_not_granted"),
+        (
+            json!({"room_id":"rm_other","text":"hi"}),
+            "room_not_granted",
+        ),
         (
             json!({"room_id":"rm_fleet","text":"@ALL hands"}),
             "room_all_mention_refused",
@@ -839,8 +855,14 @@ fn room_journals_before_send_and_replays_the_identical_intent_after_a_cut() {
         assert_eq!(done.state, RunState::Succeeded);
         assert_eq!(
             serde_json::from_str::<Value>(done.result.as_ref().unwrap()).unwrap(),
-            pinned("replies.json", if sent_before_cut == 0 { "success" } else { "receipt_replay" })
-                ["reply"]["result"]
+            pinned(
+                "replies.json",
+                if sent_before_cut == 0 {
+                    "success"
+                } else {
+                    "receipt_replay"
+                }
+            )["reply"]["result"]
         );
         let sent = fake.calls("sink.room.post");
         assert_eq!(sent.len(), sent_before_cut + 1);

@@ -363,13 +363,8 @@ fn capture_stop(run: &Value) -> Option<&Value> {
 fn is_write(call: &Value) -> bool {
     match call["kind"].as_str() {
         Some(
-            "sink.digest"
-            | "sink.status"
-            | "sink.board"
-            | "sink.wait.resolve"
-            | "sink.room.post"
-            | "fs.write"
-            | "instance.end" | "llm" | "classify" | "sh" | "kv.set" | "kv.delete"
+            "sink.digest" | "sink.status" | "sink.board" | "sink.wait.resolve" | "sink.room.post"
+            | "fs.write" | "instance.end" | "llm" | "classify" | "sh" | "kv.set" | "kv.delete"
             | "unsupported_tool",
         ) => true,
         Some("net.fetch") => !matches!(fetch_method(call).as_str(), "GET" | "HEAD"),
@@ -495,11 +490,8 @@ fn describe(manifest: &Manifest, call: &Value) -> Option<String> {
                     .filter(|ids| !ids.is_empty());
                 match mentioned {
                     Some(ids) => {
-                        let names: Vec<String> = ids
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(quote)
-                            .collect();
+                        let names: Vec<String> =
+                            ids.iter().filter_map(Value::as_str).map(quote).collect();
                         format!(
                             "Post to the room {} mentioning {}",
                             quote(&room),

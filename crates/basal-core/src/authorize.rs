@@ -93,16 +93,15 @@ pub const MAX_ROOM_MENTIONS: usize = 32;
 /// The bytes one room post may carry, as core accepts them.
 pub const MAX_ROOM_TEXT_BYTES: usize = 2000;
 /// Told to the script when its text is not something core would accept.
-pub const ROOM_TEXT_RULE: &str = "a room post is 1 to 2000 UTF-8 bytes without control characters other than newline";
+pub const ROOM_TEXT_RULE: &str =
+    "a room post is 1 to 2000 UTF-8 bytes without control characters other than newline";
 
 /// Whether core would accept this as post text: at least one byte, at most
 /// [`MAX_ROOM_TEXT_BYTES`], and only newline among the control characters.
 pub fn valid_room_text(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= MAX_ROOM_TEXT_BYTES
-        && !text
-            .chars()
-            .any(|c| c.is_control() && c != '\n')
+        && !text.chars().any(|c| c.is_control() && c != '\n')
 }
 
 /// Whether the text asks to mention every member with `@all`, which a flow
@@ -537,9 +536,9 @@ pub fn check(
                 // the approved stamp are added after this check, so a payload
                 // carrying them is a call basal did not build.
                 let valid = args.as_object().is_some_and(|object| {
-                    object.keys().all(|key| {
-                        matches!(key.as_str(), "room_id" | "text" | "mentions")
-                    })
+                    object
+                        .keys()
+                        .all(|key| matches!(key.as_str(), "room_id" | "text" | "mentions"))
                 });
                 if !valid {
                     return Err(Refusal::new(
@@ -597,7 +596,10 @@ pub fn check(
                     ));
                 };
                 for id in listed {
-                    if !allowed.iter().any(|approved| Some(approved.as_str()) == id.as_str()) {
+                    if !allowed
+                        .iter()
+                        .any(|approved| Some(approved.as_str()) == id.as_str())
+                    {
                         return Err(Refusal::new(
                             codes::ROOM_MENTION_NOT_GRANTED,
                             format!(
