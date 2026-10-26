@@ -103,12 +103,18 @@ The audience is part of the manifest bytes, so changing or widening it changes
 the code hash and requires a new version and approval. Core renders this reach
 on the approval card. The only shapes are `{ "kind": "global" }`,
 `{ "kind": "workspace", "id": "workspace-id" }` and
-`{ "kind": "agent", "id": "agent-id-or-name" }`. Global forbids `id`;
+`{ "kind": "agent", "id": "agent_…" }`. Global forbids `id`;
 the others require it. Unknown fields are refused. Workspace ids are nonblank
 strings of at most 512 bytes; agent ids follow the agent-name rules above.
 
-At install and dry run, agent ids resolve through core's `agent.list` registry
-to a stable id. An unreadable registry fails closed with the retryable
+At install and dry run, an agent audience's `id` must be the stable `agent_…`
+id returned by core's `agent.list` registry. A name is refused with
+`audience_id_not_stable`: the message names the stable id to use, and the detail
+contains `{"written":"CLOUD","stable":"agent_fb7fb88282f843b5"}`. Basal never
+rewrites the manifest bytes, since approval binds to exactly what the author wrote.
+Stored versions with a name still decode and list, but dry runs refuse the name.
+Package and template manifests continue to use `$self` instead of a named agent.
+An unreadable registry fails closed with the retryable
 `agent_registry_unavailable`, never `UnknownAgent`. Workspace ids must exactly
 match a workspace returned by Entorhinal's management query `enumerate` with
 `{ "workspaceId": "workspace-id" }`; a missing workspace returns

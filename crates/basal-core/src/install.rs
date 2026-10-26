@@ -94,6 +94,10 @@ pub enum InstallError {
         field: &'static str,
         agent: String,
     },
+    AudienceIdNotStable {
+        written: String,
+        stable: String,
+    },
     /// An agent-owned flow may act only for its owner, not another agent.
     ForeignAgentTarget {
         field: &'static str,
@@ -862,13 +866,15 @@ pub(crate) fn validate_inner(
     }
     warnings.extend(protected_root_warnings(manifest));
     if !package {
+        let agent_owned =
+            author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified";
         for (field, agent) in manifest.agents() {
             // A flow installed by an agent is agent-owned: every agent field
             // in its manifest must name that same agent, so it can act only
             // for its owner. A flow installed by the operator or by an
             // unverified local caller is global and belongs to no agent; it
             // may name any agent the catalog knows.
-            if author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" {
+            if agent_owned || field == "audience.id" {
                 let target_id = match catalog.agent_id(agent) {
                     Ok(Some(id)) => id,
                     Ok(None) => {
@@ -879,13 +885,19 @@ pub(crate) fn validate_inner(
                     }
                     Err(e) => return Err(InstallError::AgentRegistryUnavailable(format!("{e:?}"))),
                 };
-                // Manifests may use a display name, while the scope-stamped author
-                // is a stable id. Compare resolved identities, not their spelling.
-                if target_id != author {
+                // Refuse a foreign target before checking audience spelling, so a
+                // name cannot hide the violation of the author's self-only rule.
+                if agent_owned && target_id != author {
                     return Err(InstallError::ForeignAgentTarget {
                         field,
                         agent: agent.to_owned(),
                         author: author.to_owned(),
+                    });
+                }
+                if field == "audience.id" && agent != target_id {
+                    return Err(InstallError::AudienceIdNotStable {
+                        written: agent.to_owned(),
+                        stable: target_id,
                     });
                 }
             } else {

@@ -95,23 +95,20 @@ fn agent_audience_resolves_to_same_stable_author() {
     catalog.add_named_agent("agent_owner", "SYNAPSE");
     for id in ["SYNAPSE", "agent_owner"] {
         let m = parse(&manifest(Some(json!({"kind":"agent","id":id})))).unwrap();
-        install::validate(
-            &m,
-            "agent_owner",
-            &catalog,
-            &ShellDenylist::default(),
-            false,
-        )
-        .unwrap();
-        install::validate(&m, "operator", &catalog, &ShellDenylist::default(), false).unwrap();
-        install::validate(
-            &m,
-            "local:unverified",
-            &catalog,
-            &ShellDenylist::default(),
-            false,
-        )
-        .unwrap();
+        for author in ["agent_owner", "operator", "local:unverified"] {
+            let result = install::validate(&m, author, &catalog, &ShellDenylist::default(), false);
+            if id == "SYNAPSE" {
+                assert_eq!(
+                    result,
+                    Err(InstallError::AudienceIdNotStable {
+                        written: "SYNAPSE".into(),
+                        stable: "agent_owner".into(),
+                    })
+                );
+            } else {
+                result.unwrap();
+            }
+        }
         assert!(matches!(
             install::validate(&m, "ALF", &catalog, &ShellDenylist::default(), false),
             Err(InstallError::ForeignAgentTarget {

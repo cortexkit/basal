@@ -218,6 +218,11 @@ impl Module {
                     "{field} names agent {agent}; an agent-owned flow may name only its author {author}"
                 ),
             ),
+            InstallError::AudienceIdNotStable { written, stable } => OpError::new(
+                "audience_id_not_stable",
+                format!("audience.id {written:?} is a name; use the agent's stable id {stable:?}"),
+            )
+            .with_detail(Some(json!({"written": written, "stable": stable}))),
             InstallError::UnknownEvent {
                 module,
                 name,
