@@ -156,6 +156,10 @@ pub enum RefusalReason {
     /// `check_modes` (empty, duplicate or unknown mode), or lists the tool
     /// twice.
     InvalidAnswer,
+    /// The daemon catalog has no such provider, or the provider's daemon
+    /// manifest declares no tool with this name, so basal has no schema it
+    /// trusts for the entry.
+    NotDeclared,
 }
 
 impl RefusalReason {
@@ -166,6 +170,7 @@ impl RefusalReason {
             Self::ModeNotServed => "call_mode_unsupported",
             Self::CatalogUnreadable => "catalog_unreadable",
             Self::InvalidAnswer => "invalid_answer",
+            Self::NotDeclared => "tool_not_declared",
         }
     }
 
@@ -331,11 +336,34 @@ fn codemode_served(
     ))
 }
 
+/// Record `entry` as dropped, joining an existing gap with the same provider,
+/// reason and problem.
+fn add_gap(
+    gaps: &mut Vec<CatalogGap>,
+    entry: &CatalogEntry,
+    reason: RefusalReason,
+    problem: String,
+) {
+    match gaps
+        .iter_mut()
+        .find(|gap| gap.module == entry.module && gap.reason == reason && gap.problem == problem)
+    {
+        Some(gap) => gap.tools.push(entry.tool.clone()),
+        None => gaps.push(CatalogGap {
+            reason,
+            module: entry.module.clone(),
+            tools: vec![entry.tool.clone()],
+            problem,
+        }),
+    }
+}
+
 /// Resolve only tools declared by the daemon, not schemas carried by core or
 /// script input. Basal inserts its own model tools separately.
 ///
-/// Core's entries must name tools the daemon catalog declares, once each, and
-/// never codemode itself; any entry that does not fails the whole catalog.
+/// An entry naming codemode itself, or a tool the daemon declares twice, fails
+/// the whole catalog. An entry whose provider or tool the daemon catalog
+/// doesn't declare is dropped and named in a gap.
 ///
 /// An entry its provider does not serve in codemode (see `codemode_served`)
 /// is dropped and named in a gap; the run still gets the other entries. When
@@ -374,10 +402,21 @@ pub fn catalog(
                 "recursive codemode catalog entry".into(),
             ));
         }
-        let module = modules
+        // An entry the daemon doesn't declare is dropped with a gap, never
+        // run with a schema core carried: one undeclared entry must not stop
+        // the program from using every other tool.
+        let Some(module) = modules
             .iter()
             .find(|module| module["module_id"] == entry.module)
-            .ok_or_else(|| WireError::NeverSent(format!("provider {} is absent", entry.module)))?;
+        else {
+            add_gap(
+                &mut gaps,
+                entry,
+                RefusalReason::NotDeclared,
+                "the daemon catalog has no such provider".into(),
+            );
+            continue;
+        };
         let roles: Vec<subc_protocol::manifest::ProviderRole> =
             serde_json::from_value(module["roles"].clone())
                 .map_err(|e| WireError::Unreadable(e.to_string()))?;
@@ -390,9 +429,18 @@ pub fn catalog(
             .flatten()
             .filter(|tool| tool.name == entry.op)
             .map(|tool| tool.schema);
-        let schema = schemas.next().ok_or_else(|| {
-            WireError::NeverSent(format!("tool {}.{} is absent", entry.module, entry.op))
-        })?;
+        let Some(schema) = schemas.next() else {
+            add_gap(
+                &mut gaps,
+                entry,
+                RefusalReason::NotDeclared,
+                format!(
+                    "the provider's daemon manifest declares no tool {}",
+                    entry.op
+                ),
+            );
+            continue;
+        };
         if schemas.next().is_some() {
             return Err(WireError::Unreadable("ambiguous tool declaration".into()));
         }
@@ -413,19 +461,7 @@ pub fn catalog(
             Err((reason, problem)) if reason.whole_provider() => {
                 failed.push((&entry.module, reason, problem));
             }
-            Err((reason, problem)) => {
-                match gaps.iter_mut().find(|gap| {
-                    gap.module == entry.module && gap.reason == reason && gap.problem == problem
-                }) {
-                    Some(gap) => gap.tools.push(entry.tool.clone()),
-                    None => gaps.push(CatalogGap {
-                        reason,
-                        module: entry.module.clone(),
-                        tools: vec![entry.tool.clone()],
-                        problem,
-                    }),
-                }
-            }
+            Err((reason, problem)) => add_gap(&mut gaps, entry, reason, problem),
         }
     }
     // A failed provider's gap names all of its entries and replaces any
@@ -1034,6 +1070,33 @@ mod call_mode_tests {
     }
 
     #[test]
+    fn undeclared_tools_and_providers_are_dropped_while_declared_tools_resolve() {
+        let provider =
+            Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
+        let resolved = resolve(
+            &provider,
+            &daemon(&[CALL_MODES_CAPABILITY]),
+            &[
+                entry("read"),
+                entry("board"),
+                module_entry("prefrontal-core", "work"),
+            ],
+        );
+        assert_eq!(names(&resolved), ["mock_read"]);
+        assert_eq!(resolved.gaps.len(), 2, "{:?}", resolved.gaps);
+        assert!(
+            resolved
+                .gaps
+                .iter()
+                .all(|gap| gap.reason == RefusalReason::NotDeclared)
+        );
+        assert_eq!(resolved.gaps[0].tools, ["mock_board"]);
+        assert_eq!(resolved.gaps[1].module, "prefrontal-core");
+        assert_eq!(resolved.gaps[1].tools, ["prefrontal-core_work"]);
+        assert_eq!(resolved.gaps[0].reason.code(), "tool_not_declared");
+    }
+
+    #[test]
     fn a_provider_declaring_neither_capability_is_dropped_unread() {
         let provider =
             Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
@@ -1119,8 +1182,11 @@ mod call_mode_tests {
         }
     }
 
+    /// A recursive codemode entry, or a tool the daemon declares twice, still
+    /// fails the whole catalog. Undeclared providers and tools are dropped
+    /// instead (see `undeclared_tools_and_providers_are_dropped_while_declared_tools_resolve`).
     #[test]
-    fn invalid_core_entries_still_fail_the_whole_catalog() {
+    fn recursive_or_ambiguous_entries_still_fail_the_whole_catalog() {
         let provider =
             Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
         let mut ambiguous = daemon(&[CALL_MODES_CAPABILITY]);
@@ -1136,11 +1202,6 @@ mod call_mode_tests {
         };
         for (daemon, bad) in [
             (daemon(&[CALL_MODES_CAPABILITY]), recursive),
-            (
-                daemon(&[CALL_MODES_CAPABILITY]),
-                module_entry("absent", "read"),
-            ),
-            (daemon(&[CALL_MODES_CAPABILITY]), entry("delete")),
             (ambiguous, entry("read")),
         ] {
             // An unreadable provider listed first does not hide the invalid
