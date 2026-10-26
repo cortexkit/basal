@@ -1248,15 +1248,17 @@ guards = "agent audience fails closed when agent.list is unreadable"
 test_file = "crates/basal-module/tests/audience.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test audience"
 expect_red = ["unreadable_registries_refuse_install_and_dry_run"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = 'match catalog.agent_known(agent) {'
-new = 'match catalog.agent_known(agent).or_else(|e| if field == "audience.id" { Ok(true) } else { Err(e) }) { // NON-VACUITY BREAK'
+# An agent audience always resolves through agent_id (it must name the stable
+# id), so the fail-closed arm guarded here is that lookup's error arm.
+old = 'Err(e) => return Err(InstallError::AgentRegistryUnavailable(format!("{e:?}"))),'
+new = 'Err(e) => if field == "audience.id" { agent.to_owned() } else { return Err(InstallError::AgentRegistryUnavailable(format!("{e:?}"))) }, // NON-VACUITY BREAK'
 
 [[control]]
 id = "target-grant-requires-audience-at-install"
