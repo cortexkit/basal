@@ -92,11 +92,16 @@ impl<H> Default for ScopedRoutes<H> {
 }
 
 impl<H: Copy + Eq> ScopedRoutes<H> {
-    pub fn retain_flow_routes(&mut self, live: &std::collections::HashSet<String>) -> Vec<H> {
+    pub fn retain_flow_routes_for(
+        &mut self,
+        flow_id: &str,
+        live: &std::collections::HashSet<String>,
+    ) -> Vec<H> {
+        let prefix = format!("flow:{}:{flow_id}:", flow_id.len());
         let retired: Vec<_> = self
             .flows
             .keys()
-            .filter(|key| key.starts_with("flow:") && !live.contains(*key))
+            .filter(|key| key.starts_with(&prefix) && !live.contains(*key))
             .cloned()
             .collect();
         retired

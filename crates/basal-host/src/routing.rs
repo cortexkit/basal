@@ -187,8 +187,8 @@ impl Host for ModuleOpsHost {
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
         self.transport.configure_flow(flow_id, scope);
     }
-    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
-        self.transport.retain_flow_routes(live);
+    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
+        self.transport.retain_flow_routes(flow_id, live);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
         if let CallKind::Op { module, op } | CallKind::OpFor { module, op } = kind
@@ -317,9 +317,9 @@ impl Host for RoutingHost {
         self.ops.configure_flow(flow_id, scope.clone());
         self.model.configure_flow(flow_id, scope);
     }
-    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
-        self.ops.retain_flow_routes(live);
-        self.model.retain_flow_routes(live);
+    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
+        self.ops.retain_flow_routes(flow_id, live);
+        self.model.retain_flow_routes(flow_id, live);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
         self.target(kind).classify(kind)

@@ -4,6 +4,11 @@ use crate::error::Result;
 use basal_host::flow_refusal::FlowRefusal;
 use rusqlite::{Transaction, params};
 
+const LIVE_RUN_VERSIONS_SQL: &str = "SELECT DISTINCT flow_version FROM runs WHERE flow_id=?1 AND state IN ('pending','running','suspended','needs_reconcile') AND flow_version IS NOT NULL";
+// CROSS JOIN keeps runs on the left: SQLite first restricts work to this flow,
+// then looks up its Broca calls by run_id instead of scanning all pending calls.
+const PENDING_MODEL_VERSIONS_SQL: &str = "SELECT DISTINCT r.flow_version FROM runs r CROSS JOIN broca_calls b WHERE r.flow_id=?1 AND b.run_id=r.run_id AND r.flow_version IS NOT NULL AND json_extract(b.snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(b.snapshot,'$.deferred'),0)=0";
+
 impl crate::runtime::Runtime {
     pub(crate) fn configure_flow_version(
         &self,
@@ -21,7 +26,20 @@ impl crate::runtime::Runtime {
             scope,
         );
     }
+    /// Recovery is the only caller that has no particular flow to retire.
     pub(crate) fn release_unused_flow_routes(&self) -> Result<()> {
+        let flows = self.store().read(|c| {
+            Ok(c.prepare("SELECT flow_id FROM flows")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        for flow in flows {
+            self.release_unused_flow_routes_for(&flow)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn release_unused_flow_routes_for(&self, flow: &str) -> Result<()> {
         let _routes = self
             .shared
             .flow_routes
@@ -29,49 +47,54 @@ impl crate::runtime::Runtime {
             .unwrap_or_else(|p| p.into_inner());
         let mut live = self.store().read(|c| {
             let mut live = std::collections::HashSet::new();
-            let mut flows = c.prepare("SELECT flow_id FROM flows WHERE removed=0")?;
-            for flow in flows.query_map([], |r| r.get::<_, String>(0))? {
-                let flow = flow?;
-                if let Some(approved) = crate::install::approved(c, &flow)?
-                    && crate::install::revocation(c, &flow, approved.version)?.is_none()
-                {
-                    live.insert(basal_host::flow_scope::flow_route_key(&flow, approved.version));
-                }
+            let installed = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM flows WHERE flow_id=?1 AND removed=0)",
+                [flow],
+                |r| r.get::<_, bool>(0),
+            )?;
+            if installed
+                && let Some(approved) = crate::install::approved(c, flow)?
+                && crate::install::revocation(c, flow, approved.version)?.is_none()
+            {
+                live.insert(basal_host::flow_scope::flow_route_key(
+                    flow,
+                    approved.version,
+                ));
             }
-            let mut runs = c.prepare("SELECT flow_id,flow_version FROM runs r WHERE flow_version IS NOT NULL AND (state NOT IN ('succeeded','failed','engine_mismatch','cancelled') OR EXISTS(SELECT 1 FROM broca_calls b WHERE b.run_id=r.run_id AND json_extract(b.snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(b.snapshot,'$.deferred'),0)=0))")?;
-            for row in runs.query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, u32>(1)?)))? {
-                let (flow, version) = row?;
-                live.insert(basal_host::flow_scope::flow_route_key(&flow, version));
+            for sql in [LIVE_RUN_VERSIONS_SQL, PENDING_MODEL_VERSIONS_SQL] {
+                for version in c.prepare(sql)?.query_map([flow], |r| r.get::<_, u32>(0))? {
+                    live.insert(basal_host::flow_scope::flow_route_key(flow, version?));
+                }
             }
             Ok(live)
         })?;
-        // Read dispatch threads after the durable run snapshot: cancellation
-        // can end a run while its provider call still owns a route. Never hold
-        // the in-flight mutex while reading the store; dispatch registers under
-        // the store writer in some paths.
-        let inflight: std::collections::HashSet<_> = self
+        // Read dispatch ownership after durable liveness. A cancellation may
+        // have ended a run while its provider thread still owns the route.
+        // Registration can run under the store writer, so the in-flight mutex
+        // must not be held while querying SQLite.
+        for route in self
             .shared
             .inflight
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect();
-        for run in inflight {
-            let run = self.run(&run)?;
-            if let Some(version) = run.flow_version {
-                live.insert(basal_host::flow_scope::flow_route_key(
-                    &run.flow_id,
-                    version,
-                ));
+            .values()
+        {
+            if route.flow_id == flow
+                && let Some(version) = route.version
+            {
+                live.insert(basal_host::flow_scope::flow_route_key(flow, version));
             }
         }
-        // Configuration is serialized with this snapshot, but closing daemon
-        // handles must not hold either the store or the dispatch mutex.
-        self.shared.host.retain_flow_routes(&live);
+        // Configuration is serialized with retirement, but daemon closes hold
+        // neither the store nor the dispatch mutex.
+        self.shared.host.retain_flow_routes(flow, &live);
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "flow_scope_tests.rs"]
+mod tests;
 
 pub(crate) fn health(tx: &Transaction, flow: &str, refusal: &FlowRefusal) -> Result<()> {
     let value = serde_json::json!({"reason":refusal.reason,"provider":refusal.provider,"action":refusal.action,"message":refusal.message(),"detail":refusal.detail});

@@ -243,7 +243,7 @@ fn flow_versions_keep_distinct_routes_during_activation_overlap() {
         Some(11)
     );
     assert_eq!(
-        routes.retain_flow_routes(&[v2.clone()].into_iter().collect()),
+        routes.retain_flow_routes_for("flow-a", &[v2.clone()].into_iter().collect()),
         vec![11]
     );
     assert!(
@@ -277,7 +277,7 @@ fn flow_versions_sharing_a_scope_release_only_the_last_handle() {
     );
     assert!(
         routes
-            .retain_flow_routes(&[v2.clone()].into_iter().collect())
+            .retain_flow_routes_for("flow-a", &[v2.clone()].into_iter().collect())
             .is_empty()
     );
     assert!(
@@ -291,6 +291,44 @@ fn flow_versions_sharing_a_scope_release_only_the_last_handle() {
             .unwrap(),
         Some(11)
     );
-    assert_eq!(routes.retain_flow_routes(&Default::default()), vec![11]);
-    assert!(routes.retain_flow_routes(&Default::default()).is_empty());
+    assert_eq!(
+        routes.retain_flow_routes_for("flow-a", &Default::default()),
+        vec![11]
+    );
+    assert!(
+        routes
+            .retain_flow_routes_for("flow-a", &Default::default())
+            .is_empty()
+    );
+}
+
+#[test]
+fn retiring_one_flow_does_not_visit_another_flows_keys() {
+    let mut routes = ScopedRoutes::<u64>::default();
+    let first = flow_route_key("flow-a", 1);
+    let other = flow_route_key("flow-a:other", 1);
+    let mut different = codemode_scope();
+    different.selector.scope_ref = "unrelated".into();
+    routes.configure(&first, Some(codemode_scope()));
+    routes.configure(&other, Some(different));
+    assert_eq!(
+        routes.route(&first, &target(), |_| Ok(11)).unwrap(),
+        Some(11)
+    );
+    assert_eq!(
+        routes.route(&other, &target(), |_| Ok(22)).unwrap(),
+        Some(22)
+    );
+    assert_eq!(
+        routes.retain_flow_routes_for("flow-a", &Default::default()),
+        vec![11]
+    );
+    assert_eq!(
+        routes
+            .route(&other, &target(), |_| panic!(
+                "another flow's cached handle remains live"
+            ))
+            .unwrap(),
+        Some(22)
+    );
 }

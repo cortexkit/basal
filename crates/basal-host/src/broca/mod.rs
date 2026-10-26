@@ -97,7 +97,7 @@ pub trait Transport: Send + Sync {
         Ok(())
     }
     fn configure_flow(&self, _flow_id: &str, _scope: Option<crate::flow_scope::RegisteredScope>) {}
-    fn retain_flow_routes(&self, _live: &std::collections::HashSet<String>) {}
+    fn retain_flow_routes(&self, _flow_id: &str, _live: &std::collections::HashSet<String>) {}
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError>;
     /// `send.status`: what became of an accepted send, asked on the call's
     /// own route. Returns the management `result` as JSON, decoded by
@@ -1312,6 +1312,7 @@ impl BrocaHost {
         call.acknowledged = true;
         self.store.save(call)?;
         self.transport.release(&call.route);
+        sink.route_released(&call.basal_run_id);
         Ok(())
     }
 
@@ -1402,6 +1403,7 @@ impl Host for BrocaHost {
             let gate = self.call_gate(&request.idempotency_key);
             let _guard = lock(&gate);
             if let Some(mut call) = self.store.get(&request.idempotency_key)? {
+                let was_live = !call.acknowledged && !call.deferred;
                 let outcome = refusal.outcome();
                 call.outcome = Some(StoredOutcome {
                     rejected: true,
@@ -1413,6 +1415,9 @@ impl Host for BrocaHost {
                 // error would penalize a runner that was never invoked.
                 call.report_attempted = true;
                 self.store.save(&call)?;
+                if was_live && let Some(sink) = lock(&self.sink).clone() {
+                    sink.route_released(&call.basal_run_id);
+                }
             }
             Ok::<_, BrocaError>(())
         })();
@@ -1427,8 +1432,8 @@ impl Host for BrocaHost {
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
         self.transport.configure_flow(flow_id, scope);
     }
-    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
-        self.transport.retain_flow_routes(live);
+    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
+        self.transport.retain_flow_routes(flow_id, live);
     }
     fn classify(&self, _: &CallKind) -> CallClass {
         CallClass::Mutation {

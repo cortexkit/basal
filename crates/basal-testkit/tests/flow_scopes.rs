@@ -23,6 +23,7 @@ struct Wire {
     installs: Mutex<std::collections::HashMap<u32, (String, RegisteredScope)>>,
     stall: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
     closed: Mutex<Vec<u64>>,
+    retained: Mutex<Vec<String>>,
     scope: Mutex<Option<RegisteredScope>>,
     hash: Mutex<String>,
     routes: Mutex<ScopedRoutes<u64>>,
@@ -113,8 +114,13 @@ impl Transport for Wire {
         let dropped = self.routes.lock().unwrap().configure(flow, scope);
         self.closed.lock().unwrap().extend(dropped);
     }
-    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
-        let dropped = self.routes.lock().unwrap().retain_flow_routes(live);
+    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
+        self.retained.lock().unwrap().push(flow_id.into());
+        let dropped = self
+            .routes
+            .lock()
+            .unwrap()
+            .retain_flow_routes_for(flow_id, live);
         self.closed.lock().unwrap().extend(dropped);
     }
     fn catalog(&self) -> Result<Value, WireError> {
@@ -438,6 +444,60 @@ impl Fixture {
     }
 }
 const SCRIPT: &str = "return await ops.call('mock','send',{value:7});";
+
+#[derive(Default)]
+struct LiveCallRetirementProbe {
+    context: Mutex<Option<(Runtime, Arc<Wire>)>>,
+    observed: std::sync::atomic::AtomicBool,
+}
+impl basal_core::hooks::Hooks for LiveCallRetirementProbe {
+    fn at(&self, run: &str, boundary: &basal_core::hooks::Boundary) -> basal_core::hooks::Step {
+        if *boundary == basal_core::hooks::Boundary::EndingReceived {
+            let (rt, wire) = self.context.lock().unwrap().clone().unwrap();
+            // Drain the dispatch threads before ending the run, so the counter
+            // observes every unregister while the run is still live.
+            rt.quiesce();
+            assert_eq!(rt.run(run).unwrap().state, RunState::Running);
+            assert_eq!(
+                wire.calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, module, body)| module == "mock" && body["method"] == "send")
+                    .count(),
+                3
+            );
+            assert!(
+                wire.retained.lock().unwrap().is_empty(),
+                "live calls must not run route retirement"
+            );
+            self.observed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        basal_core::hooks::Step::Continue
+    }
+}
+
+#[test]
+fn live_calls_do_not_retire_flow_routes_until_the_run_ends() {
+    let probe = Arc::new(LiveCallRetirementProbe::default());
+    let f = Fixture::with_hooks(
+        "live-call-retirement",
+        "for (let n=0;n<3;n++) await ops.call('mock','send',{n}); return 7;",
+        true,
+        true,
+        ACTIVATION_WAIT,
+        probe.clone(),
+    );
+    f.wire.retained.lock().unwrap().clear();
+    *probe.context.lock().unwrap() = Some((f.rt.clone(), f.wire.clone()));
+    let run = f.admit("several-calls");
+    f.activate(&run);
+    *probe.context.lock().unwrap() = None;
+    assert!(probe.observed.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Succeeded);
+    assert_eq!(*f.wire.retained.lock().unwrap(), vec!["flow-test"]);
+}
 
 fn approve_second_version(f: &Fixture, shared: bool) {
     f.wire

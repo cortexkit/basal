@@ -212,8 +212,8 @@ impl Transport for SubcBrocaTransport {
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
         crate::transport::Transport::configure_flow(self.connection.as_ref(), flow_id, scope);
     }
-    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
-        crate::transport::Transport::retain_flow_routes(self.connection.as_ref(), live);
+    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
+        crate::transport::Transport::retain_flow_routes(self.connection.as_ref(), flow_id, live);
     }
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError> {
         #[cfg(feature = "rig-kill-hook")]

@@ -247,7 +247,7 @@ pub(crate) struct Shared {
     /// Calls being dispatched by a thread of this process. A recovering
     /// activation never sends these again: their thread will record the
     /// outcome.
-    pub(crate) inflight: Mutex<HashSet<(String, u64)>>,
+    pub(crate) inflight: Mutex<HashMap<(String, u64), InflightRoute>>,
     pub(crate) flow_routes: Mutex<()>,
     /// Runs whose install gate got no answer from core, with when they may
     /// be checked again. In memory: a restart checks every run at once.
@@ -260,6 +260,11 @@ pub(crate) struct Shared {
     pub(crate) owner_notice_drain: Mutex<()>,
     /// The `fs.write` temporary files this process is writing now.
     pub(crate) fs_temps: crate::retention::FsTemps,
+}
+
+pub(crate) struct InflightRoute {
+    pub(crate) flow_id: String,
+    pub(crate) version: Option<u32>,
 }
 
 const EVENT_SCOPE_WARNING_HISTORY: usize = 4096;
@@ -308,6 +313,19 @@ struct Sink {
 }
 
 impl CompletionSink for Sink {
+    fn route_released(&self, run_id: &str) {
+        if let Some(shared) = self.shared.upgrade() {
+            let rt = Runtime {
+                shared,
+                config: self.config.clone(),
+            };
+            if let Ok(run) = rt.run(run_id)
+                && run.state.is_terminal()
+            {
+                let _ = rt.release_unused_flow_routes_for(&run.flow_id);
+            }
+        }
+    }
     fn complete(&self, c: &Completion) -> std::result::Result<CompletionAck, SinkError> {
         let shared = self
             .shared
@@ -372,7 +390,7 @@ impl Runtime {
             catalog,
             hooks,
             source,
-            inflight: Mutex::new(HashSet::new()),
+            inflight: Mutex::new(HashMap::new()),
             flow_routes: Mutex::new(()),
             gate_backoff: Mutex::new(HashMap::new()),
             event_scope_warnings: Mutex::new(EventScopeWarnings::default()),
@@ -540,6 +558,7 @@ impl Runtime {
     pub fn recover(&self) -> Result<Vec<String>> {
         let ids = self.shared.store.write(runs::requeue_orphans)?;
         self.flush_refusals()?;
+        self.release_unused_flow_routes()?;
         self.shared.signal.bump();
         Ok(ids)
     }
@@ -564,6 +583,7 @@ impl Runtime {
         self.flush_refusals()?;
         self.shared.signal.bump();
         if let Ok(run) = self.run(run_id) {
+            self.release_unused_flow_routes_for(&run.flow_id)?;
             self.wake_flow(&run.flow_id);
         }
         Ok(())
@@ -626,7 +646,6 @@ impl Runtime {
     /// activations acknowledging the same intent concurrently. A crash may
     /// redeliver an intent, as the host's acknowledgement API allows.
     pub(crate) fn flush_refusals(&self) -> Result<()> {
-        self.release_unused_flow_routes()?;
         let _flush = lock(&self.shared.refusal_flush);
         let rows = self.store().read(|c| {
             let mut stmt = c.prepare(
@@ -775,13 +794,25 @@ impl Runtime {
     /// Registers a call as being dispatched by this process. Done before the
     /// call's row (or its resend authorization) commits, so a recovering
     /// activation never sends a call this process is about to send.
-    pub(crate) fn register(&self, run_id: &str, position: u64) {
-        lock(&self.shared.inflight).insert((run_id.to_owned(), position));
+    pub(crate) fn register(&self, run: &Run, position: u64) {
+        lock(&self.shared.inflight).insert(
+            (run.run_id.clone(), position),
+            InflightRoute {
+                flow_id: run.flow_id.clone(),
+                version: run.flow_version,
+            },
+        );
     }
 
     pub(crate) fn unregister(&self, run_id: &str, position: u64) {
-        lock(&self.shared.inflight).remove(&(run_id.to_owned(), position));
-        let _ = self.release_unused_flow_routes();
+        let route = lock(&self.shared.inflight).remove(&(run_id.to_owned(), position));
+        let terminal = self
+            .store()
+            .read(|c| runs::state(c, run_id))
+            .is_ok_and(|state| state.is_terminal());
+        if terminal && let Some(route) = route {
+            let _ = self.release_unused_flow_routes_for(&route.flow_id);
+        }
     }
 
     pub(crate) fn mark_event_scope_warning(&self, run_id: &str) -> bool {
@@ -793,7 +824,7 @@ impl Runtime {
     }
 
     pub(crate) fn is_inflight(&self, run_id: &str, position: u64) -> bool {
-        lock(&self.shared.inflight).contains(&(run_id.to_owned(), position))
+        lock(&self.shared.inflight).contains_key(&(run_id.to_owned(), position))
     }
 
     /// Dispatches an authorized call on its own thread.
@@ -1232,6 +1263,9 @@ impl Runtime {
         }
         self.flush_refusals()?;
         self.retention_due(now)?;
+        for flow in expired.iter().map(|(_, flow)| flow).collect::<HashSet<_>>() {
+            self.release_unused_flow_routes_for(flow)?;
+        }
         self.reap_threads();
         if !expired.is_empty() {
             self.shared.signal.bump();

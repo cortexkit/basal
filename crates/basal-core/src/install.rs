@@ -1587,8 +1587,6 @@ fn decide<T>(
         })
         .map_err(InstallError::Store)?;
     rt.shared.signal.bump();
-    rt.release_unused_flow_routes()
-        .map_err(InstallError::Store)?;
     result
 }
 
@@ -1655,6 +1653,11 @@ impl Runtime {
                 &resolved,
             )
         })
+        .and_then(|outcome| {
+            self.release_unused_flow_routes_for(flow_id)
+                .map_err(InstallError::Store)?;
+            Ok(outcome)
+        })
     }
 
     /// Disables a flow at once. The operator may disable any flow; an agent
@@ -1720,6 +1723,13 @@ impl Runtime {
                 [flow_id],
             )?;
             Ok(true)
+        })
+        .and_then(|removed| {
+            if removed {
+                self.release_unused_flow_routes_for(flow_id)
+                    .map_err(InstallError::Store)?;
+            }
+            Ok(removed)
         })
     }
 

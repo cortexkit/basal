@@ -144,7 +144,7 @@ pub trait Transport: Send + Sync {
         Ok(())
     }
     fn configure_flow(&self, _flow: &str, _scope: Option<crate::flow_scope::RegisteredScope>) {}
-    fn retain_flow_routes(&self, _live: &std::collections::HashSet<String>) {}
+    fn retain_flow_routes(&self, _flow_id: &str, _live: &std::collections::HashSet<String>) {}
     fn management_for_flow(
         &self,
         _flow: &str,
@@ -895,12 +895,12 @@ impl Transport for SubcTransport {
                 .block_on(self.consumer.close_handle(&handle, Default::default()));
         }
     }
-    fn retain_flow_routes(&self, live: &std::collections::HashSet<String>) {
+    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
         let dropped = self
             .routes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .retain_flow_routes(live);
+            .retain_flow_routes_for(flow_id, live);
         for handle in dropped {
             let _ = self
                 .handle

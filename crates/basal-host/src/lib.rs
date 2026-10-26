@@ -485,6 +485,9 @@ pub trait CompletionSink: Send + Sync {
     /// a completion, it is redelivered until the runtime records it, and a
     /// redelivery is acknowledged as [`CompletionAck::Duplicate`].
     fn unknown(&self, unknown: &UnknownOutcome) -> Result<CompletionAck, SinkError>;
+    /// The host has durably settled the call and released its route. This
+    /// follows completion acknowledgement, which alone may precede that save.
+    fn route_released(&self, _run_id: &str) {}
 }
 
 /// The hosts a flow reaches. Implementations must be safe to call from
@@ -551,9 +554,9 @@ pub trait Host: Send + Sync {
     /// flow version, or `codemode:<run_id>` for a codemode run).
     /// Passing no scope releases the key, including one never registered.
     fn configure_flow(&self, _flow_id: &str, _scope: Option<flow_scope::RegisteredScope>) {}
-    /// Retires ordinary version keys absent from both installs and live runs.
-    /// Codemode and target-scope keys have independent lifetimes.
-    fn retain_flow_routes(&self, _live: &std::collections::HashSet<String>) {}
+    /// Retires this flow's version keys absent from both installs and live runs.
+    /// Other flows, codemode and target-scope keys have independent lifetimes.
+    fn retain_flow_routes(&self, _flow_id: &str, _live: &std::collections::HashSet<String>) {}
     /// Whether the call only reads, and if not whether it honours
     /// idempotency keys.
     fn classify(&self, kind: &CallKind) -> CallClass;

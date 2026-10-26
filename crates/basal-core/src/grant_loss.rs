@@ -463,7 +463,6 @@ impl Runtime {
             })?;
             self.shared.signal.bump();
         }
-        self.release_unused_flow_routes()?;
         Ok(due.len())
     }
 
@@ -485,6 +484,7 @@ impl Runtime {
                         *owner != crate::decisions::OPERATOR_ACTOR && *owner != "local:unverified"
                     });
                 self.configure_flow_version(&loss.flow_id, loss.version, Some(scope));
+                self.release_unused_flow_routes_for(&loss.flow_id)?;
                 Ok(self
                     .shared
                     .host
@@ -506,6 +506,7 @@ impl Runtime {
                     crate::decisions::close_stale_grants(tx, &loss.flow_id, self.config.clock.now_ms())?;
                     Ok(())
                 })?;
+                self.release_unused_flow_routes_for(&loss.flow_id)?;
                 Ok(false)
             }
             Err(_) => Ok(false),
