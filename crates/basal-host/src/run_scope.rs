@@ -434,10 +434,9 @@ pub fn catalog(
                 &mut gaps,
                 entry,
                 RefusalReason::NotDeclared,
-                format!(
-                    "the provider's daemon manifest declares no tool {}",
-                    entry.op
-                ),
+                // Tool-independent, so every undeclared tool from one provider
+                // shares one gap and one warning line.
+                "its daemon manifest doesn't declare them".into(),
             );
             continue;
         };
@@ -1080,6 +1079,7 @@ mod call_mode_tests {
                 entry("read"),
                 entry("board"),
                 module_entry("prefrontal-core", "work"),
+                entry("delete"),
             ],
         );
         assert_eq!(names(&resolved), ["mock_read"]);
@@ -1090,7 +1090,7 @@ mod call_mode_tests {
                 .iter()
                 .all(|gap| gap.reason == RefusalReason::NotDeclared)
         );
-        assert_eq!(resolved.gaps[0].tools, ["mock_board"]);
+        assert_eq!(resolved.gaps[0].tools, ["mock_board", "mock_delete"]);
         assert_eq!(resolved.gaps[1].module, "prefrontal-core");
         assert_eq!(resolved.gaps[1].tools, ["prefrontal-core_work"]);
         assert_eq!(resolved.gaps[0].reason.code(), "tool_not_declared");
