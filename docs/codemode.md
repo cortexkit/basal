@@ -32,6 +32,51 @@ ceiling; see [manifest dollar caps](manifest.md#classifier-dollar-caps).
 
 A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Codemode runs on macOS, Linux and Windows under each OS's full worker confinement. See [the tool and role operations](ops.md#codemode).
 
+## Worker runs
+
+A head (an agent with its own session scope) runs programs as itself: its route's
+scope carries its `agent_id`, basal opens the run with
+`{agent_id, invoking_scope, run_id, expires_at_ms}`, and the run scope core opens
+carries that `agent_id` and the `run_id`.
+
+A worker session, such as a mason or a sidekick session, works for a head without
+that head's authority. Its route's scope is core-owned, vouched for by the daemon
+(`owner_authorized`), of kind `worker`, and carries no `agent_id`, `run_id`,
+`flow_id` or `delegates`; it may name the head in `on_behalf_of_agent`, which
+basal never reads from it. Basal accepts a codemode call from such a scope and
+runs its program as a *worker run*:
+
+- Basal opens the run with `{invoking_scope, run_id, expires_at_ms}`, with the
+  worker's own scope as `invoking_scope` and no `agent_id` member at all. Core
+  decides whether this worker may run a program and which head the run works
+  for. Its refusals, such as `not_granted` or `worker_runs_unsupported`, reach
+  the caller with core's code, as for a head.
+- The run scope must carry the `run_id`, name the head in `on_behalf_of_agent`,
+  carry no `agent_id`, `delegates` or `flow_id`, and have the worker's scope at
+  the epoch it called from as its parent. Anything else fails the run with
+  `scope_mismatch`. A head's run scope must carry its `agent_id` and must not
+  name an `on_behalf_of_agent`.
+- The per-caller limit of 2 running programs counts each worker by its own
+  scope, never by the head it works for, so two workers for one head each get
+  2. The limit of 16 running programs across basal counts every run.
+- The head is recorded on the run (`on_behalf_of_agent`) for display and audit
+  only. Basal never uses it as an agent identity: not in model routing, not in
+  Broca calls, and not as the actor of any card or record. The run's own
+  `agent_id` is empty.
+- Tool calls go over the run's scope as for a head. The daemon binds a worker
+  run only to providers declaring `worker-runs/v1`; any other provider is
+  refused with `target_agent_run_unsupported`, which the program sees on each
+  call to that provider's tools (see [errors and refusals](#errors-and-refusals)).
+  Until Broca declares it, `tools.model` and `tools.llm_classify` are refused
+  in a worker run.
+- A keyed call's run ID comes from the worker's scope ref and the call key, in
+  a hash domain separate from agents' run IDs.
+
+A codemode call from any run scope, a head's or a worker's, is refused with
+`scope_mismatch`: programs do not start programs. Basal declares
+`scope-on-behalf-of/v1` so that the daemon includes `on_behalf_of_agent` when
+it describes a worker run's scope to basal.
+
 ## Pauses
 
 The worker has no timers. A program pauses with two globals, defined before
@@ -156,6 +201,11 @@ that provider for `catalog_unreadable` or `invalid_answer`) and records a
 `tools_unavailable` warning naming the provider, the dropped tools and the reason.
 A program call to a dropped tool rejects with `tool_unavailable` and
 `detail: {"reason": "<reason>", "module": "<provider>"}`; nothing is sent.
+One exception: when the daemon refuses to bind a provider on the run's scope with
+`target_agent_run_unsupported` (in a [worker run](#worker-runs), a provider that
+doesn't declare `worker-runs/v1`), the warning's reason is that code, and a call
+to any of that provider's tools rejects with outcome `refused`, the daemon's own
+code and message, and `detail: {"module": "<provider>"}`.
 
 An invalid individual catalog entry also does not refuse the run. Admission
 drops entries with malformed fields, invalid names or uncompileable input

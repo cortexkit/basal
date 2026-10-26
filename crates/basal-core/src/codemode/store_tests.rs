@@ -388,14 +388,23 @@ fn running_runs_are_counted_per_agent_and_in_total() {
         .write(|tx| commit_terminal(tx, "a2", &completed(), 150))
         .unwrap();
     assert_eq!(
-        t.store.read(|c| running_counts(c, "agent")).unwrap(),
+        t.store
+            .read(|c| running_counts(c, RunOwner::Agent("agent")))
+            .unwrap(),
         (1, 2)
     );
     assert_eq!(
-        t.store.read(|c| running_counts(c, "other")).unwrap(),
+        t.store
+            .read(|c| running_counts(c, RunOwner::Agent("other")))
+            .unwrap(),
         (1, 2)
     );
-    assert_eq!(t.store.read(|c| running_counts(c, "none")).unwrap(), (0, 2));
+    assert_eq!(
+        t.store
+            .read(|c| running_counts(c, RunOwner::Agent("none")))
+            .unwrap(),
+        (0, 2)
+    );
     assert_eq!(t.store.read(running_runs).unwrap(), ["a1", "b1"]);
 }
 

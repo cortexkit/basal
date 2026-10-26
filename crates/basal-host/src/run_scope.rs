@@ -3,6 +3,12 @@
 //! Basal sends that agent and scope identity with a fixed expiry to core over its
 //! own route stamped reserved:basal, the daemon-verified basal module principal.
 //! The confined worker never makes these authority-bearing control requests.
+//!
+//! A worker (a session working for a head, such as a mason) has no agent_id on
+//! its scope. Basal opens its run with the worker's own scope as
+//! `invoking_scope` and no `agent_id` member at all; core derives who the run
+//! works for from that scope. The result is a *worker run*: its scope names the
+//! head in `on_behalf_of_agent`, for attribution only, never as authority.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,7 +33,11 @@ pub struct Scope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Open {
-    pub agent_id: String,
+    /// The head that asked for the run. `None` for a worker run, and then the
+    /// member is left out of the request entirely: core refuses an explicit
+    /// `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub invoking_scope: Scope,
     pub run_id: String,
     pub expires_at_ms: i64,
@@ -160,6 +170,24 @@ pub enum RefusalReason {
     /// manifest declares no tool with this name, so basal has no schema it
     /// trusts for the entry.
     NotDeclared,
+    /// The daemon refused to bind the provider on the run's scope with
+    /// `target_agent_run_unsupported`: for a worker run, the provider does not
+    /// declare `worker-runs/v1`. The gap keeps the refusal so each call to one
+    /// of the provider's tools rejects with that code and message.
+    RunUnsupported,
+}
+
+/// The code the daemon refuses a run-scope bind with when the target provider
+/// does not accept that kind of run (for a worker run: it does not declare
+/// `worker-runs/v1`).
+pub const TARGET_AGENT_RUN_UNSUPPORTED: &str = "target_agent_run_unsupported";
+
+/// A refusal the program sees exactly as it was sent, with its code and
+/// message, when it calls a tool of the provider that was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRefusal {
+    pub code: String,
+    pub message: String,
 }
 
 impl RefusalReason {
@@ -171,6 +199,7 @@ impl RefusalReason {
             Self::CatalogUnreadable => "catalog_unreadable",
             Self::InvalidAnswer => "invalid_answer",
             Self::NotDeclared => "tool_not_declared",
+            Self::RunUnsupported => TARGET_AGENT_RUN_UNSUPPORTED,
         }
     }
 
@@ -179,7 +208,10 @@ impl RefusalReason {
     /// no result format can be trusted from an answer basal could not read
     /// or that is invalid.
     fn whole_provider(self) -> bool {
-        matches!(self, Self::CatalogUnreadable | Self::InvalidAnswer)
+        matches!(
+            self,
+            Self::CatalogUnreadable | Self::InvalidAnswer | Self::RunUnsupported
+        )
     }
 }
 
@@ -193,6 +225,9 @@ pub struct CatalogGap {
     pub tools: Vec<String>,
     /// Plain-language detail, such as the read error or the failing check.
     pub problem: String,
+    /// For `RunUnsupported`, the refusal as the daemon sent it, which a call
+    /// to any of `tools` rejects with. `None` for every other reason.
+    pub refusal: Option<ProviderRefusal>,
 }
 
 impl CatalogGap {
@@ -288,6 +323,12 @@ fn codemode_served(
         read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module)
     });
     let answer = answer.as_ref().map_err(|error| {
+        if run_refusal(error).is_some() {
+            return (
+                RefusalReason::RunUnsupported,
+                format!("it does not accept this run: {}", catalog_read_error(error)),
+            );
+        }
         let hint = if catalog_read_may_recover(error) {
             "; retrying the run may succeed"
         } else {
@@ -336,6 +377,22 @@ fn codemode_served(
     ))
 }
 
+/// The daemon's `target_agent_run_unsupported` refusal of a run-scope bind, if
+/// `error` is one.
+fn run_refusal(error: &WireError) -> Option<ProviderRefusal> {
+    match error {
+        WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. }
+            if code == TARGET_AGENT_RUN_UNSUPPORTED =>
+        {
+            Some(ProviderRefusal {
+                code: code.clone(),
+                message: message.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Record `entry` as dropped, joining an existing gap with the same provider,
 /// reason and problem.
 fn add_gap(
@@ -354,6 +411,7 @@ fn add_gap(
             module: entry.module.clone(),
             tools: vec![entry.tool.clone()],
             problem,
+            refusal: None,
         }),
     }
 }
@@ -484,6 +542,11 @@ pub fn catalog(
         .map(|(module, _)| module.clone())
         .collect();
     for (module, reason, problem) in &failed {
+        let refusal = answers
+            .get(*module)
+            .and_then(|answer| answer.as_ref().err())
+            .and_then(run_refusal)
+            .filter(|_| *reason == RefusalReason::RunUnsupported);
         gaps.push(CatalogGap {
             reason: *reason,
             module: (*module).to_owned(),
@@ -493,6 +556,7 @@ pub fn catalog(
                 .map(|entry| entry.tool.clone())
                 .collect(),
             problem: problem.clone(),
+            refusal,
         });
     }
     Ok(ResolvedCatalog {
@@ -510,7 +574,7 @@ mod tests {
     #[test]
     fn exact_run_scope_wire_shapes() {
         let request = Open {
-            agent_id: "agent-1".into(),
+            agent_id: Some("agent-1".into()),
             invoking_scope: Scope {
                 reference: "agent:1".into(),
                 epoch: 7,
@@ -540,6 +604,33 @@ mod tests {
             serde_json::to_value(serde_json::from_value::<Closed>(reply.clone()).unwrap()).unwrap(),
             reply
         );
+    }
+
+    #[test]
+    fn a_worker_run_open_has_no_agent_id_member() {
+        let request = Open {
+            agent_id: None,
+            invoking_scope: Scope {
+                reference: "task:1".into(),
+                epoch: 3,
+            },
+            run_id: "run-1".into(),
+            expires_at_ms: 2_460_123,
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            wire,
+            json!({"invoking_scope":{"ref":"task:1","epoch":3},"run_id":"run-1","expires_at_ms":2_460_123})
+        );
+        assert!(wire.get("agent_id").is_none());
+        // A stored worker open reads back as a worker open, and a stored head
+        // open written before the member became optional still reads.
+        assert_eq!(serde_json::from_value::<Open>(wire).unwrap(), request);
+        let head: Open = serde_json::from_value(
+            json!({"agent_id":"a","invoking_scope":{"ref":"s","epoch":1},"run_id":"r","expires_at_ms":1}),
+        )
+        .unwrap();
+        assert_eq!(head.agent_id.as_deref(), Some("a"));
     }
 }
 
@@ -1046,6 +1137,62 @@ mod call_mode_tests {
                 "codemode can't use mock_read from provider mock: its tool.catalog could not be read: refused (invalid_request): broca does not serve this route target"
             );
         }
+    }
+
+    /// In a worker run the daemon refuses to bind a provider that does not
+    /// declare `worker-runs/v1`. Its tools stay named in the run, each
+    /// carrying the daemon's refusal for the program to see when it calls
+    /// them, while other providers still resolve.
+    #[test]
+    fn a_run_unsupported_refusal_is_kept_for_each_of_the_providers_tools() {
+        let message = "mock does not declare worker-runs/v1";
+        let provider = Provider::answering_each([
+            (
+                "mock",
+                Err(WireError::Refused {
+                    code: TARGET_AGENT_RUN_UNSUPPORTED.into(),
+                    message: message.into(),
+                }),
+            ),
+            (
+                "other",
+                Ok(answer(vec![tool("read", Some(json!(["codemode"])))])),
+            ),
+        ]);
+        let modules = json!({"modules":[
+            provider_module("mock", &[CALL_MODES_CAPABILITY]),
+            provider_module("other", &[CALL_MODES_CAPABILITY]),
+        ]});
+        let resolved = resolve(
+            &provider,
+            &modules,
+            &[entry("read"), module_entry("other", "read"), entry("write")],
+        );
+        assert_eq!(names(&resolved), ["other_read"]);
+        let dropped = gap(&resolved);
+        assert_eq!(dropped.reason, RefusalReason::RunUnsupported);
+        assert_eq!(dropped.reason.code(), "target_agent_run_unsupported");
+        assert_eq!(dropped.tools, ["mock_read", "mock_write"]);
+        assert_eq!(
+            dropped.refusal,
+            Some(ProviderRefusal {
+                code: "target_agent_run_unsupported".into(),
+                message: message.into(),
+            })
+        );
+        assert!(!dropped.message().contains("retrying the run may succeed"));
+        // Any other refusal keeps no refusal for the program.
+        let provider = Provider::answering(Err(WireError::Refused {
+            code: "principal_denied".into(),
+            message: "no".into(),
+        }));
+        let resolved = resolve(
+            &provider,
+            &daemon(&[CALL_MODES_CAPABILITY]),
+            &[entry("read")],
+        );
+        assert_eq!(gap(&resolved).reason, RefusalReason::CatalogUnreadable);
+        assert_eq!(gap(&resolved).refusal, None);
     }
 
     #[test]

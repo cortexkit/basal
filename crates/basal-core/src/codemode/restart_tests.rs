@@ -62,7 +62,7 @@ fn construction_recovers_every_running_row_before_returning() {
     assert_eq!(
         f.host
             .store
-            .read(|c| store::running_counts(c, "agent"))
+            .read(|c| store::running_counts(c, store::RunOwner::Agent("agent")))
             .unwrap(),
         (0, 0)
     );
@@ -341,7 +341,7 @@ fn restart_case(seam: &str, sends: usize, outcomes: &[&str]) {
     assert_eq!(
         f.host
             .store
-            .read(|c| store::running_counts(c, "agent"))
+            .read(|c| store::running_counts(c, store::RunOwner::Agent("agent")))
             .unwrap(),
         (0, 0)
     );

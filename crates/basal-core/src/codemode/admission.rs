@@ -91,6 +91,10 @@ pub struct Unavailable {
     /// A provider refusal code or the reason its catalog entry was dropped.
     pub reason: String,
     pub message: String,
+    /// When set, a call rejects with this refusal's own code and message
+    /// instead of `tool_unavailable`: the daemon refused to bind the provider
+    /// on the run's scope, and the program should see that refusal as sent.
+    pub refusal: Option<basal_host::run_scope::ProviderRefusal>,
 }
 
 /// Permission to register `codemode:<run_id>` and start its fresh worker.
@@ -161,6 +165,11 @@ pub fn admit(
     let checked = (|| {
         let scope = scope_shape(request)?;
         let agent_id = attest(host, &scope, request, None)?;
+        // This path admits agent runs only, so it needs the agent's id too.
+        request
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Refusal::new("invalid_request", "invalid codemode request fields"))?;
         let fields = request_fields(request)?;
         let limits = limits(request.get("limits"))?;
         let resolved = super::models::add_catalog(fields.catalog)
@@ -185,7 +194,8 @@ pub fn admit(
         if let Some(known) = known(tx, fields.run_id)? {
             return Ok(known);
         }
-        let (agent_runs, basal_runs) = store::running_counts(tx, &agent_id)?;
+        let (agent_runs, basal_runs) =
+            store::running_counts(tx, store::RunOwner::Agent(&agent_id))?;
         if agent_runs >= MAX_AGENT_RUNS || basal_runs >= MAX_BASAL_RUNS {
             return Ok(Admission::Refused(Refusal::new(
                 "busy",
@@ -289,6 +299,92 @@ fn attest(
     request: &Value,
     deadline_bounds: Option<(i64, i64)>,
 ) -> Checked<String> {
+    let stamp = described_stamp(host, scope, deadline_bounds)?;
+    let agent_id = stamp
+        .attributes
+        .agent_id
+        .ok_or_else(|| Refusal::new("scope_mismatch", "scope has no attested agent identity"))?;
+    // A record carries at most one of the two; a stamp naming both is not an
+    // agent run's, whatever else it says.
+    if stamp.attributes.on_behalf_of_agent.is_some() {
+        return Err(Refusal::new(
+            "scope_mismatch",
+            "an agent run's scope also names an agent it works on behalf of",
+        ));
+    }
+    // Missing or non-string agent_id and run_id request fields are rejected as
+    // invalid_request by request_fields. Compare only string identities here
+    // so invalid field types are not mislabeled as scope_mismatch. Mismatched
+    // strings refuse before request-field, limit and catalog validation.
+    if request
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id != agent_id)
+    {
+        return Err(Refusal::new(
+            "scope_mismatch",
+            "agent identity does not match the scope",
+        ));
+    }
+    attest_run_id(stamp.attributes.run_id, request.get("run_id"))?;
+    Ok(agent_id)
+}
+
+/// Attests a worker run's scope and returns the head it works for, which basal
+/// records for display and audit only and never acts as. The scope must name
+/// that head in `on_behalf_of_agent` and carry no `agent_id`, `delegates` or
+/// `flow_id`; its parent must be the worker's own scope at the epoch the
+/// worker called from; and its `run_id` must be this run's.
+fn attest_worker(
+    host: &dyn Host,
+    scope: &FlowScope,
+    run_id: &str,
+    invoking: &basal_host::run_scope::Scope,
+    deadline_bounds: Option<(i64, i64)>,
+) -> Checked<String> {
+    let stamp = described_stamp(host, scope, deadline_bounds)?;
+    let attributes = &stamp.attributes;
+    if attributes.agent_id.is_some() || attributes.delegates || attributes.flow_id.is_some() {
+        return Err(Refusal::new(
+            "scope_mismatch",
+            "a worker run's scope carries an agent's identity",
+        ));
+    }
+    let head = attributes
+        .on_behalf_of_agent
+        .clone()
+        .filter(|head| !head.is_empty())
+        .ok_or_else(|| {
+            Refusal::new(
+                "scope_mismatch",
+                "a worker run's scope names no agent it works on behalf of",
+            )
+        })?;
+    let core = Principal::Reserved {
+        module_id: basal_host::subc_catalog::CORE.into(),
+    };
+    if !stamp.parent.as_ref().is_some_and(|parent| {
+        parent.owner == core
+            && parent.scope_ref == invoking.reference
+            && parent.scope_epoch == invoking.epoch
+    }) {
+        return Err(Refusal::new(
+            "scope_mismatch",
+            "a worker run's scope is not a child of the scope that asked for it",
+        ));
+    }
+    attest_run_id(attributes.run_id.clone(), Some(&Value::from(run_id)))?;
+    Ok(head)
+}
+
+/// The live stamp the daemon describes for `scope`, refused unless it is the
+/// requested owner, ref and epoch and its owner may set authority-bearing
+/// attributes.
+fn described_stamp(
+    host: &dyn Host,
+    scope: &FlowScope,
+    deadline_bounds: Option<(i64, i64)>,
+) -> Checked<subc_protocol::scope::ScopeStamp> {
     let description = host
         .scope_describe(&scope.owner, &scope.scope_ref)
         .map_err(|e| Refusal::new("no_scope", format!("scope cannot be attested: {e}")))?;
@@ -314,30 +410,15 @@ fn attest(
     if let Some((requested, core_cap)) = deadline_bounds {
         log_stamp_deadline(stamp.expires_at_ms, requested, core_cap);
     }
-    let agent_id = stamp
-        .attributes
-        .agent_id
-        .ok_or_else(|| Refusal::new("scope_mismatch", "scope has no attested agent identity"))?;
-    // Missing or non-string agent_id and run_id request fields are rejected as
-    // invalid_request by request_fields. Compare only string identities here
-    // so invalid field types are not mislabeled as scope_mismatch. Mismatched
-    // strings refuse before request-field, limit and catalog validation.
-    if request
-        .get("agent_id")
-        .and_then(Value::as_str)
-        .is_some_and(|id| id != agent_id)
-    {
-        return Err(Refusal::new(
-            "scope_mismatch",
-            "agent identity does not match the scope",
-        ));
-    }
-    let run_id = stamp
-        .attributes
-        .run_id
+    Ok(stamp)
+}
+
+/// The stamp must carry a `run_id`, equal to the requested one when the
+/// request names it as a string.
+fn attest_run_id(stamped: Option<String>, requested: Option<&Value>) -> Checked<()> {
+    let run_id = stamped
         .ok_or_else(|| Refusal::new("scope_mismatch", "scope has no attested run identity"))?;
-    if request
-        .get("run_id")
+    if requested
         .and_then(Value::as_str)
         .is_some_and(|id| id != run_id)
     {
@@ -346,7 +427,7 @@ fn attest(
             "run identity does not match the scope",
         ));
     }
-    Ok(agent_id)
+    Ok(())
 }
 
 fn log_stamp_deadline(expiry: Option<u64>, requested: i64, core_cap: i64) {
@@ -384,10 +465,6 @@ fn request_fields(request: &Value) -> Checked<Fields<'_>> {
     let invalid = || Refusal::new("invalid_request", "invalid codemode request fields");
     let run_id = request
         .get("run_id")
-        .and_then(Value::as_str)
-        .ok_or_else(invalid)?;
-    request
-        .get("agent_id")
         .and_then(Value::as_str)
         .ok_or_else(invalid)?;
     let program = request
@@ -480,6 +557,7 @@ impl Catalog {
                     module: module.unwrap_or_default().to_owned(),
                     reason: reason.to_owned(),
                     message,
+                    refusal: None,
                 },
             );
         }
@@ -609,6 +687,7 @@ fn unavailable_tools(
                     module: gap.module.clone(),
                     reason: gap.reason.code().into(),
                     message: gap.message(),
+                    refusal: gap.refusal.clone(),
                 },
             );
         }
@@ -629,19 +708,33 @@ fn valid_name(name: &str) -> bool {
 mod tests;
 
 /// basal-module builds this invocation from the principal and scope the daemon
-/// records when binding the agent's codemode tool route. Agent identity and the
-/// invoking scope come only from that record; bind identity configures provider
-/// workspaces and sessions, not authority. Program arguments supply only code,
-/// a description and lower limits.
+/// records when binding the caller's codemode tool route. The caller's identity
+/// and the invoking scope come only from that record; bind identity configures
+/// provider workspaces and sessions, not authority. Program arguments supply
+/// only code, a description and lower limits.
 pub struct ToolInvocation<'a> {
     pub run_id: &'a str,
-    pub agent_id: &'a str,
+    pub caller: RunCaller<'a>,
     pub invoking_scope: basal_host::run_scope::Scope,
     pub carrier: &'a str,
     pub call_key: Option<&'a str>,
     pub record_scope: &'a str,
     pub custodian: &'a str,
     pub bind_identity: &'a subc_protocol::BindIdentity,
+}
+
+/// Who asked for a codemode run, from the daemon's stamp on the invoking route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunCaller<'a> {
+    /// A head, by the `agent_id` its session scope carries. The run is an
+    /// agent run and counts against that agent's cap.
+    Agent(&'a str),
+    /// A worker session, such as a mason or a sidekick session working for one,
+    /// identified by its own scope (`ToolInvocation::invoking_scope`). Core
+    /// decides whether it may open a run and which head the run works for. The
+    /// run is a worker run: it counts against the worker's own cap, never the
+    /// head's, and basal never acts as that head.
+    Worker,
 }
 
 pub fn admit_tool(
@@ -675,8 +768,15 @@ pub fn admit_tool(
     }
     let started = clock.now_ms();
     let expires_at_ms = started.saturating_add(run_scope::SCOPE_LIFETIME_MS);
-    let mut request = json!({"run_id":invocation.run_id,"agent_id":invocation.agent_id,
+    let agent_id = match invocation.caller {
+        RunCaller::Agent(agent_id) => Some(agent_id),
+        RunCaller::Worker => None,
+    };
+    let mut request = json!({"run_id":invocation.run_id,
         "program":arguments["code"],"catalog":[],"deadline_ms":expires_at_ms});
+    if let Some(agent_id) = agent_id {
+        request["agent_id"] = agent_id.into();
+    }
     if let Some(description) = arguments.get("description") {
         request["description"] = description.clone();
     }
@@ -689,25 +789,34 @@ pub fn admit_tool(
         Err(refusal) => return Ok(Admission::Refused(refusal)),
     };
     let open = run_scope::Open {
-        agent_id: invocation.agent_id.into(),
+        agent_id: agent_id.map(str::to_owned),
         invoking_scope: invocation.invoking_scope.clone(),
         run_id: invocation.run_id.into(),
         expires_at_ms,
+    };
+    // A worker run's cap is the worker's own, keyed by its scope ref; it has
+    // no agent of its own, so its row's agent_id is left empty.
+    let (owner, worker_scope) = match agent_id {
+        Some(agent_id) => (store::RunOwner::Agent(agent_id), None),
+        None => {
+            let reference = invocation.invoking_scope.reference.as_str();
+            (store::RunOwner::Worker(reference), Some(reference))
+        }
     };
     let limits_text = serde_json::to_string(&limits).unwrap();
     let empty_digest = catalog_digest(&json!([])).unwrap();
     let won = store.write(|tx| {
         if let Some(known) = known(tx, invocation.run_id)? { return Ok(Err(known)); }
-        let (agent,total) = store::running_counts(tx,invocation.agent_id)?;
-        if agent >= MAX_AGENT_RUNS || total >= MAX_BASAL_RUNS {
+        let (own,total) = store::running_counts(tx,owner)?;
+        if own >= MAX_AGENT_RUNS || total >= MAX_BASAL_RUNS {
             return Ok(Err(Admission::Refused(Refusal::new("busy","codemode concurrency limit reached"))));
         }
         store::insert_run(tx,&NewRun {
-            run_id:invocation.run_id,agent_id:invocation.agent_id,program:fields.program,
+            run_id:invocation.run_id,agent_id:agent_id.unwrap_or_default(),program:fields.program,
             catalog:"[]",catalog_digest:&empty_digest,description:fields.description,
             limits:&limits_text,scope:"{}",deadline_ms:expires_at_ms,admitted_at:started,
         },None)?;
-        tx.execute("UPDATE codemode_runs SET keyless=?2,program_digest=?3,bind_identity=?4 WHERE run_id=?1",rusqlite::params![invocation.run_id,invocation.call_key.is_none(),blake3::hash(fields.program.as_bytes()).to_hex().to_string(),serde_json::to_string(invocation.bind_identity).unwrap()])?;
+        tx.execute("UPDATE codemode_runs SET keyless=?2,program_digest=?3,bind_identity=?4,worker_scope=?5 WHERE run_id=?1",rusqlite::params![invocation.run_id,invocation.call_key.is_none(),blake3::hash(fields.program.as_bytes()).to_hex().to_string(),serde_json::to_string(invocation.bind_identity).unwrap(),worker_scope])?;
         tx.execute("INSERT INTO codemode_scopes(run_id,request) VALUES (?1,?2)",rusqlite::params![invocation.run_id,serde_json::to_string(&open).unwrap()])?;
         if let Some(key) = invocation.call_key {
             tx.execute("INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian) VALUES (?1,?2,?3,?4,?5)",
@@ -763,13 +872,32 @@ pub fn admit_tool(
                 json!({"code":"scope_mismatch","message":"core changed the immutable run expiry"}),
             );
         }
-        attest(
-            host,
-            &selector,
-            &request,
-            Some((expires_at_ms, opened.expires_at_ms)),
-        )
+        let bounds = Some((expires_at_ms, opened.expires_at_ms));
+        // For a worker run, the head it works for: recorded for display and
+        // audit, never used as the run's identity.
+        let on_behalf_of_agent = match agent_id {
+            Some(_) => attest(host, &selector, &request, bounds).map(|_| None),
+            None => attest_worker(
+                host,
+                &selector,
+                invocation.run_id,
+                &invocation.invoking_scope,
+                bounds,
+            )
+            .map(Some),
+        }
         .map_err(|e| json!({"code":e.code,"message":e.message}))?;
+        if let Some(head) = &on_behalf_of_agent {
+            store
+                .write(|tx| {
+                    tx.execute(
+                        "UPDATE codemode_runs SET on_behalf_of_agent=?2 WHERE run_id=?1 AND status='running'",
+                        rusqlite::params![invocation.run_id, head],
+                    )?;
+                    Ok(())
+                })
+                .map_err(|e| json!({"code":"storage_unavailable","message":e.to_string()}))?;
+        }
         let daemon = transport.catalog().map_err(super::scope::error_value)?;
         // Reading each opted-in provider's own tool catalog makes live calls,
         // so it runs here, outside every store write. The reads go over the
@@ -902,3 +1030,7 @@ pub fn admit_tool(
 #[cfg(test)]
 #[path = "deadline_tests.rs"]
 mod deadline_tests;
+
+#[cfg(test)]
+#[path = "worker_run_tests.rs"]
+mod worker_run_tests;

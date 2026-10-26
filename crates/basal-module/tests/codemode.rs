@@ -208,13 +208,26 @@ impl Transport for Core {
                     );
                 }
                 self.opens.lock().unwrap().push(params.clone());
-                let agent = if *self.mismatch.lock().unwrap() {
-                    "forged"
-                } else {
-                    params["agent_id"].as_str().unwrap()
+                // A worker run (an open with no agent_id) gets the stamp core
+                // gives one: the head it works for, and the worker's own scope
+                // as parent. An agent run gets the agent's id.
+                let attributes = match params.get("agent_id") {
+                    Some(agent) => {
+                        let agent = if *self.mismatch.lock().unwrap() {
+                            "forged"
+                        } else {
+                            agent.as_str().unwrap()
+                        };
+                        json!({"agent_id":agent,"run_id":id})
+                    }
+                    None => json!({"on_behalf_of_agent":"agent","run_id":id}),
                 };
-                let stamp = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":id,"scope_epoch":19,"kind":"ephemeral",
-                        "attributes":{"agent_id":agent,"run_id":id},"owner_authorized":true});
+                let mut stamp = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":id,"scope_epoch":19,"kind":"ephemeral",
+                        "attributes":attributes,"owner_authorized":true});
+                if params.get("agent_id").is_none() {
+                    stamp["parent"] = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},
+                        "ref":params["invoking_scope"]["ref"],"scope_epoch":params["invoking_scope"]["epoch"]});
+                }
                 self.run_stamps.lock().unwrap().insert(
                     id.into(),
                     (
@@ -648,6 +661,106 @@ fn core_scope_shapes_and_stamp_mismatch_prevent_worker_start() {
         [json!({"run_id":open["run_id"],"epoch":19})]
     );
     assert_eq!(rig.core.state.lock().unwrap().0, 0);
+}
+
+/// A worker session's own scope as core stamps it: core-owned and authorized,
+/// kind `worker`, the head it works for named for attribution only, and no
+/// agent_id.
+fn worker_context(scope_ref: &str) -> Context {
+    Context {
+        scope: Some(serde_json::from_value::<ScopeStamp>(json!({
+            "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":scope_ref,"scope_epoch":5,"kind":"worker",
+            "parent":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7},
+            "attributes":{"on_behalf_of_agent":"agent"},"owner_authorized":true})).unwrap()),
+        ..context()
+    }
+}
+
+#[test]
+fn a_worker_scope_runs_a_worker_run_that_names_no_agent() {
+    let rig = rig("worker-run", false);
+    rig.core.release();
+    let result = rig
+        .fixture
+        .module
+        .handle_tool(
+            &worker_context("task-1"),
+            ToolCallRequest::new(
+                "codemode",
+                json!({"code":"return await tools.echo({n:3});"}),
+            )
+            .with_call_key("worker"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(result["structuredContent"]["value"], json!({"n":3}));
+    let id = basal_module::codemode::worker_run_id("task-1", "worker");
+    assert_eq!(result["structuredContent"]["run_id"], id);
+    // Core gets the worker's own scope and no agent_id member at all.
+    let open = rig.core.opens.lock().unwrap()[0].clone();
+    assert_eq!(
+        open,
+        json!({"invoking_scope":{"ref":"task-1","epoch":5},"run_id":id,"expires_at_ms":common::T0+2_460_000})
+    );
+    // The head is recorded for audit; the run has no agent of its own.
+    let recorded: (String, Option<String>, Option<String>) = rig
+        .core
+        .store
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .read(|conn| {
+            Ok(conn.query_row(
+                "SELECT agent_id,worker_scope,on_behalf_of_agent FROM codemode_runs WHERE run_id=?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        recorded,
+        (String::new(), Some("task-1".into()), Some("agent".into()))
+    );
+}
+
+#[test]
+fn a_scope_naming_neither_an_agent_nor_a_worker_is_refused_before_core_is_asked() {
+    let rig = rig("worker-run-refused", false);
+    let shapes = [
+        // A head's scope that names no agent.
+        json!({"kind":"head","attributes":{"on_behalf_of_agent":"agent"},"owner_authorized":true}),
+        // A worker scope core does not vouch for.
+        json!({"kind":"worker","attributes":{"on_behalf_of_agent":"agent"},"owner_authorized":false}),
+        // A worker run's own scope: codemode never runs inside a run.
+        json!({"kind":"worker","attributes":{"on_behalf_of_agent":"agent","run_id":"r"},"owner_authorized":true}),
+    ];
+    for shape in shapes {
+        let mut stamp = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"task-1","scope_epoch":5});
+        stamp
+            .as_object_mut()
+            .unwrap()
+            .extend(shape.as_object().unwrap().clone());
+        let caller = Context {
+            scope: Some(serde_json::from_value::<ScopeStamp>(stamp).unwrap()),
+            ..context()
+        };
+        let error = rig
+            .fixture
+            .module
+            .handle_tool(
+                &caller,
+                ToolCallRequest::new("codemode", json!({"code":"return 1;"})).with_call_key("x"),
+                Duration::from_secs(10),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "scope_mismatch", "{shape}");
+    }
+    assert!(rig.core.opens.lock().unwrap().is_empty());
 }
 
 #[test]

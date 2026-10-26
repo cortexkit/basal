@@ -183,6 +183,11 @@ pub fn manifest() -> ModuleManifest {
                 cortexkit_role_tool_provider::PROVIDES.into(),
                 cortexkit_role_tool_provider::CALL_MODES_CAPABILITY.into(),
                 "flow-install-policy/v1".into(),
+                // basal reads a worker run's `on_behalf_of_agent` from the
+                // daemon's description of the run's scope, which the daemon
+                // includes only for a module declaring this. basal treats
+                // the field as attribution only and never acts as that agent.
+                subc_protocol::scope::SCOPE_ON_BEHALF_OF_CAPABILITY.into(),
             ],
             requires: vec![],
             must_never_reach: vec![],

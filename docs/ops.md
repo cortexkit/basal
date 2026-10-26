@@ -649,6 +649,7 @@ Basal records the run before calling core's `codemode.run_scope.open` over its o
 ```json
 {"agent_id":"string","invoking_scope":{"ref":"string","epoch":"integer"},"run_id":"string","expires_at_ms":"integer"}
 ```
+For a worker session's call (a [worker run](codemode.md#worker-runs)) the request has no `agent_id` member, and `invoking_scope` is the worker's own scope; core derives the head the run works for from it.
 Core replies:
 ```json
 {"scope":{"ref":"string","epoch":"integer"},"expires_at_ms":"integer","catalog":[{"tool":"string","module":"string","op":"string"}],"preset?":"head | worker | reader"}

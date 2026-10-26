@@ -124,23 +124,30 @@ impl Codemode {
         let Some(scope) = &context.scope else {
             return Err(ErrorBody::new("no_scope", "codemode needs an agent scope"));
         };
-        let crate::caller::Caller::Agent { agent_id, .. } =
-            crate::caller::from_route(Some(&context.principal), Some(scope))
-        else {
-            return Err(ErrorBody::new(
-                "scope_mismatch",
-                "the stamp does not identify a core-owned agent",
-            ));
-        };
         if scope.attributes.run_id.is_some() {
             return Err(ErrorBody::new(
                 "scope_mismatch",
                 "codemode cannot recurse from a run scope",
             ));
         }
-        let id = match &request.call_key {
-            Some(key) => run_id(&agent_id, key),
-            None => random_id()?,
+        // A head runs programs as itself. A worker session (a mason, or a
+        // sidekick session working for a head or a mason) runs them as a
+        // worker run: core decides whether the worker may, and which head the
+        // run works for, and basal never acts as that head.
+        let caller = match crate::caller::from_route(Some(&context.principal), Some(scope)) {
+            crate::caller::Caller::Agent { agent_id, .. } => Some(agent_id),
+            _ if crate::caller::worker_scope(scope).is_some() => None,
+            _ => {
+                return Err(ErrorBody::new(
+                    "scope_mismatch",
+                    "the stamp does not identify a core-owned agent or worker",
+                ));
+            }
+        };
+        let id = match (&request.call_key, &caller) {
+            (Some(key), Some(agent_id)) => run_id(agent_id, key),
+            (Some(key), None) => worker_run_id(&scope.scope_ref, key),
+            (None, _) => random_id()?,
         };
         let _admission = self.admission.lock().unwrap();
         if cancelled() {
@@ -174,7 +181,10 @@ impl Codemode {
         };
         let invocation = admission::ToolInvocation {
             run_id: &id,
-            agent_id: &agent_id,
+            caller: match &caller {
+                Some(agent_id) => admission::RunCaller::Agent(agent_id),
+                None => admission::RunCaller::Worker,
+            },
             invoking_scope: basal_host::run_scope::Scope {
                 reference: scope.scope_ref.clone(),
                 epoch: scope.scope_epoch,
@@ -417,6 +427,20 @@ pub fn run_id(agent: &str, key: &str) -> String {
     let mut hash = blake3::Hasher::new();
     hash.update(b"basal/codemode/run/v1\0");
     for field in [agent, key] {
+        hash.update(&(field.len() as u64).to_be_bytes());
+        hash.update(field.as_bytes());
+    }
+    hash.finalize().to_hex().to_string()
+}
+
+/// A worker's keyed run id: the worker's own scope ref and the call key,
+/// framed like [`run_id`] but in a hash domain of its own, so a worker's id
+/// never equals an agent's even when the agent id and scope ref are the same
+/// text.
+pub fn worker_run_id(scope_ref: &str, key: &str) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"basal/codemode/worker-run/v1\0");
+    for field in [scope_ref, key] {
         hash.update(&(field.len() as u64).to_be_bytes());
         hash.update(field.as_bytes());
     }
