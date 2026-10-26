@@ -1,7 +1,7 @@
 Run a short JavaScript program that calls your own tools and returns one result.
 
 - Call a tool with `await tools.<name>(input)`, using the same name as a direct call. Inside a program, tools take field names from their catalog schema, which can differ from your direct tool's; a refused call names the fields it expects. A program gets the tools whose providers serve codemode, and `Object.keys(tools)` lists them. Not every tool is available yet; calling a missing one throws an error that names it and lists the available ones. The tool decides allow, ask and deny exactly as for a direct call, and an ask waits for its answer.
-- `tools.model({prompt, system?, max_output?})` asks a model for one completion, and `tools.classify({text, labels})` picks one label; both count against the run's model budget (20 calls, 200,000 tokens).
+- `tools.model({prompt, system?, max_output?})` asks a model for one completion; a run may make 20 such calls, using up to 200,000 tokens. `tools.llm_classify({model, questions, item, max_cost_usd})` classifies an item; its calls share a $0.50 budget per run, which `limits.model_cost_usd` can lower.
 - `console.log(...)` output is captured, up to 64 KiB.
 - `await sleep(ms)` pauses for 0 to 10,000 ms; it uses wall time only, not CPU time or tool calls.
 - `await waitFor(condition, {timeout, interval})` calls `condition` every `interval` ms (default 500, at least 250) until it returns something truthy, and returns that; after `timeout` ms (default and maximum 30,000) it throws with `error.code` `wait_timeout`.
