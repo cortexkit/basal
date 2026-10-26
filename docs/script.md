@@ -265,6 +265,15 @@ the approved audience at delivery time. A refusal such as
 `sink_target_not_in_audience` reaches the script unchanged, so it can catch the
 rejection. Membership is not cached at install or decided by the script.
 
+A placeholder is never a recipient. When a digest, digest withdrawal, status,
+board or facts call names `$audience`, or any other `$`-prefixed name that basal
+did not resolve (`$self` outside a template or package instance), basal refuses
+it before sending with `sink_target_placeholder` and the message `"$audience" is
+a manifest placeholder; pass the recipient's agent id`; for an agent audience
+the message also names the approved agent id. The refusal is journaled as an
+unsent local rejection like other manifest refusals, and capture dry runs
+refuse the call the same way, so a preview catches the mistake.
+
 Any author may request a workspace or global audience through `flow.install`;
 the requester does not grant that reach. Core allows self installs by default,
 asks for workspace installs by default (configurable), and always asks for

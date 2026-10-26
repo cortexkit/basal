@@ -243,6 +243,65 @@ fn status_group_is_validated_at_install_and_dry_run() {
 }
 
 #[test]
+fn capture_mode_refuses_a_placeholder_recipient_before_sending() {
+    use basal_module::dryrun::{DryRunRequest, DryTrigger, Mode};
+    let f = fixture("dry-placeholder-target", Options::default());
+    f.catalog.add_agent("agent_cloud");
+    let mut manifest = audience_op_manifest(
+        "flow-placeholder-target",
+        json!({"kind":"agent","id":"agent_cloud"}),
+        "echo",
+        false,
+    );
+    manifest["board"] = json!([{"agent":"$audience","title":"Work"}]);
+    // Each call's rejection code and message, or "sent" if nothing refused it.
+    let script = "const seen = [];\n\
+                  const attempt = async (call) => { try { await call(); seen.push('sent'); }\n\
+                    catch (e) { seen.push(e.data.code + ': ' + e.data.message); } };\n\
+                  await attempt(() => sink.digest.withdraw('$audience', { replace_key: 'runner-alert' }));\n\
+                  await attempt(() => sink.digest('$audience', { title: 'alert' }));\n\
+                  await attempt(() => sink.status('$audience', 'ok'));\n\
+                  await attempt(() => sink.board.append('$audience', 'alert'));\n\
+                  await attempt(() => sink.digest('$self', { title: 'alert' }));\n\
+                  await attempt(() => sink.digest('agent_cloud', { title: 'alert' }));\n\
+                  return seen;";
+    let summary = f
+        .module
+        .dry
+        .run(&DryRunRequest {
+            script: script.into(),
+            manifest: manifest.to_string(),
+            author: "operator".into(),
+            loop_override: false,
+            mode: Mode::Capture,
+            trigger: DryTrigger::Synthetic(json!({})),
+            now_ms: common::T0,
+        })
+        .expect("dry run");
+    let run = &summary["runs"][0];
+    assert_eq!(run["state"], "succeeded", "{run:#}");
+    let refused = |name: &str| {
+        format!(
+            "sink_target_placeholder: \"{name}\" is a manifest placeholder; pass the recipient's agent id (agent_cloud is this flow's approved audience)"
+        )
+    };
+    let result = run["result"].as_array().expect("result list");
+    for (index, name) in ["$audience", "$audience", "$audience", "$audience", "$self"]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(result[index], refused(name), "call {index}: {run:#}");
+        assert_eq!(calls(run)[index]["action"], "refused", "{run:#}");
+    }
+    // A concrete recipient still reaches the capture host.
+    assert!(
+        result[5].as_str().unwrap().starts_with("captured:"),
+        "{run:#}"
+    );
+    assert_eq!(f.mock.total_sends(), 0);
+}
+
+#[test]
 fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
     use std::sync::Arc;
 

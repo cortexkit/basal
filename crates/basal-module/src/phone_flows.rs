@@ -331,6 +331,23 @@ fn runs(c: &rusqlite::Connection, flow_id: &str, limit: u32) -> basal_core::Resu
         .collect()
 }
 
+/// The longest failure line `flow.list` shows, in characters, ellipsis included.
+const FAILURE_LINE_CHARS: usize = 200;
+
+/// A run's stored error detail as `flow.list` shows it: flattened to one plain
+/// line like the phone's run list, then cut to [`FAILURE_LINE_CHARS`]
+/// characters, ending in an ellipsis when anything was cut.
+pub(super) fn failure_line(detail: &str) -> String {
+    let line = one_line(detail, usize::MAX);
+    if line.chars().count() <= FAILURE_LINE_CHARS {
+        return line;
+    }
+    let mut cut: String = line.chars().take(FAILURE_LINE_CHARS - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
+}
+
 /// Keep registry text and failure details on one plain line, bounded by UTF-8
 /// bytes rather than characters so a phone never receives half a code point.
 fn one_line(text: &str, max_bytes: usize) -> String {
@@ -492,5 +509,15 @@ mod tests {
             "alinkz"
         );
         assert_eq!(one_line(" \n hello\rworld\t", 200), "hello world");
+    }
+
+    #[test]
+    fn list_failure_line_is_one_line_and_cut_with_an_ellipsis() {
+        assert_eq!(failure_line("HostError: no\n    at run"), "HostError: no at run");
+        let exact = "é".repeat(FAILURE_LINE_CHARS);
+        assert_eq!(failure_line(&exact), exact);
+        let cut = failure_line(&format!("{exact}x"));
+        assert_eq!(cut.chars().count(), FAILURE_LINE_CHARS);
+        assert_eq!(cut, format!("{}…", "é".repeat(FAILURE_LINE_CHARS - 1)));
     }
 }

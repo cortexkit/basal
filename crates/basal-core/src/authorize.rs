@@ -74,6 +74,9 @@ pub mod codes {
     pub const DIGEST_REPLACE_KEY_UNSUPPORTED: &str = "digest_replace_key_unsupported";
     /// The refusal code when prefrontal-core cannot withdraw a pending digest item.
     pub const DIGEST_WITHDRAW_UNSUPPORTED: &str = "digest_withdraw_unsupported";
+    /// The refusal code when a script names a manifest placeholder such as
+    /// `$audience` as a call's recipient instead of a concrete agent.
+    pub const SINK_TARGET_PLACEHOLDER: &str = "sink_target_placeholder";
 }
 
 /// The module ops a flow may never call, even when its manifest lists
@@ -141,6 +144,49 @@ fn agent_arg(args: &Value, primitive: Primitive) -> Result<&str, Refusal> {
             format!("{} needs an agent name", primitive.name()),
         )
     })
+}
+
+/// Refuses a sink, status, board or facts call whose recipient is a manifest
+/// placeholder (any name starting with `$`, such as `$audience`).
+///
+/// Placeholders belong in the manifest's grants only; a call must name the
+/// concrete agent it writes to. Without this check the call would be sent
+/// and prefrontal-core would refuse it at delivery, which a capture dry run
+/// never reaches, so the mistake would only show up as live run failures.
+/// Run it after the driver has replaced `$self` with a package or template
+/// owner's id, so only placeholders nothing resolved are refused.
+pub fn placeholder_target(
+    manifest: &Manifest,
+    kind: &CallKind,
+    args: &Value,
+) -> Result<(), Refusal> {
+    if !matches!(
+        kind,
+        CallKind::Primitive(
+            Primitive::SinkDigest
+                | Primitive::SinkStatus
+                | Primitive::SinkBoard
+                | Primitive::SinkWaitResolve
+                | Primitive::Facts
+        )
+    ) {
+        return Ok(());
+    }
+    let Some(target) = args
+        .get("agent")
+        .and_then(Value::as_str)
+        .filter(|agent| agent.starts_with('$'))
+    else {
+        return Ok(());
+    };
+    let mut message =
+        format!("\"{target}\" is a manifest placeholder; pass the recipient's agent id");
+    if let Some(crate::manifest::Audience::Agent { id }) = &manifest.audience
+        && !id.starts_with('$')
+    {
+        message.push_str(&format!(" ({id} is this flow's approved audience)"));
+    }
+    Err(Refusal::new(codes::SINK_TARGET_PLACEHOLDER, message))
 }
 
 /// Resolve grants against the admission-time owner, never a mutable agent name.

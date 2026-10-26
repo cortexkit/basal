@@ -218,6 +218,14 @@ fn remaining_actions_have_plain_text_instead_of_json() {
             ]}),
             "watch: enabled; approved version 2; last run failed (run-1)\npending: pending; approved version none; last run none",
         ),
+        (
+            "list",
+            json!({"flows":[
+                {"flow_id":"alerts","state":"enabled","approved_version":3,"last_run":{"run_id":"run-9","state":"failed","ended_at":0,"error_kind":"script","error":"HostError: target $audience is not in audience"}},
+                {"flow_id":"quiet","state":"enabled","approved_version":1,"last_run":{"run_id":"run-2","state":"succeeded","ended_at":0}}
+            ]}),
+            "alerts: enabled; approved version 3; last run failed (run-9) at 1970-01-01T00:00:00Z; script: HostError: target $audience is not in audience\nquiet: enabled; approved version 1; last run succeeded (run-2)",
+        ),
     ] {
         assert_eq!(summary(action, &result), expected, "{action}");
     }

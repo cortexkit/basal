@@ -1206,6 +1206,9 @@ impl Activation<'_> {
         {
             args["agent"] = Value::String(agent.to_owned());
         }
+        // Before the board target is looked up in the registry, so a
+        // placeholder is refused for what it is rather than as an unknown agent.
+        authorize::placeholder_target(manifest, &call.kind, &args)?;
         let resolved_manifest = if matches!(call.kind, CallKind::Primitive(Primitive::SinkBoard))
             && !manifest.board.is_empty()
         {
