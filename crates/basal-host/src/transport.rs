@@ -287,6 +287,11 @@ pub fn map_error(error: CallError) -> WireError {
 /// through [`refusal`] instead.
 fn run_scope_error(error: CallError) -> WireError {
     match error {
+        // Scope-state refusals (`scope_ended`, `scope_changed`, ...) describe
+        // the run's own scope, and the supervisor reads them as typed reasons
+        // to end the run or retry a withdrawal, so they keep `refusal`'s
+        // mapping.
+        CallError::Module(body) if body.code.starts_with("scope_") => refusal(body),
         CallError::Module(body) => provider_refusal(body),
         // Everything else keeps `map_error`'s meaning: a request that never
         // left or whose outcome is unknown is not the provider's refusal. A
@@ -2276,14 +2281,14 @@ mod tests {
 
     #[test]
     fn run_tool_other_bind_refusals_and_sent_requests_are_never_retried() {
-        use crate::flow_refusal::RefusalReason::ScopeEnded;
+        use crate::flow_refusal::RefusalReason::{ScopeChanged, ScopeEnded};
         // A terminal bind refusal is not re-opened.
         let (result, opened, sent) = reopen_trace(vec![Err(bind_refused(ScopeEnded))], vec![]);
         assert!(matches!(result, Err(WireError::Typed(_))));
         assert_eq!((opened, sent), (1, 0));
         // The provider received the request and answered scope_changed: the
-        // answer reaches the program as the provider sent it, never followed
-        // by a second request.
+        // answer is returned as the scope reason the supervisor reads, never
+        // followed by a second request.
         let (result, opened, sent) = reopen_trace(
             vec![Ok(1)],
             vec![Err(CallError::Module(subc_protocol::ErrorBody::new(
@@ -2292,7 +2297,7 @@ mod tests {
             )))],
         );
         assert!(
-            matches!(&result, Err(WireError::Refused { code, message }) if code == "scope_changed" && message == "changed"),
+            matches!(&result, Err(WireError::Typed(refusal)) if refusal.reason == ScopeChanged),
             "{result:?}"
         );
         assert_eq!((opened, sent), (1, 1));
@@ -2310,9 +2315,9 @@ mod tests {
                 "run:call:1",
                 &options,
             );
-            // The program reads the provider's own code and message.
+            // A scope-state refusal keeps its typed reason.
             assert!(
-                matches!(&result, Err(WireError::Refused { code, message }) if code == "scope_changed" && message == "changed"),
+                matches!(&result, Err(WireError::Typed(refusal)) if refusal.reason == crate::flow_refusal::RefusalReason::ScopeChanged),
                 "{result:?}"
             );
             assert_eq!(requests_named(&calls, "changed_after_send"), 1);
