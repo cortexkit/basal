@@ -108,8 +108,36 @@ pub fn valid_room_text(text: &str) -> bool {
 /// Whether the text asks to mention every member with `@all`, which a flow
 /// may never do. Core also refuses it, as `room_all_mention_refused`; basal
 /// checks first so a live run never posts and a preview says the same.
+///
+/// The rule is core's room mention token rule, so both sides refuse the same
+/// texts. `@` must start the text or follow a character that is neither
+/// alphanumeric nor `_`. Then comes `all` in any ASCII case. It must end the
+/// text or be followed by a character that is not alphanumeric, `_`, `-` or a
+/// combining mark. So `hi @all.` matches; `@allison`, `ops@alltrails.com` and
+/// `@all-ops` don't.
 pub fn mentions_all_members(text: &str) -> bool {
-    text.to_ascii_lowercase().contains("@all")
+    use unicode_general_category::{GeneralCategory, get_general_category};
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let combining = |c: char| {
+        matches!(
+            get_general_category(c),
+            GeneralCategory::NonspacingMark
+                | GeneralCategory::SpacingMark
+                | GeneralCategory::EnclosingMark
+        )
+    };
+    text.match_indices('@').any(|(at, _)| {
+        let boundary_before = text[..at].chars().next_back().is_none_or(|c| !word(c));
+        let rest = &text[at + 1..];
+        boundary_before
+            && rest.len() >= 3
+            && rest.is_char_boundary(3)
+            && rest[..3].eq_ignore_ascii_case("all")
+            && rest[3..]
+                .chars()
+                .next()
+                .is_none_or(|c| !(word(c) || c == '-' || combining(c)))
+    })
 }
 
 /// Whether an id is a stable agent id: the agent name alphabet agent ids are
@@ -631,5 +659,33 @@ pub fn check(
             | Primitive::GitDiff
             | Primitive::NetFetch => builtin_grant(manifest, *p, args).map(|_| ()),
         },
+    }
+}
+
+#[cfg(test)]
+mod room_mention_tests {
+    use super::mentions_all_members;
+
+    /// prefrontal-core's own cases for its room mention token rule
+    /// (`all_mention_helper_matches_room_parser_token_boundaries`), so basal
+    /// refuses exactly the posts core refuses.
+    #[test]
+    fn all_mention_matches_cores_token_boundaries() {
+        for text in ["@all", "hi @all.", "\n@ALL!", ".@all"] {
+            assert!(mentions_all_members(text), "{text:?} should match");
+        }
+        for text in [
+            "@allison",
+            "ops@alltrails.com",
+            "word@all",
+            "_@all",
+            "é@all",
+            "@all-ops",
+            "@all_ops",
+            "@allé",
+            "@all\u{301}",
+        ] {
+            assert!(!mentions_all_members(text), "{text:?} should not match");
+        }
     }
 }

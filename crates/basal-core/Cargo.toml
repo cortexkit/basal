@@ -35,6 +35,7 @@ sha2.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 subc-protocol.workspace = true
 tracing.workspace = true
+unicode-general-category.workspace = true
 
 [dev-dependencies]
 # Give this dependency a different name so --features basal-core/test-support

@@ -112,6 +112,7 @@ dependencies = [
  "sha2",
  "subc-protocol",
  "tracing",
+ "unicode-general-category",
 ]
 
 [[package]]

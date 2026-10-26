@@ -62,6 +62,9 @@ jsonschema = { version = "0.47", default-features = false }
 # Checks SHA-256 of contract evidence and test vectors against the digests
 # published by their owners.
 sha2 = "0.10"
+# Tells combining marks apart, so a flow room post's `@all` check uses the
+# same token boundary as prefrontal-core's room mention parser.
+unicode-general-category = "1.1"
 # The module shell. subc-client-rs owns HELLO, route binding, health and the
 # frame lifecycle; subc-protocol is the manifest and route vocabulary it
 # speaks. Keep the scope-stamp reader current with the protocol.
