@@ -287,11 +287,6 @@ fn install_and_dry_run_apply_audience_authorship_and_resolution() {
     }
     for (n, caller, audience) in [
         (
-            0,
-            agent("agent_owner"),
-            json!({"kind":"agent","id":"SYNAPSE"}),
-        ),
-        (
             1,
             agent("agent_owner"),
             json!({"kind":"agent","id":"agent_owner"}),
@@ -320,6 +315,124 @@ fn install_and_dry_run_apply_audience_authorship_and_resolution() {
             )
             .unwrap();
     }
+}
+
+#[test]
+fn agent_audience_names_are_refused_at_install() {
+    let f = fixture("audience-stable-install", Options::default());
+    let stable = "agent_fb7fb88282f843b5";
+    f.catalog.add_named_agent(stable, "CLOUD");
+    for (n, caller) in [Caller::Operator, agent(stable), Caller::Local]
+        .into_iter()
+        .enumerate()
+    {
+        let id = format!("named-{n}");
+        let m = audience_manifest(&id, json!({"kind":"agent","id":"CLOUD"}));
+        let err = f
+            .module
+            .handle(
+                &caller,
+                "flow.install",
+                json!({"script":"return 1;","manifest":m.to_string()}),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "audience_id_not_stable");
+        assert_eq!(
+            err.message,
+            "audience.id \"CLOUD\" is a name; use the agent's stable id \"agent_fb7fb88282f843b5\""
+        );
+        assert_eq!(err.detail, Some(json!({"written":"CLOUD","stable":stable})));
+        assert!(f.module.rt.flow(&id).unwrap().is_none());
+    }
+    assert!(f.consent.cards().is_empty());
+    let m = audience_manifest("stable", json!({"kind":"agent","id":stable}));
+    let text = m.to_string();
+    let reply = install(&f, &agent(stable), "return 1;", &m);
+    assert_eq!(reply["state"], "pending");
+    assert!(reply["dry_run"].get("error").is_none(), "{reply}");
+    let stored: String = f
+        .module
+        .rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT manifest FROM installs WHERE flow_id='stable'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(stored, text);
+}
+
+#[test]
+fn agent_audience_packages_still_require_self() {
+    let f = fixture("audience-package-self", Options::default());
+    f.catalog.add_named_agent("agent_fb7fb88282f843b5", "CLOUD");
+    for id in ["CLOUD", "agent_fb7fb88282f843b5"] {
+        let m = audience_manifest("package-reach", json!({"kind":"agent","id":id}));
+        let err = f
+            .module
+            .handle(
+                &Caller::Core,
+                "package.register",
+                json!({"script":"return 1;","manifest":m.to_string()}),
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "package_names_agent");
+    }
+    let m = audience_manifest("package-reach", json!({"kind":"agent","id":"$self"}));
+    f.module
+        .handle(
+            &Caller::Core,
+            "package.register",
+            json!({"script":"return 1;","manifest":m.to_string()}),
+        )
+        .unwrap();
+}
+
+#[test]
+fn stored_agent_audience_name_lists_but_dry_run_refuses() {
+    let f = fixture("audience-stored-name", Options::default());
+    let stable = "agent_fb7fb88282f843b5";
+    f.catalog.add_named_agent(stable, "CLOUD");
+    let text = audience_manifest("legacy", json!({"kind":"agent","id":"CLOUD"})).to_string();
+    let m = Manifest::parse_stored(&text).unwrap();
+    assert_eq!(
+        m.audience,
+        Some(basal_core::manifest::Audience::Agent { id: "CLOUD".into() })
+    );
+    let request = InstallRequest {
+        script: "return 1;".into(),
+        manifest: text,
+        author: stable.into(),
+        loop_override: false,
+    };
+    // Record the old version directly, as if it predates intake's stable-id rule.
+    f.module
+        .rt
+        .store()
+        .write(|tx| {
+            basal_core::install::record(tx, &m, &request, Vec::new(), T0).unwrap();
+            Ok(())
+        })
+        .unwrap();
+    let list = f
+        .module
+        .handle(&Caller::Operator, "flow.list", json!({}))
+        .unwrap();
+    assert_eq!(list["flows"][0]["flow_id"], "legacy");
+    assert_eq!(list["flows"][0]["pending_version"], 1);
+    let err = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.dry_run",
+            json!({"flow_id":"legacy","trigger":{}}),
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "audience_id_not_stable");
+    assert_eq!(err.detail, Some(json!({"written":"CLOUD","stable":stable})));
 }
 
 #[test]
