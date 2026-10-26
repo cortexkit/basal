@@ -867,8 +867,13 @@ impl Driver {
         let sleep = self.sleeps.first().map_or(i64::MAX, |(due, _)| {
             due.saturating_sub(self.shared.clock.now_ms())
         });
-        let remaining = deadline.min(sleep).max(0);
-        let wait = Duration::from_millis(remaining as u64);
+        let remaining = deadline.min(sleep);
+        // A wait of zero means something is due, but a countdown that reaches
+        // zero does not: `wall` decides the deadline after adding the
+        // person-wait allowance back, so nothing may actually be due. A
+        // zero-length receive returns at once without blocking on the events,
+        // so the driver needs this floor to keep waiting either way.
+        let wait = Duration::from_millis(remaining.max(1) as u64);
         #[cfg(test)]
         {
             let hook = self.shared.before_wait.lock().unwrap().clone();
