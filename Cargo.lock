@@ -98,6 +98,7 @@ dependencies = [
  "basal-host",
  "basal-proto",
  "blake3",
+ "cortexkit-llm-tools",
  "cortexkit-role-tool-provider",
  "cortexkit-store",
  "cortexkit-store-types",
@@ -222,6 +223,7 @@ dependencies = [
  "basal-proto",
  "basal-testkit",
  "blake3",
+ "cortexkit-llm-tools",
  "cortexkit-test-support",
  "jiff",
  "libc",
@@ -443,6 +445,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cortexkit-llm-tools"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "233083985c55934bba91982bc4650719895ae236e00ebe48e4db8e52e0dd2d32"
+dependencies = [
+ "cortexkit-model-batch",
+ "cortexkit-role-classifier",
+ "cortexkit-role-extractor",
+ "indexmap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cortexkit-log"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -457,11 +473,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "cortexkit-model-batch"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ba8a82cd36445c06658fc3383334fc9cdc45c936bf68b7b6d0f13b07b154571"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "cortexkit-resource-busy"
 version = "0.1.0"
 source = "git+https://github.com/cortexkit/commons?rev=c46f324133c5df6411703714e4c147f7cc8554a0#c46f324133c5df6411703714e4c147f7cc8554a0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "cortexkit-role-classifier"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95b013902af700747a64b9da9d529643bbe320095deb5fc4ae0c5e071fdae264"
+dependencies = [
+ "cortexkit-model-batch",
+ "indexmap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cortexkit-role-extractor"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62372f03db4c981cd47da7530ec28e0a55a3a11a022ddb3a1526e0774f1d04a7"
+dependencies = [
+ "cortexkit-model-batch",
+ "indexmap",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1166,6 +1219,18 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "indexmap"
+version = "2.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
+dependencies = [
+ "equivalent",
+ "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

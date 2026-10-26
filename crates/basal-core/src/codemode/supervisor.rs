@@ -416,6 +416,11 @@ impl Supervisor {
             value["keyless"] = keyless.into();
             value["person_wait_ms"] = person.into();
             value["call_count"] = count.into();
+            let limits: super::admission::Limits = serde_json::from_str(&run.limits)
+                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            let spent = crate::classify_cost::spent(conn, "program", id)?;
+            value["budgets"] = json!({"model_cost_usd": {"limit":limits.model_cost_usd,
+                "spent":spent,"remaining":limits.model_cost_usd - spent}});
             if let Some(result) = run.value { value["value"] = parse(&result)?; }
             if let Some(error) = run.error { value["error"] = json!({"code": error.code, "message": error.message}); }
             if let Some(description) = run.description { value["description"] = description.into(); }
@@ -1129,8 +1134,28 @@ impl Driver {
                 .custody
                 .remove(&module, &self.run.run_id, answer.call.position);
         }
+        let cost_value = answer
+            .result
+            .as_ref()
+            .ok()
+            .and_then(|value| value.get("cost_usd"))
+            .map(|cost| json!({"cost_usd":cost}));
         let mapped = mapped.unwrap_or_else(|| map_answer(answer.result));
+        let cost_value = cost_value.or_else(|| {
+            mapped
+                .value
+                .as_ref()
+                .and_then(|value| serde_json::from_str::<Value>(value.as_str()).ok())
+        });
         if self.shared.store.write(|tx| {
+            crate::classify_cost::settle(
+                tx,
+                "program",
+                &self.run.run_id,
+                answer.call.position,
+                cost_value.as_ref(),
+                mapped.code.as_deref(),
+            )?;
             super::models::settle(
                 tx,
                 &self.run.run_id,
@@ -1420,13 +1445,16 @@ impl Driver {
         let Some(tool) = self.start.tools.get(name) else {
             return self.refuse(call, Outcome::Refused, "unknown_tool", true);
         };
-        let input: Value = match serde_json::from_str(call.args.as_str()) {
+        let mut input: Value = match serde_json::from_str(call.args.as_str()) {
             Ok(value) => value,
             Err(_) => {
                 let mapped = invalid_input(name, &tool.input_schema, None);
                 return self.refuse_input(call, mapped);
             }
         };
+        if tool.classify_cost && input.is_object() && input.get("max_cost_usd").is_none() {
+            input["max_cost_usd"] = 0.into();
+        }
         if !tool.input_schema.is_valid(&input) {
             let mapped = invalid_input(name, &tool.input_schema, Some(&input));
             return self.refuse_input(call, mapped);
@@ -1492,7 +1520,7 @@ impl Driver {
         self.deliver(&call, mapped)
     }
 
-    fn dispatch(&mut self, call: HostCall, queued: bool) -> Result<()> {
+    fn dispatch(&mut self, mut call: HostCall, queued: bool) -> Result<()> {
         if self.wall()? {
             return Ok(());
         }
@@ -1533,11 +1561,44 @@ impl Driver {
         }
         let module = tool.module.clone();
         let op = tool.op.clone();
+        let classify_cost = tool.classify_cost;
         if self.wall()? {
             return Ok(());
         }
         if !queued {
             self.insert(&call, CallStart::Queued)?;
+        }
+        if classify_cost {
+            let mut input: Value =
+                serde_json::from_str(call.args.as_str()).expect("validated input");
+            let prepared = self.shared.store.write(|tx| {
+                crate::classify_cost::reserve(
+                    tx,
+                    "program",
+                    &self.run.run_id,
+                    call.position,
+                    None,
+                    self.shared.clock.now_ms(),
+                    self.start.limits.model_cost_usd,
+                    None,
+                    &mut input,
+                )
+            })?;
+            if let Err(error) = prepared {
+                let mapped = map_answer(Err(error));
+                self.shared.store.write(|tx| {
+                    store::record_outcome(
+                        tx,
+                        &self.run.run_id,
+                        call.position,
+                        mapped.outcome,
+                        mapped.code.as_deref(),
+                        self.shared.clock.now_ms(),
+                    )
+                })?;
+                return self.deliver(&call, mapped);
+            }
+            call.args = JsonText::new(input.to_string()).expect("bounded classify input");
         }
         let store = DispatchStore::new(
             self.shared.store.clone(),
@@ -1768,6 +1829,9 @@ impl Driver {
                 rejection["reason"] = json!(reason);
             }
             if let Some(detail) = mapped.detail {
+                if let Some(budget) = detail.get("budget") {
+                    rejection["budget"] = budget.clone();
+                }
                 rejection["detail"] = detail;
             }
             let rejection = rejection.to_string();
@@ -2094,6 +2158,7 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
         }) => {
             let mut mapped = map_answer(Err(WireError::Refused { code, message }));
             mapped.reason = detail["reason"].as_str().map(str::to_owned);
+            mapped.detail = Some(detail);
             mapped
         }
         Err(WireError::Refused { code, message }) => Mapped::rejected(

@@ -31,6 +31,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `ops` | list of op references | no | `[]` | Every module op the flow may call. Anything else is refused at run time. |
 | `facts` | facts grant | no | none | Whose facts the flow may read. Without it, `facts()` is refused. |
 | `llm` | model grant | no | none | Without it, `llm()` and `classify()` are refused. |
+| `model_cost_usd` | `{per_run, usd, window}` | for tagged classifier ops | none | Dollar caps for `llm.classify/v1` op grants; see classifier dollar caps below. |
 | `fs` | `{read?, write?}` lists of roots | no | none | Directories the file built-ins may read under (`fs.read`, `fs.list`, `fs.stat`) or write under (`fs.write`). Each root is absolute after `~` expansion and must exist at install. See `docs/builtins.md`. |
 | `git` | `{read}` list of repositories | no | none | Repositories the git built-ins may read. Each is absolute after `~` expansion and must exist at install. |
 | `net` | `{fetch}` list of `{host, methods?}` | no | none | Hosts `net.fetch` may reach over HTTPS on port 443 only, including redirect hops. `methods` defaults to `GET` and `HEAD`; others must be listed. Wildcard and IP-literal hosts are refused. |
@@ -401,6 +402,46 @@ flow-health penalty, as is `for_target_requires_delegate`.
 | `max_output` | integer | yes | 1 to 200,000, and not above the cap: the ceiling on any one call's output tokens. A call asking for more is clamped to it; `classify` is clamped to at most 64. |
 
 Model calls get no tools: an `llm` request with a `tools` field is refused. Scripts cannot supply a `model` or `provider`, even one previously selected: the call is rejected with `model_not_allowed`. Fleet routing chooses a Broca runner before the intent commits, and its exact selection and decision id are journaled. Retries reuse that selection; there is no default or environment-configured model.
+
+### Classifier dollar caps
+
+Broca's `llm_classify` is called through an ordinary `ops` grant, for example
+`ops.call("broca", "llm_classify", {model, questions, item, max_cost_usd})`.
+An op carrying the shared `llm.classify/v1` tag additionally requires:
+
+```json
+"model_cost_usd": {"per_run": 0.50, "usd": 5.00, "window": "1d"}
+```
+
+Both amounts are finite non-negative US dollars. `per_run` bounds each run;
+`usd` bounds the flow across all versions in a **rolling** lookback of `window`
+(`"1m"` through `"31d"`, unlike the legacy token grant's fixed windows).
+The install card shows a dollar line with both caps. A tagged classifier grant
+without these caps is refused with `model_cost_cap_required`. While providers
+are enabling tags, an untagged tool whose input schema requires `max_cost_usd`
+is refused at install with `model_tool_untagged`; flows cannot install an
+unbudgeted model call during that transition.
+
+The provider's tool classification is captured during version validation and
+stored with the install or package version, including dry-run scratch versions.
+Calls use the run's approved version's saved policy; they do not fetch
+`tool.catalog` on the execution path. A new version is needed to change that
+classification. Migration 42 explicitly preserves pre-existing grants as
+`legacy_ordinary`, matching their previous behavior without dollar handling or
+new approval cards. A genuinely missing saved policy refuses with
+`tool_policy_missing`; it is never guessed or fetched during a call.
+
+Basal journals the call and reserves dollars atomically before sending. An
+omitted `max_cost_usd` becomes the smaller remaining run/window budget; a supplied
+ceiling is clamped to it. Exhaustion refuses before sending with
+`budget_exhausted`, identifying `model_cost_usd`. Success charges the actual
+`cost_usd` (even zero); `cost_unmeasured` charges the ceiling; pre-model refusals
+are free. A reported overrun can exceed the caps: Broca bounds its estimate,
+not the actual bill. Unknown calls keep their reservations and are not
+automatically resent. Broca does not bill twice if the same call is retried
+with its durable call key.
+Calls use the flow-stamped scope, and spend belongs to the flow, not its owner.
+The legacy `llm` grant and token-budgeted primitives are unchanged.
 
 ## Card fields not in the manifest
 

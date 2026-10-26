@@ -800,6 +800,15 @@ pub fn accept_outcome(
     // it (a cancelled run's model call still spent tokens), so a model
     // call's token reservation is replaced by its reported usage, once.
     crate::tokens::settle_outcome(tx, run_id, position, outcome, now_ms())?;
+    let value: Option<serde_json::Value> = serde_json::from_str(outcome.value.as_str()).ok();
+    crate::classify_cost::settle(
+        tx,
+        "flow",
+        run_id,
+        position,
+        value.as_ref(),
+        value.as_ref().and_then(|v| v["code"].as_str()),
+    )?;
     if state == "cancelled" {
         quarantine(tx, run_id, p, handle, outcome, &hash, "run_cancelled")?;
         return Ok(not_woken(CompletionAck::Refused));

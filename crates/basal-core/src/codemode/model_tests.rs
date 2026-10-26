@@ -160,20 +160,12 @@ impl ModelFixture {
         );
         let catalog = models::catalog();
         f.start(
-            &[
-                (
-                    "model",
-                    "basal",
-                    "model",
-                    catalog[0]["input_schema"].clone(),
-                ),
-                (
-                    "classify",
-                    "basal",
-                    "classify",
-                    catalog[1]["input_schema"].clone(),
-                ),
-            ],
+            &[(
+                "model",
+                "basal",
+                "model",
+                catalog[0]["input_schema"].clone(),
+            )],
             Limits::default(),
             100_000,
         );
@@ -276,7 +268,7 @@ impl Drop for ModelFixture {
 fn model_catalog_is_basal_owned_and_inputs_are_closed() {
     let catalog = models::add_catalog(&json!([])).unwrap();
     assert_eq!(catalog[0]["name"], "model");
-    assert_eq!(catalog[1]["name"], "classify");
+    assert_eq!(catalog.as_array().unwrap().len(), 1);
     let f = ModelFixture::new();
     for (i, input) in [
         json!({"prompt":"hi","tools":[]}),
@@ -293,11 +285,6 @@ fn model_catalog_is_basal_owned_and_inputs_are_closed() {
         assert_eq!(d.settlement, Settlement::Rejected);
         assert_eq!(parse(d.value.as_str()).unwrap()["code"], "invalid_input");
     }
-    f.f.issue(5, "classify", json!({"text":"hi","labels":[]}));
-    assert_eq!(
-        parse(f.f.delivery().value.as_str()).unwrap()["code"],
-        "invalid_input"
-    );
     assert!(f.wire.fake.sends().is_empty());
 }
 
@@ -375,7 +362,7 @@ fn model_call_budget_rejects_call_21_without_ending_run() {
     for pos in 0..20 {
         assert_eq!(f.model(pos).settlement, Settlement::Fulfilled);
     }
-    let d = f.invoke(20, "classify", json!({"text":"hi","labels":["done"]}));
+    let d = f.model(20);
     assert_eq!(d.settlement, Settlement::Rejected);
     let value = parse(d.value.as_str()).unwrap();
     assert_eq!(value["code"], "budget_exhausted");
@@ -398,8 +385,8 @@ fn model_token_budget_reserves_before_send_and_is_catchable() {
     }
     let d = f.invoke(
         1,
-        "classify",
-        json!({"text":"x".repeat(700),"labels":["done"]}),
+        "model",
+        json!({"prompt":"x".repeat(700),"max_output":4096}),
     );
     assert_eq!(d.position, 1);
     assert_eq!(parse(d.value.as_str()).unwrap()["reason"], "model_tokens");
@@ -494,37 +481,14 @@ fn model_dispatch_declares_no_tools() {
 }
 
 #[test]
-fn classify_reuses_flow_instruction_validation_and_call_table() {
+fn retired_local_classify_is_unknown_to_programs() {
     let f = ModelFixture::new();
-    f.wire.fake.pending_next();
     f.f.issue(0, "classify", json!({"text":"good","labels":["yes","no"]}));
-    let d = f.finish_usage(0, "yes", Usage::default());
-    assert_eq!(d.settlement, Settlement::Fulfilled);
-    assert_eq!(parse(d.value.as_str()).unwrap(), json!("yes"));
-    let sends = f.wire.fake.sends();
-    let send: SendParams = serde_json::from_slice(&sends[0].1).unwrap();
     assert_eq!(
-        parse(&send.prompt).unwrap(),
-        json!({"text":"good","labels":["yes","no"]})
+        parse(f.f.delivery().value.as_str()).unwrap()["code"],
+        "unknown_tool"
     );
-    assert_eq!(
-        send.system.as_deref(),
-        Some(
-            "Classify the text in the JSON object. Return exactly one label from labels, verbatim, with no added quotes, whitespace, explanation or other text."
-        )
-    );
-    assert_eq!(send.generation.max_output_tokens, Some(64));
-    f.wire.fake.pending_next();
-    f.f.issue(1, "classify", json!({"text":"bad","labels":["yes","no"]}));
-    assert_eq!(
-        f.finish_usage(1, "other", Usage::default()).settlement,
-        Settlement::Rejected
-    );
-    f.f.finish("1");
-    let result = f.f.terminal();
-    assert_eq!(result["calls"][0]["tool"], "classify");
-    assert_eq!(result["calls"][0]["outcome"], "ok");
-    assert_eq!(result["calls"][1]["outcome"], "error");
+    assert!(f.wire.fake.sends().is_empty());
 }
 
 #[test]
@@ -608,12 +572,11 @@ fn overcap_provider_usage_still_yields_typed_budget_refusal() {
 }
 
 #[test]
-fn both_model_tools_default_to_iq_50_and_eq_0() {
+fn model_defaults_to_iq_50_and_eq_0() {
     let f = ModelFixture::new();
     f.invoke(0, "model", json!({"prompt":"hello","max_output":1}));
-    f.invoke(1, "classify", json!({"text":"hello","labels":["done"]}));
     let calls = f.routing.calls.lock().unwrap();
-    assert_eq!(calls.len(), 2);
+    assert_eq!(calls.len(), 1);
     for call in calls.iter() {
         assert_eq!(call["requirements"], json!({"iq":50,"eq":0}));
     }
@@ -630,7 +593,7 @@ fn both_model_tools_default_to_iq_50_and_eq_0() {
 }
 
 #[test]
-fn both_model_tools_forward_explicit_iq_and_eq() {
+fn model_forwards_explicit_iq_and_eq() {
     let f = ModelFixture::new();
     for (position, name, input, expected) in [
         (
@@ -641,8 +604,8 @@ fn both_model_tools_forward_explicit_iq_and_eq() {
         ),
         (
             1,
-            "classify",
-            json!({"text":"hello","labels":["done"],"iq":100,"eq":0}),
+            "model",
+            json!({"prompt":"hello","max_output":1,"iq":100,"eq":0}),
             json!({"iq":100,"eq":0}),
         ),
         (
@@ -653,8 +616,8 @@ fn both_model_tools_forward_explicit_iq_and_eq() {
         ),
         (
             3,
-            "classify",
-            json!({"text":"hello","labels":["done"],"iq":37,"eq":82}),
+            "model",
+            json!({"prompt":"hello","max_output":1,"iq":37,"eq":82}),
             json!({"iq":37,"eq":82}),
         ),
     ] {
@@ -668,17 +631,13 @@ fn both_model_tools_forward_explicit_iq_and_eq() {
 }
 
 #[test]
-fn both_model_tools_refuse_invalid_demands_before_routing() {
+fn model_refuses_invalid_demands_before_routing() {
     let f = ModelFixture::new();
     let mut position = 0;
-    for name in ["model", "classify"] {
+    for name in ["model"] {
         for field in ["iq", "eq"] {
             for bad in [json!(-1), json!(101), json!(0.5), json!("50"), Value::Null] {
-                let mut input = if name == "model" {
-                    json!({"prompt":"hello","max_output":1})
-                } else {
-                    json!({"text":"hello","labels":["done"]})
-                };
+                let mut input = json!({"prompt":"hello","max_output":1});
                 input[field] = bad;
                 let delivery = f.invoke(position, name, input);
                 assert_eq!(delivery.settlement, Settlement::Rejected);

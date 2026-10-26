@@ -88,6 +88,14 @@ pub trait Catalog: Send + Sync {
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl>;
     /// The declaration of `module`'s op `op`, if declared.
     fn op(&self, module: &str, op: &str) -> Option<OpDecl>;
+    /// Provider-owned tool metadata, including capability tags and input schema.
+    fn tool_contract(
+        &self,
+        _module: &str,
+        _op: &str,
+    ) -> Result<Option<serde_json::Value>, crate::transport::WireError> {
+        Ok(None)
+    }
     /// Whether calling `module`'s tool `op` can make `module` emit an event,
     /// as the module declares it on the tool in its own `tool.catalog`
     /// answer. `Ok(Some(false))` is the module's promise that no call to the
@@ -147,6 +155,8 @@ pub trait Catalog: Send + Sync {
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Entries {
+    tool_contracts: BTreeMap<(String, String), serde_json::Value>,
+    tool_contract_reads: Vec<(String, String)>,
     flow_capable: BTreeSet<String>,
     events: BTreeMap<(String, String, u32), EventDecl>,
     ops: BTreeMap<(String, String), OpDecl>,
@@ -177,6 +187,15 @@ pub struct MockCatalog {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockCatalog {
+    /// Metadata lookups that would read the provider's tool.catalog on SubcCatalog.
+    pub fn tool_contract_reads(&self) -> Vec<(String, String)> {
+        self.read().tool_contract_reads.clone()
+    }
+    pub fn set_tool_contract(&self, module: &str, op: &str, entry: serde_json::Value) {
+        self.write()
+            .tool_contracts
+            .insert((module.into(), op.into()), entry);
+    }
     pub fn set_flow_capable(&self, module: &str, capable: bool) {
         if capable {
             self.write().flow_capable.insert(module.into());
@@ -342,6 +361,18 @@ impl MockCatalog {
 
 #[cfg(any(test, feature = "test-support"))]
 impl Catalog for MockCatalog {
+    fn tool_contract(
+        &self,
+        module: &str,
+        op: &str,
+    ) -> Result<Option<serde_json::Value>, crate::transport::WireError> {
+        let mut entries = self.write();
+        entries.tool_contract_reads.push((module.into(), op.into()));
+        Ok(entries
+            .tool_contracts
+            .get(&(module.into(), op.into()))
+            .cloned())
+    }
     fn workspace_name(&self, id: &str) -> Result<Option<String>, crate::transport::WireError> {
         Ok(self.read().workspace_names.get(id).cloned())
     }

@@ -174,7 +174,7 @@ impl Runtime {
         if manifest.agents().iter().any(|(_, agent)| *agent != "$self") {
             return Err(refused("package_names_agent"));
         }
-        install::validate_inner(
+        let validation = install::validate_inner(
             &manifest,
             "operator",
             self.catalog(),
@@ -192,6 +192,12 @@ impl Runtime {
             let new = existing.is_none();
             if new {
                 tx.execute("INSERT INTO package_versions (package,version,script,manifest,code_hash,registered_at) VALUES (?1,?2,?3,?4,?5,?6)", params![manifest.id,manifest.version,script,text,hash.as_slice(),self.config().clock.now_ms()])?;
+                crate::classify_cost::record_package(
+                    tx,
+                    &manifest.id,
+                    manifest.version,
+                    &validation.tool_policies,
+                )?;
             }
             Ok(
                 json!({"package":manifest.id,"version":manifest.version,"code_hash":hex(&hash),"new":new}),

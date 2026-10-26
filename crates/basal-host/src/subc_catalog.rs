@@ -470,6 +470,23 @@ impl Catalog for SubcCatalog {
     fn emits_events(&self, module: &str, op: &str) -> Result<Option<bool>, WireError> {
         self.tool_emits_events(module, op)
     }
+    fn tool_contract(&self, module: &str, op: &str) -> Result<Option<Value>, WireError> {
+        match self.resolve(module, op)? {
+            Some(found) if found.surface == Surface::Tool => {}
+            _ => return Ok(None),
+        }
+        let answer = read_tool_catalog(self.transport.as_ref(), module)?;
+        let mut tools = answer.tools.into_iter().filter(|tool| tool.name == op);
+        let tool = tools
+            .next()
+            .ok_or_else(|| WireError::Unreadable("tool missing from provider catalog".into()))?;
+        if tools.next().is_some() {
+            return Err(WireError::Unreadable("duplicate provider tool".into()));
+        }
+        serde_json::to_value(tool)
+            .map(Some)
+            .map_err(|e| WireError::Unreadable(e.to_string()))
+    }
     fn agent_known(&self, agent: &str) -> Result<bool, WireError> {
         self.known_agent(agent)
     }

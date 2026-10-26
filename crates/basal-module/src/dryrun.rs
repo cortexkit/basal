@@ -474,6 +474,11 @@ impl DryRunner {
             config,
         );
         let install_result = if request.template.is_some() {
+            let validation = basal_core::install::Validation {
+                warnings: Vec::new(),
+                tool_policies: basal_core::classify_cost::snapshot(manifest, self.catalog.as_ref())
+                    .map_err(DryRunError::InstallRefused)?,
+            };
             // Registration already validated the immutable template. Ordinary
             // installation rejects `at` schedules and grants for paths that do not
             // exist yet, but both are valid after binding template parameters.
@@ -485,7 +490,7 @@ impl DryRunner {
                         tx,
                         manifest,
                         request.install,
-                        Vec::new(),
+                        validation,
                         request.now_ms,
                     )
                     .map_err(|e| basal_core::CoreError::Invalid(e.to_string()))?;
@@ -517,21 +522,21 @@ impl DryRunner {
                     }
                 )));
             }
-            basal_core::install::validate(
+            basal_core::install::validate_with_policies(
                 manifest,
                 &request.install.author,
                 self.catalog.as_ref(),
                 &self.base.shell_denylist,
                 request.install.loop_override,
             )
-            .and_then(|warnings| {
+            .and_then(|validation| {
                 rt.store()
                     .write(|tx| {
                         basal_core::install::record(
                             tx,
                             manifest,
                             request.install,
-                            warnings,
+                            validation,
                             request.now_ms,
                         )
                         .map_err(|e| basal_core::CoreError::Invalid(e.to_string()))

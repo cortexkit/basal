@@ -155,6 +155,7 @@ pub fn fields(input: &CardInput<'_>) -> Value {
             "max_output": l.max_output,
         })),
         "token_window": input.token_window,
+        "model_cost_usd": m.model_cost_usd.as_ref().map(|cap| json!({"per_run":cap.per_run,"usd":cap.usd,"window":cap.window})),
         // The built-in lines, as approved: roots as written (`~` is the
         // user's home) and each host with the methods it is approved for.
         "fs": m.fs.as_ref().map(|f| json!({ "read": f.read, "write": f.write })),

@@ -677,9 +677,17 @@ fn seed_manifest(store: &Store, id: &str, manifest: &str, card: bool, confirmed:
         loop_override: false,
     };
     let parsed = basal_core::manifest::Manifest::parse(&request.manifest).unwrap();
+    let validation = install::Validation {
+        warnings: vec![],
+        tool_policies: basal_core::classify_cost::snapshot(
+            &parsed,
+            &basal_host::MockCatalog::standard(),
+        )
+        .unwrap(),
+    };
     store
         .write(|tx| {
-            let installed = install::record(tx, &parsed, &request, vec![], 0).unwrap();
+            let installed = install::record(tx, &parsed, &request, validation, 0).unwrap();
             if card {
                 basal_core::cards::record(tx, id, 1, &installed.code_hash, "operator", "{}", 0)?;
             }
@@ -701,9 +709,17 @@ fn record_v3(store: &Store, approve: bool) {
         loop_override: false,
     };
     let parsed = basal_core::manifest::Manifest::parse(&manifest).unwrap();
+    let validation = install::Validation {
+        warnings: vec![],
+        tool_policies: basal_core::classify_cost::snapshot(
+            &parsed,
+            &basal_host::MockCatalog::standard(),
+        )
+        .unwrap(),
+    };
     store
         .write(|tx| {
-            let installed = install::record(tx, &parsed, &request, vec![], common::T0).unwrap();
+            let installed = install::record(tx, &parsed, &request, validation, common::T0).unwrap();
             if approve {
                 install::approve(
                     tx,

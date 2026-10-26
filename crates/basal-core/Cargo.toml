@@ -18,6 +18,7 @@ basal-host.workspace = true
 basal-proto.workspace = true
 blake3.workspace = true
 cortexkit-role-tool-provider.workspace = true
+cortexkit-llm-tools.workspace = true
 cortexkit-store.workspace = true
 cortexkit-store-types.workspace = true
 croner.workspace = true
@@ -40,3 +41,4 @@ tracing.workspace = true
 basal-core-test-support = { package = "basal-core", path = ".", features = ["test-support"] }
 # Consume the immutable held-reply fixtures shipped by the wire-contract crate.
 cortexkit-role-tool-provider = { workspace = true, features = ["test-vectors"] }
+cortexkit-llm-tools = { workspace = true, features = ["test-vectors"] }

@@ -422,6 +422,56 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 40,
         statements: "ALTER TABLE event_flow_health ADD COLUMN stale_dropped INTEGER NOT NULL DEFAULT 0;",
     },
+    Migration {
+        version: 41,
+        statements: r#"
+CREATE TABLE classify_costs (
+    kind TEXT NOT NULL CHECK(kind IN ('program','flow')),
+    run_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    flow_id TEXT,
+    created_at INTEGER NOT NULL,
+    reserved REAL NOT NULL CHECK(reserved >= 0),
+    charged REAL CHECK(charged >= 0),
+    args TEXT NOT NULL,
+    PRIMARY KEY(kind,run_id,position)
+);
+CREATE INDEX classify_cost_window ON classify_costs(flow_id,created_at);
+"#,
+    },
+    Migration {
+        version: 42,
+        // Existing versions had no dollar handling for provider ops. Preserve that
+        // approval as explicit legacy_ordinary policy, without startup peer reads
+        // or a new approval card for every live flow. New versions snapshot the
+        // provider's actual model-tool classification during validation instead.
+        statements: r#"
+CREATE TABLE install_tool_policies (
+    flow_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    module TEXT NOT NULL,
+    op TEXT NOT NULL,
+    policy TEXT NOT NULL CHECK(policy IN ('ordinary','classify','legacy_ordinary')),
+    PRIMARY KEY(flow_id,version,module,op),
+    FOREIGN KEY(flow_id,version) REFERENCES installs(flow_id,version) ON DELETE CASCADE
+);
+CREATE TABLE package_tool_policies (
+    package TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    module TEXT NOT NULL,
+    op TEXT NOT NULL,
+    policy TEXT NOT NULL CHECK(policy IN ('ordinary','classify','legacy_ordinary')),
+    PRIMARY KEY(package,version,module,op),
+    FOREIGN KEY(package,version) REFERENCES package_versions(package,version) ON DELETE CASCADE
+);
+INSERT OR IGNORE INTO install_tool_policies(flow_id,version,module,op,policy)
+    SELECT i.flow_id,i.version,json_extract(o.value,'$.module'),json_extract(o.value,'$.op'),'legacy_ordinary'
+    FROM installs i, json_each(i.manifest,'$.ops') o;
+INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
+    SELECT p.package,p.version,json_extract(o.value,'$.module'),json_extract(o.value,'$.op'),'legacy_ordinary'
+    FROM package_versions p, json_each(p.manifest,'$.ops') o;
+"#,
+    },
 ];
 
 // Broca model calls learn their completion from Broca's bus events.

@@ -201,6 +201,18 @@ impl Module {
                 format!("flow {flow_id} involves a retired agent"),
             )
             .with_detail(serde_json::from_str(&retirement).ok()),
+            InstallError::ModelCostCapRequired { module, op } => OpError::new(
+                "model_cost_cap_required",
+                format!("{module}.{op} requires model_cost_usd caps"),
+            ),
+            InstallError::ModelToolUntagged { module, op } => OpError::new(
+                "model_tool_untagged",
+                format!("{module}.{op} requires max_cost_usd but has no recognized model tool tag"),
+            ),
+            InstallError::ToolContractUnreadable { module, op, reason } => OpError::new(
+                "tool_contract_unreadable",
+                format!("{module}.{op}: {reason}"),
+            ),
             InstallError::SelfRequiresPackage => OpError::new(
                 "self_requires_package",
                 "$self is available only in package manifests",

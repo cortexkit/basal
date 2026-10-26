@@ -49,6 +49,40 @@ fn admit(rt: &basal_core::Runtime, id: &str, trigger: &str) -> String {
 }
 
 #[test]
+fn package_tool_policies_follow_the_runs_version_after_instance_upgrade() {
+    let world = World::new("package-tool-policies");
+    let rt = runtime(&world, InstallGate::Off);
+    world.catalog.set_tool_contract(
+        "mock",
+        "echo",
+        json!({"capabilities":[cortexkit_llm_tools::classify::TAG]}),
+    );
+    let mut m = manifest(1);
+    m["model_cost_usd"] = json!({"per_run":0.30,"usd":1,"window":"1h"});
+    rt.register_package("return 1", &m.to_string()).unwrap();
+    let id = rt.ensure_instance("dark-wake", 1, OWNER, 1).unwrap()["flow_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    world.catalog.set_tool_contract("mock", "echo", json!({}));
+    m["version"] = json!(2);
+    rt.register_package("return 2", &m.to_string()).unwrap();
+    rt.ensure_instance("dark-wake", 2, OWNER, 2).unwrap();
+    let reads = world.catalog.tool_contract_reads().len();
+    rt.store()
+        .read(|conn| {
+            let old = basal_core::classify_cost::load(conn, &id, 1)?;
+            let new = basal_core::classify_cost::load(conn, &id, 2)?;
+            let op = (String::from("mock"), String::from("echo"));
+            assert_eq!(old[&op], basal_core::classify_cost::ToolPolicy::Classify);
+            assert_eq!(new[&op], basal_core::classify_cost::ToolPolicy::Ordinary);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(world.catalog.tool_contract_reads().len(), reads);
+}
+
+#[test]
 fn batched_token_usage_reads_package_approvals_and_omits_revoked_instances() {
     let world = World::new("pkg-token-batch");
     let rt = runtime(&world, InstallGate::Core);

@@ -119,6 +119,14 @@ pub fn request_for(card: &InstallCard, dry_run_text: bool) -> Result<Value, Cons
         "flow_install":{"flow_id":card.flow_id,"version":card.version,"code_hash":hash,"script":script,"manifest_json":manifest,
             "author":author,"warnings":f["warnings"].as_array().map(|warnings| warnings.iter().map(|w| json!({"code":w["kind"],"detail":w["text"]})).collect::<Vec<_>>()).unwrap_or_default(),"dry_run_summary":f["dry_run_summary"],"token_usage":{"window":f["token_cap"]["window"].as_str().unwrap_or("1d"),"fresh_input":f["token_window"]["input_tokens"].as_u64().unwrap_or(0),"cache_write":f["token_window"]["cache_write_tokens"].as_u64().unwrap_or(0),"output":f["token_window"]["output_tokens"].as_u64().unwrap_or(0),"cache_read":f["token_window"]["cached_input_tokens"].as_u64().unwrap_or(0)}}});
     let mut result = result;
+    if let (Some(per_run), Some(usd), Some(window)) = (
+        f["model_cost_usd"]["per_run"].as_f64(),
+        f["model_cost_usd"]["usd"].as_f64(),
+        f["model_cost_usd"]["window"].as_str(),
+    ) {
+        result["facts"] = json!([{"label":"Classifier dollar budget",
+            "value":format!("${per_run} per run; ${usd} per rolling {window}")}]);
+    }
     if let Some(placement) = placement {
         result["flow_install"]["placement"] = json!(placement);
     }

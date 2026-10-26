@@ -112,8 +112,17 @@ fn agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run() {
             .rt
             .store()
             .write(|tx| {
-                basal_core::install::record(tx, &parsed, &request, Vec::new(), T0)
-                    .expect("seed legacy version");
+                basal_core::install::record(
+                    tx,
+                    &parsed,
+                    &request,
+                    basal_core::install::Validation {
+                        warnings: Vec::new(),
+                        tool_policies: Default::default(),
+                    },
+                    T0,
+                )
+                .expect("seed legacy version");
                 Ok(())
             })
             .expect("legacy install");

@@ -1,4 +1,25 @@
 use super::*;
+
+#[test]
+fn program_dollar_limits_are_defaulted_lower_only_and_nonnegative() {
+    assert_eq!(limits(None).unwrap().model_cost_usd, 0.50);
+    for amount in [0.0, 0.30, 0.50] {
+        assert_eq!(
+            limits(Some(&json!({"model_cost_usd":amount})))
+                .unwrap()
+                .model_cost_usd,
+            amount
+        );
+    }
+    for amount in [json!(0.51), json!(-0.01), json!("0.30"), Value::Null] {
+        assert_eq!(
+            limits(Some(&json!({"model_cost_usd":amount})))
+                .unwrap_err()
+                .code,
+            "invalid_limits"
+        );
+    }
+}
 use basal_host::mock::MockHost;
 use serde_json::json;
 use std::sync::{Arc, Barrier, Condvar, Mutex};
@@ -389,7 +410,7 @@ fn scope_shape_precedes_attestation_and_needs_no_flow_targets() {
     let start = start.unwrap();
     assert_eq!(start.scope.targets, ["broca".into()].into_iter().collect());
     assert!(start.tools.contains_key("model"));
-    assert!(start.tools.contains_key("classify"));
+    assert!(!start.tools.contains_key("classify"));
     assert_eq!(start.scope.selector.scope_ref, "scope:run");
     assert_eq!(start.scope.selector.epoch, 19);
 }
@@ -642,7 +663,8 @@ fn dropped_entry(bad: Value, reason: &str) {
     req["catalog"] = json!([bad, entry("good")]);
     let (run, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
     let start = start.unwrap();
-    assert_eq!(start.tools.len(), 3);
+    // `good` plus basal's built-in `model` tool.
+    assert_eq!(start.tools.len(), 2);
     assert!(start.tools.contains_key("good"));
     let warnings: Vec<Value> = serde_json::from_str(&run.warnings).unwrap();
     assert_eq!(warnings.len(), 1);
@@ -718,7 +740,7 @@ fn tool_names_are_ascii_identifiers_of_at_most_128_bytes() {
     let mut req = request("run", "agent");
     req["catalog"] = json!([entry(&"x".repeat(128)), entry("_A0")]);
     let (_, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
-    assert_eq!(start.unwrap().tools.len(), 4);
+    assert_eq!(start.unwrap().tools.len(), 3);
 }
 
 #[test]
@@ -766,16 +788,14 @@ fn module_and_op_are_nonempty_strings_with_a_128_byte_cap() {
 
 #[test]
 fn model_name_collisions_drop_both_the_provider_and_builtin() {
-    for name in ["model", "classify"] {
-        let resolved =
-            super::super::models::add_catalog(&json!([entry(name), entry("good")])).unwrap();
-        let catalog = catalog(&resolved, &[]).unwrap();
-        assert!(!catalog.tools.contains_key(name));
-        assert!(catalog.tools.contains_key("good"));
-        assert_eq!(catalog.unavailable[name].reason, "duplicate tool name");
-        assert_eq!(catalog.warnings.len(), 1);
-        assert_eq!(catalog.warnings[0]["tool"], name);
-    }
+    let name = "model";
+    let resolved = super::super::models::add_catalog(&json!([entry(name), entry("good")])).unwrap();
+    let catalog = catalog(&resolved, &[]).unwrap();
+    assert!(!catalog.tools.contains_key(name));
+    assert!(catalog.tools.contains_key("good"));
+    assert_eq!(catalog.unavailable[name].reason, "duplicate tool name");
+    assert_eq!(catalog.warnings.len(), 1);
+    assert_eq!(catalog.warnings[0]["tool"], name);
 }
 
 #[test]

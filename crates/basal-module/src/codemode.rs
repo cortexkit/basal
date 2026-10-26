@@ -448,6 +448,12 @@ fn render_text(result: &mut Value) -> String {
             .unwrap_or(calls.len() as u64),
         result["person_wait_ms"]
     );
+    if let Some(budget) = result.get("budgets").and_then(|b| b.get("model_cost_usd")) {
+        text.push_str(&format!(
+            "Classifier dollars: ${} spent · ${} remaining (limit ${})\n",
+            budget["spent"], budget["remaining"], budget["limit"]
+        ));
+    }
     if let Some(error) = result.get("error") {
         text.push_str(&error_text(error));
     }
@@ -669,6 +675,7 @@ fn bounded_result(mut reply: cortexkit_role_tool_provider::result::ToolResult) -
                         | "status"
                         | "termination_reason"
                         | "budget"
+                        | "budgets"
                         | "duration_ms"
                         | "person_wait_ms"
                         | "call_count"

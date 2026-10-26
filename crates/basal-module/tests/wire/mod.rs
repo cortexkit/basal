@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 use basal_host::transport::{Transport, WireError, management_body, tool_body};
+use cortexkit_role_tool_provider::catalog::{CatalogAnswer, CatalogTool, schema_digest};
+use cortexkit_role_tool_provider::describe::{Major, RoleDescribe};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -105,7 +107,7 @@ impl Fake {
             .unwrap()
             .insert(op.into(), replies.into());
     }
-    fn reply(&self, op: &str, params: &Value) -> Result<Value, WireError> {
+    fn reply(&self, module: &str, op: &str, params: &Value) -> Result<Value, WireError> {
         if op == "post" {
             let barrier = self.post_barrier.lock().unwrap().clone();
             if let Some(barrier) = barrier {
@@ -122,6 +124,46 @@ impl Fake {
             return r;
         }
         match op {
+            "role.describe" => Ok(serde_json::to_value(RoleDescribe::new(
+                vec![Major {
+                    version: cortexkit_role_tool_provider::PROVIDES.into(),
+                    ops: cortexkit_role_tool_provider::REQUIRED_OPS
+                        .iter()
+                        .map(|op| (*op).into())
+                        .collect(),
+                    stability: "stable".into(),
+                }],
+                "fixture",
+            ))
+            .unwrap()),
+            "tool.catalog" => {
+                // Install-time contract reads must see the same tools and schemas
+                // that the daemon catalog declares for dispatch.
+                let catalog = self.catalog.lock().unwrap();
+                let tools = catalog["modules"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|entry| entry["module_id"] == module)
+                    .flat_map(|entry| entry["roles"].as_array().into_iter().flatten())
+                    .flat_map(|role| role["tools"].as_array().into_iter().flatten())
+                    .map(|tool| {
+                        let schema = tool["schema"].clone();
+                        CatalogTool::new(
+                            tool["name"].as_str().unwrap(),
+                            schema_digest(&schema).unwrap(),
+                            1,
+                            schema,
+                        )
+                    })
+                    .collect();
+                Ok(
+                    serde_json::to_value(
+                        CatalogAnswer::new("fixture", "fixture").with_tools(tools),
+                    )
+                    .unwrap(),
+                )
+            }
             // A head's entry as core lists it: its project and workspace, and a
             // residence whose address is an object and whose state is `live`.
             "agent.list" => Ok(
@@ -793,7 +835,7 @@ impl Transport for Fake {
             .lock()
             .unwrap()
             .push((module.into(), management_body(op, params.clone())));
-        self.reply(op, &params)
+        self.reply(module, op, &params)
     }
     fn tool(
         &self,
@@ -806,6 +848,6 @@ impl Transport for Fake {
             .lock()
             .unwrap()
             .push((module.into(), tool_body(name, arguments.clone(), key)?));
-        self.reply(name, &arguments)
+        self.reply(module, name, &arguments)
     }
 }

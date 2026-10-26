@@ -557,6 +557,7 @@ pub fn settle_pending_calls(tx: &Transaction, run_id: &str, at: i64) -> Result<(
          WHERE run_id = ?1 AND outcome = 'pending' AND intent_at IS NULL",
         [run_id],
     )?;
+    tx.execute("UPDATE classify_costs SET charged=0 WHERE kind='program' AND run_id=?1 AND charged IS NULL AND position IN (SELECT position FROM codemode_calls WHERE run_id=?1 AND outcome='cancelled')", [run_id])?;
     let unknown = tx.execute(
         "UPDATE codemode_calls SET outcome = 'outcome_unknown', code = ?2, \
           duration_ms = CASE WHEN entered_at IS NULL THEN NULL ELSE max(?3 - entered_at, 0) END \

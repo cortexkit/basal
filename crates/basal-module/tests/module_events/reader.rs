@@ -2,6 +2,8 @@ use super::*;
 use basal_host::subc_catalog::{DaemonCapabilities, SubcCatalog};
 use basal_host::transport::{Transport, WireError};
 use basal_module::events::Reader;
+use cortexkit_role_tool_provider::catalog::{CatalogAnswer, CatalogTool, schema_digest};
+use cortexkit_role_tool_provider::describe::{Major, RoleDescribe};
 use serde_json::Value;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
@@ -65,6 +67,18 @@ struct BlockingTransport {
     pause_restart: AtomicBool,
     unreadable: AtomicBool,
     catalog_calls: AtomicUsize,
+    installing: AtomicBool,
+    reader_tool_calls: AtomicUsize,
+}
+
+impl BlockingTransport {
+    fn assert_no_reader_provider_calls(&self) {
+        assert_eq!(
+            self.reader_tool_calls.load(Ordering::SeqCst),
+            0,
+            "event admission, fan-out and health must not call a provider"
+        );
+    }
 }
 
 impl Transport for BlockingTransport {
@@ -111,8 +125,41 @@ impl Transport for BlockingTransport {
         }
     }
 
-    fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
-        panic!("reader must not resolve event bodies")
+    fn tool(&self, module: &str, name: &str, _: Value, _: &str) -> Result<Value, WireError> {
+        let installing = self.installing.load(Ordering::SeqCst);
+        if !installing {
+            self.reader_tool_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        match (module, name) {
+            ("plexus", "role.describe" | "tool.catalog") => {
+                // Only fixture installation may inspect the granted tool's contract.
+                assert!(installing, "reader must not read provider metadata");
+                let answer = if name == "role.describe" {
+                    serde_json::to_value(RoleDescribe::new(
+                        vec![Major {
+                            version: cortexkit_role_tool_provider::PROVIDES.into(),
+                            ops: cortexkit_role_tool_provider::REQUIRED_OPS
+                                .iter()
+                                .map(|op| (*op).into())
+                                .collect(),
+                            stability: "stable".into(),
+                        }],
+                        "reader-fixture",
+                    ))
+                    .unwrap()
+                } else {
+                    let schema = json!({});
+                    let tool =
+                        CatalogTool::new("events_get", schema_digest(&schema).unwrap(), 1, schema);
+                    serde_json::to_value(
+                        CatalogAnswer::new("fixture", "fixture").with_tools(vec![tool]),
+                    )
+                    .unwrap()
+                };
+                Ok(answer)
+            }
+            _ => panic!("reader must not resolve event bodies"),
+        }
     }
 }
 
@@ -124,6 +171,8 @@ async fn fixture(server: &Server) -> (Runtime, Arc<BlockingTransport>) {
         pause_restart: AtomicBool::new(false),
         unreadable: AtomicBool::new(false),
         catalog_calls: AtomicUsize::new(0),
+        installing: AtomicBool::new(true),
+        reader_tool_calls: AtomicUsize::new(0),
     });
     let capabilities = Arc::new(DaemonCapabilities::default());
     capabilities.observe_hello_ack(
@@ -158,6 +207,9 @@ async fn fixture(server: &Server) -> (Runtime, Arc<BlockingTransport>) {
         }).unwrap();
         install_rt.approve("reader", 1, &installed.code_hash, "test").unwrap();
     }).await.unwrap();
+    // Install-time daemon catalog reads are not reader activity.
+    transport.catalog_calls.store(0, Ordering::SeqCst);
+    transport.installing.store(false, Ordering::SeqCst);
     (rt, transport)
 }
 
@@ -201,6 +253,8 @@ async fn reader_admits_v2_with_blocking_catalog_and_stays_alive() {
     assert_eq!(run_count(&rt), 2);
     assert!(transport.catalog_calls.load(Ordering::SeqCst) >= 2);
     wait_health(&reader, |h| h.backlog == 0).await;
+    drop(reader);
+    transport.assert_no_reader_provider_calls();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -235,6 +289,8 @@ async fn reader_panic_reports_dead_health_and_restarts() {
     assert_eq!(run_count(&rt), 1);
     publish(&server, 2, 2).await;
     wait_health(&reader, |h| h.admitted == 2).await;
+    drop(reader);
+    transport.assert_no_reader_provider_calls();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -242,7 +298,7 @@ async fn reader_foreign_malformed_notice_is_debug_and_counts_malformed() {
     let logs = captured_logs();
     let server = Server::start().await;
     let (rt, transport) = fixture(&server).await;
-    let reader = Reader::start(rt, transport);
+    let reader = Reader::start(rt, transport.clone());
     let subject = "ck.account.event.subc.activity.v3";
     let key = format!("{:064x}", 41);
     super::v2::publish(&server, subject, &format!("{key}.v3"), Some(&key)).await;
@@ -265,6 +321,8 @@ async fn reader_foreign_malformed_notice_is_debug_and_counts_malformed() {
         subject,
         "undeclared event version"
     ));
+    drop(reader);
+    transport.assert_no_reader_provider_calls();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -272,7 +330,7 @@ async fn reader_subscribed_malformed_notice_still_warns() {
     let logs = captured_logs();
     let server = Server::start().await;
     let (rt, transport) = fixture(&server).await;
-    let reader = Reader::start(rt, transport);
+    let reader = Reader::start(rt, transport.clone());
     let key = "invalid";
     super::v2::publish(&server, SUBJECT_V2, &format!("{key}.v2"), Some(key)).await;
 
@@ -285,6 +343,8 @@ async fn reader_subscribed_malformed_notice_still_warns() {
         SUBJECT_V2,
         "invalid event key"
     ));
+    drop(reader);
+    transport.assert_no_reader_provider_calls();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -301,6 +361,8 @@ async fn reader_refuses_undeclared_or_unreadable_versions() {
     assert_eq!(run_count(&rt), 0);
     assert!(health.connected);
     assert!(health.error.is_none());
+    drop(reader);
+    transport.assert_no_reader_provider_calls();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -327,4 +389,6 @@ async fn reader_health_counts_model_wakes() {
     let health = wait_health(&reader, |h| h.model_wakes == 1).await;
     assert_eq!(health.admitted, 0);
     assert!(health.error.is_none(), "{health:?}");
+    drop(reader);
+    transport.assert_no_reader_provider_calls();
 }

@@ -44,12 +44,19 @@ impl Platform {
 
 /// Budgets for one codemode run's wall time, tool calls and captured output.
 /// These never change the budgets used by approved flow activations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Limits {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wall_ms: Option<i64>,
     pub tool_calls: u64,
     pub output_bytes: u64,
+    #[serde(default = "default_model_cost")]
+    pub model_cost_usd: f64,
+}
+
+fn default_model_cost() -> f64 {
+    crate::classify_cost::DEFAULT_USD
 }
 
 impl Default for Limits {
@@ -58,6 +65,7 @@ impl Default for Limits {
             wall_ms: Some(basal_host::run_scope::WALL_MS),
             tool_calls: 200,
             output_bytes: 65_536,
+            model_cost_usd: default_model_cost(),
         }
     }
 }
@@ -70,6 +78,7 @@ pub struct Tool {
     pub op: String,
     pub input_schema: InputSchema,
     pub result_format: Option<cortexkit_role_tool_provider::result::ResultFormat>,
+    pub classify_cost: bool,
 }
 
 /// A tool core put in the run's catalog that basal dropped because its
@@ -418,6 +427,13 @@ fn limits(value: Option<&Value>) -> Checked<Limits> {
     let invalid = || Refusal::new("invalid_limits", "invalid codemode limits");
     let fields = value.as_object().ok_or_else(invalid)?;
     for (key, value) in fields {
+        if key == "model_cost_usd" {
+            limits.model_cost_usd = value
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0 && *n <= default_model_cost())
+                .ok_or_else(invalid)?;
+            continue;
+        }
         let n = value.as_i64().filter(|n| *n >= 1).ok_or_else(invalid)?;
         match key.as_str() {
             "wall_ms" if n <= basal_host::run_scope::WALL_MS => limits.wall_ms = Some(n),
@@ -497,7 +513,9 @@ fn catalog(value: &Value, gaps: &[basal_host::run_scope::CatalogGap]) -> Checked
                 return Err("duplicate tool name".into());
             }
             let fields = entry.as_object().ok_or("must be an object")?;
-            if fields.len() != 4 + usize::from(fields.contains_key("result_format"))
+            if fields.len()
+                != 4 + usize::from(fields.contains_key("result_format"))
+                    + usize::from(fields.contains_key("capabilities"))
                 || !["name", "input_schema", "module", "op"]
                     .iter()
                     .all(|k| fields.contains_key(*k))
@@ -536,6 +554,7 @@ fn catalog(value: &Value, gaps: &[basal_host::run_scope::CatalogGap]) -> Checked
                 op: op.to_owned(),
                 input_schema,
                 result_format,
+                classify_cost: crate::classify_cost::matches(entry),
             })
         })();
         match checked {

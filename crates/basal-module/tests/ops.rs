@@ -314,6 +314,21 @@ fn install_card_exposes_event_max_age_in_fields_and_plain_text() {
 }
 
 #[test]
+fn install_card_exposes_classifier_dollars_as_a_readable_line() {
+    let f = fixture("ops-dollar-card", Options::default());
+    let mut manifest = events_manifest(FLOW);
+    manifest["model_cost_usd"] = json!({"per_run":0.50,"usd":5.0,"window":"1d"});
+    let reply = install(&f, &agent(OWNER), SCRIPT, &manifest);
+    let card = f.consent.card(reply["card_id"].as_str().unwrap()).unwrap();
+    assert_eq!(card.fields["model_cost_usd"], manifest["model_cost_usd"]);
+    let request = basal_host::core_consent::request_for(&card, false).unwrap();
+    assert_eq!(
+        request["facts"],
+        json!([{"label":"Classifier dollar budget","value":"$0.5 per run; $5 per rolling 1d"}])
+    );
+}
+
+#[test]
 fn install_raises_one_card_per_version_and_its_decision_approves_or_rejects() {
     let f = fixture("ops-install", Options::default());
     let owner = agent(OWNER);

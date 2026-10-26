@@ -1,6 +1,34 @@
 # Codemode
 
-Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. prefrontal-core, which manages agents and their tool grants, grants access to codemode and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny using the daemon-recorded agent identity and run scope, just as for a direct call. Basal also provides `tools.model` and `tools.classify`, which call Broca on the run's scope within a per-run model budget.
+Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. prefrontal-core, which manages agents and their tool grants, grants access to codemode and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny using the daemon-recorded agent identity and run scope, just as for a direct call. Basal also provides `tools.model`, which calls Broca within the existing per-run budget of 20 calls and 200,000 tokens. Classification uses Broca's catalog tool `tools.llm_classify`, not a Basal built-in.
+
+## Classifier dollar budget
+
+Tools carrying the shared contract's `llm.classify/v1` tag share **$0.50 per program run**.
+`limits: {model_cost_usd: 0.30}` may lower that budget (including to zero), never raise it.
+The caller supplies `{model, questions, item, max_cost_usd?}`; `model` is its chosen
+`provider/model` id. Basal supplies an omitted ceiling from the remaining budget,
+or clamps a supplied ceiling to that remainder before sending it to Broca.
+Concurrent calls reserve their whole ceilings, so they cannot spend the same remainder.
+With nothing left, the promise rejects before sending with `budget_exhausted` and
+`budget: "model_cost_usd"` in its structured error.
+
+A successful `{answers, usage, cost_usd}` charges the reported `cost_usd`, including
+zero-rated calls. If Broca omits a field from `usage`, Basal leaves it absent in
+the result. `cost_unmeasured` charges the
+reserved ceiling; known refusals before any model call charge nothing. Unknown
+outcomes retain their reservation and are never automatically retried. Broca's
+ceiling bounds its estimate, **not its actual bill**: reported cost can exceed the
+ceiling and run budget, and Basal records that overrun rather than clipping it.
+Result text lists dollars spent and remaining; structured results carry
+`budgets.model_cost_usd: {limit, spent, remaining}` (remaining may be negative).
+
+Identification uses the contract tag only, never a provider or tool-name guess.
+Until Broca advertises the tag, an untagged `llm_classify` remains an ordinary
+program tool call **without Basal's dollar accounting or ceiling injection**;
+Broca still requires and enforces the caller's `max_cost_usd` on each call.
+Flows instead refuse installation of untagged tools whose schema requires that
+ceiling; see [manifest dollar caps](manifest.md#classifier-dollar-caps).
 
 A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Codemode runs on macOS, Linux and Windows under each OS's full worker confinement. See [the tool and role operations](ops.md#codemode).
 
@@ -74,6 +102,7 @@ result body:
 Consumers build model input from ordered `content` parts only, never from
 `structuredContent`. Codemode emits one text part. For a run that fits the
 size bound it holds, in order: the status/duration/call-count/person-wait line,
+the classifier dollar budget line,
 the error if present (`Error (<code>): <message>`, plus an `Error detail:` line
 with the provider detail as JSON when there is one), the return value if
 present, console output verbatim under `Output:` when there is any, the
@@ -135,7 +164,7 @@ module, tool name (or zero-based entry index), reason and a plain-language
 message. Duplicate names drop every claim to that name and produce one warning
 per name; basal never picks an arbitrary provider. A dropped entry with a safe
 identifier remains callable only to reject with `tool_unavailable`, naming the
-reason. This also applies when a provider claims `model` or `classify`: the
+reason. This also applies when a provider claims `model`: the
 provider entry and basal's built-in entry are both dropped, and that name only
 rejects as unavailable. Invalid identifiers and reserved names (`__proto__`, `constructor`,
 `prototype`, `tools`, `console`) are never exposed, even as unavailable tools.

@@ -258,7 +258,13 @@ fn codemode_served(
     module: &Value,
     entry: &CatalogEntry,
     answers: &mut BTreeMap<String, Result<CatalogAnswer, WireError>>,
-) -> Result<Option<cortexkit_role_tool_provider::result::ResultFormat>, (RefusalReason, String)> {
+) -> Result<
+    (
+        Option<cortexkit_role_tool_provider::result::ResultFormat>,
+        Value,
+    ),
+    (RefusalReason, String),
+> {
     let provides = |token: &str| {
         module["capabilities"]["provides"]
             .as_array()
@@ -319,7 +325,10 @@ fn codemode_served(
             format!("the modes of {} do not include codemode", entry.op),
         ));
     }
-    Ok(tool.result_format.clone())
+    Ok((
+        tool.result_format.clone(),
+        serde_json::to_value(&tool.capabilities).unwrap(),
+    ))
 }
 
 /// Resolve only tools declared by the daemon, not schemas carried by core or
@@ -391,10 +400,13 @@ pub fn catalog(
             continue;
         }
         match codemode_served(transport, read, module, entry, &mut answers) {
-            Ok(result_format) => {
+            Ok((result_format, tags)) => {
                 let mut resolved = serde_json::json!({"name":entry.tool,"module":entry.module,"op":entry.op,"input_schema":schema});
                 if let Some(format) = result_format {
                     resolved["result_format"] = serde_json::to_value(format).unwrap();
+                }
+                if tags.as_array().is_some_and(|tags| !tags.is_empty()) {
+                    resolved["capabilities"] = tags;
                 }
                 usable.push((&entry.module, resolved));
             }
@@ -888,6 +900,19 @@ mod call_mode_tests {
             assert!(resolved.catalog[1].get("result_format").is_none());
             assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
         }
+    }
+
+    #[test]
+    fn capability_tags_are_frozen_from_provider_catalogs() {
+        let mut read = tool("read", Some(json!(["codemode"])));
+        read["capabilities"] = json!(["code.read/v1"]);
+        let provider = Provider::answering(Ok(answer(vec![read])));
+        let resolved = resolve(
+            &provider,
+            &daemon(&[CALL_MODES_CAPABILITY]),
+            &[entry("read")],
+        );
+        assert_eq!(resolved.catalog[0]["capabilities"], json!(["code.read/v1"]));
     }
 
     #[test]

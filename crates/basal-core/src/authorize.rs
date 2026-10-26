@@ -40,6 +40,13 @@ impl Refusal {
 
     pub fn outcome(&self) -> HostOutcome {
         let mut outcome = rejection(&self.code, &self.message);
+        if self.code == "budget_exhausted" {
+            let mut value: Value =
+                serde_json::from_str(outcome.value.as_str()).expect("rejection JSON");
+            value["budget"] = "model_cost_usd".into();
+            outcome.value =
+                basal_proto::JsonText::new(value.to_string()).expect("bounded rejection");
+        }
         if let Some(module) = &self.module {
             let mut value: Value =
                 serde_json::from_str(outcome.value.as_str()).expect("rejection JSON");
