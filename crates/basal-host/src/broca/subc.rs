@@ -156,7 +156,7 @@ impl SubcBrocaTransport {
         method: &str,
         params: &[u8],
     ) -> Result<T, BrocaError> {
-        let value = match &route.flow_id {
+        let value = match &route.route_key() {
             Some(flow) => self.connection.management_for_model(
                 flow,
                 identity(route),
@@ -197,7 +197,10 @@ impl Transport for SubcBrocaTransport {
             crate::InstallStatus::Active { code_hash, scope }
                 if code_hash == identity.code_hash =>
             {
-                self.connection.configure_flow(&identity.flow_id, scope);
+                self.connection.configure_flow(
+                    &crate::flow_scope::flow_route_key(&identity.flow_id, identity.version),
+                    scope,
+                );
                 Ok(())
             }
             _ => Err(BrocaError::Unavailable {
@@ -208,6 +211,9 @@ impl Transport for SubcBrocaTransport {
     }
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
         crate::transport::Transport::configure_flow(self.connection.as_ref(), flow_id, scope);
+    }
+    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
+        crate::transport::Transport::retain_flow_routes(self.connection.as_ref(), flow_id, live);
     }
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError> {
         #[cfg(feature = "rig-kill-hook")]
@@ -268,7 +274,7 @@ impl Transport for SubcBrocaTransport {
         )
     }
     fn release(&self, route: &Route) {
-        if let Some(flow) = &route.flow_id {
+        if let Some(flow) = &route.route_key() {
             self.connection
                 .release_model(flow, identity(route), &self.module);
         }

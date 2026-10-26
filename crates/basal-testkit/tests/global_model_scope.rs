@@ -47,6 +47,12 @@ impl Transport for Models {
     fn configure_flow(&self, flow: &str, scope: Option<RegisteredScope>) {
         self.routes.lock().unwrap().configure(flow, scope);
     }
+    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
+        self.routes
+            .lock()
+            .unwrap()
+            .retain_flow_routes_for(flow_id, live);
+    }
     fn provider_ready(&self, flow: &str, action: &str) -> Result<(), FlowRefusal> {
         self.routes.lock().unwrap().ready(flow, "broca", action)
     }
@@ -56,7 +62,7 @@ impl Transport for Models {
             .lock()
             .unwrap()
             .route(
-                route.flow_id.as_deref().unwrap(),
+                &route.route_key().unwrap(),
                 &RouteTarget::ManagementSurface {
                     module_id: "broca".into(),
                 },

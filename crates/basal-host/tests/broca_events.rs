@@ -38,14 +38,15 @@ fn llm(position: u64) -> CallRequest {
         })
         .unwrap();
     CallRequest {
+        flow_version: None,
         flow_id: "f".into(),
         run_id: "r".into(),
         position,
         kind: CallKind::Primitive(Primitive::Llm),
         args: JsonText::new(
             json!({"send_id": key, "work_class": "flow:f",
-                "session": format!("basal:flow-f:r:{position}"), "op": "llm",
-                "max_output": 12, "request": {"prompt": "hello"}, "selection": selection})
+            "session": format!("basal:flow-f:r:{position}"), "op": "llm",
+            "max_output": 12, "request": {"prompt": "hello"}, "selection": selection})
             .to_string(),
         )
         .unwrap(),
@@ -718,14 +719,15 @@ fn codemode_request(position: u64) -> CallRequest {
         })
         .unwrap();
     CallRequest {
+        flow_version: None,
         flow_id: "codemode:c".into(),
         run_id: "c".into(),
         position,
         kind: CallKind::Primitive(Primitive::Llm),
         args: JsonText::new(
             json!({"send_id": key, "work_class": "codemode:c",
-                "session": basal_host::broca::codemode_session("c", position), "op": "llm",
-                "max_output": 12, "request": {"prompt": "hello"}, "selection": selection})
+            "session": basal_host::broca::codemode_session("c", position), "op": "llm",
+            "max_output": 12, "request": {"prompt": "hello"}, "selection": selection})
             .to_string(),
         )
         .unwrap(),

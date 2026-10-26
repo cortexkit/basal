@@ -494,6 +494,7 @@ pub(crate) struct SavedRefusal {
 impl SavedRefusal {
     pub(crate) fn request(&self) -> Result<basal_host::CallRequest> {
         Ok(basal_host::CallRequest {
+            flow_version: None,
             flow_id: self.flow_id.clone(),
             run_id: self.run_id.clone(),
             position: to_u64(self.position, "position")?,

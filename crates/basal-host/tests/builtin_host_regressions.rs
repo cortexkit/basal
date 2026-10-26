@@ -35,6 +35,7 @@ fn escaped_800kb_file_is_a_typed_refusal_not_successful_null() {
     let path = tree.0.join("root").join("escaped");
     std::fs::write(&path, vec![0; 800 * 1024]).unwrap();
     let request = CallRequest {
+        flow_version: None,
         flow_id: "f".into(),
         run_id: "r".into(),
         position: 0,
@@ -76,6 +77,7 @@ fn escaped_listing_exceeds_encoded_cap_as_a_typed_refusal() {
         std::fs::write(dir.join(format!("{}{n:04}", "\u{0001}".repeat(248))), "").unwrap();
     }
     let request = CallRequest {
+        flow_version: None,
         flow_id: "f".into(),
         run_id: "r".into(),
         position: 0,

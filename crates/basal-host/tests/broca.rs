@@ -24,7 +24,7 @@ fn request(p: Primitive, position: u64, args: Value) -> CallRequest {
             send_id: key.clone(),
         })
         .unwrap();
-    CallRequest { flow_id: "f".into(), run_id: "r".into(), position, kind: CallKind::Primitive(p),
+    CallRequest { flow_version: None, flow_id: "f".into(), run_id: "r".into(), position, kind: CallKind::Primitive(p),
         args: JsonText::new(json!({"send_id": key, "work_class": "flow:f", "session": format!("basal:flow-f:r:{position}"), "op": p.name(), "max_output": 12, "request": args, "selection":selection}).to_string()).unwrap(),
         idempotency_key: key, attempt: 1 }
 }
@@ -46,12 +46,26 @@ fn host(fake: Arc<FakeBroca>, store: Arc<dyn StateStore>) -> BrocaHost {
 }
 #[derive(Default)]
 struct Sink {
+    released: Mutex<Vec<String>>,
+    release_store: Mutex<Option<Arc<MemoryStore>>>,
     completions: Mutex<Vec<Completion>>,
     unknowns: Mutex<Vec<UnknownOutcome>>,
     fail: Mutex<bool>,
     attempts: Mutex<usize>,
 }
 impl CompletionSink for Sink {
+    fn route_released(&self, run_id: &str) {
+        if let Some(store) = self.release_store.lock().unwrap().as_ref() {
+            assert!(
+                store
+                    .load()
+                    .unwrap()
+                    .iter()
+                    .any(|call| call.basal_run_id == run_id && call.acknowledged)
+            );
+        }
+        self.released.lock().unwrap().push(run_id.into());
+    }
     fn complete(&self, c: &Completion) -> Result<CompletionAck, SinkError> {
         *self.attempts.lock().unwrap() += 1;
         if *self.fail.lock().unwrap() {
@@ -101,6 +115,7 @@ fn exact_send_contract_and_parallel_sessions() {
     assert_eq!(
         sends[0].0,
         basal_host::broca::Route {
+            flow_version: None,
             flow_id: Some("f".into()),
             project_root: "/project".into(),
             harness: "basal".into(),
@@ -535,16 +550,19 @@ fn sink_failure_replays_a_durable_completion() {
     let store = Arc::new(MemoryStore::default());
     let h = host(fake.clone(), store.clone());
     let sink = Arc::new(Sink::default());
+    *sink.release_store.lock().unwrap() = Some(store.clone());
     h.attach(sink.clone());
     h.dispatch_model(&llm(0)).unwrap();
     fake.finish("key:0", "retry", RunFinishReason::Completed, None)
         .unwrap();
     *sink.fail.lock().unwrap() = true;
     assert!(matches!(h.poll(), Err(BrocaError::Sink(_))));
+    assert!(sink.released.lock().unwrap().is_empty());
     drop(h);
     *sink.fail.lock().unwrap() = false;
     host(fake, store).attach(sink.clone());
     assert_eq!(sink.completions.lock().unwrap().len(), 1);
+    assert_eq!(*sink.released.lock().unwrap(), vec!["r"]);
 }
 
 #[test]

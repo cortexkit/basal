@@ -203,7 +203,9 @@ impl Runtime {
         if state == RunState::Pending {
             self.wake(run_id);
         } else if state.is_terminal() {
-            self.wake_flow(&self.run(run_id)?.flow_id);
+            let run = self.run(run_id)?;
+            self.release_unused_flow_routes_for(&run.flow_id)?;
+            self.wake_flow(&run.flow_id);
         }
         Ok(state)
     }

@@ -923,6 +923,7 @@ mod tests {
 
     fn request(op: &str, key: &str) -> CallRequest {
         CallRequest {
+            flow_version: None,
             flow_id: "f".into(),
             run_id: "r".into(),
             position: 0,

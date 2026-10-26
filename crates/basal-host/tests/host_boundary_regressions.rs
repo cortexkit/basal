@@ -50,6 +50,7 @@ fn catalog(module: &str, op: &str) -> Value {
 }
 fn request(module: &str, op: &str) -> CallRequest {
     CallRequest {
+        flow_version: None,
         flow_id: "flow".into(),
         run_id: "run".into(),
         position: 0,

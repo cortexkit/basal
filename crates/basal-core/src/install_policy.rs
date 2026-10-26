@@ -179,6 +179,7 @@ impl Runtime {
             Err(error) => Err(error),
             Ok(()) => {
                 self.shared.signal.bump();
+                self.release_unused_flow_routes_for(flow_id)?;
                 Ok(!superseded)
             }
         }

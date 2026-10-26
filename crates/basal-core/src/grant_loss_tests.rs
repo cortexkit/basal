@@ -31,11 +31,15 @@ impl Host for ProbeHost {
     fn grant_would_ask(
         &self,
         flow: &str,
+        version: u32,
         agent: Option<&str>,
         provider: &str,
         grant: &str,
     ) -> std::result::Result<bool, TransportError> {
-        assert_eq!(lock(&self.configured).as_deref(), Some(flow));
+        assert_eq!(
+            *lock(&self.configured),
+            Some(basal_host::flow_scope::flow_route_key(flow, version))
+        );
         lock(&self.probes).push((
             flow.into(),
             agent.map(str::to_owned),

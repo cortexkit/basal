@@ -1533,3 +1533,20 @@ timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 old = "if call.kind.is_sleep() {"
 new = "if false && call.kind.is_sleep() { // NON-VACUITY BREAK"
+[[control]]
+id = "flow-live-dispatch-does-not-sweep-route-liveness"
+guards = "ordinary live-run calls do not query route liveness or invoke host retirement"
+file = "crates/basal-core/src/runtime.rs"
+scope = { after = "pub(crate) fn unregister(", before = "\n    pub(crate) fn mark_event_scope_warning" }
+old = 'if terminal && let Some(route) = route {'
+new = 'if true && let Some(route) = route { // NON-VACUITY BREAK'
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+select = { tests = ["live_calls_do_not_retire_flow_routes_until_the_run_ends", "cancelled_v1_dispatch_keeps_its_route_after_v2_activates", "needs_reconcile_v1_keeps_its_route_when_v2_scope_registers"] }
+expect_red = ["live_calls_do_not_retire_flow_routes_until_the_run_ends"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600

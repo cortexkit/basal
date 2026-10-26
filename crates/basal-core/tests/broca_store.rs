@@ -32,7 +32,7 @@ fn keyed_snapshot_lookup_ignores_unrelated_corruption_and_migrates_legacy_params
             send_id: "key".into(),
         })
         .unwrap();
-    let request = CallRequest { flow_id:"f".into(), run_id:"r".into(), position:0, kind:CallKind::Primitive(Primitive::Llm), args:JsonText::new(json!({"send_id":"key", "work_class":"flow:f", "session":"basal:flow-f:r:0", "op":"llm", "max_output":12, "request":{"prompt":"legacy"}, "selection":selection}).to_string()).unwrap(), idempotency_key:"key".into(), attempt:1 };
+    let request = CallRequest { flow_version: None, flow_id: "f".into(), run_id:"r".into(), position:0, kind:CallKind::Primitive(Primitive::Llm), args:JsonText::new(json!({"send_id":"key", "work_class":"flow:f", "session":"basal:flow-f:r:0", "op":"llm", "max_output":12, "request":{"prompt":"legacy"}, "selection":selection}).to_string()).unwrap(), idempotency_key:"key".into(), attempt:1 };
     BrocaHost::new(
         Arc::new(FakeBroca::default()),
         memory.clone(),

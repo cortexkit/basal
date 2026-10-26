@@ -20,7 +20,7 @@ fn request() -> CallRequest {
             send_id: "k".into(),
         })
         .unwrap();
-    CallRequest { flow_id:"f".into(), run_id:"r".into(), position:0, kind:CallKind::Primitive(Primitive::Llm), args:JsonText::new(json!({"send_id":"k", "work_class":"flow:f", "session":"basal:flow-f:r:0", "op":"llm", "max_output":12, "request":{"prompt":"hello"}, "selection":selection}).to_string()).unwrap(), idempotency_key:"k".into(), attempt:1 }
+    CallRequest { flow_version: None, flow_id: "f".into(), run_id:"r".into(), position:0, kind:CallKind::Primitive(Primitive::Llm), args:JsonText::new(json!({"send_id":"k", "work_class":"flow:f", "session":"basal:flow-f:r:0", "op":"llm", "max_output":12, "request":{"prompt":"hello"}, "selection":selection}).to_string()).unwrap(), idempotency_key:"k".into(), attempt:1 }
 }
 
 struct BrokenStore;

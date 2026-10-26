@@ -1164,7 +1164,7 @@ id = "grant-loss-poll-never-unscoped"
 guards = "restoration uses the registered flow route even when no scope is available"
 file = "crates/basal-host/src/transport.rs"
 old = '''let reply = self.call_for_flow(
-            flow,
+            &crate::flow_scope::flow_route_key(flow, version),
             RouteTarget::ManagementSurface {
                 module_id: module.into(),
             },
@@ -1174,7 +1174,7 @@ old = '''let reply = self.call_for_flow(
             module,
             "grants.would_ask",
         )?;'''
-new = '''let _ = flow;
+new = '''let _ = (flow, version);
         let reply = self.management(module, "grants.would_ask", params)?; // NON-VACUITY BREAK'''
 test_file = "crates/basal-host/src/transport.rs"
 runner = "cargo"

@@ -170,6 +170,7 @@ pub fn prepare(
         envelope
     };
     Ok(CallRequest {
+        flow_version: None,
         flow_id,
         run_id: run.run_id.clone(),
         position: call.position,

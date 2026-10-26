@@ -483,11 +483,18 @@ impl Runtime {
                     .filter(|owner| {
                         *owner != crate::decisions::OPERATOR_ACTOR && *owner != "local:unverified"
                     });
-                self.shared.host.configure_flow(&loss.flow_id, Some(scope));
+                self.configure_flow_version(&loss.flow_id, loss.version, Some(scope));
+                self.release_unused_flow_routes_for(&loss.flow_id)?;
                 Ok(self
                     .shared
                     .host
-                    .grant_would_ask(&loss.flow_id, agent, &loss.provider, &loss.grant)
+                    .grant_would_ask(
+                        &loss.flow_id,
+                        loss.version,
+                        agent,
+                        &loss.provider,
+                        &loss.grant,
+                    )
                     .unwrap_or(false))
             }
             Ok(InstallStatus::Active { code_hash, .. }) if code_hash == expected => Ok(false),
@@ -499,6 +506,7 @@ impl Runtime {
                     crate::decisions::close_stale_grants(tx, &loss.flow_id, self.config.clock.now_ms())?;
                     Ok(())
                 })?;
+                self.release_unused_flow_routes_for(&loss.flow_id)?;
                 Ok(false)
             }
             Err(_) => Ok(false),

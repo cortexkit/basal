@@ -278,6 +278,20 @@ impl Runtime {
             })
             .map_err(InstallError::Store)?;
         self.shared.signal.bump();
+        if matches!(&outcome, Some(Ok(Decided::Applied(CardState::Approved)))) {
+            let flow = self
+                .store()
+                .read(|c| {
+                    Ok(c.query_row(
+                        "SELECT flow_id FROM install_cards WHERE card_id=?1",
+                        [card_id],
+                        |r| r.get::<_, String>(0),
+                    )?)
+                })
+                .map_err(InstallError::Store)?;
+            self.release_unused_flow_routes_for(&flow)
+                .map_err(InstallError::Store)?;
+        }
         outcome.unwrap_or_else(|| {
             Err(InstallError::Store(CoreError::Store(
                 "the card decision produced no outcome".into(),

@@ -242,6 +242,7 @@ mod tests {
         let call = StoredCall {
             deferred: false,
             route: Route {
+                flow_version: None,
                 flow_id: Some("flow".into()),
                 project_root: "/rig".into(),
                 harness: "basal".into(),

@@ -25,6 +25,7 @@ use wire::Fake;
 
 fn call(p: Primitive, args: Value) -> CallRequest {
     CallRequest {
+        flow_version: None,
         flow_id: "flow".into(),
         run_id: "run".into(),
         position: 7,

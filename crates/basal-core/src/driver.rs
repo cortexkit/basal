@@ -172,6 +172,7 @@ impl Runtime {
                 {
                     if run.state.is_terminal() {
                         self.clear_event_scope_warning(run_id);
+                        self.release_unused_flow_routes_for(&run.flow_id)?;
                     }
                     // It expired just now: the slot it held is free.
                     self.shared.signal.bump();
@@ -287,6 +288,7 @@ impl Runtime {
                 if terminal {
                     self.clear_event_scope_warning(&run_id);
                     if let Ok(run) = self.run(&run_id) {
+                        let _ = self.release_unused_flow_routes_for(&run.flow_id);
                         self.wake_flow(&run.flow_id);
                     }
                 }
@@ -728,7 +730,7 @@ impl Activation<'_> {
             ));
         }
         for mut row in resend {
-            self.rt.register(&run_id, row.position);
+            self.rt.register(&self.run, row.position);
             let attempt = match self
                 .rt
                 .store()
@@ -983,7 +985,7 @@ impl Activation<'_> {
             StoredClass::Local => self.commit_local_call(&call, &flow_id, &new, audited_at),
             _ => {
                 let run_id = self.lease.run_id.clone();
-                self.rt.register(&run_id, call.position);
+                self.rt.register(&self.run, call.position);
                 let committed = self.rt.store().write(|tx| {
                     self.commit_remote(tx, &flow_id, &call, &new, &prepared, audited_at)
                 });
@@ -1017,6 +1019,7 @@ impl Activation<'_> {
                     position: call.position,
                 })?;
                 let request = basal_host::CallRequest {
+                    flow_version: self.run.flow_version,
                     flow_id,
                     run_id,
                     position: call.position,
@@ -1309,7 +1312,10 @@ impl Activation<'_> {
             self.rt
                 .shared
                 .host
-                .provider_ready(&self.run.flow_id, &call.kind)
+                .provider_ready(
+                    &basal_host::flow_scope::route_key(&self.run.flow_id, self.run.flow_version),
+                    &call.kind,
+                )
                 .map_err(|refusal| {
                     let mut rejected = Refusal::new(refusal.reason.as_str(), refusal.message());
                     rejected.module = Some(refusal.provider);

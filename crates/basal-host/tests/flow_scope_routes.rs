@@ -1,5 +1,5 @@
 use basal_host::Host;
-use basal_host::flow_scope::{FlowScope, RegisteredScope, ScopedRoutes};
+use basal_host::flow_scope::{FlowScope, RegisteredScope, ScopedRoutes, flow_route_key};
 use basal_host::routing::ModuleOpsHost;
 use basal_host::subc_catalog::SubcCatalog;
 use basal_host::transport::{Transport, WireError};
@@ -210,5 +210,125 @@ fn configure_flow_release_of_an_unregistered_codemode_key_is_a_noop() {
             ))
             .unwrap(),
         Some(17)
+    );
+}
+
+#[test]
+fn flow_versions_keep_distinct_routes_during_activation_overlap() {
+    let mut routes = ScopedRoutes::<u64>::default();
+    let v1 = flow_route_key("flow-a", 1);
+    let v2 = flow_route_key("flow-a", 2);
+    let mut first = codemode_scope();
+    first.selector.scope_ref = "approved-v1".into();
+    let mut second = first.clone();
+    second.selector.scope_ref = "approved-v2".into();
+    routes.configure(&v1, Some(first.clone()));
+    assert_eq!(routes.route(&v1, &target(), |_| Ok(11)).unwrap(), Some(11));
+    assert!(routes.configure(&v2, Some(second.clone())).is_empty());
+    assert_eq!(
+        routes
+            .route(&v2, &target(), |scope| {
+                assert_eq!(scope, &second.selector);
+                Ok(22)
+            })
+            .unwrap(),
+        Some(22)
+    );
+    assert_eq!(
+        routes
+            .route(&v1, &target(), |_| panic!(
+                "the in-flight v1 route stays open"
+            ))
+            .unwrap(),
+        Some(11)
+    );
+    assert_eq!(
+        routes.retain_flow_routes_for("flow-a", &[v2.clone()].into_iter().collect()),
+        vec![11]
+    );
+    assert!(
+        routes
+            .route(&v1, &target(), |_| panic!("retired version cannot reopen"))
+            .is_err()
+    );
+    assert_eq!(
+        routes
+            .route(&v2, &target(), |_| panic!("v2 stays cached"))
+            .unwrap(),
+        Some(22)
+    );
+}
+
+#[test]
+fn flow_versions_sharing_a_scope_release_only_the_last_handle() {
+    let mut routes = ScopedRoutes::<u64>::default();
+    let v1 = flow_route_key("flow-a", 1);
+    let v2 = flow_route_key("flow-a", 2);
+    routes.configure(&v1, Some(codemode_scope()));
+    routes.configure(&v2, Some(codemode_scope()));
+    assert_eq!(routes.route(&v1, &target(), |_| Ok(11)).unwrap(), Some(11));
+    assert_eq!(
+        routes
+            .route(&v2, &target(), |_| panic!(
+                "versions share the scope's handle"
+            ))
+            .unwrap(),
+        Some(11)
+    );
+    assert!(
+        routes
+            .retain_flow_routes_for("flow-a", &[v2.clone()].into_iter().collect())
+            .is_empty()
+    );
+    assert!(
+        routes
+            .route(&v1, &target(), |_| panic!("v1 was released"))
+            .is_err()
+    );
+    assert_eq!(
+        routes
+            .route(&v2, &target(), |_| panic!("v2 still owns the handle"))
+            .unwrap(),
+        Some(11)
+    );
+    assert_eq!(
+        routes.retain_flow_routes_for("flow-a", &Default::default()),
+        vec![11]
+    );
+    assert!(
+        routes
+            .retain_flow_routes_for("flow-a", &Default::default())
+            .is_empty()
+    );
+}
+
+#[test]
+fn retiring_one_flow_does_not_visit_another_flows_keys() {
+    let mut routes = ScopedRoutes::<u64>::default();
+    let first = flow_route_key("flow-a", 1);
+    let other = flow_route_key("flow-a:other", 1);
+    let mut different = codemode_scope();
+    different.selector.scope_ref = "unrelated".into();
+    routes.configure(&first, Some(codemode_scope()));
+    routes.configure(&other, Some(different));
+    assert_eq!(
+        routes.route(&first, &target(), |_| Ok(11)).unwrap(),
+        Some(11)
+    );
+    assert_eq!(
+        routes.route(&other, &target(), |_| Ok(22)).unwrap(),
+        Some(22)
+    );
+    assert_eq!(
+        routes.retain_flow_routes_for("flow-a", &Default::default()),
+        vec![11]
+    );
+    assert_eq!(
+        routes
+            .route(&other, &target(), |_| panic!(
+                "another flow's cached handle remains live"
+            ))
+            .unwrap(),
+        Some(22)
     );
 }

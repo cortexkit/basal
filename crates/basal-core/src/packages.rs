@@ -222,6 +222,7 @@ impl Runtime {
         // The catalog may page core's agent list over the network. Resolve it
         // before holding the store's writer, so journal commits do not wait on core.
         // A failed read stays distinct from an answered read without the agent.
+        let mut liveness_changed = false;
         let known_agent = self
             .catalog()
             .agent_id(agent)
@@ -269,6 +270,7 @@ impl Runtime {
                 .flatten();
             let new = previous.is_none();
             let was_removed = removed(tx, &id)?;
+            liveness_changed = previous != Some(version) || was_removed;
             tx.execute("INSERT INTO flows (flow_id,owner,approved_version,created_at,package,first_approved_at) VALUES (?1,?2,?3,?4,?5,?4) ON CONFLICT(flow_id) DO UPDATE SET approved_version=excluded.approved_version,first_approved_at=COALESCE(flows.first_approved_at,excluded.first_approved_at),removed=0", params![id,agent,version,self.config().clock.now_ms(),package])?;
             // A same-version generation changes only ordering and removal.
             // In particular, a disabled schedule must not be reset by a resend.
@@ -315,6 +317,12 @@ impl Runtime {
             )?;
             Ok(reply)
         })
+        .and_then(|reply| {
+            if liveness_changed {
+                self.release_unused_flow_routes_for(&instance_id(package, agent)).map_err(PackageError::Store)?;
+            }
+            Ok(reply)
+        })
     }
 
     pub fn remove_instance(
@@ -323,6 +331,7 @@ impl Runtime {
         agent: &str,
         incoming: i64,
     ) -> Result<Value, PackageError> {
+        let mut liveness_changed = false;
         decide(self, |tx| {
             if let Some(reply) = generation(tx, package, agent, incoming, "remove", None)? {
                 return Ok(reply);
@@ -332,6 +341,7 @@ impl Runtime {
                 "UPDATE flows SET removed=1 WHERE flow_id=?1 AND package IS NOT NULL AND removed=0",
                 [&id],
             )?;
+            liveness_changed = changed != 0;
             if changed != 0 {
                 let now = jiff::Timestamp::from_millisecond(self.config().clock.now_ms())
                     .map_err(|e| CoreError::Invalid(e.to_string()))?;
@@ -339,6 +349,13 @@ impl Runtime {
             }
             let reply = json!({"flow_id":id,"generation":incoming,"removed":changed != 0});
             record_generation(tx, package, agent, incoming, "remove", None, &reply)?;
+            Ok(reply)
+        })
+        .and_then(|reply| {
+            if liveness_changed {
+                self.release_unused_flow_routes_for(&instance_id(package, agent))
+                    .map_err(PackageError::Store)?;
+            }
             Ok(reply)
         })
     }

@@ -6,6 +6,21 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use subc_protocol::{BindIdentity, Principal, scope::ScopeSelector};
 
+/// An ordinary flow's registration is pinned to its installed version. The
+/// length prefix keeps flow ids containing separators from aliasing other keys.
+pub fn flow_route_key(flow_id: &str, version: u32) -> String {
+    format!("flow:{}:{flow_id}:{version}", flow_id.len())
+}
+
+/// Codemode and offline simulations have no installed flow version and keep
+/// their own opaque keys. Installed runs always carry a version at admission.
+pub fn route_key(flow_id: &str, version: Option<u32>) -> String {
+    version.map_or_else(
+        || flow_id.to_owned(),
+        |version| flow_route_key(flow_id, version),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlowScope {
@@ -77,6 +92,23 @@ impl<H> Default for ScopedRoutes<H> {
 }
 
 impl<H: Copy + Eq> ScopedRoutes<H> {
+    pub fn retain_flow_routes_for(
+        &mut self,
+        flow_id: &str,
+        live: &std::collections::HashSet<String>,
+    ) -> Vec<H> {
+        let prefix = format!("flow:{}:{flow_id}:", flow_id.len());
+        let retired: Vec<_> = self
+            .flows
+            .keys()
+            .filter(|key| key.starts_with(&prefix) && !live.contains(*key))
+            .cloned()
+            .collect();
+        retired
+            .into_iter()
+            .flat_map(|key| self.configure(&key, None))
+            .collect()
+    }
     /// Daemon control pushes name a channel list, or a module on older
     /// daemons. They do not carry a route epoch or a single route_channel.
     pub fn control_push(
