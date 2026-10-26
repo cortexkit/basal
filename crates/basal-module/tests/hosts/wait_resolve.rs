@@ -423,6 +423,7 @@ fn wait_store_refusal_defers_and_reuses_frozen_receipt() {
 #[test]
 fn wait_dry_run_would_resolve_but_never_sends() {
     let fake = Fake::new();
+    set_core_capability(&fake, CAPABILITY.trim(), true);
     let f = worker_fixture(
         fake.clone(),
         Arc::new(CoreConsent::new(fake.clone())),

@@ -4,6 +4,7 @@
 //! and leaves the flow's real `kv` and runs untouched.
 
 mod common;
+mod wire;
 
 use basal_core::RunState;
 use basal_module::caller::Caller;
@@ -243,7 +244,34 @@ fn status_group_is_validated_at_install_and_dry_run() {
 
 #[test]
 fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
-    let f = fixture("dry-capture", Options::default());
+    use std::sync::Arc;
+
+    let fake = wire::Fake::new();
+    fake.catalog.lock().unwrap()["modules"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "module_id":"prefrontal-core",
+            "capabilities":{"provides":[basal_host::core_host::FLOW_DIGEST_WITHDRAW_V1]}
+        }));
+    let mock = Arc::new(basal_host::mock::MockHost::new());
+    let f = fixture(
+        "dry-capture",
+        Options {
+            hosts: Some(basal_module::module::Hosts {
+                host: Arc::new(basal_host::routing::RoutingHost::new(
+                    mock.clone(),
+                    Arc::new(basal_host::core_host::CoreHost::new(fake.clone())),
+                    mock.clone(),
+                )),
+                catalog: Arc::new(basal_host::MockCatalog::standard()),
+                transport: fake.clone(),
+                consent: Arc::new(basal_host::MockConsent::new()),
+                hooks: Arc::new(basal_core::NoHooks),
+            }),
+            ..Options::default()
+        },
+    );
     let script = "const r = await ops.call('mock', 'echo', { due: trigger.due }).catch((e) => e.data.code);\n\
                   await sink.digest('SYNAPSE', { title: 'fire' }).catch(() => null);\n\
                   await sink.digest('SYNAPSE', { title: 'loud' }, 'wake').catch(() => null);\n\
@@ -290,7 +318,8 @@ fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
         assert!(c[3]["args"].get("item").is_none());
     }
     assert_eq!(runs[0]["trigger"]["due"], "2026-04-30T15:00:00Z");
-    assert_eq!(f.mock.total_sends(), 0, "nothing reached a host");
+    assert_eq!(mock.total_sends(), 0, "nothing reached the ops host");
+    assert!(fake.calls("sink.digest").is_empty());
 
     // Asked for explicitly, by the owner, still nothing executes.
     let summary = dry_run(
@@ -300,7 +329,8 @@ fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
     )
     .expect("dry run");
     assert_eq!(summary["window"]["replayed"], 3);
-    assert_eq!(f.mock.total_sends(), 0, "nothing reached a host");
+    assert_eq!(mock.total_sends(), 0, "nothing reached the ops host");
+    assert!(fake.calls("sink.digest").is_empty());
 }
 
 #[test]
