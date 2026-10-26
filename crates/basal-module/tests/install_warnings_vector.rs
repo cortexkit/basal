@@ -62,8 +62,8 @@ fn hosts(fake: Arc<Fake>) -> Hosts {
     }
 }
 
-/// With `BASAL_WRITE_VECTORS=1` the test writes the vector and its checksums
-/// before comparing them, to regenerate them after an intended change.
+/// With `BASAL_WRITE_VECTORS` set the test writes the vector and its checksums
+/// and fails, requiring a separate run to verify the regenerated files.
 #[test]
 fn protected_root_install_request_vector_matches_what_basal_sends_core() {
     let home = common::scratch("protected-root-vector-home");
@@ -110,9 +110,12 @@ fn protected_root_install_request_vector_matches_what_basal_sends_core() {
         basal_proto::util::hex(&Sha256::digest(&readme)),
         basal_proto::util::hex(&Sha256::digest(&bytes)),
     );
-    if std::env::var("BASAL_WRITE_VECTORS").as_deref() == Ok("1") {
+    if std::env::var_os("BASAL_WRITE_VECTORS").is_some() {
         std::fs::write(format!("{DIRECTORY}/{FILE}"), &bytes).expect("write vector");
         std::fs::write(format!("{DIRECTORY}/SHA256SUMS"), &sums).expect("write checksums");
+        drop(f);
+        let _ = std::fs::remove_dir_all(&home);
+        panic!("vectors rewritten, rerun without the variable");
     }
     let committed = std::fs::read(format!("{DIRECTORY}/{FILE}")).unwrap_or_default();
     assert!(

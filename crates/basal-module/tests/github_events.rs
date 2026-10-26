@@ -28,6 +28,58 @@ const EVENTS: [&str; 3] = [
     "github_release_published",
 ];
 
+// Independent delivery expectations for every shipped repository and bot binding.
+// An empty bot slug means the owner has no bound bot, not that routing is disabled.
+const ROUTING: &[(&str, &str, &str)] = &[
+    ("aft", "agent_ab64ea0873bbee0c", "aft-alfonso"),
+    ("prefrontal", "agent_fff43bb5f4bea20b", "alf-alfonso"),
+    ("magic-context", "agent_b613e5cf2ee55b8c", "magic-alfonso"),
+    ("subconscious", "agent_2bfd6927602f7977", "subc-alfonso"),
+    (
+        "subconscious-design",
+        "agent_2bfd6927602f7977",
+        "subc-alfonso",
+    ),
+    ("commons", "agent_2bfd6927602f7977", "subc-alfonso"),
+    ("cingulate", "agent_2bfd6927602f7977", "subc-alfonso"),
+    ("plexus", "agent_309edd5e94fbb2fe", "plex-alfonso"),
+    ("cerebellum", "agent_b1a9c546c33b84c9", "cereb-alfonso"),
+    ("basal", BASAL, "basal-alfonso"),
+    ("broca", "agent_65e9fe998e14b47d", "broca-alfonso"),
+    ("broca-private", "agent_65e9fe998e14b47d", "broca-alfonso"),
+    ("entorhinal", "agent_fef99bdc81d3110f", "ento-alfonso"),
+    ("engram", "agent_ad4b5a2aa78261f4", "engram-alfonso"),
+    ("insula", "agent_2fd02cfeb9c0484f", "qta-alfonso"),
+    ("claustrum", "agent_847ef2a2861e98ec", "ckcred-alfonso"),
+    ("callosum", "agent_26399f830c6eb22a", "callo-alfonso"),
+    ("thalamus", "agent_62d6b770df582b4a", "thalamus-alfonso"),
+    ("fusiform", "agent_ce8142a135f2ba63", "fusi-alfonso"),
+    ("motor", "agent_ef98bc82ef005a63", ""),
+    ("motor-private", "agent_ef98bc82ef005a63", ""),
+    ("synapse", "agent_80d5db38cd991ef1", "synapse-alfonso"),
+    ("astrocyte", "agent_5acf4ca3cb0138c4", "astro-alfonso"),
+    ("cortexkit-cloud", "agent_fb7fb88282f843b5", ""),
+    ("cortexkit-account", "agent_fb7fb88282f843b5", ""),
+    ("alfonso-ios", "agent_fcd30f86aefd4fd9", "ckios-alfonso"),
+    ("alfonso-tui", "agent_b54b7f85f177ca5d", "cktui-alfonso"),
+    ("alfonso-desktop", "agent_16013c86", "ckdesk-alfonso"),
+    ("avatar", "agent_6f5aa47e4c5ad277", "ava-alfonso"),
+    ("wernicke", "agent_20dabecd80549388", "werni-alfonso"),
+    ("cortexkit-e2e", "agent_d444250e2d503c07", "cke2e-alfonso"),
+    (
+        "anthropic-auth",
+        "agent_74a1517f3695e9b1",
+        "antauth-alfonso",
+    ),
+    (
+        "antigravity-auth",
+        "agent_87f64a79b52bf905",
+        "agauth-alfonso",
+    ),
+    ("openai-auth", "agent_0f4d7713e64e7cc4", "oaiauth-alfonso"),
+    ("common-auth", "agent_0f4d7713e64e7cc4", "oaiauth-alfonso"),
+];
+
 #[derive(Default)]
 struct GithubHost {
     mock: MockHost,
@@ -82,6 +134,9 @@ impl GithubHost {
                         .unwrap_or_else(|| HostOutcome::fulfilled(text(json!({"ok":true})))),
                 )
             }
+            CallKind::Op { module, op } if module == "plexus" && op == "github_read" => Some(
+                HostOutcome::fulfilled(text(json!({"result":{"superseded":false}}))),
+            ),
             CallKind::Op { .. } | CallKind::OpFor { .. } => {
                 panic!("flow made an unexpected op: {request:?}")
             }
@@ -139,6 +194,10 @@ struct Test {
 
 impl Test {
     fn new() -> Self {
+        Self::with_flow(SCRIPT, MANIFEST, &EVENTS)
+    }
+
+    fn with_flow(script: &str, manifest: &str, events: &[&str]) -> Self {
         let host = Arc::new(GithubHost::default());
         let catalog = MockCatalog::standard();
         catalog.set_op(
@@ -163,14 +222,20 @@ impl Test {
             },
         );
         catalog.set_emits_events("plexus", "github_react", Some(false));
+        catalog.set_op(
+            "plexus",
+            "github_read",
+            OpDecl {
+                kind: Some(OpKind::Query),
+                cause_echo: false,
+                shell_capable: false,
+            },
+        );
         // Targeted calls resolve the owner through the agent registry.
-        for owner in owners(SCRIPT)
-            .split('\'')
-            .filter(|part| part.starts_with("agent_"))
-        {
+        for &(_, owner, _) in ROUTING {
             catalog.add_agent(owner);
         }
-        for name in EVENTS {
+        for &name in events {
             catalog.set_event(
                 "plexus",
                 name,
@@ -201,8 +266,8 @@ impl Test {
         let reply = common::install(
             &f,
             &Caller::Operator,
-            SCRIPT,
-            &serde_json::from_str(MANIFEST).unwrap(),
+            script,
+            &serde_json::from_str(manifest).unwrap(),
         );
         let card_id = reply["card_id"].as_str().unwrap();
         let card = consent.card(card_id).unwrap().fields;
@@ -311,17 +376,6 @@ fn item(kind: &str, action: &str) -> Value {
     body
 }
 
-fn owners(script: &str) -> String {
-    script
-        .split_once("const OWNERS = {")
-        .unwrap()
-        .1
-        .split_once("\n};")
-        .unwrap()
-        .0
-        .to_owned()
-}
-
 /// The exact `github_react` arguments, as basal journals them inside the
 /// targeted-call envelope, for an opened item numbered 42 in cortexkit/basal.
 fn pinned_reaction(kind: &str, event: usize) -> String {
@@ -402,22 +456,76 @@ fn install_admits_github_react_by_plexus_declaring_it_emits_no_events() {
 }
 
 #[test]
-fn owner_map_matches_router_and_bot_bindings_are_populated() {
-    assert_eq!(
-        owners(SCRIPT),
-        owners(include_str!("../../../flows/ci-failure-router/flow.js"))
+fn shipped_flows_deliver_to_expected_owners_and_suppress_bot_wakes() {
+    let github = Test::new();
+    let router = Test::with_flow(
+        include_str!("../../../flows/ci-failure-router/flow.js"),
+        include_str!("../../../flows/ci-failure-router/manifest.json"),
+        &["github_ci_job_failed", "github_ci_run_completed"],
     );
-    let bots = SCRIPT
-        .split_once("const BOT_SLUGS = {")
-        .unwrap()
-        .1
-        .split_once("\n};")
-        .unwrap()
-        .0;
-    assert_eq!(bots.lines().filter(|line| line.contains(": '")).count(), 26);
-    assert!(bots.contains("agent_16013c86: 'ckdesk-alfonso'"));
-    assert!(!bots.contains("agent_ef98bc82ef005a63"));
-    assert!(!bots.contains("agent_fb7fb88282f843b5"));
+    for (index, &(repo, owner, bot)) in ROUTING.iter().enumerate() {
+        // Advance time between repositories so rate limiting cannot suppress delivery.
+        github.f.clock.set(common::T0 + index as i64 * 60_000);
+        let repo = format!("cortexkit/{repo}");
+        let mut issue = item("issue", "opened");
+        issue["repo"] = json!(repo);
+        let before = github.writes().len();
+        github.event(issue.clone());
+        let writes = github.writes();
+        assert_eq!(writes.len(), before + 1, "{repo}");
+        assert_eq!(writes.last().unwrap()["agent"], owner, "{repo}");
+        assert_eq!(writes.last().unwrap()["action"], "wake", "{repo}");
+
+        // A bound owner's bot must be suppressed even when a human delivers its event.
+        // Unbound owners still receive events authored by unrelated automation.
+        issue["author"] = json!(format!(
+            "{}[bot]",
+            if bot.is_empty() { "unrelated" } else { bot }
+        ));
+        issue["number"] = json!(43);
+        let result = github.event(issue);
+        if bot.is_empty() {
+            assert_eq!(github.writes().last().unwrap()["agent"], owner, "{repo}");
+            assert_eq!(github.writes().len(), writes.len() + 1, "{repo}");
+        } else {
+            assert_eq!(
+                result["events"][0]["suppressed_reason"], "own_bot_automated",
+                "{repo}"
+            );
+            assert_eq!(github.writes().len(), writes.len(), "{repo}");
+        }
+
+        let mut job: Value =
+            serde_json::from_str(include_str!("data/template-ci-job-v2.json")).unwrap();
+        job["repo"] = json!(repo);
+        job["id"] = json!(index + 1);
+        job["run_id"] = json!(index + 1);
+        if repo == "cortexkit/magic-context" {
+            job["head_branch"] = json!("master");
+        }
+        router.notice(job, "github_ci_job_failed", &repo);
+        let writes = router.writes();
+        assert_eq!(writes.len(), index + 1, "{repo}");
+        assert_eq!(writes.last().unwrap()["agent"], owner, "{repo}");
+        let action = if repo == "cortexkit/cerebellum" {
+            "silent"
+        } else {
+            "wake"
+        };
+        assert_eq!(writes.last().unwrap()["action"], action, "{repo}");
+    }
+    let mut job: Value =
+        serde_json::from_str(include_str!("data/template-ci-job-v2.json")).unwrap();
+    job["repo"] = json!("cortexkit/basal");
+    job["id"] = json!(1000);
+    job["run_id"] = json!(1000);
+    job["head_branch"] = json!("feature/bot");
+    job["actor"] = json!("dependabot[bot]");
+    router.notice(job, "github_ci_job_failed", "cortexkit/basal");
+    let writes = router.writes();
+    assert_eq!(writes.len(), ROUTING.len() + 1);
+    assert_eq!(writes.last().unwrap()["agent"], BASAL);
+    assert_eq!(writes.last().unwrap()["action"], "silent");
 }
 
 #[test]

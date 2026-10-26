@@ -93,6 +93,7 @@ fn catalog_events_require_an_acknowledged_daemon_capability() {
     );
     acknowledge(&capabilities, &[CAP_CATALOG_EVENTS_V1]);
     install(&f, "github_pr_changed", 1).unwrap();
+    dry_run(&f).unwrap();
     acknowledge(&capabilities, &[]);
     let error = dry_run(&f).unwrap_err();
     assert_eq!(error.code, "invalid_params");
@@ -141,15 +142,6 @@ fn header_filters_require_declared_catalog_keys_at_install_and_dry_run() {
         assert_eq!(error.code, "event_header_not_declared");
         assert!(error.message.contains("repo"), "{error:?}");
     }
-}
-
-#[test]
-fn declared_catalog_event_is_accepted_by_install_and_dry_run() {
-    let capabilities = Arc::new(DaemonCapabilities::default());
-    acknowledge(&capabilities, &[CAP_CATALOG_EVENTS_V1]);
-    let (f, _) = fixture(entry(), capabilities.clone());
-    assert!(install(&f, "github_pr_changed", 1).is_ok());
-    assert!(dry_run(&f).is_ok());
 }
 
 #[test]

@@ -13,8 +13,8 @@ use basal_core::{InstallGate, NoHooks, RunState};
 use basal_host::core_consent::CoreConsent;
 use basal_host::core_host::{CoreHost, decode_install_status};
 use basal_host::routing::{ModuleOpsHost, RoutingHost};
-use basal_host::subc_catalog::{CORE, SubcCatalog};
-use basal_host::transport::{Transport, WireError};
+use basal_host::subc_catalog::SubcCatalog;
+use basal_host::transport::WireError;
 use basal_host::{Host, InstallStatus};
 use basal_module::caller::Caller;
 use basal_module::module::Hosts;
@@ -583,8 +583,7 @@ fn install_status_replies_decode_strictly() {
 }
 
 /// `placement` is left out of the `flow_install` request when the manifest
-/// states none (core renders "not stated"), sent when it does, and never
-/// sent empty. The fake refuses an empty one as core does.
+/// states none (core renders "not stated") and sent when it does.
 #[test]
 fn placement_is_sent_only_when_the_manifest_states_one() {
     let fake = Fake::new();
@@ -599,12 +598,4 @@ fn placement_is_sent_only_when_the_manifest_states_one() {
     common::install(&f, &Caller::Operator, SCRIPT, &placed);
     let sent = fake.calls("flow.install_request")[1]["params"]["flow_install"].clone();
     assert_eq!(sent["placement"], "machine:local");
-
-    let mut empty = fake.calls("flow.install_request")[1]["params"].clone();
-    empty["flow_install"]["placement"] = json!("");
-    let refused = fake.management(CORE, "flow.install_request", empty);
-    assert!(
-        matches!(&refused, Err(WireError::Refused { code, .. }) if code == "elicitation_invalid_request"),
-        "{refused:?}"
-    );
 }

@@ -90,7 +90,9 @@ fn list_authorization_rows() {
         ids(&list(&f, &Caller::Operator, json!({}))),
         ["a", "b", "local"]
     );
+    assert_eq!(ids(&list(&f, &agent("A"), json!({}))), ["a"]);
     assert_eq!(ids(&list(&f, &agent("B"), json!({}))), ["b"]);
+    assert_eq!(ids(&list(&f, &Caller::Local, json!({}))), ["local"]);
     assert!(ids(&list(&f, &agent("C"), json!({}))).is_empty());
     for caller in [Caller::Core, Caller::Other("other".into())] {
         assert_eq!(
@@ -115,18 +117,6 @@ fn list_authorization_rows() {
             "invalid_params"
         );
     }
-}
-
-#[test]
-fn list_agent_cannot_see_another_agents_flow() {
-    let f = populated("list-agent");
-    assert_eq!(ids(&list(&f, &agent("A"), json!({}))), ["a"]);
-}
-
-#[test]
-fn list_local_cannot_see_an_agents_flow() {
-    let f = populated("list-local");
-    assert_eq!(ids(&list(&f, &Caller::Local, json!({}))), ["local"]);
 }
 
 #[test]
@@ -213,61 +203,52 @@ fn list_reply_decodes_against_documented_shape_and_health_state() {
         .nth(1)
         .expect("documented reply");
     let shape: Value = serde_json::from_str(section.split("\n```").next().unwrap()).unwrap();
-    for actor in [
-        None,
-        Some(Actor::Agent("A".into())),
-        Some(Actor::Operator("operator".into())),
-        Some(Actor::Runtime),
-        Some(Actor::Core),
+    let raw = list(&f, &Caller::Operator, json!({}));
+    matches_shape(&raw, &shape, false);
+    assert_eq!(raw["as_of"], T0);
+    let a = &raw["flows"][0];
+    assert_eq!(a["approved_version"], 1);
+    assert_eq!(a["pending_version"], 2);
+    assert_eq!(a["last_run"]["run_id"], run);
+    assert_eq!(a["last_run"]["state"], "succeeded");
+    assert!(a["last_run"]["ended_at"].as_i64().unwrap() > 0);
+    assert_eq!(a["needs_reconcile"], false);
+    assert!(a["disabled"].is_null());
+    assert_eq!(raw["flows"][1]["approved_version"], Value::Null);
+    assert_eq!(raw["flows"][1]["pending_version"], 1);
+    let health = f
+        .module
+        .handle(&Caller::Core, "flow.health", json!({}))
+        .unwrap();
+    for (entry, h) in raw["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(health["flows"].as_array().unwrap())
+    {
+        assert_eq!(entry["state"], h["state"]);
+    }
+    for key in shape["flows"][0].as_object().unwrap().keys() {
+        let mut missing = raw.clone();
+        missing["flows"][0].as_object_mut().unwrap().remove(key);
+        assert!(std::panic::catch_unwind(|| matches_shape(&missing, &shape, false)).is_err());
+    }
+    for (actor, kind) in [
+        (Actor::Agent("A".into()), "owner"),
+        (Actor::Operator("operator".into()), "operator"),
+        (Actor::Runtime, "auto"),
+        (Actor::Core, "core"),
     ] {
         f.module
             .rt
             .enable_flow_as("a", &Actor::Operator("operator".into()))
             .unwrap();
-        if let Some(actor) = &actor {
-            f.module.rt.disable_flow("a", actor, "stop").unwrap();
-        }
+        f.module.rt.disable_flow("a", &actor, "stop").unwrap();
         let raw = list(&f, &Caller::Operator, json!({}));
-        matches_shape(&raw, &shape, false);
-        assert_eq!(raw["as_of"], T0);
-        let a = &raw["flows"][0];
-        assert_eq!(a["approved_version"], 1);
-        assert_eq!(a["pending_version"], 2);
-        assert_eq!(a["last_run"]["run_id"], run);
-        assert_eq!(a["last_run"]["state"], "succeeded");
-        assert!(a["last_run"]["ended_at"].as_i64().unwrap() > 0);
-        assert_eq!(a["needs_reconcile"], false);
-        if let Some(actor) = &actor {
-            let kind = match actor {
-                Actor::Agent(_) => "owner",
-                Actor::Operator(_) => "operator",
-                // Core's own disable is its own kind, never an owner's.
-                Actor::Core => "core",
-                Actor::Runtime => "auto",
-            };
-            assert_eq!(a["disabled"], json!({"by":kind,"reason":"stop","at":T0}));
-        } else {
-            assert!(a["disabled"].is_null());
-        }
-        assert_eq!(raw["flows"][1]["approved_version"], Value::Null);
-        assert_eq!(raw["flows"][1]["pending_version"], 1);
-        let health = f
-            .module
-            .handle(&Caller::Core, "flow.health", json!({}))
-            .unwrap();
-        for (entry, h) in raw["flows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(health["flows"].as_array().unwrap())
-        {
-            assert_eq!(entry["state"], h["state"]);
-        }
-        for key in shape["flows"][0].as_object().unwrap().keys() {
-            let mut missing = raw.clone();
-            missing["flows"][0].as_object_mut().unwrap().remove(key);
-            assert!(std::panic::catch_unwind(|| matches_shape(&missing, &shape, false)).is_err());
-        }
+        assert_eq!(
+            raw["flows"][0]["disabled"],
+            json!({"by":kind,"reason":"stop","at":T0})
+        );
     }
 }
 

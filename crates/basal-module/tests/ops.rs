@@ -33,8 +33,7 @@ fn v2() -> Value {
     common::events_v2(FLOW)
 }
 
-/// What an op did for one caller: ran (or failed for a reason other than
-/// who called), refused it, or refused it as needing the attested operator.
+/// A successful op, an exact permission refusal, or a request for operator attestation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Seen {
     Ran,
@@ -45,9 +44,12 @@ use Seen::{NeedsOperator as Attest, Ran as Yes, Refused as No};
 
 fn seen(r: &Result<Value, String>) -> Seen {
     match r {
-        Err(e) if e.starts_with("not_permitted") => Seen::Refused,
-        Err(e) if e.starts_with("operator_attestation_required") => Seen::NeedsOperator,
-        _ => Seen::Ran,
+        Ok(_) => Seen::Ran,
+        Err(e) => match e.split_once(": ").map(|(code, _)| code) {
+            Some("not_permitted") => Seen::Refused,
+            Some("operator_attestation_required") => Seen::NeedsOperator,
+            _ => panic!("unexpected operation error: {e}"),
+        },
     }
 }
 
@@ -65,7 +67,30 @@ fn reserved(module_id: &str) -> Principal {
 
 #[test]
 fn authorization_matrix() {
-    let f = owned_flow("ops-matrix");
+    let f = fixture("ops-matrix", Options::with_worker());
+    install_approved(&f, &agent(OWNER), SCRIPT, &events_manifest(FLOW));
+    let mut manifest = events_manifest("matrix-post");
+    manifest["ops"] = json!([{"module":"mock", "op":"post"}]);
+    install_approved(
+        &f,
+        &agent(OWNER),
+        "return await ops.call('mock', 'post', {});",
+        &manifest,
+    );
+    f.mock.inject(
+        "mock",
+        "post",
+        &[Fault {
+            proven_unsent: false,
+            effect_applied: true,
+        }],
+    );
+    let reconcile_run = admit(&f, "matrix-post", "lost-reply");
+    f.module.engine.run_until_idle(50).expect("idle");
+    assert_eq!(
+        f.module.rt.run(&reconcile_run).unwrap().state,
+        RunState::NeedsReconcile
+    );
     // The operator and the local caller come from their routes' stamps: only
     // the attested callosum is the operator, and a direct key-holder (any
     // local process) is a local caller.
@@ -101,7 +126,7 @@ fn authorization_matrix() {
         ("flow.health", Value::Null, [Yes, Attest, No, No, Yes, No]),
         (
             "flow.reconcile",
-            json!({ "run_id": "run-none", "position": 0, "resolution": "cancel" }),
+            json!({ "run_id": reconcile_run, "position": 0, "resolution": "cancel" }),
             [Yes, Attest, No, No, No, No],
         ),
         (
