@@ -268,7 +268,10 @@ fn install_and_dry_run_apply_audience_authorship_and_resolution() {
                     tx,
                     &Manifest::parse(&request.manifest).unwrap(),
                     &request,
-                    Vec::new(),
+                    basal_core::install::Validation {
+                        warnings: Vec::new(),
+                        tool_policies: Default::default(),
+                    },
                     T0,
                 )
                 .unwrap();
@@ -413,7 +416,17 @@ fn stored_agent_audience_name_lists_but_dry_run_refuses() {
         .rt
         .store()
         .write(|tx| {
-            basal_core::install::record(tx, &m, &request, Vec::new(), T0).unwrap();
+            basal_core::install::record(
+                tx,
+                &m,
+                &request,
+                basal_core::install::Validation {
+                    warnings: Vec::new(),
+                    tool_policies: Default::default(),
+                },
+                T0,
+            )
+            .unwrap();
             Ok(())
         })
         .unwrap();
@@ -565,7 +578,10 @@ fn unreadable_registries_refuse_install_and_dry_run() {
                         tx,
                         &Manifest::parse(&request.manifest).unwrap(),
                         &request,
-                        Vec::new(),
+                        basal_core::install::Validation {
+                            warnings: Vec::new(),
+                            tool_policies: Default::default(),
+                        },
                         T0,
                     )
                     .unwrap();
@@ -685,7 +701,17 @@ fn target_grants_and_audience_run_bounds_are_validated_by_install_and_dry_run() 
             .rt
             .store()
             .write(|tx| {
-                basal_core::install::record(tx, &valid, &request, Vec::new(), T0).unwrap();
+                basal_core::install::record(
+                    tx,
+                    &valid,
+                    &request,
+                    basal_core::install::Validation {
+                        warnings: Vec::new(),
+                        tool_policies: Default::default(),
+                    },
+                    T0,
+                )
+                .unwrap();
                 Ok(())
             })
             .unwrap();

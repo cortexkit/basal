@@ -422,6 +422,15 @@ are enabling tags, an untagged tool whose input schema requires `max_cost_usd`
 is refused at install with `model_tool_untagged`; flows cannot install an
 unbudgeted model call during that transition.
 
+The provider's tool classification is captured during version validation and
+stored with the install or package version, including dry-run scratch versions.
+Calls use the run's approved version's saved policy; they do not fetch
+`tool.catalog` on the execution path. A new version is needed to change that
+classification. Migration 42 explicitly preserves pre-existing grants as
+`legacy_ordinary`, matching their previous behavior without dollar handling or
+new approval cards. A genuinely missing saved policy refuses with
+`tool_policy_missing`; it is never guessed or fetched during a call.
+
 Basal journals the call and reserves dollars atomically before sending. An
 omitted `max_cost_usd` becomes the smaller remaining run/window budget; a supplied
 ceiling is clamped to it. Exhaustion refuses before sending with

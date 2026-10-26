@@ -750,6 +750,13 @@ pub struct Installed {
     pub new: bool,
 }
 
+/// Provider decisions captured before the version is written or approved.
+#[derive(Debug)]
+pub struct Validation {
+    pub warnings: Vec<Warning>,
+    pub tool_policies: crate::classify_cost::ToolPolicies,
+}
+
 /// Validates a parsed manifest against its author, the catalog and the shell denylist.
 pub fn validate(
     manifest: &Manifest,
@@ -758,6 +765,17 @@ pub fn validate(
     denylist: &ShellDenylist,
     loop_override: bool,
 ) -> std::result::Result<Vec<Warning>, InstallError> {
+    validate_with_policies(manifest, author, catalog, denylist, loop_override)
+        .map(|validated| validated.warnings)
+}
+
+pub fn validate_with_policies(
+    manifest: &Manifest,
+    author: &str,
+    catalog: &dyn Catalog,
+    denylist: &ShellDenylist,
+    loop_override: bool,
+) -> std::result::Result<Validation, InstallError> {
     manifest.check_ordinary().map_err(InstallError::Manifest)?;
     if manifest.agents().iter().any(|(_, agent)| *agent == "$self") {
         return Err(InstallError::SelfRequiresPackage);
@@ -772,9 +790,10 @@ pub(crate) fn validate_inner(
     denylist: &ShellDenylist,
     loop_override: bool,
     package: bool,
-) -> std::result::Result<Vec<Warning>, InstallError> {
+) -> std::result::Result<Validation, InstallError> {
     validate_audience(manifest, catalog)?;
     let mut warnings = Vec::new();
+    let mut tool_policies = crate::classify_cost::ToolPolicies::new();
     let audience = agentless_audience_label(manifest);
     let mut trigger_modules: Vec<&str> = Vec::new();
     if let Some(events) = &manifest.trigger.events {
@@ -827,27 +846,10 @@ pub(crate) fn validate_inner(
             let (module, op) = pair();
             return Err(InstallError::UnknownOp { module, op });
         };
-        if let Some(entry) = catalog.tool_contract(module, op).map_err(|error| {
-            InstallError::ToolContractUnreadable {
-                module: module.clone(),
-                op: op.clone(),
-                reason: format!("{error:?}"),
-            }
-        })? {
-            if crate::classify_cost::matches(&entry) {
-                if manifest.model_cost_usd.is_none() {
-                    return Err(InstallError::ModelCostCapRequired {
-                        module: module.clone(),
-                        op: op.clone(),
-                    });
-                }
-            } else if crate::classify_cost::requires_ceiling(&entry) {
-                return Err(InstallError::ModelToolUntagged {
-                    module: module.clone(),
-                    op: op.clone(),
-                });
-            }
-        }
+        tool_policies.insert(
+            (module.clone(), op.clone()),
+            crate::classify_cost::policy_for(manifest, catalog, module, op)?,
+        );
         if decl.shell_capable {
             let (module, op) = pair();
             return Err(InstallError::ShellCapable { module, op });
@@ -982,7 +984,10 @@ pub(crate) fn validate_inner(
             }
         }
     }
-    Ok(warnings)
+    Ok(Validation {
+        warnings,
+        tool_policies,
+    })
 }
 
 fn validate_flow_scope_support(
@@ -1031,9 +1036,13 @@ pub fn record(
     tx: &Transaction,
     manifest: &Manifest,
     request: &InstallRequest,
-    warnings: Vec<Warning>,
+    validation: Validation,
     now_ms: i64,
 ) -> std::result::Result<Installed, InstallError> {
+    let Validation {
+        warnings,
+        tool_policies,
+    } = validation;
     let hash = code_hash(&request.script, &request.manifest);
     let flow_id = manifest.id.clone();
     let version = manifest.version;
@@ -1089,6 +1098,7 @@ pub fn record(
             now_ms
         ],
     )?;
+    crate::classify_cost::record_install(tx, &flow_id, version, &tool_policies)?;
     Ok(Installed {
         flow_id,
         version,
@@ -1653,7 +1663,7 @@ impl Runtime {
         }
         let manifest =
             Manifest::parse_ordinary(&request.manifest).map_err(InstallError::Manifest)?;
-        let warnings = validate(
+        let validation = validate_with_policies(
             &manifest,
             &request.author,
             self.catalog(),
@@ -1661,7 +1671,7 @@ impl Runtime {
             request.loop_override,
         )?;
         let now = self.config().clock.now_ms();
-        decide(self, |tx| record(tx, &manifest, request, warnings, now))
+        decide(self, |tx| record(tx, &manifest, request, validation, now))
     }
 
     /// Approves an installed version, bound to its code hash. New triggers

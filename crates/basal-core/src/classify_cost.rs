@@ -3,6 +3,128 @@
 use basal_host::transport::WireError;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolPolicy {
+    Ordinary,
+    Classify,
+    LegacyOrdinary,
+}
+
+impl ToolPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ordinary => "ordinary",
+            Self::Classify => "classify",
+            Self::LegacyOrdinary => "legacy_ordinary",
+        }
+    }
+}
+
+pub type ToolPolicies = BTreeMap<(String, String), ToolPolicy>;
+
+/// Reads provider metadata only while validating an install or a dry run.
+pub fn snapshot(
+    manifest: &crate::Manifest,
+    catalog: &dyn basal_host::Catalog,
+) -> Result<ToolPolicies, crate::InstallError> {
+    let mut policies = ToolPolicies::new();
+    for grant in &manifest.ops {
+        let policy = policy_for(manifest, catalog, &grant.module, &grant.op)?;
+        policies.insert((grant.module.clone(), grant.op.clone()), policy);
+    }
+    Ok(policies)
+}
+
+pub fn policy_for(
+    manifest: &crate::Manifest,
+    catalog: &dyn basal_host::Catalog,
+    module: &str,
+    op: &str,
+) -> Result<ToolPolicy, crate::InstallError> {
+    let entry = catalog.tool_contract(module, op).map_err(|error| {
+        crate::InstallError::ToolContractUnreadable {
+            module: module.into(),
+            op: op.into(),
+            reason: format!("{error:?}"),
+        }
+    })?;
+    if entry.as_ref().is_some_and(matches) {
+        if manifest.model_cost_usd.is_none() {
+            return Err(crate::InstallError::ModelCostCapRequired {
+                module: module.into(),
+                op: op.into(),
+            });
+        }
+        Ok(ToolPolicy::Classify)
+    } else {
+        if let Some(entry) = &entry
+            && requires_ceiling(entry)
+        {
+            return Err(crate::InstallError::ModelToolUntagged {
+                module: module.into(),
+                op: op.into(),
+            });
+        }
+        Ok(ToolPolicy::Ordinary)
+    }
+}
+
+pub fn record_install(
+    tx: &Transaction<'_>,
+    flow: &str,
+    version: u32,
+    policies: &ToolPolicies,
+) -> crate::Result<()> {
+    for ((module, op), policy) in policies {
+        tx.execute("INSERT INTO install_tool_policies(flow_id,version,module,op,policy) VALUES (?1,?2,?3,?4,?5)",
+            params![flow,version,module,op,policy.as_str()])?;
+    }
+    Ok(())
+}
+
+pub fn record_package(
+    tx: &Transaction<'_>,
+    package: &str,
+    version: u32,
+    policies: &ToolPolicies,
+) -> crate::Result<()> {
+    for ((module, op), policy) in policies {
+        tx.execute("INSERT INTO package_tool_policies(package,version,module,op,policy) VALUES (?1,?2,?3,?4,?5)",
+            params![package,version,module,op,policy.as_str()])?;
+    }
+    Ok(())
+}
+
+/// Loads the immutable version used by this run, not the flow's current version.
+pub fn load(conn: &Connection, flow: &str, version: u32) -> crate::Result<ToolPolicies> {
+    let mut stmt = conn.prepare("SELECT module,op,policy FROM install_tool_policies WHERE flow_id=?1 AND version=?2
+        UNION ALL SELECT p.module,p.op,p.policy FROM package_tool_policies p JOIN flows f ON f.package=p.package WHERE f.flow_id=?1 AND p.version=?2")?;
+    let rows = stmt.query_map(params![flow, version], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut policies = ToolPolicies::new();
+    for row in rows {
+        let (module, op, policy) = row?;
+        let policy = match policy.as_str() {
+            "ordinary" => ToolPolicy::Ordinary,
+            "classify" => ToolPolicy::Classify,
+            "legacy_ordinary" => ToolPolicy::LegacyOrdinary,
+            _ => {
+                return Err(crate::CoreError::Corrupt(format!(
+                    "unknown tool policy {policy}"
+                )));
+            }
+        };
+        policies.insert((module, op), policy);
+    }
+    Ok(policies)
+}
 
 /// Recognizes the contract rather than a particular provider or tool alias.
 pub fn matches(entry: &Value) -> bool {
@@ -120,7 +242,7 @@ pub fn settle(
     let charged = value
         .and_then(|v| v["cost_usd"].as_f64())
         .filter(|v| v.is_finite() && *v >= 0.0)
-        .unwrap_or_else(|| match code {
+        .unwrap_or(match code {
             Some(
                 "invalid_params"
                 | "scope_required"

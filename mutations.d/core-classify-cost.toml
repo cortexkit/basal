@@ -63,6 +63,6 @@ expect_red = ["flow_classify_install_requires_dollar_cap"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
-file = "crates/basal-core/src/install.rs"
+file = "crates/basal-core/src/classify_cost.rs"
 old = "if manifest.model_cost_usd.is_none() {"
 new = "if false && manifest.model_cost_usd.is_none() {"

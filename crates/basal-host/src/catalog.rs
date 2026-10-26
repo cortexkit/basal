@@ -156,6 +156,7 @@ pub trait Catalog: Send + Sync {
 #[derive(Default)]
 struct Entries {
     tool_contracts: BTreeMap<(String, String), serde_json::Value>,
+    tool_contract_reads: Vec<(String, String)>,
     flow_capable: BTreeSet<String>,
     events: BTreeMap<(String, String, u32), EventDecl>,
     ops: BTreeMap<(String, String), OpDecl>,
@@ -186,6 +187,10 @@ pub struct MockCatalog {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockCatalog {
+    /// Metadata lookups that would read the provider's tool.catalog on SubcCatalog.
+    pub fn tool_contract_reads(&self) -> Vec<(String, String)> {
+        self.read().tool_contract_reads.clone()
+    }
     pub fn set_tool_contract(&self, module: &str, op: &str, entry: serde_json::Value) {
         self.write()
             .tool_contracts
@@ -361,8 +366,9 @@ impl Catalog for MockCatalog {
         module: &str,
         op: &str,
     ) -> Result<Option<serde_json::Value>, crate::transport::WireError> {
-        Ok(self
-            .read()
+        let mut entries = self.write();
+        entries.tool_contract_reads.push((module.into(), op.into()));
+        Ok(entries
             .tool_contracts
             .get(&(module.into(), op.into()))
             .cloned())

@@ -273,3 +273,105 @@ fn flow_classify_untagged_cost_schema_is_not_installable() {
         "{error:?}"
     );
 }
+
+#[test]
+fn ordinary_tool_call_makes_zero_tool_catalog_reads_at_runtime() {
+    let world = World::new("ordinary-tool-policy");
+    let rt = common::runtime(&world);
+    let spec = world
+        .spec(&rt, "return await ops.call('mock','echo',{n:7});")
+        .unwrap();
+    let reads = world.catalog.tool_contract_reads().len();
+    assert!(reads > 0, "installation must capture provider metadata");
+    let id = rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+    let run = finish(&rt, &world, &id);
+    assert_eq!(result(&run), json!({"n":7}));
+    assert_eq!(world.mock.total_sends(), 1);
+    assert_eq!(
+        world.catalog.tool_contract_reads().len() - reads,
+        0,
+        "ordinary calls must use the approved snapshot, not tool.catalog"
+    );
+}
+
+#[test]
+fn classifier_policy_is_bound_to_the_installed_version() {
+    let (world, rt, provider, m, _) = fixture(0.30);
+    let spec = world.spec_with(&rt,"return await ops.call('mock','echo',{model:'example/classifier',questions:{urgent:{type:'noul',instructions:'Is it urgent?'}},item:{state:'A kettle'},max_cost_usd:1});",&m).unwrap();
+    world.catalog.set_tool_contract("mock", "echo", json!({}));
+    let reads = world.catalog.tool_contract_reads().len();
+    let id = rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+    finish(&rt, &world, &id);
+    let input: Value =
+        serde_json::from_str(provider.calls.lock().unwrap()[0].args.as_str()).unwrap();
+    assert_eq!(input["max_cost_usd"], 0.30);
+    assert_eq!(world.catalog.tool_contract_reads().len(), reads);
+}
+
+#[test]
+fn migration_42_preserves_existing_versions_as_legacy_ordinary() {
+    let world = World::new("legacy-tool-policy");
+    let rt = common::runtime(&world);
+    let spec = world
+        .spec(&rt, "return await ops.call('mock','echo',{n:42});")
+        .unwrap();
+    // Removing only the new tables reproduces the pre-migration schema around
+    // the recorded version; migration 42 must preserve its existing approval.
+    rt.store()
+        .write(|tx| {
+            tx.execute_batch(
+                "DROP TABLE install_tool_policies; DROP TABLE package_tool_policies;",
+            )?;
+            tx.execute_batch(
+                basal_core::schema::MIGRATIONS
+                    .iter()
+                    .find(|m| m.version == 42)
+                    .unwrap()
+                    .statements,
+            )?;
+            let policies = basal_core::classify_cost::load(tx, "flow-test", 1)?;
+            assert_eq!(
+                policies[&(String::from("mock"), String::from("echo"))],
+                basal_core::classify_cost::ToolPolicy::LegacyOrdinary
+            );
+            Ok(())
+        })
+        .unwrap();
+    world.catalog.set_tool_contract(
+        "mock",
+        "echo",
+        json!({"input_schema":{"required":["max_cost_usd"]}}),
+    );
+    let reads = world.catalog.tool_contract_reads().len();
+    let id = rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+    let run = finish(&rt, &world, &id);
+    assert_eq!(result(&run), json!({"n":42}));
+    assert_eq!(world.mock.total_sends(), 1);
+    assert_eq!(world.catalog.tool_contract_reads().len(), reads);
+}
+
+#[test]
+fn absent_tool_policy_is_a_typed_refusal_without_peer_reads() {
+    let world = World::new("missing-tool-policy");
+    let rt = common::runtime(&world);
+    let spec = world
+        .spec(
+            &rt,
+            "try { return await ops.call('mock','echo',{}); } catch(e) { return e.data.code; }",
+        )
+        .unwrap();
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "DELETE FROM install_tool_policies WHERE flow_id='flow-test'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let reads = world.catalog.tool_contract_reads().len();
+    let id = rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+    assert_eq!(result(&finish(&rt, &world, &id)), "tool_policy_missing");
+    assert_eq!(world.mock.total_sends(), 0);
+    assert_eq!(world.catalog.tool_contract_reads().len(), reads);
+}

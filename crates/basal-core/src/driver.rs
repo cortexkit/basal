@@ -87,6 +87,7 @@ struct Activation<'a> {
     /// The run's approved manifest, decoded once per activation; every new
     /// call is authorized against it.
     manifest: Option<Manifest>,
+    tool_policies: crate::classify_cost::ToolPolicies,
 }
 
 /// A call ready to journal, including a board call waiting for its registry read.
@@ -221,6 +222,7 @@ impl Runtime {
                     worker,
                     deadline: None,
                     manifest: None,
+                    tool_policies: Default::default(),
                     input: Value::Null,
                     trigger: Value::Null,
                 };
@@ -457,6 +459,11 @@ impl Activation<'_> {
                     crate::templates::effective_instance(&mut manifest, &params, &guards);
                 }
                 self.manifest = Some(manifest);
+                if let Some(version) = self.run.flow_version {
+                    self.tool_policies = self.rt.store().read(|conn| {
+                        crate::classify_cost::load(conn, &self.run.flow_id, version)
+                    })?;
+                }
             }
             Err(e) => {
                 return self.fail(
@@ -1329,25 +1336,23 @@ impl Activation<'_> {
                     rejected
                 })?;
         }
-        let classify_cost = if let CallKind::Op { module, op } = &call.kind {
-            let entry = self
-                .rt
-                .catalog()
-                .tool_contract(module, op)
-                .map_err(|e| Refusal::new("tool_contract_unreadable", format!("{e:?}")))?;
-            if let Some(entry) = &entry {
-                if !crate::classify_cost::matches(entry)
-                    && crate::classify_cost::requires_ceiling(entry)
-                {
-                    return Err(Refusal::new(
-                        "model_tool_untagged",
-                        "model tool has no recognized capability tag",
-                    ));
+        let classify_cost = match &call.kind {
+            CallKind::Op { module, op } => {
+                match self.tool_policies.get(&(module.clone(), op.clone())) {
+                    Some(crate::classify_cost::ToolPolicy::Classify) => true,
+                    Some(
+                        crate::classify_cost::ToolPolicy::Ordinary
+                        | crate::classify_cost::ToolPolicy::LegacyOrdinary,
+                    ) => false,
+                    None => {
+                        return Err(Refusal::new(
+                            "tool_policy_missing",
+                            "the approved version has no saved policy for this op",
+                        ));
+                    }
                 }
             }
-            entry.as_ref().is_some_and(crate::classify_cost::matches)
-        } else {
-            false
+            _ => false,
         };
         let prepared: std::result::Result<Prepared, Refusal> = match &call.kind {
             CallKind::Op { .. } if classify_cost => {
