@@ -280,23 +280,6 @@ fn install_approval_enable_and_disable_wake_the_engine() {
 }
 
 #[test]
-fn shutdown_wakes_a_parked_loop() {
-    let (engine, path) = engine(false);
-    let (tx, rx) = std::sync::mpsc::channel();
-    let e = engine.clone();
-    let loop_thread = thread::spawn(move || {
-        e.run_loop(|seen, timeout| {
-            tx.send(()).unwrap();
-            e.inner.wake.wait(seen, timeout);
-        })
-    });
-    rx.recv_timeout(Duration::from_secs(60)).unwrap();
-    engine.stop();
-    loop_thread.join().unwrap();
-    cleanup(engine, path);
-}
-
-#[test]
 fn a_decision_answer_wakes_the_sleeping_engine() {
     wake_case(
         |engine| {

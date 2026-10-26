@@ -661,14 +661,6 @@ fn baseline(test: &Test, instance: &Value) -> String {
 }
 
 #[test]
-fn template_digest_helpers_are_identical() {
-    let helper = |script: &'static str| script.split("// END boundedDigest").next().unwrap();
-    for (name, _, script) in TEMPLATES {
-        assert_eq!(helper(script), helper(TEMPLATES[0].2), "{name}");
-    }
-}
-
-#[test]
 fn published_templates_declare_exact_bounds_and_self_only_grants() {
     for (name, manifest, _) in TEMPLATES {
         let m: Value = serde_json::from_str(manifest).unwrap();
@@ -1409,88 +1401,90 @@ fn a_quote_filled_note_and_very_long_path_still_deliver_with_bounded_metadata() 
 
 #[test]
 fn digest_helper_bounds_escaped_note_long_metadata_and_links_on_every_platform() {
-    let t = Test::new();
-    let note = "\"".repeat(4096);
-    let path = format!("/long/{}", "\"é🦀".repeat(2000));
-    let url = format!(
-        "https://github.com/example/project/pull/42?{}",
-        "x".repeat(20000)
-    );
-    // Exercise the exact shared helper without pathname validation: macOS
-    // refuses future paths above its smaller OS pathname limit at creation.
-    let helper = TEMPLATES[0].2.split("// END boundedDigest").next().unwrap();
-    let script = format!(
-        "const params = {};\n{helper}\nawait finishWatch('File appeared', {{exists: true}}, [{{kind: 'url', url: {}}}]);",
-        json!({"note":note,"path":path}),
-        json!(url),
-    );
-    let manifest = json!({
-        "id":"digest-helper","version":2,"purpose":"Exercise the published digest helper",
-        "trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"$self","digest_max":"wake"}],
-        "params":{"note":{"type":"string","max_bytes":4096}},
-        "template":{"max_per_agent":100,"max_lifetime":"365d"},
-    });
-    t.f.module
-        .handle(
-            &Caller::Operator,
-            "package.register",
-            json!({"script":script,"manifest":manifest.to_string()}),
-        )
-        .unwrap();
-    let instance = t.create("digest-helper", json!({"note":note}));
-    let run = t.run(&instance, "bounded-metadata");
-    let items = t.items();
-    assert_eq!(items.len(), 1, "{items:#?}");
-    assert_eq!(items[0]["agent"], OWNER);
-    assert_eq!(items[0]["action"], "wake");
-    let item = items[0]["item"].clone();
-    limits(&item);
-    assert_eq!(item["body"], instance["params"]["note"]);
-    assert!(item["title"].as_str().unwrap().contains("File appeared"));
-    t.live(&instance, false);
-    let calls = t.f.module.rt.calls(&run).unwrap();
-    let digest = calls
-        .iter()
-        .position(|call| call.kind == CallKind::Primitive(Primitive::SinkDigest))
-        .unwrap();
-    assert_eq!(
-        calls[digest + 1].kind,
-        CallKind::Primitive(Primitive::InstanceEnd)
-    );
-    assert!(
-        !calls
-            .iter()
-            .any(|call| call.kind == CallKind::Primitive(Primitive::SinkWaitResolve))
-    );
-    assert_eq!(item["body"], note);
-    assert_eq!(
-        item["data"]["truncated"]["params.path"]["original_bytes"],
-        path.len()
-    );
-    assert_eq!(
-        item["data"]["truncated"]["link_url"]["original_bytes"],
-        url.len()
-    );
-    assert_eq!(item["links"], json!([]));
-    // Recompute whole JSON values as an independent oracle for the incremental
-    // byte counters, including the truncation markers added after dropping a URL.
-    let mut expected = json!({
-        "title":"File appeared", "body":note, "links":[],
-        "data":{"params":{"path":path},"observed":{"exists":true},
-            "truncated":{"link_url":{"original_bytes":url.len()}}}
-    });
-    while serde_json::to_vec(&expected["data"]).unwrap().len() > 8192
-        || serde_json::to_vec(&expected).unwrap().len() > 16384
-    {
-        expected["data"]["truncated"]["params.path"] = json!({"original_bytes":path.len()});
-        let text = expected["data"]["params"]["path"].as_str().unwrap();
-        expected["data"]["params"]["path"] = json!(
-            text.chars()
-                .take(text.chars().count() / 2)
-                .collect::<String>()
+    for (name, _, template) in TEMPLATES {
+        let t = Test::new();
+        let note = "\"".repeat(4096);
+        let path = format!("/long/{}", "\"é🦀".repeat(2000));
+        let url = format!(
+            "https://github.com/example/project/pull/42?{}",
+            "x".repeat(20000)
         );
+        // Exercise each shipped helper without pathname validation: macOS
+        // refuses future paths above its smaller OS pathname limit at creation.
+        let helper = template.split("// END boundedDigest").next().unwrap();
+        let script = format!(
+            "const params = {};\n{helper}\nawait finishWatch('File appeared', {{exists: true}}, [{{kind: 'url', url: {}}}]);",
+            json!({"note":note,"path":path}),
+            json!(url),
+        );
+        let manifest = json!({
+            "id":"digest-helper","version":2,"purpose":"Exercise the published digest helper",
+            "trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"$self","digest_max":"wake"}],
+            "params":{"note":{"type":"string","max_bytes":4096}},
+            "template":{"max_per_agent":100,"max_lifetime":"365d"},
+        });
+        t.f.module
+            .handle(
+                &Caller::Operator,
+                "package.register",
+                json!({"script":script,"manifest":manifest.to_string()}),
+            )
+            .unwrap();
+        let instance = t.create("digest-helper", json!({"note":note}));
+        let run = t.run(&instance, "bounded-metadata");
+        let items = t.items();
+        assert_eq!(items.len(), 1, "{items:#?}");
+        assert_eq!(items[0]["agent"], OWNER);
+        assert_eq!(items[0]["action"], "wake");
+        let item = items[0]["item"].clone();
+        limits(&item);
+        assert_eq!(item["body"], instance["params"]["note"]);
+        assert!(item["title"].as_str().unwrap().contains("File appeared"));
+        t.live(&instance, false);
+        let calls = t.f.module.rt.calls(&run).unwrap();
+        let digest = calls
+            .iter()
+            .position(|call| call.kind == CallKind::Primitive(Primitive::SinkDigest))
+            .unwrap();
+        assert_eq!(
+            calls[digest + 1].kind,
+            CallKind::Primitive(Primitive::InstanceEnd)
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.kind == CallKind::Primitive(Primitive::SinkWaitResolve))
+        );
+        assert_eq!(item["body"], note);
+        assert_eq!(
+            item["data"]["truncated"]["params.path"]["original_bytes"],
+            path.len()
+        );
+        assert_eq!(
+            item["data"]["truncated"]["link_url"]["original_bytes"],
+            url.len()
+        );
+        assert_eq!(item["links"], json!([]));
+        // Recompute whole JSON values as an independent oracle for the incremental
+        // byte counters, including the truncation markers added after dropping a URL.
+        let mut expected = json!({
+            "title":"File appeared", "body":note, "links":[],
+            "data":{"params":{"path":path},"observed":{"exists":true},
+                "truncated":{"link_url":{"original_bytes":url.len()}}}
+        });
+        while serde_json::to_vec(&expected["data"]).unwrap().len() > 8192
+            || serde_json::to_vec(&expected).unwrap().len() > 16384
+        {
+            expected["data"]["truncated"]["params.path"] = json!({"original_bytes":path.len()});
+            let text = expected["data"]["params"]["path"].as_str().unwrap();
+            expected["data"]["params"]["path"] = json!(
+                text.chars()
+                    .take(text.chars().count() / 2)
+                    .collect::<String>()
+            );
+        }
+        assert_eq!(item, expected, "{name}");
     }
-    assert_eq!(item, expected);
 }
 
 fn ci_params() -> Value {

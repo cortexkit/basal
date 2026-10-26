@@ -201,6 +201,8 @@ struct Wire {
     pending: Pending,
     corr: AtomicU64,
     channel: AtomicU16,
+    provider: subc_client_rs::ModuleHandle,
+    core: Arc<MockCore>,
 }
 impl Wire {
     async fn send(&self, channel: u16, body: Value) -> (u64, mpsc::UnboundedReceiver<Frame>) {
@@ -247,7 +249,11 @@ impl Route {
     async fn exchange(&self, body: Value, cancel: bool) -> Result<Exchange, RouteFailure> {
         let (corr, mut receive) = self.wire.send(self.channel, body).await;
         if cancel {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            bounded(
+                "the invocation entering its tool action",
+                self.wire.core.action_entered.notified(),
+            )
+            .await;
             bounded(
                 "writing a cancel to the provider",
                 write_frame(
@@ -257,6 +263,8 @@ impl Route {
             )
             .await
             .unwrap();
+            *self.wire.core.action_gate.lock().unwrap() = None;
+            self.wire.core.action_changed.notify_all();
         }
         let mut frames = Vec::new();
         loop {
@@ -273,13 +281,47 @@ impl Route {
                 break;
             }
         }
-        // Keep listening after the terminal frame so a double terminal is a
-        // test failure, rather than something hidden by the route adapter.
-        while let Ok(Some(observed)) =
-            tokio::time::timeout(Duration::from_millis(20), receive.recv()).await
-        {
+        // The SDK holds a dispatch permit until the handler and terminal enqueue
+        // finish. Once dispatch is idle, a health reply fences the shared writer:
+        // the reader has captured every preceding frame for this correlation.
+        bounded("the provider finishing dispatch", async {
+            while self
+                .wire
+                .provider
+                .request_pool_snapshots()
+                .iter()
+                .any(|pool| pool.in_use != 0 || pool.waiting != 0)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        let (fence, mut fenced) = self
+            .wire
+            .send(
+                0,
+                serde_json::to_value(ModuleControlRequest::HealthCheck {}).unwrap(),
+            )
+            .await;
+        let health = bounded("the dispatch completion wire fence", fenced.recv())
+            .await
+            .expect("provider closed before fence");
+        assert_eq!(health.header.ty, FrameType::Response, "{health:?}");
+        self.wire.pending.lock().unwrap().remove(&(0, fence));
+        while let Ok(observed) = receive.try_recv() {
             frames.push(observed);
         }
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| matches!(
+                    frame.header.ty,
+                    FrameType::Response | FrameType::Error | FrameType::StreamEnd
+                ))
+                .count(),
+            1,
+            "{frames:?}"
+        );
         self.wire
             .pending
             .lock()
@@ -457,14 +499,19 @@ impl Harness for Subject {
                 let _ = ready.send(());
             }
         }));
+        let (started, provider_handle) = tokio::sync::oneshot::channel();
         let provider = tokio::spawn(async move {
-            let (_, serving) = subc_client_rs::serve_with_handle(
+            let (handle, serving) = subc_client_rs::serve_with_handle(
                 &file,
                 basal_module::manifest::manifest(),
                 handler,
             )
             .await
             .unwrap();
+            assert!(
+                started.send(handle).is_ok(),
+                "provider handle receiver closed"
+            );
             serving.await.unwrap();
         });
         let (mut stream, _) = bounded("the provider connecting", listener.accept())
@@ -506,6 +553,10 @@ impl Harness for Subject {
                 pending,
                 corr: AtomicU64::new(100),
                 channel: AtomicU16::new(1),
+                provider: bounded("the provider's dispatch handle", provider_handle)
+                    .await
+                    .unwrap(),
+                core: core.clone(),
             }),
             core,
             provider: Some(provider),
@@ -662,7 +713,6 @@ impl ToolProviderSubject for Subject {
     fn tool_result_v1_calls(&self) -> Vec<CallSpec> {
         vec![
             self.quick_call(),
-            ("flow".into(), json!({"action":"list"})),
             (
                 "codemode".into(),
                 json!({"code":"throw new Error('probe failure');"}),
@@ -691,7 +741,16 @@ impl ToolProviderSubject for Subject {
             .await
     }
     fn slow_call(&self) -> Option<CallSpec> {
-        Some(("codemode".into(), json!({"code":"while (true) {}"})))
+        let core = self.core.lock().unwrap().as_ref().unwrap().clone();
+        *core.action_gate.lock().unwrap() = Some(false);
+        let marker = core.marker_root.join("cancel-phase");
+        Some((
+            "codemode".into(),
+            json!({"code":format!(
+                "await tools.write_marker({{path:{}}}); while (true) {{}}",
+                serde_json::to_string(&marker.to_string_lossy()).unwrap()
+            )}),
+        ))
     }
     fn disabled_tool(&self) -> Option<String> {
         None

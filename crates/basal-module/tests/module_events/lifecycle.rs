@@ -284,6 +284,7 @@ async fn captured_lifecycle_notices_bodies_and_snapshot_match_vectors() {
     let bytes = format!("{}\n", serde_json::to_string_pretty(&capture).unwrap());
     if std::env::var_os("BASAL_UPDATE_TEMPLATE_VECTORS").is_some() {
         std::fs::write(&path, &bytes).unwrap();
+        panic!("vectors rewritten, rerun without the variable");
     }
     assert_eq!(std::fs::read_to_string(path).unwrap(), bytes);
 }
