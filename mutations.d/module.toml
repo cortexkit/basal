@@ -724,6 +724,23 @@ old = "CardDecision::Approve => Decision::Approve,"
 new = "CardDecision::Approve => Decision::Reject,"
 
 [[control]]
+id = "dry-run-replace-key-capability-hardcoded-false"
+guards = "dry-run replace-key support must follow the live core catalog instead of refusing unconditionally"
+test_file = "crates/basal-module/tests/hosts/dry_run_capabilities.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test hosts"
+expect_red = ["dry_run_capabilities::digest_replace_key_dry_runs_follow_live_catalog"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+scope = { after = "impl Host for CaptureHost {", before = "fn classify(" }
+file = "crates/basal-module/src/dryrun.rs"
+old = "self.live.supports_core_capability(capability)"
+new = "if capability == basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1 { false } else { self.live.supports_core_capability(capability) } // NON-VACUITY BREAK"
+
+[[control]]
 id = "capture-mode-sends-calls-to-the-host"
 hub = "Capture dry runs execute no host effects, including install, board, audience and template previews; their captured calls must not reach live host sinks"
 hub_targets = ["audience", "board_hygiene", "decisions", "e2e", "flow_templates", "hosts", "templates"]

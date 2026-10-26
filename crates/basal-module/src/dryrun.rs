@@ -916,10 +916,9 @@ fn captured(detail: &str) -> HostOutcome {
 
 impl Host for CaptureHost {
     fn supports_core_capability(&self, capability: &str) -> bool {
-        // Wait resolutions and digest withdrawals are captured without a live
-        // core request, so their previews need no deployed core capability.
-        capability == basal_host::core_host::FLOW_WAIT_RESOLVE_V1
-            || capability == basal_host::core_host::FLOW_DIGEST_WITHDRAW_V1
+        // Capture effects, not capability checks: previews must refuse the same
+        // operations as the live host when core does not advertise support.
+        self.live.supports_core_capability(capability)
     }
 
     fn classify(&self, kind: &CallKind) -> CallClass {
