@@ -149,7 +149,7 @@ struct Shared {
     before_reader_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Called by a driver just before it blocks waiting for its next event.
     #[cfg(test)]
-    before_wait: Mutex<Option<Arc<dyn Fn(&Parked) + Send + Sync>>>,
+    before_wait: Mutex<Option<ParkedHook>>,
     /// How many times a driver has returned from its wait for an event.
     #[cfg(test)]
     wakes: std::sync::atomic::AtomicUsize,
@@ -163,6 +163,10 @@ struct Shared {
 pub struct Supervisor(Arc<Shared>);
 
 pub type TerminalHook = dyn Fn(&str, Value) -> Result<()> + Send + Sync;
+
+/// A test's callback for a driver about to block; see [`Parked`].
+#[cfg(test)]
+type ParkedHook = Arc<dyn Fn(&Parked) + Send + Sync>;
 
 /// What a driver reports to a test just before it blocks for its next event,
 /// so the test can wait for the driver to go idle instead of sleeping.
