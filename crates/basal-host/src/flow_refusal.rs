@@ -71,6 +71,10 @@ pub struct FlowRefusal {
     pub action: String,
     pub retry_after_ms: Option<u64>,
     pub detail: Option<Value>,
+    /// The message the provider sent with the refusal, when it sent one.
+    /// [`Self::message`] is basal's own wording for the reason, which a flow
+    /// run reads; a codemode program, which has no flow, reads this instead.
+    pub message: Option<String>,
 }
 
 impl FlowRefusal {
@@ -164,6 +168,7 @@ impl FlowRefusal {
             action: action.into(),
             retry_after_ms: None,
             detail: None,
+            message: None,
         }
     }
 
@@ -196,6 +201,7 @@ impl FlowRefusal {
             busy.validate().map_err(|e| e.to_string())?;
             refusal.retry_after_ms = Some(busy.retry_after_ms);
         }
+        refusal.message = Some(body.message.clone());
         // Grant references must reach the store intact: it hashes oversized
         // references instead of truncating authority-bearing bytes.
         refusal.detail = body

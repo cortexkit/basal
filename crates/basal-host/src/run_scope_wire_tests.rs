@@ -99,6 +99,11 @@ struct Daemon {
     /// answer, as AFT lists `head`, `worker` and `reader`. A provider absent
     /// here lists none and serves only its default variant.
     served_presets: BTreeMap<String, Vec<String>>,
+    /// The error body a provider answers one request with, by the request's
+    /// tool name or management `method`, before any of its own checks.
+    tool_refusals: BTreeMap<String, Value>,
+    /// The error body the daemon refuses a route.open with, by provider.
+    bind_refusals: BTreeMap<String, Value>,
     received: Vec<Received>,
 }
 
@@ -138,6 +143,9 @@ impl Daemon {
             .unwrap_or("basal")
             .to_owned();
         let call_mode = derive_call_mode(stamp.as_ref());
+        if let Some(refusal) = self.bind_refusals.get(&module) {
+            return Err(refusal.clone());
+        }
         match module.as_str() {
             "cerebellum" => {
                 let admitted = stamp.as_ref().is_some_and(|stamp| {
@@ -182,6 +190,28 @@ impl Daemon {
     /// Answers one request on a bound route, or refuses it with an error body.
     fn answer(&mut self, channel: u16, body: &Value) -> Result<Value, Value> {
         let (module, call_mode) = self.routes[&channel].clone();
+        let module = module.clone();
+        let method = body["method"].as_str().unwrap_or_default();
+        let name = body["name"].as_str().unwrap_or_default();
+        // A queued refusal answers before the provider does, whichever surface
+        // the request arrived on.
+        if let Some(refusal) = self
+            .tool_refusals
+            .get(name)
+            .or_else(|| self.tool_refusals.get(method))
+        {
+            if module != "broca" {
+                self.received.push(Received {
+                    module,
+                    name: name.into(),
+                    call_mode,
+                    call_key: body.get("call_key").is_some(),
+                    preset: None,
+                    catalog_preset: None,
+                });
+            }
+            return Err(refusal.clone());
+        }
         if module == "broca" {
             self.received.push(Received {
                 module,
@@ -753,5 +783,104 @@ fn the_fake_cerebellum_refuses_envelope_keys_on_role_ops_and_unknown_catalog_mem
             matches!(&unknown, Err(WireError::Refused { code, message }) if code == "invalid_request" && message.contains("unknown catalog member")),
             "{unknown:?}"
         );
+    });
+}
+
+/// Broca refuses a codemode program's model call with `flow_scope_required`
+/// and its own message. The program has no flow scope, so it must read that
+/// refusal as Broca sent it, not as basal's flow wording for a call that
+/// should have carried one. The call goes through `management_for_model`, the
+/// way the program's `model` and `classify` tools reach Broca.
+#[test]
+fn a_program_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
+    // Both the model call and the bind that opens its route are refused with
+    // the code: whichever layer of Broca refuses, the program keeps Broca's
+    // message and detail.
+    for bind_refusal in [false, true] {
+        with_daemon("linked", |transport, state| {
+            let refusal = json!({
+                "code": "flow_scope_required",
+                "message": "Basal model tools require a daemon-stamped flow scope",
+                "detail": {"provider":"broca","call":"llm_classify"},
+            });
+            {
+                let mut daemon = state.lock().unwrap();
+                if bind_refusal {
+                    daemon.bind_refusals.insert("broca".into(), refusal.clone());
+                } else {
+                    daemon
+                        .tool_refusals
+                        .insert("session.send".into(), refusal.clone());
+                }
+            }
+            let flow = format!("codemode:{RUN}");
+            transport.configure_flow(
+                &flow,
+                Some(crate::flow_scope::RegisteredScope {
+                    selector: crate::flow_scope::FlowScope {
+                        owner: core(),
+                        scope_ref: RUN.into(),
+                        epoch: 19,
+                    },
+                    targets: ["broca"].map(String::from).into(),
+                }),
+            );
+            let identity = BindIdentity::new("/agent/project", "opencode", "head-session");
+            let reply = transport.management_for_model(
+                &flow,
+                identity,
+                "broca",
+                "session.send",
+                br#"{"send_id":"s1"}"#,
+            );
+            match reply {
+                Err(WireError::RefusedDetails {
+                    code,
+                    message,
+                    detail,
+                }) => {
+                    assert_eq!(code, "flow_scope_required");
+                    assert_eq!(message, "Basal model tools require a daemon-stamped flow scope");
+                    assert_eq!(detail, refusal["detail"], "bind refusal: {bind_refusal}");
+                }
+                other => panic!("the program was answered {other:?}, bind refusal: {bind_refusal}"),
+            }
+        });
+    }
+}
+
+/// The same refusal on a role request the run makes on its own scope, which
+/// Broca answers for the binds the program will use.
+#[test]
+fn a_role_request_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
+    with_daemon("linked", |transport, state| {
+        let refusal = json!({
+            "code": "flow_scope_required",
+            "message": "Basal model tools require a daemon-stamped flow scope",
+        });
+        state
+            .lock()
+            .unwrap()
+            .tool_refusals
+            .insert("role.describe".into(), refusal);
+        let identity =
+            crate::run_scope::catalog_read_identity(std::path::Path::new("/agent/project"), RUN);
+        let reply = transport.role_on_run_scope(
+            &run_selector(),
+            &identity,
+            "broca",
+            "role.describe",
+            json!({}),
+        );
+        match reply {
+            Err(WireError::Refused { code, message }) => {
+                assert_eq!(code, "flow_scope_required");
+                assert_eq!(
+                    message,
+                    "Basal model tools require a daemon-stamped flow scope"
+                );
+            }
+            other => panic!("the program was answered {other:?}"),
+        }
     });
 }
