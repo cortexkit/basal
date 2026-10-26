@@ -304,9 +304,11 @@ fn every_run_result_state_maps_to_its_outcome_and_nonterminals_wait() {
             }
             "error" => {
                 assert_eq!(c[0].outcome.settlement, Settlement::Rejected);
+                // The provider's error is reported as it came, so a caller can
+                // read the provider's own code and detail beside its message.
                 assert_eq!(
                     value(&c[0]),
-                    json!({"code":"error","class":"auth_required","message":"provider login expired"})
+                    json!({"class":"auth_required","message":"provider login expired"})
                 );
             }
             _ => {

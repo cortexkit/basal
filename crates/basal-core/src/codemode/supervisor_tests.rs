@@ -1302,6 +1302,25 @@ fn every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run() {
     assert_eq!(f.terminal()["status"], "completed");
 }
 
+/// A provider refusal reaches the program with its own code, message and
+/// detail. A codemode run has no flow, so basal's flow-refusal message would
+/// misdescribe the refusal, and dropping the detail would hide what the
+/// provider said.
+#[test]
+fn a_provider_refusal_keeps_the_provider_code_message_and_detail() {
+    let detail = json!({"scope_kind":"codemode","code":"flow_scope_required"});
+    let mapped = map_answer(Err(WireError::RefusedDetails {
+        code: "flow_scope_required".into(),
+        message: "provider's own text".into(),
+        detail: detail.clone(),
+    }));
+    assert_eq!(mapped.outcome, Outcome::Error);
+    assert_eq!(mapped.code.as_deref(), Some("flow_scope_required"));
+    assert_eq!(mapped.message, "provider's own text");
+    assert_eq!(mapped.detail, Some(detail));
+    assert!(!mapped.scope_loss);
+}
+
 #[test]
 fn each_scope_loss_records_the_refusal_preserves_earlier_ok_and_interrupts() {
     // ScopeChanged is not here: it leaves the run scope live, so it ends only

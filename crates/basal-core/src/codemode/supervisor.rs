@@ -2092,8 +2092,14 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
             message,
             detail,
         }) => {
+            // The provider's refusal reaches the program as the provider sent
+            // it. A codemode run has no flow, so its refusal must not be turned
+            // into basal's flow wording. The whole detail is kept, so a program
+            // sees everything the provider said; the run error text still names
+            // the payload's own `reason` when it carries one.
             let mut mapped = map_answer(Err(WireError::Refused { code, message }));
             mapped.reason = detail["reason"].as_str().map(str::to_owned);
+            mapped.detail = Some(detail);
             mapped
         }
         Err(WireError::Refused { code, message }) => Mapped::rejected(
