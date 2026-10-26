@@ -422,7 +422,20 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 40,
         statements: "ALTER TABLE event_flow_health ADD COLUMN stale_dropped INTEGER NOT NULL DEFAULT 0;",
     },
+    Migration {
+        version: 42,
+        statements: INSTALL_ID,
+    },
 ];
+
+// Existing cards acquire an id transactionally before their next request is
+// sent. Status-only recovery does not need to invent an id for old grants.
+const INSTALL_ID: &str = r#"
+ALTER TABLE install_cards ADD COLUMN install_id TEXT
+    CHECK (install_id IS NULL OR (length(install_id) BETWEEN 1 AND 64
+        AND install_id NOT GLOB '*[^A-Za-z0-9_-]*'));
+CREATE UNIQUE INDEX install_cards_install_id ON install_cards(install_id);
+"#;
 
 // Broca model calls learn their completion from Broca's bus events.
 // `broca_waits` has one row per accepted call that the runtime has not yet

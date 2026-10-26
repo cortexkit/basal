@@ -2,6 +2,50 @@ use super::*;
 use rusqlite::{Connection, OptionalExtension};
 
 #[test]
+fn install_id_migration_preserves_legacy_cards_and_backfills_before_retry() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    for migration in MIGRATIONS.iter().filter(|m| m.version < 42) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch("INSERT INTO flows(flow_id,created_at) VALUES ('flow',0);
+        INSERT INTO installs(flow_id,version,code_hash,manifest,script,author,state,installed_at) VALUES ('flow',1,zeroblob(32),'{}','return 1','operator','validated',0);").unwrap();
+    let hash = [0; 32];
+    let card_id = crate::cards::card_id("flow", 1, &hash);
+    conn.execute("INSERT INTO install_cards(card_id,flow_id,version,code_hash,author,card,state,created_at,attempt) VALUES (?1,'flow',1,zeroblob(32),'operator','{}','pending',0,7)", [&card_id]).unwrap();
+    let migration = MIGRATIONS.iter().find(|m| m.version == 42).unwrap();
+    conn.execute_batch(migration.statements).unwrap();
+    let legacy = crate::cards::load(&conn, &card_id).unwrap().unwrap();
+    assert_eq!(legacy.install_id, None);
+    assert_eq!(legacy.attempt, Some(7));
+    let tx = conn.transaction().unwrap();
+    let prepared = crate::cards::record(&tx, "flow", 1, &hash, "operator", "changed", 1).unwrap();
+    assert_eq!(prepared.card, "{}");
+    assert_eq!(prepared.attempt, Some(7));
+    assert_eq!(prepared.install_id.as_ref().unwrap().len(), 32);
+    tx.rollback().unwrap();
+    assert_eq!(
+        crate::cards::load(&conn, &card_id)
+            .unwrap()
+            .unwrap()
+            .install_id,
+        None
+    );
+    let tx = conn.transaction().unwrap();
+    let prepared = crate::cards::record(&tx, "flow", 1, &hash, "operator", "changed", 1).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        crate::cards::load(&conn, &card_id).unwrap().unwrap(),
+        prepared
+    );
+    for invalid in ["", "bad id", "é", &"a".repeat(65)] {
+        assert!(
+            conn.execute("UPDATE install_cards SET install_id=?1", [invalid])
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn decision_path_migration_preserves_all_legacy_intents_and_withdrawals() {
     let conn = Connection::open_in_memory().unwrap();
     for migration in MIGRATIONS.iter().filter(|m| m.version <= 18) {

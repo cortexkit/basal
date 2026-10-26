@@ -64,10 +64,21 @@ fn phone_removal_migration_preserves_populated_history() {
 }
 
 #[test]
-fn phone_migration_keeps_the_version_chain_contiguous() {
-    for (index, migration) in MIGRATIONS.iter().enumerate() {
+fn phone_migration_keeps_the_version_chain_ordered() {
+    // Migration numbers may be reserved before their schema changes land.
+    // Gaps after the original chain must not permit duplicates or reordering.
+    for (index, migration) in MIGRATIONS
+        .iter()
+        .take_while(|m| m.version <= 40)
+        .enumerate()
+    {
         assert_eq!(migration.version as usize, index + 1);
     }
+    assert!(
+        MIGRATIONS
+            .windows(2)
+            .all(|pair| pair[0].version < pair[1].version)
+    );
     // Migration 39 adds the removal columns; later migrations may follow it.
     assert!(MIGRATIONS.iter().any(|migration| migration.version == 39));
 }

@@ -706,8 +706,8 @@ new = '''    pub(crate) fn raised(&self) {
 id = "install-request-not-dedicated"
 guards = "install cards enter through core's dedicated request, never generic elicitation or cingulate"
 file = "crates/basal-host/src/core_consent.rs"
-old = '.management(CORE, "flow.install_request", request(card)?)'
-new = '.management(CORE, "elicitation.request", request(card)?) /* NON-VACUITY BREAK */'
+old = '.management(CORE, "flow.install_request", request)'
+new = '.management(CORE, "elicitation.request", request) /* NON-VACUITY BREAK */'
 test_file = "crates/basal-module/tests/install_policy.rs"
 runner = "cargo"
 package = "basal-module"
@@ -751,3 +751,19 @@ timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
 old = 'request["facts"] = json!(facts);'
 new = 'request["facts"] = json!([]); // NON-VACUITY BREAK'
+
+[[control]]
+id = "install-id-without-capability"
+guards = "an install request omits install_id unless core advertises acceptance"
+file = "crates/basal-host/src/core_consent.rs"
+old = "if crate::core_host::core_provides(self.state.transport.as_ref(), FLOW_INSTALL_ID_V1) {"
+new = "if true { // NON-VACUITY BREAK"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test install_policy"
+expect_red = ["install_id_is_sent_only_with_core_capability"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
