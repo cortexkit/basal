@@ -663,7 +663,8 @@ fn dropped_entry(bad: Value, reason: &str) {
     req["catalog"] = json!([bad, entry("good")]);
     let (run, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
     let start = start.unwrap();
-    assert_eq!(start.tools.len(), 3);
+    // `good` plus basal's built-in `model` tool.
+    assert_eq!(start.tools.len(), 2);
     assert!(start.tools.contains_key("good"));
     let warnings: Vec<Value> = serde_json::from_str(&run.warnings).unwrap();
     assert_eq!(warnings.len(), 1);

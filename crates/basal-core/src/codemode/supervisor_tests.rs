@@ -1799,6 +1799,11 @@ fn entry_time_migration_preserves_old_calls_and_reinstalls_guards() {
         )
         .is_err()
     );
+    // Current store code may touch tables from later migrations, so finish
+    // migrating before exercising it.
+    for migration in &crate::schema::MIGRATIONS[18..] {
+        conn.execute_batch(migration.statements).unwrap();
+    }
     let tx = conn.transaction().unwrap();
     store::insert_call(&tx, "r", 1, "read", 4, CallStart::Prepared { at: 100 }).unwrap();
     assert!(tx.execute("UPDATE codemode_runs SET status='cancelled',ended_at=100,duration_ms=0 WHERE run_id='r'",[]).is_err());
@@ -2331,6 +2336,11 @@ fn tool_provider_migration_preserves_calls_and_schedules_legacy_scope_close() {
         )
         .is_err()
     );
+    // Current store code may touch tables from later migrations, so finish
+    // migrating before exercising it.
+    for migration in &crate::schema::MIGRATIONS[20..] {
+        conn.execute_batch(migration.statements).unwrap();
+    }
     let tx = conn.transaction().unwrap();
     store::settle_pending_calls(&tx, "r", 140).unwrap();
     store::commit_terminal(&tx, "r", &exhausted(Budget::PersonWait), 140).unwrap();
