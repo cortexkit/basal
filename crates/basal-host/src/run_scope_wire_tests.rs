@@ -840,7 +840,10 @@ fn a_program_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
                     detail,
                 }) => {
                     assert_eq!(code, "flow_scope_required");
-                    assert_eq!(message, "Basal model tools require a daemon-stamped flow scope");
+                    assert_eq!(
+                        message,
+                        "Basal model tools require a daemon-stamped flow scope"
+                    );
                     assert_eq!(detail, refusal["detail"], "bind refusal: {bind_refusal}");
                 }
                 other => panic!("the program was answered {other:?}, bind refusal: {bind_refusal}"),

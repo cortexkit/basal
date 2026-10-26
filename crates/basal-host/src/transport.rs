@@ -786,7 +786,13 @@ impl SubcTransport {
             .model_handle(flow, &target, identity)
             // `contextual` would turn a plain refusal back into a flow refusal,
             // so the codemode route's mapping is final.
-            .map_err(|e| if codemode { bind_error(e, true) } else { contextual(e, module, op) })?;
+            .map_err(|e| {
+                if codemode {
+                    bind_error(e, true)
+                } else {
+                    contextual(e, module, op)
+                }
+            })?;
         let result = self.handle.block_on(self.consumer.request(
             &handle,
             management_bytes(op, params)?,
@@ -804,7 +810,13 @@ impl SubcTransport {
         result
             .map_err(if codemode { run_scope_error } else { map_error })
             .and_then(|bytes| decode_response(&bytes, true))
-            .map_err(|e| if codemode { e } else { contextual(e, module, op) })
+            .map_err(|e| {
+                if codemode {
+                    e
+                } else {
+                    contextual(e, module, op)
+                }
+            })
     }
 
     pub(crate) fn release_model(&self, flow: &str, identity: BindIdentity, module: &str) {
