@@ -364,7 +364,7 @@ fn broca_without_run_scope_opt_in_is_refused_without_dispatch() {
 fn a_provider_refusal_reaches_the_program_as_the_provider_sent_it() {
     let f = ModelFixture::new();
     f.wire.fake.pending_next();
-    f.f.issue(0, "classify", json!({"text":"good","labels":["yes","no"]}));
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
     assert_eq!(f.committed.recv_timeout(TIMEOUT).unwrap(), 0);
     let provider = json!({
         "class": "permanent",
@@ -385,7 +385,7 @@ fn a_provider_refusal_reaches_the_program_as_the_provider_sent_it() {
     let delivery = f.f.delivery();
     assert_eq!(delivery.settlement, Settlement::Rejected);
     let value = parse(delivery.value.as_str()).unwrap();
-    assert_eq!(value["tool"], "classify");
+    assert_eq!(value["tool"], "model");
     assert_eq!(value["outcome"], "error");
     // The provider's reply is the refusal: basal adds no wording of its own,
     // and the rest of the reply travels in `detail`.
