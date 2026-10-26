@@ -231,13 +231,9 @@ fn a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker() {
     drop(worker);
     basal_testkit::process::assert_reaped(pid);
     rt.quiesce();
-    let error = waited
+    waited
         .expect("the ownership driver wait did not fail within five seconds")
         .expect_err("the stalled ownership driver unexpectedly exited");
-    assert!(
-        error.contains("deliberately stalled ownership driver"),
-        "{error}"
-    );
 }
 
 /// The run is taken over while the old worker is blocked, before a

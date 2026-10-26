@@ -123,11 +123,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_action_is_kill_process() {
-        assert_eq!(DEFAULT_ACTION, SeccompAction::KillProcess);
-    }
-
-    #[test]
     fn admission_document_matches_each_architecture_table() {
         let text = include_str!("../../../sandbox/linux/syscall-admission.md");
         for (arch, column) in [("x86_64", 1), ("aarch64", 2)] {

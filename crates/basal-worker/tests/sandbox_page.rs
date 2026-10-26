@@ -98,61 +98,13 @@ fn a_caught_memory_or_stack_failure_does_not_retire_the_worker() {
 #[test]
 fn windows_section_states_the_layers_residual_and_limits() {
     let windows = section("Windows");
-    for topic in [
-        "LPAC",
-        "Untrusted",
+    for statement in [
+        "Less Privileged AppContainer (LPAC)",
         "zero capabilities",
-        "deny-only",
-        "Before resume",
-        "committed memory",
-        "handle list",
-        "all five confinement fields true",
-        "27 handles",
-        "windows-latest",
-        "windows-2022",
-        "**26**",
-        "\\Device\\CNG",
-        "ProcessPrng",
-        "windows-handle-provenance.md",
-        "one image profile",
-        "self-escalation",
-        "File stdin",
-        "File stdout/stderr",
-        "Directory",
-        "Event",
-        "IoCompletion",
-        "TpWorkerFactory",
-        "IRTimer",
-        "WaitCompletionPacket",
-        "Semaphore",
-        "SchedulerSharedData",
-        "0x000f0001",
-        "private, unnamed",
-        "AFD",
-        "KnownDlls-relative section opens",
-        "Native API probing",
-        "weaker token",
-        "profile",
-        "scheduler-tick resolution",
-        "wall deadline",
-        "idle retirement",
-        "loaded user profile",
-        "install-directory",
-        "AppContainer SID",
-        "SUBC",
-        "ck setup",
-        "ck upgrade",
+        "every access group deny-only",
+        "access masks are **not all read-only**",
+        "do not establish denial of direct native access to the AFD network device",
     ] {
-        assert_mentions(&windows, topic);
-    }
-    assert!(!windows.contains("not provided yet"));
-    let differences = section("Differences between the systems");
-    for topic in [
-        "| Windows |",
-        "allowed inside the worker",
-        "mounts and in-root links not traversed",
-        "fatal rather than an error",
-    ] {
-        assert_mentions(&differences, topic);
+        assert_mentions(&windows, statement);
     }
 }

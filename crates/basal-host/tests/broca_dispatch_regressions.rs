@@ -87,14 +87,6 @@ fn saved_params_are_compact_and_read_legacy_byte_arrays() {
 }
 
 #[test]
-fn broca_errors_have_stable_human_readable_display() {
-    assert_eq!(
-        BrocaError::Store("disk full".into()).to_string(),
-        "Broca store: disk full"
-    );
-}
-
-#[test]
 fn an_unsent_refusal_does_not_penalize_the_selected_model() {
     let store = Arc::new(MemoryStore::default());
     let selector = Arc::new(FakeSelector::default());

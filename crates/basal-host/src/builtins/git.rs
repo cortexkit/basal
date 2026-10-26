@@ -601,14 +601,20 @@ pub struct Ran {
 /// [`MAX_OUTPUT_BYTES`].
 #[cfg(not(windows))]
 pub fn run_command(command: Command) -> Result<Ran, Denial> {
-    run_command_until(command, None)
+    run_command_until(command, None, TIMEOUT)
 }
 
 #[cfg(windows)]
 pub use windows::run_command;
 
+/// Every production caller passes [`TIMEOUT`]; only a test passes a shorter
+/// `timeout`, so it can check the timeout cleanup without waiting 20 s.
 #[cfg(not(windows))]
-fn run_command_until(mut command: Command, max_lines: Option<usize>) -> Result<Ran, Denial> {
+fn run_command_until(
+    mut command: Command,
+    max_lines: Option<usize>,
+    timeout: Duration,
+) -> Result<Ran, Denial> {
     command.process_group(0);
     let child = command
         .spawn()
@@ -632,7 +638,7 @@ fn run_command_until(mut command: Command, max_lines: Option<usize>) -> Result<R
                 ));
             }
         }
-        let deadline = Instant::now() + TIMEOUT;
+        let deadline = Instant::now() + timeout;
         let (tx, completed) = mpsc::channel();
         guard.waiter(tx.clone());
         let output_tx = tx.clone();
@@ -841,7 +847,7 @@ fn git(repo: &Repository, args: &[&str]) -> Result<Ran, Denial> {
 
 #[cfg(not(windows))]
 fn run_tags_command(command: Command) -> Result<Ran, Denial> {
-    run_command_until(command, Some(MAX_TAGS))
+    run_command_until(command, Some(MAX_TAGS), TIMEOUT)
 }
 
 #[cfg(windows)]

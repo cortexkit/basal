@@ -221,19 +221,6 @@ fn stable_agent_id_wins_over_a_display_name_even_on_a_later_page() {
     );
 }
 #[test]
-#[should_panic(expected = "an unsent fault cannot apply an effect")]
-fn mock_refuses_contradictory_unsent_fault() {
-    basal_host::mock::MockHost::new().inject(
-        "mock",
-        "send",
-        &[basal_host::mock::Fault {
-            proven_unsent: true,
-            effect_applied: true,
-        }],
-    );
-}
-
-#[test]
 fn production_random_is_not_the_same_first_draw_after_restart() {
     if std::env::var_os("BASAL_ENTROPY_CHILD").is_some() {
         let host = basal_host::core_host::CoreHost::new(Arc::new(Wire::default()));

@@ -256,18 +256,6 @@ mod tests {
         engine_intervals(0);
     }
 
-    /// Compare the tick-accounted clock with wall time and raw thread cycles.
-    /// Keep every sample so a large accounting jump is visible in CI output.
-    #[cfg(windows)]
-    #[test]
-    fn windows_engine_interval_samples() {
-        let mut largest = Duration::ZERO;
-        for index in 0..512 {
-            largest = largest.max(engine_intervals(index));
-        }
-        println!("largest entered interval over 512 samples: {largest:?}");
-    }
-
     thread_local! {
         static SAMPLE: Cell<Duration> = const { Cell::new(Duration::ZERO) };
     }

@@ -772,6 +772,9 @@ fn new_epoch_or_ref_drops_the_old_route() {
         f.activate(&run);
     }
     assert_eq!(f.wire.opens.lock().unwrap().len(), 3);
+    // Route ids count opens, so a new epoch closes route 1 and a new
+    // scope_ref closes route 2; the current route 3 stays open.
+    assert_eq!(*f.wire.closed.lock().unwrap(), vec![1, 2]);
 }
 
 #[test]

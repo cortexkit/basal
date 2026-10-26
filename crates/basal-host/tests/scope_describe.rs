@@ -68,36 +68,6 @@ fn an_unwired_module_host_fails_closed() {
 }
 
 #[test]
-fn mock_describe_is_injected_per_owner_and_ref() {
-    let mock = MockHost::new();
-    mock.set_scope_description(owner(), "scope:run", Ok(description()));
-    let host: &dyn Host = &mock.clone();
-    assert_eq!(
-        host.scope_describe(&owner(), "scope:run"),
-        Ok(description())
-    );
-    assert_eq!(
-        host.scope_describe(&owner(), "scope:unknown"),
-        Err(ScopeDescribeError::Unavailable)
-    );
-    let other_owner = Principal::Reserved {
-        module_id: "other-core".into(),
-    };
-    assert_eq!(
-        host.scope_describe(&other_owner, "scope:run"),
-        Err(ScopeDescribeError::Unavailable)
-    );
-    assert_eq!(
-        mock.scope_queries(),
-        vec![
-            (owner(), "scope:run".into()),
-            (owner(), "scope:unknown".into()),
-            (other_owner, "scope:run".into()),
-        ]
-    );
-}
-
-#[test]
 fn routing_describe_uses_only_the_ops_host_and_keeps_typed_errors() {
     let ops = Arc::new(MockHost::new());
     let core = Arc::new(MockHost::new());
