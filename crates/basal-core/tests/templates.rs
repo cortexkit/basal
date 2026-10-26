@@ -338,8 +338,15 @@ fn template_ids_match_the_public_vectors() {
         "../../../test-vectors/templates/instance-ids.json"
     ))
     .unwrap();
-    for vector in vectors.as_array().unwrap() {
+    let vectors = vectors.as_array().unwrap();
+    assert!(
+        !vectors.is_empty(),
+        "the public template-ID vector set is empty"
+    );
+    let mut timestamp_cases = 0;
+    for vector in vectors {
         if let Some(at) = vector["supplied_params"]["at"].as_str() {
+            timestamp_cases += 1;
             let manifest = parse(&with_parameter(
                 json!({"type":"timestamp","max_ahead":"1d"}),
             ))
@@ -366,6 +373,10 @@ fn template_ids_match_the_public_vectors() {
             vector["flow_id"]
         );
     }
+    assert!(
+        timestamp_cases > 0,
+        "no public template-ID vector exercises timestamp normalization"
+    );
     assert_ne!(
         instance_id("watch", "agent_test", &json!({})),
         basal_core::packages::instance_id("watch", "agent_test")
