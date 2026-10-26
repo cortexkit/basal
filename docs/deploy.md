@@ -31,7 +31,7 @@ In order, `stage.sh`:
    It measures the staged and live workers' protocol versions by sending a Hello requesting reserved version 0 and reading each VersionMismatch reply. No flow is activated. A failed or malformed reply refuses the card. Different versions automatically select a stop-the-world card: back up the store read-only, stop and disable basal, place both files with `--no-restart`, then start basal only after both placements succeed. Matching versions keep the worker-first update card.
 6. **Stages** both under `<staging root>/basal-<short sha>/`, with a `.sha256` sidecar each that passes `shasum -c`, and a `revision` file. The default staging root is `~/.local/share/cortexkit/staging`. A stage directory is never rewritten: staging the same commit twice refuses.
 7. **Declares it current**, writing `<staging root>/basal.current` and `<staging root>/basal-worker.current` through a temp file and a rename. Each holds `stage=` (the stage directory), `revision=` (the full 40-character sha) and `declared_at=` (UTC), plus `pushed=no (--local-only)` for a local-only stage. place-module.sh derives the file name from the destination binary's name without `ck-`, so the worker's card reads `basal-worker.current`.
-8. **Prints the card** and saves it in the stage directory as `card.md`: card, signing, marker and control, store/rollback, order, and the post-placement check. Its CI line looks up the push-triggered CI run for the exact commit and names its conclusion and URL. CI also runs on a nightly schedule, replaying every mutation control against every test target in its package to find controls whose mutant breaks unrelated tests. That run can be newer and can fail for reasons unrelated to the commit, so the card never reports it. It is not posted.
+8. **Prints the card** and saves it in the stage directory as `card.md`: card, signing, marker and control, store/rollback, order, and the post-placement check. Its CI line looks up the push-triggered CI run for the exact commit and names its conclusion and URL. It is not posted.
 
 ## What the placement gate checks, and what a first placement changes
 
@@ -91,16 +91,7 @@ After placement, basal checks that `ck --json provenance basal` names the commit
 
 ## The rig run before a handover
 
-Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in [CONTRIBUTING.md](../CONTRIBUTING.md#the-gate), then validate and replay the safety catalogue with the pinned `ckdev-mutate` 0.12.6 runner:
-
-```sh
-cargo install --locked --git https://github.com/cortexkit/commons --rev 0b3bc096880e22ab43bec18eb6719a50fc59c270 cortexkit-mutate
-mkdir -p target/mutations
-ckdev-mutate check
-ckdev-mutate run --all --report target/mutations/handover.json
-```
-
-Every row must be `CAUGHT`; a build failure or a red test other than the named guard is not proof of that guard. Keep the JSON report with the handover evidence rather than committing machine output. New safety guards belong in the file for their area under `mutations.d/`: resolve the full libtest path, use `ckdev-mutate prove` to record only a caught edit, and commit the guard with its proof as described in [mutations.md](mutations.md). These source-level proofs complement, rather than replace, the signed-binary and live rig checks below.
+Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in [CONTRIBUTING.md](../CONTRIBUTING.md#the-gate). These complement, rather than replace, the signed-binary and live rig checks below.
 
 On macOS, run the staged bytes on the ckdev-flows rig, basal's isolated test stack ([`script/flows-rig.sh`](../script/flows-rig.sh) documents it in its header; see also [testing.md](testing.md#the-ckdev-flows-rig)). Its root defaults to `~/Work/Projects/CortexKit-scratch/ckdev-flows`; set `BASAL_RIG_ROOT` to an absolute path to override it. The guard refuses roots under `~/.local/share/cortexkit/` or macOS external volumes (`/Volumes/`).
 

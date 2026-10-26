@@ -113,7 +113,7 @@ every callback TID is in the snapshot: {"legacy": 10108, "timer": 5208, "wait": 
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.96s
 ```
 
-### Production image and mutation witnesses
+### Production image
 
 ```text
 production inventory "windows-latest": 25 handles; saved D:\a\_temp/windows-baseline/windows-handle-provenance.json
@@ -127,19 +127,6 @@ exits 0. Diagnostic handle tracing was disabled after snapshot; permanent
 strict-handle checks remained enabled. The production image has no static
 Winsock import. Only socket probes preload Winsock before their unchanged
 startup checks; they attempt startup and sockets after attestation/readiness.
-
-Unedited mutation records: [JSON](windows-mutation-evidence-windows-latest.json).
-
-- Startup allowlist removed: only
-  `planted_handle_startup_refuses_and_the_allowlist_mutant_writes_the_fixture`
-  fails (13 tests filtered). It reports exit 0 instead of 70 and the parent
-  fixture contains `[101, 115, 99, 97, 112, 101, 100]` (`escaped`).
-- Kernel32 removed from the committed import inventory: only
-  `the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports` fails
-  (the C-runtime-name test is filtered). The assertion says
-  `kernel32.dll is not in` the committed inventory.
-- Each mutation records a non-empty applied Git diff and an empty restored
-  diff; the restored named test passes. No other tests ran in the red checks.
 
 ## windows-2022
 
@@ -247,7 +234,7 @@ every callback TID is in the snapshot: {"legacy": 6324, "timer": 7780, "wait": 2
 test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
 ```
 
-### Production image and mutation witnesses
+### Production image
 
 ```text
 production inventory "windows-2022": 25 handles; saved D:\a\_temp/windows-baseline/windows-handle-provenance.json
@@ -261,19 +248,6 @@ exits 0. Diagnostic handle tracing was disabled after snapshot; permanent
 strict-handle checks remained enabled. The production image has no static
 Winsock import. Only socket probes preload Winsock before their unchanged
 startup checks; they attempt startup and sockets after attestation/readiness.
-
-Unedited mutation records: [JSON](windows-mutation-evidence-windows-2022.json).
-
-- Startup allowlist removed: only
-  `planted_handle_startup_refuses_and_the_allowlist_mutant_writes_the_fixture`
-  fails (13 tests filtered). It reports exit 0 instead of 70 and the parent
-  fixture contains `[101, 115, 99, 97, 112, 101, 100]` (`escaped`).
-- Kernel32 removed from the committed import inventory: only
-  `the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports` fails
-  (the C-runtime-name test is filtered). The assertion says
-  `kernel32.dll is not in` the committed inventory.
-- Each mutation records a non-empty applied Git diff and an empty restored
-  diff; the restored named test passes. No other tests ran in the red checks.
 
 ## Unrelated workspace baseline failure
 

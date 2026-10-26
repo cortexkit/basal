@@ -38,13 +38,10 @@ With migration 21 followed by migration 22, Cargo/rustc 1.99.0:
 - Workspace clippy with `-D warnings` passed with and without `basal-module/rig-kill-hook`.
 - `cargo test --workspace --locked` passed on Linux with eight vCPUs: 1,036 tests, zero ignored, 113 harnesses.
 - The same workspace test passed on macOS: 948 tests, one existing ignored test, 113 harnesses.
-- `ckdev-mutate check` verified all 898 catalogue rows with runner 0.9.8.
-- Python 3.14.4 checks passed: development naming (123 files, zero violations), path-dependency boundary, mutation platform coverage (411 Linux and 487 macOS rows), and 50 script unit tests.
+- Python 3.14.4 checks passed: development naming (123 files, zero violations), path-dependency boundary, and 50 script unit tests.
 
 ## Reproduction and mutation evidence
 
 Run `cargo test -p basal-core --lib events::tests --locked` and `cargo test -p basal-module --test module_events --test event_preamble --locked`. The CI workflow installs nats-server v2.15.0 using pinned official archive hashes on Linux x86_64/arm64, macOS x86_64/arm64 and Windows x86_64/arm64.
-
-`runner-linux.json` contains **21 CAUGHT** mutation controls, exact red names and per-test failure output, including cutoff removal, approval-time replacement and forged-header timestamp controls. One replay-control run also hit an unrelated codemode model-budget test timeout; the complete affected control was rerun successfully, and the initial attempt remains recorded in `prior_attempts`. Shared `green_name_groups` and per-row exclusions retain every green test identity without repeating whole library lists. Controls with `only=true` require exactly the named failure within their target; the no-match acknowledgment control selects its expected test explicitly. These rows were replayed against their own test target only. The nightly `--broad` run, which replays each mutant against every test target in its package, hasn't covered them yet.
 
 The retention test uses independent eight-day clock boundaries rather than deriving its expected time from the production retention constant.

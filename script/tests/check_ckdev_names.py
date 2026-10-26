@@ -26,7 +26,7 @@ class CkdevNameChecks(unittest.TestCase):
 
     def test_planted_cargo_launch_is_refused_and_named(self):
         result = self.check_source("crates/example/tests/launch.rs",
-                                   'Command::new(env!("CARGO_BIN_EXE_ck-basal")).spawn(); // NON-VACUITY BREAK\n')
+                                   'Command::new(env!("CARGO_BIN_EXE_ck-basal")).spawn();\n')
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("crates/example/tests/launch.rs:1", result.stderr)
         self.assertIn("bypasses dev_binary", result.stderr)

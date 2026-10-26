@@ -37,24 +37,16 @@ python3 script/check-path-deps.py
 python3 script/check-ckdev-names.py
 python3 script/check-local-paths.py
 python3 -m unittest script.tests
-python3 -m unittest discover -s .github/workflows -p 'test_*.py'
 ```
 
-The mutation catalogue checks, with the pinned runner installed as [docs/mutations.md](docs/mutations.md) describes:
-
-```sh
-ckdev-mutate check
-python3 .github/workflows/check_mutation_coverage.py
-```
-
-`ckdev-mutate check` validates every row's anchors and test names, and `check_mutation_coverage.py` enforces that every row declares exactly one replay platform. The latter's schema check and Python tests run in `lint`; native anchor/test-name checks stay with the build jobs. On a pull request CI then replays the rows the diff touches, with `ckdev-mutate run --diff origin/main`; Windows application/restoration witnesses (indexed source diffs and exact named-test failures captured by `script/witness-mutations.py`) are restricted to the selected Windows rows. On a push to `main` it replays the whole catalogue in shards (eight Linux, five macOS, two Windows), uploads full Windows witness evidence across both shards, and `check_mutation_coverage.py --reports` requires exactly one successful replay of every row across all shards. Each Windows image, windows-latest and windows-2022, runs two parallel package groups: launcher + worker + host (including the remaining workspace packages), and module + core + testkit + rig. The workspace pass includes all host tests once; launcher and worker suites retain both production and `deviations` modes.
+Tests are ordinary cargo tests, run per crate as above. Each Windows image, windows-latest and windows-2022, runs two parallel package groups: launcher + worker + host (including the remaining workspace packages), and module + core + testkit + rig. The workspace pass includes all host tests once; launcher and worker suites retain both production and `deviations` modes.
 
 ## Commits
 
 - Author commits with your GitHub no-reply address (`<id>+<user>@users.noreply.github.com`), not a personal or work address.
 - Keep local paths out of tracked files. `script/check-local-paths.py` refuses absolute user-home paths; also leave out machine names and other paths that exist only on your machine.
-- Don't commit raw logs or generated machine output. Mutation reports stay under the git-ignored `target/mutations/`, and CI uploads its own reports as artifacts. Measurements that back a performance claim belong in [`evidence/`](evidence/README.md), with the command that produced them.
-- Commit a safety guard together with the source it guards and its catalogue row.
+- Don't commit raw logs or generated machine output. Measurements that back a performance claim belong in [`evidence/`](evidence/README.md), with the command that produced them.
+- Commit a safety guard together with the source it guards and the test that catches a broken guard.
 
 ## Where code goes
 
@@ -70,7 +62,3 @@ python3 .github/workflows/check_mutation_coverage.py
 | `basal-rig` | Test support for the ckdev-flows rig only; never deployed. |
 
 Test doubles and test-only helpers stay behind `cfg(test)` or the owning crate's `test-support` feature ([docs/testing.md](docs/testing.md#test-only-code)). Scripts live in `script/`, with their offline tests in `script/tests/`. Checked-in flows live in `flows/` and templates in `templates/`.
-
-## The mutation catalogue
-
-Every safety guard has a mutation proof: a source edit that the named test must catch. The catalogue is the `mutations.d/*.toml` files, one per crate or area; add a row to the file for the area of the source it edits. Every row declares exactly one platform in `platforms` (`linux`, `macos` or `windows`), the one CI host that replays it, and row ids are unique across all files. Record a row with `ckdev-mutate prove`, which writes it only when the mutant is caught. [docs/mutations.md](docs/mutations.md) gives the file naming, the platform rules, anchor scopes, run sets and the `prove` command.

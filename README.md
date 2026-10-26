@@ -51,11 +51,10 @@ python3 -m unittest script.tests
 python3 script/check-path-deps.py
 python3 script/check-ckdev-names.py
 python3 script/check-local-paths.py
-python3 .github/workflows/check_mutation_coverage.py
 shellcheck -x script/*.sh
 ```
 
-The mutation proofs use the pinned `ckdev-mutate` 0.12.6 runner; [docs/mutations.md](docs/mutations.md) installs it and describes the catalogue. [CONTRIBUTING.md](CONTRIBUTING.md) lists the full gate, and [docs/testing.md](docs/testing.md) covers test-only features, development executable names and the ckdev-flows rig.
+Tests are ordinary cargo tests, run per crate as above. [CONTRIBUTING.md](CONTRIBUTING.md) lists the full gate, and [docs/testing.md](docs/testing.md) covers test-only features, development executable names and the ckdev-flows rig.
 
 ## Documentation
 
@@ -69,7 +68,6 @@ The mutation proofs use the pinned `ckdev-mutate` 0.12.6 runner; [docs/mutations
 - [docs/sandbox.md](docs/sandbox.md): how the worker is confined on each operating system, what it can still do, and the differences between systems.
 - [docs/deploy.md](docs/deploy.md): staging, signing and placing the two binaries, and rolling them back.
 - [docs/testing.md](docs/testing.md): test-only code, development executable names and the ckdev-flows rig.
-- [docs/mutations.md](docs/mutations.md): the mutation-proof catalogue and the `ckdev-mutate` runner.
 - [CONTRIBUTING.md](CONTRIBUTING.md): the gate, commits and where code goes.
 - [SECURITY.md](SECURITY.md): reporting a vulnerability and the threat model.
 

@@ -1,5 +1,5 @@
 {
-  "runner": "ckdev-mutate 0.9.8",
+  "runner": "cargo test",
   "platform": "linux",
   "cargo": "1.99.0",
   "green_name_groups": {

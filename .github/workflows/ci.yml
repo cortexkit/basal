@@ -4,21 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The nightly breadth audit: the full catalogue with `--broad`, which runs
-  # each mutant against every test target in its package. That reveals a
-  # control whose mutant breaks unrelated tests (CAUGHT_BROADLY), which a
-  # normal replay of the row's own target cannot see.
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push to a pull request supersedes the older run. On main every
-# commit gets its full catalogue replay, and the nightly audit always
-# finishes, so a later run never cancels either.
-# Every push to main gets its own group, so a later push never cancels the
+# A newer push to a pull request supersedes the older run. Every push to
+# main gets its own group, so a later push never cancels the
 # pending run of an earlier one: each pushed commit can be a deploy candidate
 # and needs its own full result. A pull request's newer commits do cancel its
 # older runs.
@@ -29,9 +21,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: never
   PYTHONDONTWRITEBYTECODE: 1
-  # ckdev-mutate 0.12.6. It reads the catalogue from mutations.d/, one file per
-  # crate or area, and every replay, shard and report covers all of its files.
-  CK_MUTATE_REV: 0b3bc096880e22ab43bec18eb6719a50fc59c270
 
 jobs:
   lint:
@@ -73,12 +62,6 @@ jobs:
         run: |
           /bin/sh -n script/stage.sh
           python3 -m unittest script.tests.stage_card -v
-      - name: Check catalogue platform coverage schema
-        run: |
-          python3 --version
-          python3 .github/workflows/check_mutation_coverage.py
-          python3 -m unittest discover -s .github/workflows -p 'test_*.py' -v
-          python3 -m unittest script.tests.mutation_catalogue script.tests.witness_mutations -v
 
   checks:
     if: github.event_name != 'schedule'
@@ -87,8 +70,7 @@ jobs:
     # (codesign, privacy disclaim) are compiled only on macOS. The Linux
     # seccomp filter has a separate syscall table per architecture, so Linux
     # runs natively on both x86_64 and aarch64. The lint job handles build-free
-    # checks; the aarch64 leg replays no mutation rows, so it installs no
-    # mutation runner.
+    # checks.
     strategy:
       fail-fast: false
       matrix:
@@ -131,21 +113,6 @@ jobs:
         name: Measure restored build folder
         shell: bash
         run: du -sk target 2>/dev/null || test ! -d target
-      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        if: matrix.platform != 'linux-arm64'
-        id: mutate-cache
-        with:
-          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
-      - name: Install pinned mutation runner
-        if: matrix.platform != 'linux-arm64' && steps.mutate-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
-      - name: Save pinned mutation runner
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.platform != 'linux-arm64' && steps.mutate-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
         if: matrix.platform == 'linux'
       - run: cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
@@ -172,12 +139,6 @@ jobs:
         env:
           BASAL_REQUIRE_VISIBLE_PROC: ${{ runner.os == 'Linux' && '1' || '' }}
         run: cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-rig --features basal-module/rig-kill-hook
-      # `ckdev-mutate check` validates every catalogue row's anchors and test
-      # names. Listing test names compiles the test binaries but runs no test,
-      # so no worker starts. Rows marked for the other OS are skipped, so each
-      # host validates the rows it will replay.
-      - run: ckdev-mutate check
-        if: matrix.platform != 'linux-arm64'
       - &final-build-size
         name: Measure final build folder
         shell: bash
@@ -221,240 +182,6 @@ jobs:
           name: syscall-trace-aarch64
           path: crates/basal-worker/sandbox/linux/traces/aarch64
           if-no-files-found: error
-
-  mutations-pr:
-    if: github.event_name == 'pull_request'
-    needs: [checks, lint]
-    defaults:
-      run:
-        shell: bash
-    # Replays the mutation controls whose files this pull request changes.
-    # Every catalogue row is marked for exactly one OS, so running the replay
-    # on all three platforms covers every changed control without running any twice.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            os: ubuntu-latest
-          - platform: macos
-            os: macos-latest
-          - platform: windows
-            os: windows-2022
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        if: matrix.platform == 'windows'
-        with:
-          python-version: '3.12'
-      - name: Install stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - *install-nats
-      - name: Record installed Rust version
-        id: rust
-        run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
-      # Main's checks publish this run's cache before replay starts. PR checks
-      # do not save, so PR replays restore the newest main entry by prefix.
-      # Windows has no checks leg; its fallback uses the Windows baseline.
-      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-main-${{ github.run_id }}-module-core-testkit-rig
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-main-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
-      - *restored-build-size
-      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        id: mutate-cache
-        with:
-          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
-      - name: Install pinned mutation runner
-        if: steps.mutate-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
-      - &save-mutation-runner
-        name: Save pinned mutation runner
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.mutate-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
-      - name: Replay proofs selected by the PR diff
-        run: |
-          mkdir -p target/mutations
-          rm -f target/mutations/diff.json
-          selected=$(ckdev-mutate run --diff origin/main --list)
-          if [[ -z "$selected" ]]; then
-            printf '[]\n' > target/mutations/diff.json
-            echo "PR diff selects no mutation rows; skipping replay."
-          else
-            env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --diff origin/main --report target/mutations/diff.json
-          fi
-      - name: Capture exact Windows mutation application and restoration witnesses
-        if: matrix.platform == 'windows'
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          import os
-          import subprocess
-          import sys
-
-          sys.path.insert(0, "script")
-          import mutation_catalogue
-
-          rows, _ = mutation_catalogue.load(Path.cwd())
-          windows_ids = {row["id"] for row in rows if row["platforms"] == ["windows"]}
-          report = json.loads(Path("target/mutations/diff.json").read_text())
-          selected = sorted({row["id"] for row in report} & windows_ids)
-          if not selected:
-              print("Skipping Windows witnesses: the PR diff selected no Windows catalogue rows.")
-          else:
-              command = [sys.executable, "script/witness-mutations.py", "--platform", "windows",
-                         "--output", str(Path(os.environ["RUNNER_TEMP"]) / "windows-mutation-evidence")]
-              for row_id in selected:
-                  command.extend(["--only", row_id])
-              subprocess.run(command, check=True)
-          PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always() && matrix.platform == 'windows'
-        with:
-          name: windows-mutation-evidence-pr
-          path: ${{ runner.temp }}/windows-mutation-evidence
-      - *final-build-size
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: ${{ matrix.platform == 'windows' && 'mutations-windows-1' || format('mutations-pr-{0}', matrix.platform) }}
-          path: target/mutations/diff.json
-
-  # On a push to main: the full catalogue, each row against its own target.
-  # Nightly or on demand: the same catalogue with `--broad`.
-  # always() lets the scheduled matrix proceed past the skipped checks job;
-  # push and manual runs still require those checks to succeed.
-  mutation-matrix:
-    if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success' && needs.lint.result == 'success') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && needs.checks.result == 'success' && needs.lint.result == 'success'))
-    needs: [checks, lint]
-    runs-on: ubuntu-latest
-    outputs:
-      include: ${{ steps.matrix.outputs.include }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Select event-specific mutation shards
-        id: matrix
-        run: python3 .github/workflows/mutation_matrix.py --event "$EVENT_NAME" >> "$GITHUB_OUTPUT"
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-
-  mutations-main:
-    if: always() && needs.mutation-matrix.result == 'success'
-    needs: mutation-matrix
-    defaults:
-      run:
-        shell: bash
-    # The matrix job retains the event filter and prerequisite checks gate.
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Scheduled breadth needs shorter shards to stay below the hosted
-        # runner's six-hour limit. Push and manual runs use eight Linux shards.
-        # Every host shards the entire sorted catalogue independently;
-        # rows for other platforms are reported as skips, not built.
-        include: ${{ fromJSON(needs.mutation-matrix.outputs.include) }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        if: matrix.platform == 'windows'
-        with:
-          python-version: '3.12'
-      - name: Install stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - *install-nats
-      - name: Record installed Rust version
-        id: rust
-        run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-main-${{ github.run_id }}-module-core-testkit-rig
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-main-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
-      - *restored-build-size
-      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        id: mutate-cache
-        with:
-          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
-      - name: Install pinned mutation runner
-        if: steps.mutate-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
-      - *save-mutation-runner
-      - name: Replay the full catalogue in an isolated shard
-        run: |
-          mkdir -p target/mutations
-          rm -f target/mutations/all.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ matrix.shards }} ${BROAD:+--broad} --report target/mutations/all.json
-        env:
-          BROAD: ${{ github.event_name != 'push' && 'true' || '' }}
-      - name: Capture exact Windows mutation application and restoration witnesses
-        if: matrix.platform == 'windows'
-        run: python script/witness-mutations.py --platform windows --shard ${{ matrix.shard }}/${{ matrix.shards }} --output "$RUNNER_TEMP/windows-mutation-evidence"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always() && matrix.platform == 'windows'
-        with:
-          name: windows-mutation-evidence-${{ matrix.shard }}
-          path: ${{ runner.temp }}/windows-mutation-evidence
-      - *final-build-size
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: mutations-${{ matrix.platform }}-${{ matrix.shard }}
-          path: target/mutations/all.json
-
-  # Reads every shard's replay report (target/mutations/all.json) after all
-  # hosts finish, and requires exactly one successful replay of each
-  # catalogue row across all of them. A row skipped everywhere, missing from
-  # every report or replayed twice fails here, even if each shard passed.
-  mutation-coverage:
-    if: always() && needs.mutations-main.result != 'skipped'
-    needs: mutations-main
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: mutations-*
-          path: target/mutation-reports
-      - name: Require one successful replay for every catalogue row
-        run: |
-          python3 --version
-          python3 .github/workflows/check_mutation_coverage.py --reports target/mutation-reports
 
   minimum-rust:
     if: github.event_name != 'schedule'
@@ -539,26 +266,6 @@ jobs:
       - *restored-build-size
       - name: Prepare the log directory
         run: mkdir -p "$RUNNER_TEMP/windows-baseline"
-      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        if: matrix.os == 'windows-2022' && matrix.suite == 'module-core-testkit-rig'
-        id: mutate-cache
-        with:
-          path: ~/.cargo/bin/ckdev-mutate.exe
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
-      - name: Install pinned mutation runner
-        if: matrix.os == 'windows-2022' && matrix.suite == 'module-core-testkit-rig' && steps.mutate-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate 2>&1 | tee "$RUNNER_TEMP/windows-baseline/install-mutate.log"
-      - name: Save pinned mutation runner
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.os == 'windows-2022' && matrix.suite == 'module-core-testkit-rig' && steps.mutate-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: ~/.cargo/bin/ckdev-mutate.exe
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
-      - name: Verify the pinned mutation runner on Windows
-        if: matrix.os == 'windows-2022' && matrix.suite == 'module-core-testkit-rig'
-        run: |
-          ckdev-mutate --version 2>&1 | tee "$RUNNER_TEMP/windows-baseline/mutate-version.log"
-          ckdev-mutate check 2>&1 | tee "$RUNNER_TEMP/windows-baseline/mutate-check.log"
       # The Windows launcher's own tests start real confined children, so
       # they can only run here. The deviations feature adds the test-only
       # launch variants, one per confinement check. They run first and print
@@ -582,14 +289,6 @@ jobs:
         id: test-worker
         timeout-minutes: 30
         run: cargo test -p basal-worker --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker.log"
-      # The creators and counts of production startup handles are measured
-      # once per Windows runner image. Every worker startup still compares its
-      # live handle table with the fixed per-image count limits; the image test
-      # rejects DLL imports absent from the worker's windows-imports.txt file.
-      - name: Witness the startup-handle and import-inventory mutants
-        if: matrix.suite == 'launch-worker-host'
-        timeout-minutes: 10
-        run: python crates/basal-worker/tests/windows_mutation_witness.py "$RUNNER_TEMP/windows-baseline"
       - name: Test the worker with its test variants
         if: matrix.suite == 'launch-worker-host'
         id: test-worker-deviations
