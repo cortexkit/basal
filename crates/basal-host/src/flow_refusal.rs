@@ -74,7 +74,8 @@ pub struct FlowRefusal {
     /// The message the provider sent with the refusal, when it sent one.
     /// [`Self::message`] is basal's own wording for the reason, which a flow
     /// run reads; a codemode program, which has no flow, reads this instead.
-    pub message: Option<String>,
+    /// Boxed so the refusal, carried inside every `WireError`, stays small.
+    pub message: Option<Box<str>>,
 }
 
 impl FlowRefusal {
@@ -201,7 +202,7 @@ impl FlowRefusal {
             busy.validate().map_err(|e| e.to_string())?;
             refusal.retry_after_ms = Some(busy.retry_after_ms);
         }
-        refusal.message = Some(body.message.clone());
+        refusal.message = Some(body.message.as_str().into());
         // Grant references must reach the store intact: it hashes oversized
         // references instead of truncating authority-bearing bytes.
         refusal.detail = body

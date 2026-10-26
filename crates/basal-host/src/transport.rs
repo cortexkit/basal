@@ -325,8 +325,9 @@ fn bind_error(open: WireError, codemode: bool) -> WireError {
         WireError::Typed(refusal) => {
             let message = refusal
                 .message
-                .clone()
-                .unwrap_or_else(|| refusal.reason.as_str().to_owned());
+                .as_deref()
+                .unwrap_or(refusal.reason.as_str())
+                .to_owned();
             let body = subc_protocol::ErrorBody::new(refusal.reason.as_str(), message);
             match &refusal.detail {
                 Some(detail) => provider_refusal(body.with_detail(detail.clone())),
