@@ -5,6 +5,7 @@
 
 mod common;
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -14,7 +15,8 @@ use basal_core::manifest::OpRef;
 use basal_core::{ActivationEnd, Config, RunState, ShellDenylist};
 use basal_host::{OpDecl, OpKind};
 use basal_proto::{
-    CallKind, HostCall, JsonText, ParentMessage, Primitive, Settlement, Welcome, WorkerMessage,
+    ActivationResult, CallKind, Confinement, HostCall, JsonText, ParentMessage, PreludeHash,
+    Primitive, Settlement, Welcome, WorkerMessage,
 };
 use basal_testkit::harness::{Point, World, run_with_cuts, run_with_cuts_under, test_manifest};
 use common::{admit, config, finish, query_i64, result, runtime};
@@ -444,4 +446,179 @@ fn refusals_replay_the_same_after_a_cut_under_any_manifest() {
     assert_eq!(run.fired, vec![true]);
     assert_eq!(run.summary.result, Some(json!("denied")), "{run:#?}");
     assert!(world.mock.effects().is_empty());
+}
+
+/// A worker channel that stands in for the script engine: it issues `calls`
+/// one at a time, waits for each outcome, and finishes with what each call
+/// returned (its rejection code and message, or `"fulfilled"`). The parent's
+/// checks run exactly as for a real worker, without needing a confined
+/// worker process.
+struct Scripted {
+    welcome: Welcome,
+    activation: Option<u64>,
+    calls: VecDeque<HostCall>,
+    awaiting: Option<u64>,
+    seen: Vec<Value>,
+}
+
+impl Scripted {
+    fn new(calls: Vec<(Primitive, Value)>) -> Self {
+        Self {
+            welcome: Welcome {
+                protocol_version: basal_proto::PROTOCOL_VERSION,
+                engine: "scripted".into(),
+                prelude_hash: PreludeHash([0; 32]),
+                codemode_prelude_hash: PreludeHash([0; 32]),
+                confinement: Confinement::None,
+            },
+            activation: None,
+            calls: calls
+                .into_iter()
+                .enumerate()
+                .map(|(position, (primitive, args))| HostCall {
+                    position: position as u64,
+                    kind: CallKind::Primitive(primitive),
+                    args: JsonText::new(args.to_string()).expect("small"),
+                })
+                .collect(),
+            awaiting: None,
+            seen: Vec::new(),
+        }
+    }
+}
+
+impl WorkerChannel for Scripted {
+    fn welcome(&self) -> &Welcome {
+        &self.welcome
+    }
+
+    fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
+        match message {
+            ParentMessage::Activate(request) => self.activation = Some(request.activation_id),
+            ParentMessage::Deliver(outcome) if self.awaiting == Some(outcome.position) => {
+                self.awaiting = None;
+                self.seen.push(match outcome.settlement {
+                    Settlement::Rejected => {
+                        let value: Value =
+                            serde_json::from_str(outcome.value.as_str()).expect("rejection JSON");
+                        json!(format!(
+                            "{}: {}",
+                            value["code"].as_str().unwrap_or_default(),
+                            value["message"].as_str().unwrap_or_default()
+                        ))
+                    }
+                    _ => json!("fulfilled"),
+                });
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn recv(&mut self, _timeout: Duration) -> Result<WorkerMessage, ChannelError> {
+        let Some(activation_id) = self.activation else {
+            return Err(ChannelError::Closed);
+        };
+        if let Some(position) = self.awaiting {
+            return Ok(WorkerMessage::Blocked {
+                awaiting: vec![position],
+            });
+        }
+        if let Some(call) = self.calls.pop_front() {
+            self.awaiting = Some(call.position);
+            return Ok(WorkerMessage::HostCall(call));
+        }
+        self.activation = None;
+        Ok(WorkerMessage::Finished {
+            activation_id,
+            result: ActivationResult::Completed {
+                value: JsonText::new(Value::from(self.seen.clone()).to_string()).expect("small"),
+            },
+        })
+    }
+
+    fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
+        panic!("the flow driver reads this worker through recv")
+    }
+
+    fn kill(&mut self) {}
+}
+
+/// `$audience` is valid only in a manifest grant. A script that passes it
+/// (or an unresolved `$self`) as a recipient is refused before anything is
+/// sent, with a code and message that say what to pass instead, while a
+/// concrete recipient under the same grant is still sent.
+#[test]
+fn placeholder_recipients_are_refused_before_dispatch() {
+    let world = World::new("auth-placeholder-target");
+    let rt = runtime(&world);
+    let mut manifest = test_manifest();
+    manifest["audience"] = json!({"kind":"agent","id":"ALF"});
+    manifest["sinks"] = json!([{ "agent": "$audience", "digest_max": "wake" }]);
+    manifest["status"] = json!(["$audience"]);
+    manifest.as_object_mut().unwrap().remove("facts");
+    let spec = world
+        .spec_with(&rt, "return 1;", &manifest)
+        .expect("approve");
+    let run_id = rt
+        .admit(&spec)
+        .expect("admit")
+        .run_id()
+        .expect("admitted")
+        .to_owned();
+    let mut worker = Scripted::new(vec![
+        (
+            Primitive::SinkDigest,
+            json!({"agent":"$audience","withdraw":true,"options":{"replace_key":"runner-alert"}}),
+        ),
+        (
+            Primitive::SinkDigest,
+            json!({"agent":"$audience","item":{"title":"alert"}}),
+        ),
+        (
+            Primitive::SinkStatus,
+            json!({"agent":"$audience","value":"ok"}),
+        ),
+        (Primitive::Facts, json!({"agent":"$self"})),
+        (
+            Primitive::SinkDigest,
+            json!({"agent":"ALF","item":{"title":"alert"}}),
+        ),
+    ]);
+    let end = rt.activate(&run_id, &mut worker).expect("activation");
+    assert!(matches!(end, ActivationEnd::Succeeded { .. }), "{end:?}");
+    let run = rt.run(&run_id).expect("run");
+    assert_eq!(run.state, RunState::Succeeded, "{run:#?}");
+    let refused = |name: &str| {
+        json!(format!(
+            "sink_target_placeholder: \"{name}\" is a manifest placeholder; pass the recipient's agent id (ALF is this flow's approved audience)"
+        ))
+    };
+    assert_eq!(
+        result(&run),
+        json!([
+            refused("$audience"),
+            refused("$audience"),
+            refused("$audience"),
+            refused("$self"),
+            "fulfilled"
+        ])
+    );
+    // Only the concrete recipient reached the host.
+    assert_eq!(world.mock.total_sends(), 1);
+    let audit = rt
+        .store()
+        .read(|c| basal_core::audit::rows(c, &run_id))
+        .expect("audit");
+    let outcomes: Vec<&str> = audit.iter().map(|r| r.outcome.as_str()).collect();
+    assert_eq!(
+        outcomes,
+        [
+            "sink_target_placeholder",
+            "sink_target_placeholder",
+            "sink_target_placeholder",
+            "sink_target_placeholder",
+            "allowed"
+        ]
+    );
 }

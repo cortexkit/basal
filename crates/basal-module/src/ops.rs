@@ -1301,7 +1301,8 @@ impl Module {
                     f.disabled_by, f.disabled_reason, f.disabled_at,
                     (SELECT MAX(i.version) FROM installs i WHERE i.flow_id=f.flow_id AND i.state='validated' AND NOT EXISTS (SELECT 1 FROM install_cards c WHERE c.flow_id=i.flow_id AND c.version=i.version AND c.state<>'pending')),
                     r.run_id, r.state, COALESCE(r.ended_at,r.admitted_at),
-                    EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile'), f.agent_retirement, f.state_epoch
+                    EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile'), f.agent_retirement, f.state_epoch,
+                    r.error_kind, r.error_detail
                  FROM flows f LEFT JOIN runs r ON r.run_id=(
                     SELECT run_id FROM runs WHERE flow_id=f.flow_id
                     AND state IN ('succeeded','failed','engine_mismatch','cancelled')
@@ -1315,6 +1316,20 @@ impl Module {
                 let approved: Option<u32> = r.get(1)?;
                 let disabled_by: Option<String> = r.get(3)?;
                 let run_id: Option<String> = r.get(7)?;
+                let mut last_run = match run_id {
+                    Some(run_id) => json!({"run_id":run_id,"state":r.get::<_, String>(8)?,"ended_at":r.get::<_, i64>(9)?}),
+                    None => Value::Null,
+                };
+                // A run that did not succeed carries why, so the owner can
+                // see the cause without opening the run; a successful run
+                // reports both fields as null.
+                if last_run["state"].is_string() {
+                    let failed = last_run["state"] != "succeeded";
+                    let kind = r.get::<_, Option<String>>(13)?.filter(|_| failed);
+                    let detail = r.get::<_, Option<String>>(14)?.filter(|_| failed);
+                    last_run["error_kind"] = json!(kind);
+                    last_run["error"] = json!(detail.map(|d| phone_flows::failure_line(&d)));
+                }
                 Ok(json!({
                     "flow_id": r.get::<_, String>(0)?,
                     "state": flow_state(approved, r.get(2)?),
@@ -1324,10 +1339,7 @@ impl Module {
                         Some(by) => json!({"by": disabled_kind(&by), "reason":r.get::<_, Option<String>>(4)?, "at":r.get::<_, Option<i64>>(5)?}),
                         None => Value::Null,
                     },
-                    "last_run": match run_id {
-                        Some(run_id) => json!({"run_id":run_id,"state":r.get::<_, String>(8)?,"ended_at":r.get::<_, i64>(9)?}),
-                        None => Value::Null,
-                    },
+                    "last_run": last_run,
                     "needs_reconcile": r.get::<_, bool>(10)?,
                     "agent_retirement": r.get::<_, Option<String>>(11)?,
                     "state_epoch": r.get::<_, u32>(12)?,

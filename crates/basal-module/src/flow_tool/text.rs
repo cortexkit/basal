@@ -302,12 +302,18 @@ pub(super) fn summary(action: &str, result: &Value) -> String {
         "list" => items(&result["flows"])
             .iter()
             .map(|flow| {
-                let last = if flow["last_run"].is_object() {
-                    format!(
-                        "{} ({})",
-                        field(&flow["last_run"], "state"),
-                        field(&flow["last_run"], "run_id")
-                    )
+                let run = &flow["last_run"];
+                let last = if run.is_object() {
+                    let mut last = format!("{} ({})", field(run, "state"), field(run, "run_id"));
+                    // `flow.list` sets `error_kind` only for runs that did
+                    // not succeed; a successful run's line stays as it was.
+                    if let Some(kind) = run["error_kind"].as_str() {
+                        last.push_str(&format!(" at {}; {kind}", timestamp(&run["ended_at"])));
+                        if let Some(error) = run["error"].as_str() {
+                            last.push_str(&format!(": {error}"));
+                        }
+                    }
+                    last
                 } else {
                     "none".into()
                 };

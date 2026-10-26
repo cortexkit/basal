@@ -207,6 +207,59 @@ fn audience_writes_check_declared_sink_kind_not_recipient() {
 }
 
 #[test]
+fn placeholder_recipients_are_refused_for_every_targeted_call() {
+    let workspace = parse(&manifest(Some(json!({"kind":"workspace","id":"team"})))).unwrap();
+    let agent = parse(&manifest(Some(json!({"kind":"agent","id":"agent_cloud"})))).unwrap();
+    let plain = parse(&manifest(None)).unwrap();
+    for kind in [
+        Primitive::SinkDigest,
+        Primitive::SinkStatus,
+        Primitive::SinkBoard,
+        Primitive::SinkWaitResolve,
+        Primitive::Facts,
+    ] {
+        let kind = CallKind::Primitive(kind);
+        for name in ["$audience", "$self", "$anything"] {
+            let args = json!({"agent":name,"withdraw":true,"options":{"replace_key":"k"}});
+            for m in [&workspace, &plain] {
+                let refusal = authorize::placeholder_target(m, &kind, &args).unwrap_err();
+                assert_eq!(refusal.code, authorize::codes::SINK_TARGET_PLACEHOLDER);
+                assert_eq!(
+                    refusal.message,
+                    format!("\"{name}\" is a manifest placeholder; pass the recipient's agent id")
+                );
+            }
+            assert_eq!(
+                authorize::placeholder_target(&agent, &kind, &args)
+                    .unwrap_err()
+                    .message,
+                format!(
+                    "\"{name}\" is a manifest placeholder; pass the recipient's agent id (agent_cloud is this flow's approved audience)"
+                )
+            );
+        }
+        for args in [
+            json!({"agent":"agent_cloud"}),
+            json!({"agent":"SYNAPSE"}),
+            json!({}),
+        ] {
+            authorize::placeholder_target(&agent, &kind, &args).unwrap();
+        }
+    }
+    // Only recipient-taking calls are checked; module op arguments are the
+    // module's own and may legitimately contain a `$` string.
+    authorize::placeholder_target(
+        &agent,
+        &CallKind::Op {
+            module: "mock".into(),
+            op: "echo".into(),
+        },
+        &json!({"agent":"$audience"}),
+    )
+    .unwrap();
+}
+
+#[test]
 fn static_writes_still_require_static_targets_and_caps() {
     let catalog = MockCatalog::standard();
     let m = parse(&manifest(None)).unwrap();
