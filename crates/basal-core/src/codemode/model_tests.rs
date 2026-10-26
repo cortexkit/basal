@@ -356,6 +356,45 @@ fn broca_without_run_scope_opt_in_is_refused_without_dispatch() {
     assert_eq!(f.f.calls()[0].outcome, Outcome::ToolUnavailable);
 }
 
+/// When Broca answers a codemode model run with the provider's own `{code,
+/// message, detail}`, the program receives exactly that. A codemode run has no
+/// flow, so basal's flow-refusal wording would describe a scope the program
+/// never has, and would hide which layer refused the call.
+#[test]
+fn a_provider_refusal_reaches_the_program_as_the_provider_sent_it() {
+    let f = ModelFixture::new();
+    f.wire.fake.pending_next();
+    f.f.issue(0, "classify", json!({"text":"good","labels":["yes","no"]}));
+    assert_eq!(f.committed.recv_timeout(TIMEOUT).unwrap(), 0);
+    let provider = json!({
+        "class": "permanent",
+        "code": "flow_scope_required",
+        "message": "provider's own text",
+        "detail": {"scope_kind": "codemode"},
+    });
+    f.wire
+        .fake
+        .finish_with_error(
+            &store::call_key("r", 0),
+            "error",
+            serde_json::from_value(provider.clone()).unwrap(),
+            Some(Usage::default()),
+        )
+        .unwrap();
+    f.broca.poll().unwrap();
+    let delivery = f.f.delivery();
+    assert_eq!(delivery.settlement, Settlement::Rejected);
+    let value = parse(delivery.value.as_str()).unwrap();
+    assert_eq!(value["tool"], "classify");
+    assert_eq!(value["outcome"], "error");
+    // The provider's reply is the refusal: basal adds no wording of its own,
+    // and the rest of the reply travels in `detail`.
+    assert_eq!(value["code"], "flow_scope_required");
+    assert_eq!(value["message"], "provider's own text");
+    assert_eq!(value["detail"], provider);
+    assert_eq!(f.f.calls()[0].code.as_deref(), Some("flow_scope_required"));
+}
+
 #[test]
 fn model_call_budget_rejects_call_21_without_ending_run() {
     let f = ModelFixture::new();

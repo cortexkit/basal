@@ -300,6 +300,23 @@ impl FakeBroca {
         });
         self.set(send_id, state_name(reason), text, error, None, status)
     }
+    /// Ends the run with `state` and `error` as the provider's own error. Broca
+    /// reports the run's state and this error under `error`.
+    pub fn finish_with_error(
+        &self,
+        send_id: &str,
+        state: &str,
+        error: ProviderError,
+        usage: Option<Usage>,
+    ) -> Result<(), BrocaError> {
+        let status = RunStatusResponse::Error {
+            metadata: Terminal {
+                usage,
+                ..Terminal::default()
+            },
+        };
+        self.set(send_id, state, "", Some(error), None, status)
+    }
     /// Sets both answers at once: `run.result` reports `state` (with
     /// `text` as the final message when completed, and the given error and
     /// pause reason), `run.status` reports `status`. Publishing the run's

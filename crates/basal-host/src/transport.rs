@@ -278,6 +278,76 @@ pub fn map_error(error: CallError) -> WireError {
     }
 }
 
+/// Maps a failure on a codemode run's own route, for a program that has no
+/// flow scope to be refused one. A provider refusal keeps the provider's own
+/// `code`, `message` and `detail`. A flow refusal (`flow_scope_required`,
+/// `no_flow_scope`, ...) names a scope the program never had, so reporting
+/// basal's wording for it would both describe the wrong thing and drop what
+/// the provider said. Flow runs keep their flow-refusal handling by mapping
+/// through [`refusal`] instead.
+fn run_scope_error(error: CallError) -> WireError {
+    match error {
+        CallError::Module(body) => provider_refusal(body),
+        // Everything else keeps `map_error`'s meaning: a request that never
+        // left or whose outcome is unknown is not the provider's refusal. A
+        // route open on a run's own scope is mapped where it happens
+        // ([`bind_error`]), so a flow-coded bind refusal keeps the provider's
+        // words too.
+        error => map_error(error),
+    }
+}
+
+/// A failed route open as the caller that opens it should read it. A codemode
+/// run's route belongs to a program with no flow scope, so a refusal there
+/// keeps the provider's own code and message; a flow route keeps `map_error`'s
+/// flow refusal, which the flow's deferral and health read.
+fn bind_error(open: WireError, codemode: bool) -> WireError {
+    if !codemode {
+        return open;
+    }
+    match open {
+        WireError::Refused { code, message } => {
+            provider_refusal(subc_protocol::ErrorBody::new(code, message))
+        }
+        WireError::RefusedDetails {
+            code,
+            message,
+            detail,
+        } => provider_refusal(subc_protocol::ErrorBody::new(code, message).with_detail(detail)),
+        // The daemon's bind refusal is decoded before this route is opened, so
+        // a flow code arrives as a flow refusal. The program reads it under the
+        // code the provider sent, with the provider's own message and detail.
+        WireError::Typed(refusal) => {
+            let message = refusal
+                .message
+                .clone()
+                .unwrap_or_else(|| refusal.reason.as_str().to_owned());
+            let body = subc_protocol::ErrorBody::new(refusal.reason.as_str(), message);
+            match &refusal.detail {
+                Some(detail) => provider_refusal(body.with_detail(detail.clone())),
+                None => provider_refusal(body),
+            }
+        }
+        error => error,
+    }
+}
+
+/// The refusal as the provider sent it, for a codemode program: its own
+/// `code` and `message`, with `detail` when it sent one.
+fn provider_refusal(body: subc_protocol::ErrorBody) -> WireError {
+    match body.detail {
+        Some(detail) => WireError::RefusedDetails {
+            code: body.code,
+            message: body.message,
+            detail,
+        },
+        None => WireError::Refused {
+            code: body.code,
+            message: body.message,
+        },
+    }
+}
+
 pub fn refusal(body: subc_protocol::ErrorBody) -> WireError {
     if body.code == "scope_expired" {
         return match body.detail {
@@ -465,7 +535,7 @@ impl SubcTransport {
                     .consumer
                     .open_route_scoped(target.clone(), bind, plan.scope.selector(), options)
                     .await
-                    .map_err(map_error)?;
+                    .map_err(|e| bind_error(map_error(e), flow.starts_with("codemode:")))?;
                 let result = self
                     .routes
                     .lock()
@@ -706,9 +776,12 @@ impl SubcTransport {
         let target = RouteTarget::ManagementSurface {
             module_id: module.into(),
         };
+        let codemode = flow.starts_with("codemode:");
         let handle = self
             .model_handle(flow, &target, identity)
-            .map_err(|e| contextual(e, module, op))?;
+            // `contextual` would turn a plain refusal back into a flow refusal,
+            // so the codemode route's mapping is final.
+            .map_err(|e| if codemode { bind_error(e, true) } else { contextual(e, module, op) })?;
         let result = self.handle.block_on(self.consumer.request(
             &handle,
             management_bytes(op, params)?,
@@ -724,10 +797,11 @@ impl SubcTransport {
                 .closed(handle, false);
         }
         result
-            .map_err(map_error)
+            .map_err(if codemode { run_scope_error } else { map_error })
             .and_then(|bytes| decode_response(&bytes, true))
-            .map_err(|e| contextual(e, module, op))
+            .map_err(|e| if codemode { e } else { contextual(e, module, op) })
     }
+
     pub(crate) fn release_model(&self, flow: &str, identity: BindIdentity, module: &str) {
         let handle = self
             .routes
@@ -971,7 +1045,9 @@ impl Transport for SubcTransport {
         let body = serde_json::to_vec(&request).map_err(|e| WireError::NeverSent(e.to_string()))?;
         // A re-opened attempt gets only what is left of the call's reply time.
         let deadline = std::time::Instant::now() + options.reply_timeout;
-        send_with_one_reopen(
+        // The program calling this tool owns no flow scope, so its route's
+        // refusals reach it as the provider sent them.
+        send_run_request(
             || {
                 self.open_scoped_handle(
                     run,
@@ -1050,7 +1126,7 @@ impl Transport for SubcTransport {
                 .unwrap_or_else(|p| p.into_inner())
                 .closed(handle, false);
         }
-        let bytes = reply.map_err(map_error)?;
+        let bytes = reply.map_err(run_scope_error)?;
         decode_response(&bytes, false)
     }
     fn catalog(&self) -> Result<Value, WireError> {
@@ -1130,9 +1206,11 @@ impl Transport for SubcTransport {
                 .map_err(|error| {
                     // Keep the provider's bind refusal code (for example
                     // `principal_denied`), so the caller can tell a permanent
-                    // refusal from a transient one.
+                    // refusal from a transient one. This route belongs to a
+                    // program with no flow scope, so a flow code in it is the
+                    // provider's own refusal, not a flow-scope diagnosis.
                     match error.route_open_refusal() {
-                        Some(body) => refusal(body.clone()),
+                        Some(body) => provider_refusal(body.clone()),
                         None => map_error(error),
                     }
                 })?;
@@ -1140,7 +1218,7 @@ impl Transport for SubcTransport {
                 .consumer
                 .request(&handle, body, options())
                 .await
-                .map_err(map_error)
+                .map_err(run_scope_error)
                 .and_then(|bytes| decode_response(&bytes, false));
             // Callers pass identities that are not reused (one per codemode
             // run), so the route is closed rather than left in the client's
@@ -1181,7 +1259,11 @@ fn run_tool_route_options(options: CallOptions) -> CallOptions {
 /// Every other failure, including a `scope_changed` error frame the provider
 /// sent after receiving the request, is returned without a resend: that
 /// request may have reached the provider.
-fn send_with_one_reopen<H: Copy>(
+///
+/// A refusal of the sent request is returned as [`run_scope_error`] maps it,
+/// so the program reads the provider's own code and message; a refused bind is
+/// mapped by [`bind_error`] where the route is opened.
+fn send_run_request<H: Copy>(
     mut open: impl FnMut() -> Result<H, WireError>,
     mut send: impl FnMut(H) -> Result<Vec<u8>, CallError>,
     mut evict: impl FnMut(H),
@@ -1207,11 +1289,11 @@ fn send_with_one_reopen<H: Copy>(
             Err(error @ CallError::StaleRouteHandle(_)) => {
                 evict(handle);
                 if reopened {
-                    return Err(map_error(error));
+                    return Err(run_scope_error(error));
                 }
                 reopened = true;
             }
-            result => return result.map_err(map_error),
+            result => return result.map_err(run_scope_error),
         }
     }
 }
@@ -2135,7 +2217,7 @@ mod tests {
             .expect("an earlier call's route is cached")
     }
 
-    /// What `send_with_one_reopen` did: how many opens and sends it made.
+    /// What `send_run_request` did: how many opens and sends it made.
     fn reopen_trace(
         mut opens: Vec<Result<u8, WireError>>,
         mut sends: Vec<Result<Vec<u8>, CallError>>,
@@ -2143,7 +2225,7 @@ mod tests {
         opens.reverse();
         sends.reverse();
         let (mut opened, mut sent) = (0, 0);
-        let result = send_with_one_reopen(
+        let result = send_run_request(
             || {
                 opened += 1;
                 opens.pop().expect("no more opens expected")
@@ -2194,13 +2276,14 @@ mod tests {
 
     #[test]
     fn run_tool_other_bind_refusals_and_sent_requests_are_never_retried() {
-        use crate::flow_refusal::RefusalReason::{ScopeChanged, ScopeEnded};
+        use crate::flow_refusal::RefusalReason::ScopeEnded;
         // A terminal bind refusal is not re-opened.
         let (result, opened, sent) = reopen_trace(vec![Err(bind_refused(ScopeEnded))], vec![]);
         assert!(matches!(result, Err(WireError::Typed(_))));
         assert_eq!((opened, sent), (1, 0));
         // The provider received the request and answered scope_changed: the
-        // answer is returned, never followed by a second request.
+        // answer reaches the program as the provider sent it, never followed
+        // by a second request.
         let (result, opened, sent) = reopen_trace(
             vec![Ok(1)],
             vec![Err(CallError::Module(subc_protocol::ErrorBody::new(
@@ -2209,7 +2292,8 @@ mod tests {
             )))],
         );
         assert!(
-            matches!(result, Err(WireError::Typed(ref refusal)) if refusal.reason == ScopeChanged)
+            matches!(&result, Err(WireError::Refused { code, message }) if code == "scope_changed" && message == "changed"),
+            "{result:?}"
         );
         assert_eq!((opened, sent), (1, 1));
     }
@@ -2226,8 +2310,9 @@ mod tests {
                 "run:call:1",
                 &options,
             );
+            // The program reads the provider's own code and message.
             assert!(
-                matches!(&result, Err(WireError::Typed(refusal)) if refusal.reason == crate::flow_refusal::RefusalReason::ScopeChanged),
+                matches!(&result, Err(WireError::Refused { code, message }) if code == "scope_changed" && message == "changed"),
                 "{result:?}"
             );
             assert_eq!(requests_named(&calls, "changed_after_send"), 1);

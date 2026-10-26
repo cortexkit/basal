@@ -996,6 +996,7 @@ fn no_flow_scope_warning_is_logged_once_across_retries() {
         action: basal_host::catalog::EVENT_BODY_OP.into(),
         retry_after_ms: None,
         detail: None,
+        message: None,
     });
     let manifest = Manifest::parse(&run.manifest).unwrap();
     let logs = CapturedLogs::default();

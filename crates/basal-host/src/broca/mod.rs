@@ -950,10 +950,14 @@ impl BrocaHost {
                     fulfilled(value, usage)
                 }
             }
+            // Broca reports the run's state, and the provider's own error
+            // beside it. Both are kept: a caller needs the provider's `code`
+            // and `detail` to say what refused the request.
             "error" => match &result.error {
                 Some(error) => StoredOutcome {
                     rejected: true,
-                    value: json!({"code": "error", "class": error.class, "message": error.message})
+                    value: serde_json::to_value(error)
+                        .expect("a provider error is JSON")
                         .to_string(),
                     usage,
                 },
