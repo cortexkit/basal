@@ -319,7 +319,15 @@ impl Transport for Core {
                 && stamp.owner_authorized
                 && subc_protocol::call_mode::derive_call_mode(Some(stamp))
                     == subc_protocol::call_mode::CallMode::Codemode
-                && *invoking == json!({"ref":"agent-scope","epoch":7})
+                // An agent run was opened from the head's scope. A worker run
+                // (a provider declaring worker-runs/v1 admits it) was opened
+                // from the worker's own scope, which is its stamped parent.
+                && (*invoking == json!({"ref":"agent-scope","epoch":7})
+                    || (stamp.attributes.on_behalf_of_agent.is_some()
+                        && stamp.parent.as_ref().is_some_and(|parent| {
+                            *invoking
+                                == json!({"ref":parent.scope_ref,"epoch":parent.scope_epoch})
+                        })))
         });
         if admitted.is_none() {
             return Err(WireError::Refused {
