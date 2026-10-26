@@ -62,6 +62,8 @@ jobs:
         run: |
           /bin/sh -n script/stage.sh
           python3 -m unittest script.tests.stage_card -v
+      - name: Check worker signing gate and core JSON features
+        run: python3 -m unittest script.tests.sign_worker script.tests.codemode_manifest -v
 
   checks:
     if: github.event_name != 'schedule'

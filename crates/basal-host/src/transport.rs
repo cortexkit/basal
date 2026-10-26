@@ -1488,10 +1488,33 @@ mod tests {
     }
 
     fn with_paused_open(
+        pause: Option<(
+            std::sync::mpsc::SyncSender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+        test: impl FnOnce(
+            Arc<SubcTransport>,
+            Arc<Mutex<Vec<Value>>>,
+            Arc<Mutex<Vec<(u16, Value)>>>,
+            std::sync::mpsc::Receiver<()>,
+        ),
+    ) {
+        with_paused_open_timeout(pause, Duration::from_secs(10), test);
+    }
+
+    /// How long the fixture daemon holds a `slow_echo` reply. A test that
+    /// passes a shorter `call_timeout` to `with_paused_open_timeout` gets the
+    /// reply only if the call's own `reply_timeout` replaces that timeout.
+    const SLOW_ECHO_DELAY: Duration = Duration::from_millis(500);
+
+    /// `with_paused_open` with `call_timeout` as the consumer's default
+    /// per-call timeout instead of 10 s.
+    fn with_paused_open_timeout(
         mut pause: Option<(
             std::sync::mpsc::SyncSender<()>,
             tokio::sync::oneshot::Receiver<()>,
         )>,
+        call_timeout: Duration,
         test: impl FnOnce(
             Arc<SubcTransport>,
             Arc<Mutex<Vec<Value>>>,
@@ -1604,7 +1627,7 @@ mod tests {
                     // AFT answers the flat read with a bare object, unwrapped.
                     json!({"path":body["path"]})
                 } else if body["name"] == "echo" || body["name"] == "slow_echo" {
-                    if body["name"] == "slow_echo" { tokio::time::sleep(Duration::from_secs(11)).await; }
+                    if body["name"] == "slow_echo" { tokio::time::sleep(SLOW_ECHO_DELAY).await; }
                     body["arguments"].clone()
                 } else {
                     json!({"result":body["params"]})
@@ -1638,7 +1661,7 @@ mod tests {
         });
         let (closed, close_seen) = std::sync::mpsc::sync_channel(1);
         let transport = SubcTransport::connect_with_file(
-            Duration::from_secs(10),
+            call_timeout,
             Some(&file),
             Some(Arc::new(move || {
                 closed.send(()).unwrap();
@@ -1851,7 +1874,11 @@ mod tests {
 
     #[test]
     fn run_tool_routes_copy_bind_identity_and_outlive_transport_fallback_wait() {
-        with_scoped_transport(|transport, opens, calls, _| {
+        // The 200 ms consumer call timeout is shorter than SLOW_ECHO_DELAY,
+        // so the reply comes back only because the 2 s per-call
+        // reply_timeout replaces the consumer's fallback wait.
+        let call_timeout = Duration::from_millis(200);
+        with_paused_open_timeout(None, call_timeout, |transport, opens, calls, _| {
             let selector = crate::flow_scope::FlowScope {
                 owner: subc_protocol::Principal::Reserved {
                     module_id: "prefrontal-core".into(),
@@ -1871,7 +1898,7 @@ mod tests {
             identity.project_id = Some("pj-registered".into());
             let options = RunToolOptions {
                 identity: identity.clone(),
-                reply_timeout: Duration::from_secs(15),
+                reply_timeout: Duration::from_secs(2),
                 preset: None,
             };
             assert_eq!(

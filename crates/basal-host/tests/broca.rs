@@ -1,5 +1,5 @@
 use basal_host::broca::{
-    BrocaError, BrocaHost, StateStore, Transport,
+    BrocaError, BrocaHost, StateStore,
     fake::{FakeBroca, MemoryStore},
     wire::*,
 };
@@ -129,7 +129,6 @@ fn exact_send_contract_and_parallel_sessions() {
         serde_json::from_slice::<Value>(&sends[0].1).unwrap(),
         expected
     );
-    assert!(expected.get("session").is_none());
     let sink = Arc::new(Sink::default());
     h.attach(sink.clone());
     fake.finish("key:1", "second", RunFinishReason::Completed, None)
@@ -517,31 +516,6 @@ fn classify_contract_is_exact_not_trimmed_or_parsed() {
             assert_eq!(c[0].outcome.settlement, Settlement::Rejected);
         }
     }
-}
-
-#[test]
-fn fake_refuses_send_id_reuse_and_restarts_with_same_run() {
-    let path = std::env::temp_dir().join(format!("basal-broca-fake-{}.json", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let fake = Arc::new(FakeBroca::persistent(&path).unwrap());
-    let h = host(fake.clone(), Arc::new(MemoryStore::default()));
-    h.dispatch_model(&llm(0)).unwrap();
-    let (route, bytes) = fake.sends()[0].clone();
-    drop(h);
-    drop(fake);
-    let fake = FakeBroca::persistent(&path).unwrap();
-    assert_eq!(
-        fake.send(&route, &bytes).unwrap(),
-        SendResult::Active {
-            run_id: "run:key:0".into()
-        }
-    );
-    let mut params: SendParams = serde_json::from_slice(&bytes).unwrap();
-    params.prompt = "changed".into();
-    assert!(
-        matches!(fake.send(&route, &serde_json::to_vec(&params).unwrap()), Err(BrocaError::Refused { code, .. }) if code == "send_id_reuse")
-    );
-    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

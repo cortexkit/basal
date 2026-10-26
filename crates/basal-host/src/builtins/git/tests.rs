@@ -89,11 +89,15 @@ fn git_waiter_timeout_kills_the_process_group_and_reaps_the_child() {
         ])
         .arg(&pid_file)
         .arg(&survivor)
-        .arg((TIMEOUT.as_secs() + 2).to_string())
+        // The descendant outlives the short timeout below by well over a
+        // second, so a reap that waited for it would let it write.
+        .arg("2")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let error = run_command(command).err().expect("git must time out");
+    let error = run_command_until(command, None, Duration::from_millis(500))
+        .err()
+        .expect("git must time out");
     let pid: i32 = std::fs::read_to_string(pid_file)
         .unwrap()
         .trim()

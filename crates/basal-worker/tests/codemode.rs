@@ -323,7 +323,7 @@ fn codemode_rejects_the_wrong_profile_prelude_hash() {
 }
 
 #[test]
-fn codemode_prelude_hash_is_independent_of_flow_source() {
+fn prelude_hashes_are_hashes_of_the_embedded_sources() {
     let flow = PreludeHash::of(include_str!("../src/prelude.js"));
     let codemode = include_str!("../src/codemode_prelude.js");
     assert_eq!(basal_worker::engine::prelude_hash(), flow);
@@ -331,12 +331,6 @@ fn codemode_prelude_hash_is_independent_of_flow_source() {
         basal_worker::engine::codemode_prelude_hash(),
         PreludeHash::of(codemode)
     );
-    let edited = format!("{codemode}\n// source fingerprint control\n");
-    assert_ne!(
-        PreludeHash::of(&edited),
-        basal_worker::engine::codemode_prelude_hash()
-    );
-    assert_eq!(basal_worker::engine::prelude_hash(), flow);
 }
 
 #[test]

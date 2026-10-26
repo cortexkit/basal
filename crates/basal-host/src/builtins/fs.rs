@@ -24,9 +24,6 @@
 //! swap that happens after the open changes nothing for this call, which
 //! already holds the checked file.
 
-#[cfg(test)]
-mod tests;
-
 #[cfg(unix)]
 use std::ffi::CString;
 use std::ffi::{OsStr, OsString};

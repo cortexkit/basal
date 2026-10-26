@@ -59,7 +59,9 @@ fn valid_specs_compile_with_their_defaults() {
         from_value(json!({ "cron": "0 * * * *", "tz": "Asia/Tokyo", "missed": "once" }))
             .expect("spec");
     let text = serde_json::to_string(&spec).expect("serialise");
-    parse(&text).expect("parse again");
+    let reparsed = from_value(serde_json::from_str(&text).expect("json")).expect("parse again");
+    assert_eq!(reparsed, spec);
+    parse(&text).expect("validate again");
 }
 
 #[test]

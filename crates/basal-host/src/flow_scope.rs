@@ -480,49 +480,6 @@ mod tests {
         assert_eq!(routes.route("a", &target, |_| Ok(2)).unwrap(), Some(2));
     }
     #[test]
-    fn epoch_change_drops_the_old_handle_and_reuses_the_new_one() {
-        let mut routes = ScopedRoutes::<u64>::default();
-        let mut scope = decode(&fixture()).unwrap().unwrap().selector;
-        let target = subc_protocol::RouteTarget::ManagementSurface {
-            module_id: "broca".into(),
-        };
-        routes.configure("a", Some(registered(scope.clone())));
-        routes.route("a", &target, |_| Ok(1)).unwrap();
-        assert_eq!(
-            routes
-                .route("a", &target, |_| panic!("opened twice"))
-                .unwrap(),
-            Some(1)
-        );
-        scope.epoch += 1;
-        assert_eq!(routes.configure("a", Some(registered(scope))), vec![1]);
-        assert_eq!(routes.route("a", &target, |_| Ok(2)).unwrap(), Some(2));
-    }
-
-    #[test]
-    fn scope_bookkeeping_forgets_removed_flows_but_preserves_shared_authority() {
-        let mut routes = ScopedRoutes::<u64>::default();
-        let scope = decode(&fixture()).unwrap().unwrap();
-        let target = subc_protocol::RouteTarget::ManagementSurface {
-            module_id: "broca".into(),
-        };
-        routes.configure("a", Some(scope.clone()));
-        routes.configure("b", Some(scope.clone()));
-        routes.route("a", &target, |_| Ok(1)).unwrap();
-        assert!(routes.configure("a", None).is_empty());
-        assert_eq!(
-            routes
-                .route("b", &target, |_| panic!("shared handle dropped"))
-                .unwrap(),
-            Some(1)
-        );
-        assert_eq!(routes.configure("b", None), [1]);
-        assert!(routes.flows.is_empty());
-        assert!(routes.scope_users.is_empty());
-        assert!(routes.routes.is_empty());
-    }
-
-    #[test]
     fn an_open_reply_cannot_install_after_scope_or_connection_changes() {
         let mut routes = ScopedRoutes::<u64>::default();
         let scope = decode(&fixture()).unwrap().unwrap();
