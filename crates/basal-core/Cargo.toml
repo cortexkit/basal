@@ -22,6 +22,7 @@ cortexkit-llm-tools.workspace = true
 cortexkit-store.workspace = true
 cortexkit-store-types.workspace = true
 croner.workspace = true
+getrandom.workspace = true
 jiff.workspace = true
 jsonschema.workspace = true
 rusqlite.workspace = true

@@ -23,7 +23,8 @@ pub struct InstallCard {
     /// The card's fields as JSON, everything the operator needs to approve
     /// the exact code: flow id, version, purpose, author, trigger, sinks, status targets, claims, ops, facts,
     /// token cap, placement, warnings, code hash and code, and the dry run's
-    /// summary.
+    /// summary. When raising through core, also include the local card's stored
+    /// `install_id` string: core requires it when advertising `flow-install-id/v1`.
     pub fields: serde_json::Value,
 }
 

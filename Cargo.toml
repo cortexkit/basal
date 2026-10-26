@@ -65,10 +65,10 @@ sha2 = "0.10"
 # The module shell. subc-client-rs owns HELLO, route binding, health and the
 # frame lifecycle; subc-protocol is the manifest and route vocabulary it
 # speaks. Keep the scope-stamp reader current with the protocol.
-subc-client-rs = "0.31"
-subc-os = "0.1.18"
-subc-protocol = "0.33"
-subc-transport = "0.14"
+subc-client-rs = "0.32.4"
+subc-os = "0.1.20"
+subc-protocol = "0.33.2"
+subc-transport = "0.14.0"
 async-trait = "0.1"
 async-nats = { version = "0.50", default-features = false, features = ["jetstream", "kv", "nkeys", "nuid", "ring", "server_2_10"] }
 cortexkit-bus-naming = "=0.2.0"

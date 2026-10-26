@@ -88,6 +88,9 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
 /// accepts `flow_install.dry_run_text`.
 pub const FLOW_INSTALL_DRY_RUN_TEXT_V1: &str = "flow-install-dry-run-text/v1";
 
+/// Core accepts a stable, basal-minted identity for each install request.
+pub const FLOW_INSTALL_ID_V1: &str = "flow-install-id/v1";
+
 /// The `flow.install_request` for an install card. With `dry_run_text`, and
 /// when the card holds one, the body also carries the dry run in plain words
 /// (`{summary, would, problems}`) beside the raw `dry_run_summary`; core
@@ -898,11 +901,14 @@ impl Consent for CoreConsent {
         );
         // Include the plain-language dry run only if the connected core says it
         // accepts one; an older core refuses the unknown key.
-        let request = |card| request_for(card, dry_run_text);
+        let mut request = request_for(card, dry_run_text)?;
+        if crate::core_host::core_provides(self.state.transport.as_ref(), FLOW_INSTALL_ID_V1) {
+            request["flow_install"]["install_id"] = json!(field(&card.fields, "install_id")?);
+        }
         let reply = self
             .state
             .transport
-            .management(CORE, "flow.install_request", request(card)?)
+            .management(CORE, "flow.install_request", request)
             .map_err(error)?;
         let outcome = decode_install_outcome(&reply)?;
         if let InstallOutcome::CardRaised {

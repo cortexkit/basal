@@ -76,6 +76,8 @@ pub struct CardRecord {
     /// The attempt number core returned with this flow id and version. Together
     /// they identify the displayed install card; absent before a card reply.
     pub attempt: Option<i64>,
+    /// Stable request identity. Legacy rows acquire one before being resent.
+    pub install_id: Option<String>,
 }
 
 /// The decision on a card.
@@ -104,7 +106,7 @@ pub fn card_id(flow_id: &str, version: u32, code_hash: &[u8; 32]) -> String {
     format!("card:{flow_id}:v{version}:{hex}")
 }
 
-const COLUMNS: &str = "card_id, flow_id, version, code_hash, author, card, state, decided_by, attempt, rejected_reason, disposition";
+const COLUMNS: &str = "card_id, flow_id, version, code_hash, author, card, state, decided_by, attempt, rejected_reason, disposition, install_id";
 
 fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CardRecord>> {
     let card_id: String = row.get(0)?;
@@ -129,6 +131,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CardRecord>> {
             attempt: row.get(8)?,
             rejected_reason: row.get(9)?,
             disposition: row.get(10)?,
+            install_id: row.get(11)?,
         })
     })())
 }
@@ -168,12 +171,21 @@ pub fn record(
     now_ms: i64,
 ) -> Result<CardRecord> {
     let id = card_id(flow_id, version, code_hash);
-    if let Some(existing) = load(tx, &id)? {
+    if let Some(mut existing) = load(tx, &id)? {
+        if existing.install_id.is_none() {
+            let install_id = mint_install_id()?;
+            tx.execute(
+                "UPDATE install_cards SET install_id=?2 WHERE card_id=?1",
+                params![id, install_id],
+            )?;
+            existing.install_id = Some(install_id);
+        }
         return Ok(existing);
     }
+    let install_id = mint_install_id()?;
     tx.execute(
         "INSERT INTO install_cards (card_id, flow_id, version, code_hash, author, card, state, \
-         created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+         created_at, install_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)",
         params![
             id,
             flow_id,
@@ -181,10 +193,18 @@ pub fn record(
             code_hash.as_slice(),
             author,
             card,
-            now_ms
+            now_ms,
+            install_id
         ],
     )?;
     load(tx, &id)?.ok_or_else(|| CoreError::Store(format!("card {id} vanished after insert")))
+}
+
+fn mint_install_id() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| CoreError::Store(format!("install id entropy unavailable: {e}")))?;
+    Ok(crate::ids::hex(&bytes))
 }
 
 /// Applies a decision to a pending card. Approval approves the card's

@@ -675,7 +675,16 @@ impl Module {
             .into_iter()
             .find(|c| c.version == installed.version);
         let record = match existing {
-            Some(card) => card,
+            Some(card) => self
+                .rt
+                .record_card(
+                    &card.flow_id,
+                    card.version,
+                    &card.code_hash,
+                    &card.author,
+                    &card.card,
+                )
+                .map_err(|e| self.core_error(e))?,
             None => {
                 let now = self.rt.config().clock.now_ms();
                 let dry_run = match self.dry.run_install(
@@ -749,6 +758,7 @@ impl Module {
             // ended since, which core would refuse on every retry.
             let mut raised_fields = fields.clone();
             raised_fields["wire_author"] = card_author(caller)?;
+            raised_fields["install_id"] = json!(record.install_id);
             let raised = self.consent.raise(&InstallCard {
                 card_id: record.card_id.clone(),
                 flow_id: record.flow_id.clone(),

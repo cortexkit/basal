@@ -228,6 +228,223 @@ fn raised_fixture(tag: &str) -> (Arc<Fake>, common::Fixture) {
     (fake, f)
 }
 
+fn install_id_capability(fake: &Fake, supported: bool) {
+    let mut catalog = fake.catalog.lock().unwrap();
+    let modules = catalog["modules"].as_array_mut().unwrap();
+    let capability = basal_host::core_consent::FLOW_INSTALL_ID_V1;
+    if let Some(core) = modules
+        .iter_mut()
+        .find(|m| m["module_id"] == "prefrontal-core")
+    {
+        let provides = core["capabilities"]["provides"].as_array_mut().unwrap();
+        provides.retain(|c| c != capability);
+        if supported {
+            provides.push(json!(capability));
+        }
+    } else {
+        modules.push(
+            json!({"module_id":"prefrontal-core","capabilities":{"provides":
+            if supported { vec![capability] } else { vec![] }}}),
+        );
+    }
+}
+
+fn sent_install_id(fake: &Fake, index: usize) -> String {
+    let requests = fake.calls("flow.install_request");
+    let params = &requests[index]["params"];
+    let id = params["flow_install"]["install_id"]
+        .as_str()
+        .expect("flow_install.install_id");
+    assert!((1..=64).contains(&id.len()), "{id}");
+    assert!(
+        id.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+        "{id}"
+    );
+    assert!(params.get("install_id").is_none());
+    id.to_owned()
+}
+
+#[test]
+fn install_id_is_persisted_and_reused_after_a_lost_reply() {
+    let fake = Fake::new();
+    install_id_capability(&fake, true);
+    let f = fixture(&fake, "install-id-retry");
+    fake.enqueue(
+        "flow.install_request",
+        vec![Err(WireError::Unknown("reply lost".into()))],
+    );
+    assert!(install_version(&f, 1).is_err());
+    let first = sent_install_id(&fake, 0);
+    let stored = f.module.rt.cards(FLOW).unwrap().remove(0);
+    assert_eq!(stored.install_id.as_deref(), Some(first.as_str()));
+    install_version(&f, 1).unwrap();
+    assert_eq!(sent_install_id(&fake, 1), first);
+    install_version(&f, 1).unwrap();
+    assert_eq!(sent_install_id(&fake, 2), first);
+    assert_eq!(f.module.rt.cards(FLOW).unwrap()[0].install_id, Some(first));
+}
+
+#[test]
+fn install_id_changes_for_a_new_version() {
+    let fake = Fake::new();
+    install_id_capability(&fake, true);
+    let f = fixture(&fake, "install-id-version");
+    install_version(&f, 1).unwrap();
+    install_version(&f, 2).unwrap();
+    let first = sent_install_id(&fake, 0);
+    let second = sent_install_id(&fake, 1);
+    assert_ne!(first, second);
+    let cards = f.module.rt.cards(FLOW).unwrap();
+    assert_eq!(cards[0].install_id.as_deref(), Some(first.as_str()));
+    assert_eq!(cards[1].install_id.as_deref(), Some(second.as_str()));
+}
+
+#[test]
+fn install_id_legacy_card_is_backfilled_before_capability_enabled_retry() {
+    let fake = Fake::new();
+    install_id_capability(&fake, false);
+    let f = fixture(&fake, "install-id-legacy");
+    install_version(&f, 1).unwrap();
+    f.module
+        .rt
+        .store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE install_cards SET install_id=NULL WHERE flow_id=?1",
+                [FLOW],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    install_id_capability(&fake, true);
+    install_version(&f, 1).unwrap();
+    let id = sent_install_id(&fake, 1);
+    assert_eq!(
+        f.module.rt.cards(FLOW).unwrap()[0].install_id.as_deref(),
+        Some(id.as_str())
+    );
+    install_version(&f, 1).unwrap();
+    assert_eq!(sent_install_id(&fake, 2), id);
+}
+
+#[test]
+fn install_id_is_sent_only_with_core_capability() {
+    let fake = Fake::new();
+    install_id_capability(&fake, false);
+    let f = fixture(&fake, "install-id-capability");
+    install_version(&f, 1).unwrap();
+    let stored = f.module.rt.cards(FLOW).unwrap()[0]
+        .install_id
+        .clone()
+        .unwrap();
+    let without = fake.calls("flow.install_request")[0]["params"].clone();
+    assert!(without["flow_install"].get("install_id").is_none());
+    install_id_capability(&fake, true);
+    install_version(&f, 1).unwrap();
+    assert_eq!(sent_install_id(&fake, 1), stored);
+    let mut with = fake.calls("flow.install_request")[1]["params"].clone();
+    with["flow_install"]
+        .as_object_mut()
+        .unwrap()
+        .remove("install_id");
+    assert_eq!(with, without);
+    install_id_capability(&fake, false);
+    install_version(&f, 1).unwrap();
+    assert_eq!(fake.calls("flow.install_request")[2]["params"], without);
+}
+
+#[test]
+fn install_id_survives_startup_and_decision_status_checks_before_retry() {
+    let fake = Fake::new();
+    install_id_capability(&fake, true);
+    let initial = fixture(&fake, "install-id-initial");
+    let reply = install_version(&initial, 1).unwrap();
+    let saved = initial.module.rt.cards(FLOW).unwrap().remove(0);
+    let first = sent_install_id(&fake, 0);
+    let pending = json!({"state":"pending","code_hash":hash(FLOW,1),"attempt":reply["attempt"]});
+    fake.enqueue(
+        "flow.install_status",
+        vec![Ok(pending.clone()), Ok(pending)],
+    );
+    let recovered = common::fixture_with_store(
+        "install-id-recovery",
+        common::Options {
+            hosts: Some(hosts(&fake, false)),
+            install_gate: InstallGate::Core,
+            ..common::Options::default()
+        },
+        |store| {
+            seed(&store, FLOW, true, false);
+            store.write(|tx| {
+                tx.execute("UPDATE install_cards SET card=?1,install_id=?2,attempt=?3 WHERE flow_id=?4",
+                    params![saved.card, saved.install_id, saved.attempt, FLOW])?;
+                Ok(())
+            }).unwrap();
+            Ok(())
+        },
+    );
+    assert_eq!(fake.calls("flow.install_status").len(), 1);
+    assert_eq!(fake.calls("flow.install_request").len(), 1);
+    hint(&recovered, &Caller::Core, saved.attempt.unwrap()).unwrap();
+    assert_eq!(fake.calls("flow.install_status").len(), 2);
+    assert_eq!(fake.calls("flow.install_request").len(), 1);
+    assert_eq!(
+        recovered.module.rt.cards(FLOW).unwrap()[0].install_id,
+        Some(first.clone())
+    );
+    install_version(&recovered, 1).unwrap();
+    assert_eq!(sent_install_id(&fake, 1), first);
+}
+
+#[test]
+fn install_id_pending_retry_survives_uninstall() {
+    let fake = Fake::new();
+    install_id_capability(&fake, true);
+    let f = fixture(&fake, "install-id-pending-uninstall");
+    install_version(&f, 1).unwrap();
+    let first = sent_install_id(&fake, 0);
+    f.module
+        .handle(&Caller::Operator, "flow.uninstall", json!({"flow_id":FLOW}))
+        .unwrap();
+    install_version(&f, 1).unwrap();
+    assert_eq!(sent_install_id(&fake, 1), first);
+    assert_eq!(f.module.rt.cards(FLOW).unwrap()[0].install_id, Some(first));
+}
+
+#[test]
+fn install_id_approved_uninstall_requires_a_new_version_for_a_fresh_request() {
+    let fake = Fake::new();
+    install_id_capability(&fake, true);
+    let f = fixture(&fake, "install-id-approved-uninstall");
+    let reply = install_version(&f, 1).unwrap();
+    let first = sent_install_id(&fake, 0);
+    fake.enqueue(
+        "flow.install_status",
+        vec![Ok(
+            json!({"state":"active","code_hash":hash(FLOW,1),"approval":{"kind":"card"}}),
+        )],
+    );
+    hint(&f, &Caller::Core, reply["attempt"].as_i64().unwrap()).unwrap();
+    f.module
+        .handle(&Caller::Operator, "flow.uninstall", json!({"flow_id":FLOW}))
+        .unwrap();
+    let repeated = install_version(&f, 1).unwrap();
+    assert_eq!(repeated["new"], false);
+    assert_eq!(fake.calls("flow.install_request").len(), 1);
+    assert_eq!(
+        f.module.rt.cards(FLOW).unwrap()[0].install_id.as_deref(),
+        Some(first.as_str())
+    );
+    let details = f
+        .module
+        .handle(&Caller::Operator, "flow.details", json!({"flow_id":FLOW}))
+        .unwrap();
+    assert_eq!(details["state"], "removed");
+    install_version(&f, 2).unwrap();
+    assert_ne!(sent_install_id(&fake, 1), first);
+}
+
 fn hint(
     f: &common::Fixture,
     caller: &Caller,
