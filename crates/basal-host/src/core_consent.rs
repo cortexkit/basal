@@ -895,7 +895,7 @@ impl Consent for CoreConsent {
         // accepts one; an older core refuses the unknown key.
         let mut request = request_for(card, dry_run_text)?;
         if crate::core_host::core_provides(self.state.transport.as_ref(), FLOW_INSTALL_ID_V1) {
-            request["install_id"] = json!(field(&card.fields, "install_id")?);
+            request["flow_install"]["install_id"] = json!(field(&card.fields, "install_id")?);
         }
         let reply = self
             .state

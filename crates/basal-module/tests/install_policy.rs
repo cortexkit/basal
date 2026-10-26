@@ -252,14 +252,16 @@ fn install_id_capability(fake: &Fake, supported: bool) {
 fn sent_install_id(fake: &Fake, index: usize) -> String {
     let requests = fake.calls("flow.install_request");
     let params = &requests[index]["params"];
-    let id = params["install_id"].as_str().expect("top-level install_id");
+    let id = params["flow_install"]["install_id"]
+        .as_str()
+        .expect("flow_install.install_id");
     assert!((1..=64).contains(&id.len()), "{id}");
     assert!(
         id.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
         "{id}"
     );
-    assert!(params["flow_install"].get("install_id").is_none());
+    assert!(params.get("install_id").is_none());
     id.to_owned()
 }
 
@@ -337,12 +339,15 @@ fn install_id_is_sent_only_with_core_capability() {
         .clone()
         .unwrap();
     let without = fake.calls("flow.install_request")[0]["params"].clone();
-    assert!(without.get("install_id").is_none());
+    assert!(without["flow_install"].get("install_id").is_none());
     install_id_capability(&fake, true);
     install_version(&f, 1).unwrap();
     assert_eq!(sent_install_id(&fake, 1), stored);
     let mut with = fake.calls("flow.install_request")[1]["params"].clone();
-    with.as_object_mut().unwrap().remove("install_id");
+    with["flow_install"]
+        .as_object_mut()
+        .unwrap()
+        .remove("install_id");
     assert_eq!(with, without);
     install_id_capability(&fake, false);
     install_version(&f, 1).unwrap();
