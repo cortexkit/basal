@@ -1,6 +1,6 @@
-//! The `model` and `classify` tools that basal adds to every codemode run.
-//! They send requests through the same Broca path as a flow's `llm` and
-//! `classify` calls. Each call reserves its share of the run's call and token
+//! The `model` tool that basal adds to every codemode run.
+//! It sends requests through the same Broca path as a flow's `llm`
+//! calls. Each call reserves its share of the run's call and token
 //! budget before routing, then saves the routing decision in SQLite before
 //! Broca can receive the request, so a resend reuses the same model.
 
@@ -26,17 +26,12 @@ pub fn catalog() -> Value {
             "type":"object","properties":{"prompt":{"type":"string"},"system":{"type":"string"},
                 "max_output":{"type":"integer","minimum":1,"maximum":200_000},
                 "iq":iq,"eq":eq},
-            "required":["prompt"],"additionalProperties":false}},
-        {"name":"classify","module":"basal","op":"classify","input_schema":{
-            "type":"object","properties":{"text":{"type":"string"},
-                "labels":{"type":"array","minItems":1,"items":{"type":"string"}},
-                "iq":iq,"eq":eq},
-            "required":["text","labels"],"additionalProperties":false}}
+            "required":["prompt"],"additionalProperties":false}}
     ])
 }
 
 pub fn is_local(module: &str, op: &str) -> bool {
-    module == "basal" && matches!(op, "model" | "classify")
+    module == "basal" && op == "model"
 }
 
 pub fn add_catalog(catalog: &Value) -> Result<Value, &'static str> {
@@ -95,7 +90,6 @@ pub fn prepare(
 ) -> Result<CallRequest, WireError> {
     let primitive = match &call.kind {
         CallKind::Tool { name } if name == "model" => Primitive::Llm,
-        CallKind::Tool { name } if name == "classify" => Primitive::Classify,
         _ => return Err(WireError::NeverSent("not a model tool".into())),
     };
     let saved: Option<String> = store
@@ -116,14 +110,10 @@ pub fn prepare(
     } else {
         let input: Value = serde_json::from_str(call.args.as_str())
             .map_err(|e| WireError::NeverSent(e.to_string()))?;
-        let max_output = if primitive == Primitive::Classify {
-            crate::tokens::CLASSIFY_MAX_OUTPUT
-        } else {
-            input["max_output"]
-                .as_u64()
-                .map(|n| n as u32)
-                .unwrap_or(DEFAULT_MAX_OUTPUT)
-        };
+        let max_output = input["max_output"]
+            .as_u64()
+            .map(|n| n as u32)
+            .unwrap_or(DEFAULT_MAX_OUTPUT);
         let mut envelope = json!({"send_id":send_id,"work_class":flow_id,
             "session":basal_host::broca::codemode_session(&run.run_id,call.position),
             "op":primitive.name(),"max_output":max_output,"request":input});

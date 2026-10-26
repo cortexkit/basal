@@ -422,6 +422,23 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 40,
         statements: "ALTER TABLE event_flow_health ADD COLUMN stale_dropped INTEGER NOT NULL DEFAULT 0;",
     },
+    Migration {
+        version: 41,
+        statements: r#"
+CREATE TABLE classify_costs (
+    kind TEXT NOT NULL CHECK(kind IN ('program','flow')),
+    run_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    flow_id TEXT,
+    created_at INTEGER NOT NULL,
+    reserved REAL NOT NULL CHECK(reserved >= 0),
+    charged REAL CHECK(charged >= 0),
+    args TEXT NOT NULL,
+    PRIMARY KEY(kind,run_id,position)
+);
+CREATE INDEX classify_cost_window ON classify_costs(flow_id,created_at);
+"#,
+    },
 ];
 
 // Broca model calls learn their completion from Broca's bus events.

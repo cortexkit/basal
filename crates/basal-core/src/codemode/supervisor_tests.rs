@@ -498,6 +498,8 @@ impl Fixture {
         deadline: i64,
     ) {
         let mut new = new_run("r");
+        let limits_text = serde_json::to_string(&limits).unwrap();
+        new.limits = &limits_text;
         new.catalog_digest = DIGEST;
         new.deadline_ms = deadline;
         self.host
@@ -520,6 +522,12 @@ impl Fixture {
                 (
                     name.to_string(),
                     Tool {
+                        classify_cost: self
+                            .catalog
+                            .tool_contract(module, op)
+                            .unwrap()
+                            .as_ref()
+                            .is_some_and(crate::classify_cost::matches),
                         module: module.to_string(),
                         op: op.to_string(),
                         input_schema: compile_input_schema(schema).unwrap(),
@@ -657,6 +665,9 @@ mod restart;
 
 #[path = "model_tests.rs"]
 mod models;
+
+#[path = "dollar_tests.rs"]
+mod dollars;
 
 #[test]
 fn shutdown_joins_a_driver_after_its_active_slot_is_released() {

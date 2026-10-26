@@ -40,6 +40,7 @@ pub mod broca;
 pub mod cards;
 pub mod channel;
 pub mod clock;
+pub mod classify_cost;
 pub mod codemode;
 pub mod decisions;
 pub mod driver;

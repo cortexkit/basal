@@ -97,6 +97,7 @@ struct Prepared {
     request: Option<JsonText>,
     /// Tokens to reserve for a model call.
     tokens: Option<u64>,
+    classify_cost: bool,
     args: Option<Value>,
     /// A failed agent registry read is retried without dispatching the call.
     deferred: Option<basal_host::flow_refusal::FlowRefusal>,
@@ -953,7 +954,13 @@ impl Activation<'_> {
             Ok(prepared) => prepared,
             Err(refusal) => return self.refuse(&call, &flow_id, &refusal),
         };
-        let class = self.rt.class_of(&call.kind, prepared.args.as_ref());
+        // A classifier can spend money even when its provider declares a query.
+        // An unknown send is reconciled, never automatically dispatched again.
+        let class = if prepared.classify_cost {
+            StoredClass::Mutation
+        } else {
+            self.rt.class_of(&call.kind, prepared.args.as_ref())
+        };
         self.commit_host_call(call, flow_id, prepared, class)
     }
 
@@ -961,7 +968,7 @@ impl Activation<'_> {
         &mut self,
         call: HostCall,
         flow_id: String,
-        prepared: Prepared,
+        mut prepared: Prepared,
         class: StoredClass,
     ) -> Result<Flow> {
         if matches!(
@@ -987,7 +994,7 @@ impl Activation<'_> {
                 let run_id = self.lease.run_id.clone();
                 self.rt.register(&self.run, call.position);
                 let committed = self.rt.store().write(|tx| {
-                    self.commit_remote(tx, &flow_id, &call, &new, &prepared, audited_at)
+                    self.commit_remote(tx, &flow_id, &call, class, &mut prepared, audited_at)
                 });
                 let key = match committed {
                     Ok(Some(key)) => key,
@@ -1322,7 +1329,39 @@ impl Activation<'_> {
                     rejected
                 })?;
         }
+        let classify_cost = if let CallKind::Op { module, op } = &call.kind {
+            let entry = self
+                .rt
+                .catalog()
+                .tool_contract(module, op)
+                .map_err(|e| Refusal::new("tool_contract_unreadable", format!("{e:?}")))?;
+            if let Some(entry) = &entry {
+                if !crate::classify_cost::matches(entry)
+                    && crate::classify_cost::requires_ceiling(entry)
+                {
+                    return Err(Refusal::new(
+                        "model_tool_untagged",
+                        "model tool has no recognized capability tag",
+                    ));
+                }
+            }
+            entry.as_ref().is_some_and(crate::classify_cost::matches)
+        } else {
+            false
+        };
         let prepared: std::result::Result<Prepared, Refusal> = match &call.kind {
+            CallKind::Op { .. } if classify_cost => {
+                if manifest.model_cost_usd.is_none() {
+                    return Err(Refusal::new(
+                        "model_cost_cap_required",
+                        "the manifest grants no classifier dollar cap",
+                    ));
+                }
+                Ok(Prepared {
+                    classify_cost: true,
+                    ..Prepared::default()
+                })
+            }
             CallKind::Op { module, op }
                 if basal_host::core_host::is_core_carrier_op(module, op) =>
             {
@@ -1710,8 +1749,8 @@ impl Activation<'_> {
         tx: &Transaction,
         flow_id: &str,
         call: &HostCall,
-        new: &NewCall<'_>,
-        prepared: &Prepared,
+        class: StoredClass,
+        prepared: &mut Prepared,
         now_ms: i64,
     ) -> Result<Option<String>> {
         if let Some(reason) = crate::revocation::dispatch_check(tx, &self.lease.run_id)? {
@@ -1736,6 +1775,44 @@ impl Activation<'_> {
             return Ok(None);
         }
         let key = idempotency_key(flow_id, &self.lease.run_id, call.position);
+        if prepared.classify_cost {
+            let cap = self
+                .manifest
+                .as_ref()
+                .and_then(|m| m.model_cost_usd.as_ref())
+                .ok_or_else(|| {
+                    CoreError::Invalid("a classifier call without dollar caps".into())
+                })?;
+            let mut input: Value = serde_json::from_str(call.args.as_str())
+                .map_err(|e| CoreError::Invalid(e.to_string()))?;
+            if let Err(error) = crate::classify_cost::reserve(
+                tx,
+                "flow",
+                &self.lease.run_id,
+                call.position,
+                Some(flow_id),
+                now_ms,
+                cap.per_run,
+                Some((
+                    crate::manifest::duration_ms(&cap.window).expect("validated window"),
+                    cap.usd,
+                )),
+                &mut input,
+            )? {
+                let code = match &error {
+                    basal_host::transport::WireError::Refused { code, .. }
+                    | basal_host::transport::WireError::RefusedDetails { code, .. } => {
+                        code.as_str()
+                    }
+                    _ => "budget_exhausted",
+                };
+                self.record_refusal(tx, flow_id, call, &Refusal::new(code, format!("{error:?}")))?;
+                return Ok(None);
+            }
+            prepared.request = Some(
+                JsonText::new(input.to_string()).map_err(|e| CoreError::Invalid(e.to_string()))?,
+            );
+        }
         if let Some(amount) = prepared.tokens {
             let Some(manifest) = &self.manifest else {
                 return Err(CoreError::Invalid("a model call without a manifest".into()));
@@ -1761,7 +1838,14 @@ impl Activation<'_> {
             }
         }
         rate::count(tx, flow_id, rate::Kind::Dispatch, now_ms, &rate)?;
-        let inserted = journal::insert_call(tx, &self.lease, flow_id, new)?;
+        let new = NewCall {
+            position: call.position,
+            kind: &call.kind,
+            args: &call.args,
+            class,
+            request: prepared.request.as_ref(),
+        };
+        let inserted = journal::insert_call(tx, &self.lease, flow_id, &new)?;
         audit::record(
             tx,
             flow_id,

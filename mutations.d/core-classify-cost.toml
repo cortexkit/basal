@@ -1,0 +1,68 @@
+# Shared classifier dollar caps for codemode and flow op calls.
+
+[[control]]
+id = "classify-dollars-no-clamp"
+guards = "program classifier ceilings never exceed the remaining dollar budget"
+test_file = "crates/basal-core/src/codemode/dollar_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "codemode::supervisor::tests::dollars::" }
+expect_red = ["codemode::supervisor::tests::dollars::program_classify_clamps_and_supplies_remaining_dollars"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/classify_cost.rs"
+old = "input[\"max_cost_usd\"] = wanted.min(remaining).into();"
+new = "input[\"max_cost_usd\"] = wanted.into();"
+
+[[control]]
+id = "classify-dollars-charge-zero-on-success"
+guards = "program classifier successes charge the reported cost even above the ceiling"
+test_file = "crates/basal-core/src/codemode/dollar_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "codemode::supervisor::tests::dollars::" }
+expect_red = ["codemode::supervisor::tests::dollars::program_classify_charges_reported_cost_and_overrun"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/classify_cost.rs"
+old = ".and_then(|v| v[\"cost_usd\"].as_f64())"
+new = ".and_then(|v| v[\"cost_usd\"].as_f64()).map(|_| 0.0)"
+
+[[control]]
+id = "classify-dollars-send-with-nothing-left"
+guards = "exhausted program classifier dollars refuse before sending"
+test_file = "crates/basal-core/src/codemode/dollar_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "codemode::supervisor::tests::dollars::" }
+expect_red = ["codemode::supervisor::tests::dollars::program_classify_exhausted_dollars_never_send"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/classify_cost.rs"
+old = "if remaining <= 0.0 {"
+new = "if false && remaining <= 0.0 {"
+
+[[control]]
+id = "classify-flow-without-cap-installable"
+guards = "flow classifier op grants require an install-approved dollar cap"
+test_file = "crates/basal-testkit/tests/classify_dollars.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test classify_dollars"
+expect_red = ["flow_classify_install_requires_dollar_cap"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "if manifest.model_cost_usd.is_none() {"
+new = "if false && manifest.model_cost_usd.is_none() {"

@@ -41,6 +41,19 @@ pub struct InstallRequest {
 /// Why an install was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
+    ModelCostCapRequired {
+        module: String,
+        op: String,
+    },
+    ModelToolUntagged {
+        module: String,
+        op: String,
+    },
+    ToolContractUnreadable {
+        module: String,
+        op: String,
+        reason: String,
+    },
     SelfRequiresPackage,
     UnknownWorkspace(String),
     WorkspaceRegistryUnavailable(String),
@@ -814,6 +827,27 @@ pub(crate) fn validate_inner(
             let (module, op) = pair();
             return Err(InstallError::UnknownOp { module, op });
         };
+        if let Some(entry) = catalog.tool_contract(module, op).map_err(|error| {
+            InstallError::ToolContractUnreadable {
+                module: module.clone(),
+                op: op.clone(),
+                reason: format!("{error:?}"),
+            }
+        })? {
+            if crate::classify_cost::matches(&entry) {
+                if manifest.model_cost_usd.is_none() {
+                    return Err(InstallError::ModelCostCapRequired {
+                        module: module.clone(),
+                        op: op.clone(),
+                    });
+                }
+            } else if crate::classify_cost::requires_ceiling(&entry) {
+                return Err(InstallError::ModelToolUntagged {
+                    module: module.clone(),
+                    op: op.clone(),
+                });
+            }
+        }
         if decl.shell_capable {
             let (module, op) = pair();
             return Err(InstallError::ShellCapable { module, op });

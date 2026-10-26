@@ -36,6 +36,7 @@ windows-sys = { version = "0.61", features = [
 serde_json.workspace = true
 
 [dev-dependencies]
+cortexkit-llm-tools = { workspace = true, features = ["test-vectors"] }
 # Give this dependency a different name so --features basal-testkit/test-support
 # still selects basal-testkit's own feature rather than this development dependency.
 basal-testkit-test-support = { package = "basal-testkit", path = ".", features = ["test-support"] }

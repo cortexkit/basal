@@ -12,6 +12,24 @@ fn text(result: &Value) -> &str {
     result["content"][0]["text"].as_str().unwrap()
 }
 
+#[test]
+fn classifier_dollar_spend_and_negative_remainder_render_in_both_formats() {
+    let budget = json!({"limit":0.50,"spent":0.60,"remaining":-0.10});
+    for output_size in [0, 4 * MAX_RESULT_BYTES] {
+        let mut run = successful_run();
+        run["output"] = "x".repeat(output_size).into();
+        run["budgets"] = json!({"model_cost_usd":budget});
+        let reply = render("codemode:example", run);
+        assert!(
+            text(&reply).contains("Classifier dollars: $0.6 spent · $-0.1 remaining (limit $0.5)")
+        );
+        assert_eq!(
+            reply["structuredContent"]["budgets"]["model_cost_usd"],
+            budget
+        );
+    }
+}
+
 const TABLE: &str = "\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\n";
 
 // The exact model-visible text, written out by hand. A change to these bytes

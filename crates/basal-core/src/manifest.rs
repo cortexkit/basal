@@ -115,6 +115,9 @@ pub struct Manifest {
     pub facts: Option<FactsGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmGrant>,
+    /// Dollar caps for tagged classifier tools called through ordinary op grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_cost_usd: Option<ModelCostCap>,
     /// Roots the `fs` built-ins may read and write under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs: Option<FsGrant>,
@@ -323,6 +326,14 @@ pub struct LlmGrant {
 pub struct TokenCap {
     pub tokens: u64,
     /// The window length, such as `"1d"`.
+    pub window: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelCostCap {
+    pub per_run: f64,
+    pub usd: f64,
     pub window: String,
 }
 
@@ -1015,6 +1026,26 @@ impl Manifest {
     }
 
     fn check_host_grants(&self) -> Result<(), ManifestError> {
+        if let Some(cap) = &self.model_cost_usd {
+            if !cap.per_run.is_finite()
+                || cap.per_run < 0.0
+                || !cap.usd.is_finite()
+                || cap.usd < 0.0
+            {
+                return Err(invalid(
+                    "model_cost_usd",
+                    "dollar caps must be finite and non-negative",
+                ));
+            }
+            if !duration_ms(&cap.window)
+                .is_some_and(|ms| (MIN_TOKEN_WINDOW_MS..=MAX_TOKEN_WINDOW_MS).contains(&ms))
+            {
+                return Err(invalid(
+                    "model_cost_usd.window",
+                    "must be a duration from 1m to 31d",
+                ));
+            }
+        }
         if let Some(llm) = &self.llm {
             if llm.iq > 100 {
                 return Err(invalid("llm.iq", "must be between 0 and 100"));

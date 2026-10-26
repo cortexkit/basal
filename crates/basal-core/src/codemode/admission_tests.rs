@@ -1,4 +1,25 @@
 use super::*;
+
+#[test]
+fn program_dollar_limits_are_defaulted_lower_only_and_nonnegative() {
+    assert_eq!(limits(None).unwrap().model_cost_usd, 0.50);
+    for amount in [0.0, 0.30, 0.50] {
+        assert_eq!(
+            limits(Some(&json!({"model_cost_usd":amount})))
+                .unwrap()
+                .model_cost_usd,
+            amount
+        );
+    }
+    for amount in [json!(0.51), json!(-0.01), json!("0.30"), Value::Null] {
+        assert_eq!(
+            limits(Some(&json!({"model_cost_usd":amount})))
+                .unwrap_err()
+                .code,
+            "invalid_limits"
+        );
+    }
+}
 use basal_host::mock::MockHost;
 use serde_json::json;
 use std::sync::{Arc, Barrier, Condvar, Mutex};
@@ -389,7 +410,7 @@ fn scope_shape_precedes_attestation_and_needs_no_flow_targets() {
     let start = start.unwrap();
     assert_eq!(start.scope.targets, ["broca".into()].into_iter().collect());
     assert!(start.tools.contains_key("model"));
-    assert!(start.tools.contains_key("classify"));
+    assert!(!start.tools.contains_key("classify"));
     assert_eq!(start.scope.selector.scope_ref, "scope:run");
     assert_eq!(start.scope.selector.epoch, 19);
 }
@@ -766,7 +787,7 @@ fn module_and_op_are_nonempty_strings_with_a_128_byte_cap() {
 
 #[test]
 fn model_name_collisions_drop_both_the_provider_and_builtin() {
-    for name in ["model", "classify"] {
+    for name in ["model"] {
         let resolved =
             super::super::models::add_catalog(&json!([entry(name), entry("good")])).unwrap();
         let catalog = catalog(&resolved, &[]).unwrap();
