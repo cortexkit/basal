@@ -151,7 +151,7 @@ fn tool_scope_open_checks_the_attested_deadline() {
         Platform::current(),
         &ToolInvocation {
             run_id: "run",
-            agent_id: "agent",
+            caller: RunCaller::Agent("agent"),
             invoking_scope: run_scope::Scope {
                 reference: "parent".into(),
                 epoch: 1,

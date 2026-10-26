@@ -47,7 +47,7 @@
 //! reads it from the scope it owns.
 
 use subc_protocol::Principal;
-use subc_protocol::scope::ScopeStamp;
+use subc_protocol::scope::{ScopeKind, ScopeStamp};
 
 /// The executive. It owns agents' session scopes and reads `flow.health`
 /// on its own cadence to decide whether a flow's claim holds.
@@ -143,9 +143,47 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
     }
 }
 
+/// A worker session's own scope, as codemode reads it: a session that works
+/// for a head without that head's authority, such as a mason or a sidekick
+/// session. Only codemode accepts one; every other op still sees such a route
+/// as [`Caller::Other`], since none of them has a meaning for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerScope {
+    pub scope_ref: String,
+    pub scope_epoch: u64,
+}
+
+/// The worker scope a route was admitted under, if it is one: core owns it,
+/// the daemon vouches that core may set its attributes, its kind is `worker`,
+/// and it carries no `agent_id`, `run_id`, `flow_id` or `delegates`. Core
+/// also names the head the worker works for in `on_behalf_of_agent`; that is
+/// attribution only, so it is allowed and never read here.
+///
+/// Core uses this shape for more than masons and sidekick sessions, and basal
+/// does not try to tell them apart: core decides, when basal asks it to open
+/// the run, whether this scope may have one.
+pub fn worker_scope(scope: &ScopeStamp) -> Option<WorkerScope> {
+    let core_owned = matches!(
+        &scope.owner,
+        Principal::Reserved { module_id } if module_id == CORE_MODULE
+    );
+    let attributes = &scope.attributes;
+    (core_owned
+        && scope.owner_authorized
+        && scope.kind == ScopeKind::Worker
+        && attributes.agent_id.is_none()
+        && attributes.run_id.is_none()
+        && attributes.flow_id.is_none()
+        && !attributes.delegates)
+        .then(|| WorkerScope {
+            scope_ref: scope.scope_ref.clone(),
+            scope_epoch: scope.scope_epoch,
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use subc_protocol::scope::{ScopeAttributes, ScopeKind};
+    use subc_protocol::scope::ScopeAttributes;
 
     use super::*;
 
@@ -223,5 +261,71 @@ mod tests {
             ),
             Caller::Module { .. }
         ));
+    }
+
+    fn worker(owner: &str, authorized: bool, attributes: ScopeAttributes) -> ScopeStamp {
+        ScopeStamp::new(
+            Principal::Reserved {
+                module_id: owner.to_owned(),
+            },
+            "task-1",
+            4,
+            ScopeKind::Worker,
+        )
+        .with_attributes(attributes)
+        .with_owner_authorized(authorized)
+    }
+
+    #[test]
+    fn a_worker_scope_is_core_owned_authorized_and_carries_no_agent() {
+        let found = Some(WorkerScope {
+            scope_ref: "task-1".into(),
+            scope_epoch: 4,
+        });
+        let head = || ScopeAttributes::new().with_on_behalf_of_agent(Some("SYNAPSE".into()));
+        // With or without the head it works for.
+        assert_eq!(worker_scope(&worker(CORE_MODULE, true, head())), found);
+        assert_eq!(
+            worker_scope(&worker(CORE_MODULE, true, ScopeAttributes::new())),
+            found
+        );
+        // It is still no agent to every other op.
+        assert!(matches!(
+            from_route(
+                Some(&Principal::Direct),
+                Some(&worker(CORE_MODULE, true, head()))
+            ),
+            Caller::Other(_)
+        ));
+        for refused in [
+            worker(CORE_MODULE, false, head()),
+            worker("aft", true, head()),
+            worker(
+                CORE_MODULE,
+                true,
+                ScopeAttributes::new().with_agent_id(Some("SYNAPSE".into())),
+            ),
+            // A run scope: codemode never runs a program from inside a run.
+            worker(CORE_MODULE, true, head().with_run_id(Some("r".into()))),
+            worker(CORE_MODULE, true, head().with_flow_id(Some("f".into()))),
+            worker(
+                CORE_MODULE,
+                true,
+                ScopeAttributes::new().with_delegates(true),
+            ),
+            // A head's session scope is not a worker's, even when it has no `agent_id`.
+            ScopeStamp::new(
+                Principal::Reserved {
+                    module_id: CORE_MODULE.into(),
+                },
+                "task-1",
+                4,
+                ScopeKind::Head,
+            )
+            .with_attributes(head())
+            .with_owner_authorized(true),
+        ] {
+            assert_eq!(worker_scope(&refused), None, "{refused:?}");
+        }
     }
 }

@@ -637,7 +637,7 @@ impl Fixture {
         assert_eq!(
             self.host
                 .store
-                .read(|c| store::running_counts(c, "agent"))
+                .read(|c| store::running_counts(c, store::RunOwner::Agent("agent")))
                 .unwrap(),
             (0, 0)
         );
@@ -1906,6 +1906,7 @@ fn a_tool_dropped_at_admission_rejects_typed_and_named_while_others_still_run() 
             module: "aft".into(),
             reason: "catalog_unreadable".into(),
             message: "codemode can't use apply_patch from provider aft: unreadable".into(),
+            refusal: None,
         },
     )]
     .into_iter()
@@ -1938,6 +1939,58 @@ fn a_tool_dropped_at_admission_rejects_typed_and_named_while_others_still_run() 
     assert!(f.attempts.try_recv().is_err(), "nothing was sent");
     let call = &f.calls()[0];
     assert_eq!(call.code.as_deref(), Some("tool_unavailable"));
+    f.issue(1, "read", json!({"n":1}));
+    f.attempt().reply.send(Ok(json!(true))).unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
+    f.finish("null");
+    assert_eq!(f.terminal()["status"], "completed");
+}
+
+/// In a worker run the daemon refuses to bind a provider that does not
+/// declare `worker-runs/v1`. The program sees that refusal's own code and
+/// message when it calls the provider's tool, and other tools still run.
+#[test]
+fn a_providers_run_refusal_reaches_the_program_as_that_refusal() {
+    let f = Fixture::new();
+    let message = "aft does not declare worker-runs/v1";
+    let unavailable = [(
+        "apply_patch".to_owned(),
+        Unavailable {
+            module: "aft".into(),
+            reason: "target_agent_run_unsupported".into(),
+            message: "codemode can't use apply_patch from provider aft".into(),
+            refusal: Some(basal_host::run_scope::ProviderRefusal {
+                code: "target_agent_run_unsupported".into(),
+                message: message.into(),
+            }),
+        },
+    )]
+    .into_iter()
+    .collect();
+    f.start_with(
+        &[("read", "notes", "read", json!({}))],
+        unavailable,
+        Limits::default(),
+        10_000,
+    );
+    let ParentMessage::Activate(request) = f.parent.recv_timeout(TIMEOUT).unwrap() else {
+        panic!()
+    };
+    assert_eq!(request.tools, ["read", "apply_patch"]);
+    f.issue(0, "apply_patch", json!({}));
+    let delivery = f.delivery();
+    let value: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+    rejection(
+        delivery,
+        "apply_patch",
+        "refused",
+        "target_agent_run_unsupported",
+    );
+    assert_eq!(value["message"], message);
+    assert_eq!(value["detail"], json!({"module":"aft"}));
+    assert!(f.attempts.try_recv().is_err(), "nothing was sent");
+    let call = &f.calls()[0];
+    assert_eq!(call.code.as_deref(), Some("target_agent_run_unsupported"));
     f.issue(1, "read", json!({"n":1}));
     f.attempt().reply.send(Ok(json!(true))).unwrap();
     assert_eq!(f.delivery().settlement, Settlement::Fulfilled);

@@ -1479,6 +1479,22 @@ impl Driver {
             return self.end(exhausted(Budget::ToolCalls));
         }
         if let Some(dropped) = self.start.unavailable.get(name) {
+            // The daemon refused the provider for this run when the run
+            // started: the program sees that refusal with its own code and
+            // message, as it would from a call the provider refused.
+            if let Some(refusal) = &dropped.refusal {
+                let mut mapped =
+                    Mapped::rejected(Outcome::Refused, &refusal.code, &refusal.message);
+                mapped.detail = Some(json!({"module":dropped.module}));
+                self.insert(
+                    &call,
+                    CallStart::Settled {
+                        outcome: Outcome::Refused,
+                        code: Some(&refusal.code),
+                    },
+                )?;
+                return self.deliver(&call, mapped);
+            }
             let mut mapped = Mapped::rejected(
                 Outcome::ToolUnavailable,
                 "tool_unavailable",

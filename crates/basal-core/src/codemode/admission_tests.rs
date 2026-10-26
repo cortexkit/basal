@@ -806,6 +806,7 @@ fn unavailable_names_are_checked_and_collisions_drop_every_claim() {
         tools: names.iter().map(|name| (*name).into()).collect(),
         reason: RefusalReason::CatalogUnreadable,
         problem: "provider catalog refused".into(),
+        refusal: None,
     };
     let gaps = [
         gap(
@@ -908,7 +909,7 @@ fn agent_cap_is_two_attested_nonterminal_runs_in_the_transaction() {
     assert!(start.is_some());
     assert_eq!(
         t.store
-            .read(|c| store::running_counts(c, "actual"))
+            .read(|c| store::running_counts(c, store::RunOwner::Agent("actual")))
             .unwrap(),
         (2, 2)
     );
@@ -937,7 +938,7 @@ fn basal_cap_is_sixteen_nonterminal_runs_in_the_transaction() {
     ));
     assert_eq!(
         t.store
-            .read(|c| store::running_counts(c, "new-agent"))
+            .read(|c| store::running_counts(c, store::RunOwner::Agent("new-agent")))
             .unwrap(),
         (1, 16)
     );
@@ -970,7 +971,9 @@ fn concurrent_distinct_admits_cannot_overfill_the_agent_cap() {
     }
     assert_eq!((admitted, busy), (1, 1));
     assert_eq!(
-        t.store.read(|c| store::running_counts(c, "agent")).unwrap(),
+        t.store
+            .read(|c| store::running_counts(c, store::RunOwner::Agent("agent")))
+            .unwrap(),
         (2, 2)
     );
 }
@@ -1001,7 +1004,9 @@ fn deadline_at_or_before_admission_inserts_terminal_without_a_start_token() {
         );
     }
     assert_eq!(
-        t.store.read(|c| store::running_counts(c, "agent")).unwrap(),
+        t.store
+            .read(|c| store::running_counts(c, store::RunOwner::Agent("agent")))
+            .unwrap(),
         (0, 0)
     );
 }

@@ -28,6 +28,8 @@ impl Transport for CoreScopes {
                 let request: Open = serde_json::from_value(params).unwrap();
                 let session: u64 = request
                     .agent_id
+                    .as_deref()
+                    .unwrap()
                     .rsplit('-')
                     .next()
                     .unwrap()

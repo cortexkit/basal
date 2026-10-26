@@ -405,13 +405,32 @@ pub fn calls(conn: &Connection, run_id: &str) -> Result<Vec<CallRecord>> {
         .collect()
 }
 
-/// Running runs: `(of agent_id, in total)`. Admission counts both in the
-/// transaction that inserts, against the per-agent and per-basal caps.
-pub fn running_counts(conn: &Connection, agent_id: &str) -> Result<(u64, u64)> {
+/// Whose cap a codemode run counts against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOwner<'a> {
+    /// An agent run, by the agent that asked for it.
+    Agent(&'a str),
+    /// A worker run, by the scope ref of the worker that asked for it. The
+    /// head the worker works for plays no part: two workers for one head each
+    /// have their own cap.
+    Worker(&'a str),
+}
+
+/// Running runs: `(of owner, in total)`. Admission counts both in the
+/// transaction that inserts, against the per-caller and per-basal caps.
+pub fn running_counts(conn: &Connection, owner: RunOwner<'_>) -> Result<(u64, u64)> {
+    // A worker run's row has an empty agent_id and its worker's scope ref in
+    // worker_scope; an agent run's row has no worker_scope.
+    let (own, key) = match owner {
+        RunOwner::Agent(agent_id) => ("worker_scope IS NULL AND agent_id = ?1", agent_id),
+        RunOwner::Worker(scope_ref) => ("worker_scope = ?1", scope_ref),
+    };
     let (agent, total): (i64, i64) = conn.query_row(
-        "SELECT COUNT(CASE WHEN agent_id = ?1 THEN 1 END), COUNT(*) FROM codemode_runs \
-         WHERE status = 'running'",
-        [agent_id],
+        &format!(
+            "SELECT COUNT(CASE WHEN {own} THEN 1 END), COUNT(*) FROM codemode_runs \
+             WHERE status = 'running'"
+        ),
+        [key],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     Ok((agent.max(0) as u64, total.max(0) as u64))

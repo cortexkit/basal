@@ -476,7 +476,23 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 43,
         statements: INSTALL_ID,
     },
+    Migration {
+        version: 44,
+        statements: CODEMODE_WORKER_RUNS,
+    },
 ];
+
+// A worker run (a codemode run asked for by a worker session, such as a mason,
+// rather than a head) has no agent of its own. Its row keeps agent_id empty,
+// names the worker's own scope ref in worker_scope (the key of its per-caller
+// cap), and records the head the worker works for in on_behalf_of_agent, for
+// display and audit only. Agent runs leave both new columns NULL.
+const CODEMODE_WORKER_RUNS: &str = r#"
+ALTER TABLE codemode_runs ADD COLUMN worker_scope TEXT
+    CHECK (worker_scope IS NULL OR (length(worker_scope) > 0 AND agent_id = ''));
+ALTER TABLE codemode_runs ADD COLUMN on_behalf_of_agent TEXT
+    CHECK (on_behalf_of_agent IS NULL OR worker_scope IS NOT NULL);
+"#;
 
 // Existing cards acquire an id transactionally before their next request is
 // sent. Status-only recovery does not need to invent an id for old grants.
