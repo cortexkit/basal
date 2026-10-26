@@ -732,7 +732,7 @@ fn a_worker_scope_runs_a_worker_run_that_names_no_agent() {
 fn a_scope_naming_neither_an_agent_nor_a_worker_is_refused_before_core_is_asked() {
     let rig = rig("worker-run-refused", false);
     let shapes = [
-        // A head's scope that names no agent.
+        // A head's scope with no `agent_id`, even though it names an `on_behalf_of_agent`.
         json!({"kind":"head","attributes":{"on_behalf_of_agent":"agent"},"owner_authorized":true}),
         // A worker scope core does not vouch for.
         json!({"kind":"worker","attributes":{"on_behalf_of_agent":"agent"},"owner_authorized":false}),

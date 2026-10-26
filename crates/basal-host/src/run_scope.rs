@@ -180,7 +180,8 @@ pub enum RefusalReason {
 /// The code the daemon refuses a run-scope bind with when the target provider
 /// does not accept that kind of run (for a worker run: it does not declare
 /// `worker-runs/v1`).
-pub const TARGET_AGENT_RUN_UNSUPPORTED: &str = "target_agent_run_unsupported";
+pub const TARGET_AGENT_RUN_UNSUPPORTED: &str =
+    subc_protocol::error_codes::TARGET_AGENT_RUN_UNSUPPORTED;
 
 /// A refusal the program sees exactly as it was sent, with its code and
 /// message, when it calls a tool of the provider that was refused.

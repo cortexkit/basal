@@ -313,7 +313,7 @@ mod tests {
                 true,
                 ScopeAttributes::new().with_delegates(true),
             ),
-            // A head's session scope is not a worker's, even without an agent.
+            // A head's session scope is not a worker's, even when it has no `agent_id`.
             ScopeStamp::new(
                 Principal::Reserved {
                     module_id: CORE_MODULE.into(),
