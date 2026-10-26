@@ -230,26 +230,21 @@ fn history_query(table: &str) -> String {
         .replace("{BATCH}", &BATCH.to_string())
 }
 
-fn assert_plan(conn: &Connection, sql: &str, index: &str) {
-    for analyzed in [false, true] {
-        if analyzed {
-            conn.execute_batch("ANALYZE").unwrap();
-        }
-        let plan: Vec<String> = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-            .unwrap()
-            .query_map([64], |r| r.get(3))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        println!("{index} (analyzed={analyzed}): {plan:?}");
-        assert!(
-            plan.iter().any(
-                |step| step.starts_with("SEARCH ") && step.contains(&format!("INDEX {index} "))
-            ),
-            "{index}: {plan:?}"
-        );
-    }
+/// Requires the plan for `sql` on `conn` to search `index`. `analyzed` only
+/// labels the failure: the caller decides whether `conn` has statistics.
+fn assert_plan(conn: &Connection, sql: &str, index: &str, analyzed: bool) {
+    let plan: Vec<String> = conn
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap()
+        .query_map([64], |r| r.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| step.starts_with("SEARCH ") && step.contains(&format!("INDEX {index} "))),
+        "{index} (analyzed={analyzed}): {plan:?}"
+    );
 }
 
 fn plan_store() -> Connection {
@@ -258,94 +253,47 @@ fn plan_store() -> Connection {
     conn
 }
 
+/// Every retention query must search its index both on a fresh store, which
+/// has no planner statistics, and after `ANALYZE` has recorded them. The two
+/// fixtures hold the same data; only the second is analyzed, so the planner
+/// sees each case both ways. They are only read, so every case shares them.
 #[test]
 fn runs_retention_plan() {
-    for unsettled in [false, true] {
-        let conn = plan_store();
-        assert_plan(&conn, &candidates_query(unsettled), "runs_retention");
-    }
-}
-
-#[test]
-fn outbox_refusal_run_plan() {
-    for unsettled in [false, true] {
-        let conn = plan_store();
-        assert_plan(&conn, &candidates_query(unsettled), "outbox_refusal_run");
-    }
-}
-
-#[test]
-fn quarantine_obligation_plan() {
-    for unsettled in [false, true] {
-        let conn = plan_store();
-        assert_plan(&conn, &candidates_query(unsettled), "quarantine_obligation");
-    }
-}
-
-#[test]
-fn call_audit_refund_window_plan() {
-    assert_plan(
-        &plan_store(),
-        &history_query("rate_windows"),
-        "call_audit_refund_window",
-    );
-}
-
-#[test]
-fn token_ledger_retention_window_plan() {
-    assert_plan(
-        &plan_store(),
-        &history_query("token_windows"),
-        "token_ledger_retention_window",
-    );
-}
-
-macro_rules! history_plan_test {
-    ($name:ident, $table:literal, $index:literal) => {
-        #[test]
-        fn $name() {
-            assert_plan(&plan_store(), &history_query($table), $index);
+    let mut cases = Vec::new();
+    for index in [
+        "runs_retention",
+        "outbox_refusal_run",
+        "quarantine_obligation",
+    ] {
+        for unsettled in [false, true] {
+            cases.push((candidates_query(unsettled), index));
         }
-    };
-}
+    }
+    for (table, index) in [
+        ("rate_windows", "call_audit_refund_window"),
+        ("token_windows", "token_ledger_retention_window"),
+        ("quarantine", "quarantine_retention"),
+        ("call_audit", "call_audit_retention"),
+        ("audit", "audit_retention"),
+        ("outbox", "outbox_retention"),
+        ("schedule_dropped", "schedule_dropped_retention"),
+        ("token_ledger", "token_ledger_retention"),
+        ("token_windows", "token_windows_retention"),
+        ("rate_windows", "rate_windows_retention"),
+        ("decision_cards", "decision_cards_retention"),
+    ] {
+        cases.push((history_query(table), index));
+    }
+    assert_eq!(cases.len(), 17);
 
-history_plan_test!(
-    quarantine_retention_plan,
-    "quarantine",
-    "quarantine_retention"
-);
-history_plan_test!(
-    call_audit_retention_plan,
-    "call_audit",
-    "call_audit_retention"
-);
-history_plan_test!(audit_retention_plan, "audit", "audit_retention");
-history_plan_test!(outbox_retention_plan, "outbox", "outbox_retention");
-history_plan_test!(
-    schedule_dropped_retention_plan,
-    "schedule_dropped",
-    "schedule_dropped_retention"
-);
-history_plan_test!(
-    token_ledger_retention_plan,
-    "token_ledger",
-    "token_ledger_retention"
-);
-history_plan_test!(
-    token_windows_retention_plan,
-    "token_windows",
-    "token_windows_retention"
-);
-history_plan_test!(
-    rate_windows_retention_plan,
-    "rate_windows",
-    "rate_windows_retention"
-);
-history_plan_test!(
-    decision_cards_retention_plan,
-    "decision_cards",
-    "decision_cards_retention"
-);
+    let unanalyzed = plan_store();
+    let analyzed = plan_store();
+    analyzed.execute_batch("ANALYZE").unwrap();
+    for (sql, index) in &cases {
+        assert_plan(&unanalyzed, sql, index, false);
+        assert_plan(&analyzed, sql, index, true);
+    }
+}
 
 #[test]
 fn indexable_ordering_preserves_candidate_and_history_batches() {

@@ -67,9 +67,17 @@ impl Stream {
 pub(in crate::codemode::supervisor) struct Custody {
     state: Mutex<State>,
     streams: Mutex<BTreeMap<String, Arc<Stream>>>,
+    /// Called by a provider's intake worker each time it finds nothing held
+    /// and is about to sleep until custody changes.
+    #[cfg(test)]
+    idle: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Custody {
+    #[cfg(test)]
+    pub(in crate::codemode::supervisor) fn on_idle(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.idle.lock().unwrap() = Some(hook);
+    }
     fn stream(&self, module: &str) -> Arc<Stream> {
         self.streams
             .lock()
@@ -232,6 +240,13 @@ impl Custody {
                     return;
                 };
                 let target = custody.candidate(&module, &stream);
+                #[cfg(test)]
+                if target.is_none() {
+                    let hook = custody.idle.lock().unwrap().clone();
+                    if let Some(hook) = hook {
+                        hook();
+                    }
+                }
                 drop(custody);
                 if let Some(target) = target {
                     let wait = due.saturating_duration_since(Instant::now());

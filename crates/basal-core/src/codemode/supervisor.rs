@@ -147,6 +147,9 @@ struct Shared {
     before_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     before_reader_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Called by a driver just before it blocks waiting for its next event.
+    #[cfg(test)]
+    before_wait: Mutex<Option<Arc<dyn Fn(&Parked) + Send + Sync>>>,
     /// How many times a driver has returned from its wait for an event.
     #[cfg(test)]
     wakes: std::sync::atomic::AtomicUsize,
@@ -160,6 +163,20 @@ struct Shared {
 pub struct Supervisor(Arc<Shared>);
 
 pub type TerminalHook = dyn Fn(&str, Value) -> Result<()> + Send + Sync;
+
+/// What a driver reports to a test just before it blocks for its next event,
+/// so the test can wait for the driver to go idle instead of sleeping.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct Parked {
+    /// The driver's wake count so far; the wake that ends this wait is next.
+    wakes: usize,
+    /// How long the driver will block unless an event arrives first.
+    wait: Duration,
+    /// The program has finished, but the run cannot end yet, for example
+    /// because a late-result page is still unacknowledged.
+    completion_pending: bool,
+}
 
 /// A tool call a running program is awaiting while a person decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +263,8 @@ impl Supervisor {
             before_exit: Mutex::new(None),
             #[cfg(test)]
             before_reader_exit: Mutex::new(None),
+            #[cfg(test)]
+            before_wait: Mutex::new(None),
             #[cfg(test)]
             wakes: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
@@ -846,6 +865,17 @@ impl Driver {
         });
         let remaining = deadline.min(sleep).max(0);
         let wait = Duration::from_millis(remaining as u64);
+        #[cfg(test)]
+        {
+            let hook = self.shared.before_wait.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook(&Parked {
+                    wakes: self.shared.wakes.load(Ordering::SeqCst),
+                    wait,
+                    completion_pending: self.completion.is_some(),
+                });
+            }
+        }
         let event = self.events.recv_timeout(wait).ok();
         #[cfg(test)]
         self.shared.wakes.fetch_add(1, Ordering::SeqCst);
