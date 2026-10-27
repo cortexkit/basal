@@ -265,10 +265,10 @@ const FREE_REFUSAL_CODES: &[&str] = &[
 /// one implementation rather than one here. A `detail` that does not decode is
 /// dropped: whatever it says is not a well-formed spend marker.
 fn refusal_from_reply(code: &str, detail: Option<&Value>) -> Refusal {
-    let refusal = cortexkit_llm_tools::errors::refusal(code, "")
-        .unwrap_or_else(|| Refusal::new(code, ""));
-    let detail = detail
-        .and_then(|detail| serde_json::from_value::<RefusalDetail>(detail.clone()).ok());
+    let refusal =
+        cortexkit_llm_tools::errors::refusal(code, "").unwrap_or_else(|| Refusal::new(code, ""));
+    let detail =
+        detail.and_then(|detail| serde_json::from_value::<RefusalDetail>(detail.clone()).ok());
     match detail {
         Some(detail) => refusal.with_detail(detail),
         None => refusal,
@@ -446,16 +446,20 @@ mod tests {
                 0.10
             };
             let charged = settle_reply(&mut conn, position as u64, Some(value), Some(code));
-            assert_eq!(charged, match case["expect"]["spend"].as_str() {
-                Some("measured") => case["expect"]["cost_usd"].as_f64().unwrap(),
-                Some("charge_ceiling") => 0.10,
-                Some("no_spend") => 0.0,
-                // No marker: the code alone decides, as it always has.
-                Some("undeclared") => by_code,
-                // A malformed marker can't be proven free.
-                None => 0.10,
-                Some(other) => panic!("{name}: unknown spend {other}"),
-            }, "{name}");
+            assert_eq!(
+                charged,
+                match case["expect"]["spend"].as_str() {
+                    Some("measured") => case["expect"]["cost_usd"].as_f64().unwrap(),
+                    Some("charge_ceiling") => 0.10,
+                    Some("no_spend") => 0.0,
+                    // No marker: the code alone decides, as it always has.
+                    Some("undeclared") => by_code,
+                    // A malformed marker can't be proven free.
+                    None => 0.10,
+                    Some(other) => panic!("{name}: unknown spend {other}"),
+                },
+                "{name}"
+            );
         }
     }
 

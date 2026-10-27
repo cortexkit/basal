@@ -1000,7 +1000,8 @@ fn a_flow_classify_refusal_charges_by_the_spend_marker_in_its_detail() {
             .unwrap(),
             usage: None,
         };
-        f.rt.accept("run", 0, None, &outcome, Source::Local).unwrap();
+        f.rt.accept("run", 0, None, &outcome, Source::Local)
+            .unwrap();
         assert_eq!(
             f.rt.store()
                 .read(|c| crate::classify_cost::spent(c, "flow", "run"))
