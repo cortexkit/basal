@@ -42,7 +42,7 @@ fn warn_unreadable(text: &str, flow: &str, version: u32) {
     }
     warned.push_back(digest);
     drop(warned);
-    tracing::warn!(target:"consent", flow_id=flow, version, "unreadable historical manifest ignored by secrets inspection");
+    tracing::warn!(target:"consent", flow_id=flow, version, "unreadable historical manifest during secrets inspection");
 }
 
 pub(crate) fn has_secrets(text: &str, flow: &str, version: u32) -> bool {
@@ -55,7 +55,7 @@ pub(crate) fn has_secrets(text: &str, flow: &str, version: u32) -> bool {
             Ok(manifest) => manifest.secrets.is_some(),
             Err(_) => {
                 warn_unreadable(text, flow, version);
-                false
+                true
             }
         },
         Err(_) => {
@@ -95,5 +95,22 @@ mod tests {
             "old",
             2
         ));
+    }
+}
+
+#[cfg(test)]
+mod conservative_tests {
+    use super::*;
+
+    #[test]
+    fn second_review_unreadable_secret_declarations_remain_declared() {
+        for text in [
+            r#"{"secrets":[],"legacy":true}"#,
+            r#"{"secr\u0065ts":null,"legacy":true}"#,
+        ] {
+            assert!(crate::manifest::Manifest::parse_stored(text).is_err());
+            assert!(has_secrets(text, "legacy-secret", 1));
+        }
+        assert!(!has_secrets(r#"{"legacy":true}"#, "legacy-plain", 1));
     }
 }

@@ -248,6 +248,14 @@ pub(crate) fn not_ready() -> crate::transport::WireError {
     ))
 }
 
+pub(crate) fn scope_changed() -> crate::transport::WireError {
+    crate::transport::WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+        crate::flow_refusal::RefusalReason::ScopeChanged,
+        "claustrum",
+        "secret.use",
+    ))
+}
+
 pub(crate) fn use_attested(
     host: &dyn crate::Host,
     transport: &dyn crate::transport::Transport,
@@ -271,16 +279,17 @@ pub(crate) fn attested_stamp(
     code_hash: &str,
     description: crate::ScopeDescription,
 ) -> Result<crate::ScopeStamp, crate::transport::WireError> {
-    if description.status != crate::ScopeStatus::Live
-        || description.scope_epoch != Some(scope.epoch)
-    {
+    if description.status != crate::ScopeStatus::Live || description.scope_epoch.is_none() {
         return Err(not_ready());
     }
+    if description.scope_epoch != Some(scope.epoch) {
+        return Err(scope_changed());
+    }
     let stamp = description.scope.ok_or_else(not_ready)?;
-    if stamp.scope_epoch != scope.epoch
-        || !description.owner_synced
-        || !description.owner_configured
-    {
+    if stamp.scope_epoch != scope.epoch {
+        return Err(scope_changed());
+    }
+    if !description.owner_synced || !description.owner_configured {
         return Err(not_ready());
     }
     let attributes = &stamp.attributes;

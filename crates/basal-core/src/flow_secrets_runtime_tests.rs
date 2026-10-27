@@ -278,3 +278,96 @@ fn review_single_stale_secret_card_queues_cleanup_in_its_transaction() {
         json!({"flow_install_id":card.install_id.unwrap(),"flow_version":1})
     );
 }
+
+struct SecondReviewProbeHost {
+    store: Arc<Store>,
+    reads: AtomicUsize,
+}
+impl Host for SecondReviewProbeHost {
+    fn install_status(
+        &self,
+        flow: &str,
+        version: u32,
+    ) -> Result<basal_host::InstallStatus, TransportError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.store.write(|tx| {
+            tx.execute("UPDATE install_cards SET attempt=7 WHERE flow_id=?1 AND version=?2 AND state='pending'", rusqlite::params![flow,version])?;
+            Ok(())
+        }).map_err(|error| TransportError::unsent(error.to_string()))?;
+        Ok(basal_host::InstallStatus::Unknown)
+    }
+    fn classify(&self, _: &CallKind) -> CallClass {
+        CallClass::Query
+    }
+    fn dispatch(&self, _: &CallRequest) -> Result<Dispatched, TransportError> {
+        panic!("no dispatch")
+    }
+    fn now_ms(&self) -> f64 {
+        0.0
+    }
+    fn random(&self) -> f64 {
+        0.5
+    }
+    fn attach(&self, _: Arc<dyn basal_host::CompletionSink>) {}
+}
+
+#[test]
+fn second_review_abandonment_rechecks_confirmation_after_unlocked_probe() {
+    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
+    let store = fixture.rt.shared.store.clone();
+    let host = Arc::new(SecondReviewProbeHost {
+        store: store.clone(),
+        reads: AtomicUsize::new(0),
+    });
+    let rt = Runtime::new(
+        store,
+        host.clone(),
+        Arc::new(basal_host::MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        Config::default(),
+    );
+    let manifest = json!({"id":"guarded-secret","version":1,"purpose":"guarded cleanup","trigger":{"schedule":{"interval":"1h"}},
+        "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/"},"methods":["GET"]}]}).to_string();
+    let installed = rt
+        .install(&InstallRequest {
+            script: "return 1;".into(),
+            manifest,
+            author: "operator".into(),
+            loop_override: false,
+        })
+        .unwrap();
+    let card = rt
+        .record_card("guarded-secret", 1, &installed.code_hash, "operator", "{}")
+        .unwrap();
+    let id = card.install_id.unwrap();
+    assert!(
+        !rt.abandon_prepared_secret_install("guarded-secret", 1, "not-the-current-id")
+            .unwrap()
+    );
+    assert_eq!(host.reads.load(Ordering::SeqCst), 0);
+    assert!(
+        !rt.abandon_prepared_secret_install("guarded-secret", 1, &id)
+            .unwrap()
+    );
+    assert_eq!(host.reads.load(Ordering::SeqCst), 1);
+    let current = rt.cards("guarded-secret").unwrap()[0].clone();
+    assert_eq!(current.attempt, Some(7));
+    assert_eq!(current.install_id.as_deref(), Some(id.as_str()));
+    assert!(
+        !rt.abandon_prepared_secret_install("guarded-secret", 1, &id)
+            .unwrap()
+    );
+    assert_eq!(host.reads.load(Ordering::SeqCst), 1);
+    let queued: i64 = rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM outbox WHERE kind='secret.revoke_flow_grants'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(queued, 0);
+}

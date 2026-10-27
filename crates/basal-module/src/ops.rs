@@ -851,16 +851,20 @@ impl Module {
                                     "prepared secret install has no identity",
                                 )
                             })?;
-                            self.rt
-                                .abandon_prepared_secret_install(
-                                    &record.flow_id,
-                                    record.version,
-                                    install_id,
-                                )
-                                .map_err(|error| self.core_error(error))?;
-                            self.rt
-                                .drain_secret_revocations()
-                                .map_err(|error| self.core_error(error))?;
+                            if record.attempt.is_none()
+                                && self
+                                    .rt
+                                    .abandon_prepared_secret_install(
+                                        &record.flow_id,
+                                        record.version,
+                                        install_id,
+                                    )
+                                    .map_err(|error| self.core_error(error))?
+                            {
+                                self.rt
+                                    .drain_secret_revocations()
+                                    .map_err(|error| self.core_error(error))?;
+                            }
                             *cause
                         }
                         other => other,

@@ -8,7 +8,6 @@ use std::collections::{HashSet, VecDeque};
 mod html_ascii;
 
 const MAX_DEPTH: usize = 8;
-const MAX_VIEWS: usize = 64;
 const MAX_WORK: usize = super::REDACTION_WORK;
 
 pub(crate) struct EchoGuard {
@@ -89,7 +88,7 @@ impl EchoGuard {
         if !seen.insert(digest) {
             return false;
         }
-        if depth > MAX_DEPTH || seen.len() > MAX_VIEWS {
+        if depth > MAX_DEPTH {
             return true;
         }
         queue.push_back((bytes, depth));
@@ -170,16 +169,23 @@ impl EchoGuard {
                         return true;
                     }
                     if let Ok(decoded) = engine.decode(candidate) {
-                        if !self.spend(decoded.len())
-                            || self.contains(&decoded)
-                            || self.selective_echo(&decoded)
-                        {
+                        if !self.spend(decoded.len()) {
                             return true;
                         }
-                        if needs_view(&decoded, self.key.len())
-                            && self.queue(decoded, depth + 1, &mut queue, &mut seen)
-                        {
-                            return true;
+                        // A printable key cannot cross a non-printable byte.
+                        // Only maximal printable runs justify another view.
+                        for printable in decoded.split(|b| !(0x20..0x7f).contains(b)) {
+                            if printable.len() < self.key.len() {
+                                continue;
+                            }
+                            if self.contains(printable) || self.selective_echo(printable) {
+                                return true;
+                            }
+                            if needs_view(printable, self.key.len())
+                                && self.queue(printable.to_vec(), depth + 1, &mut queue, &mut seen)
+                            {
+                                return true;
+                            }
                         }
                     }
                 }
@@ -284,7 +290,7 @@ impl EchoGuard {
                 ] {
                     let decoded = decode_spans(&view, decoder);
                     if decoded != view && seen.insert(decoded.clone()) {
-                        if depth >= MAX_DEPTH || seen.len() > MAX_VIEWS {
+                        if depth >= MAX_DEPTH {
                             return Err(());
                         }
                         views.push_back((decoded, depth + 1));
@@ -523,4 +529,34 @@ fn html_token(input: &[u8]) -> Option<(Vec<u8>, usize)> {
             .starts_with(name.as_bytes())
             .then(|| (value.as_bytes().to_vec(), name.len() + 1))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_review_view_count_is_not_a_failure_condition() {
+        let mut guard = EchoGuard::new(b"ghp_R4nd0mT0k3nV4lu3");
+        let mut queue = VecDeque::new();
+        let mut seen = HashSet::new();
+        for i in 0..96 {
+            let bytes = format!("ordinary printable normalization view {i:03}").into_bytes();
+            assert!(!guard.queue(bytes, 1, &mut queue, &mut seen));
+        }
+        assert_eq!(queue.len(), 96);
+        assert!(guard.queue(
+            b"ordinary printable view beyond the depth limit".to_vec(),
+            MAX_DEPTH + 1,
+            &mut queue,
+            &mut seen
+        ));
+        guard.remaining = 0;
+        assert!(guard.queue(
+            b"ordinary printable view beyond the work limit".to_vec(),
+            1,
+            &mut queue,
+            &mut seen
+        ));
+    }
 }

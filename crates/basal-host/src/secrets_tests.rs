@@ -561,7 +561,6 @@ fn review_secret_scope_readiness_uses_no_flow_scope_without_contacting_vault() {
     let vault = Arc::new(Vault::default());
     for (field, value) in [
         ("status", json!("not_live")),
-        ("scope_epoch", json!(8)),
         ("scope", Value::Null),
         ("owner_synced", json!(false)),
         ("owner_configured", json!(false)),
@@ -656,4 +655,136 @@ fn review_unknown_vault_refusals_are_final_and_keep_only_the_code() {
             matches!(host.dispatch(&request(frozen)), Err(TransportError::Refused(refusal)) if refusal.reason == crate::flow_refusal::RefusalReason::SecretVaultUnavailable)
         );
     }
+}
+
+fn second_review_request_result(args: Value) -> (Value, usize) {
+    let carrier = Arc::new(CountingHost(Mutex::new(0)));
+    let host = BuiltinHost::default().with_secret_host(carrier.clone());
+    let mut granted = grant();
+    granted.secrets[0].methods = Some(vec!["GET".into(), "POST".into()]);
+    let frozen = crate::builtins::envelope(&args, &granted);
+    let Dispatched::Completed(outcome) = host.dispatch(&request(frozen)).unwrap() else {
+        panic!("synchronous refusal")
+    };
+    let calls = *carrier.0.lock().unwrap();
+    (serde_json::from_str(outcome.value.as_str()).unwrap(), calls)
+}
+
+#[test]
+fn second_review_all_multipart_subtypes_are_refused_before_release() {
+    for mime in [
+        "multipart/mixed",
+        "multipart/related",
+        "Multipart/alternative; boundary=x",
+        "multipart/byteranges",
+        "multipart/form-data",
+    ] {
+        let (value, calls) = second_review_request_result(
+            json!({"url":"https://x.test/repos/a","options":{"secret":"key","method":"POST","headers":{"Content-Type":mime},"body":"untrusted multipart payload"}}),
+        );
+        assert_eq!(value["code"], "secret_request_unsafe", "{mime}");
+        assert_eq!(calls, 0);
+    }
+}
+
+#[test]
+fn second_review_php_normalized_method_names_are_refused_before_release() {
+    for name in [
+        ".method",
+        "+method",
+        "%20method",
+        "%2Emethod",
+        "[method",
+        "%5Bmethod",
+        "_MeThOd",
+    ] {
+        for body in [false, true] {
+            let args = if body {
+                json!({"url":"https://x.test/repos/a","options":{"secret":"key","method":"POST","headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":format!("{name}=DELETE")}})
+            } else {
+                json!({"url":format!("https://x.test/repos/a?{name}=DELETE"),"options":{"secret":"key"}})
+            };
+            let (value, calls) = second_review_request_result(args);
+            assert_eq!(
+                value["code"], "secret_request_unsafe",
+                "{name}, form={body}"
+            );
+            assert_eq!(calls, 0);
+        }
+    }
+    let (value, calls) = second_review_request_result(
+        json!({"url":"https://x.test/repos/a?ordinary.name=ok&balanced[x]=ok","options":{"secret":"key"}}),
+    );
+    assert_eq!(value["code"], "not_found");
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn second_review_json_method_overrides_are_refused_before_release() {
+    for (mime, body) in [
+        ("text/plain", r#"{"_method":"DELETE"}"#),
+        ("application/json", r#"{"_METHOD":"DELETE"}"#),
+        ("text/json", r#"{"_MeThOd":"DELETE"}"#),
+        ("application/problem+json", r#"{"\u005fmethod":"DELETE"}"#),
+        ("custom/json", r#"{"_method":"DELETE",}"#),
+    ] {
+        let (value, calls) = second_review_request_result(
+            json!({"url":"https://x.test/repos/a","options":{"secret":"key","method":"POST","headers":{"Content-Type":mime},"body":body}}),
+        );
+        assert_eq!(value["code"], "secret_request_unsafe", "{mime}");
+        assert_eq!(calls, 0);
+    }
+    let (value, calls) = second_review_request_result(
+        json!({"url":"https://x.test/repos/a","options":{"secret":"key","method":"POST","body":r#"{"_method":"DELETE"}"#}}),
+    );
+    assert_eq!(value["code"], "secret_request_unsafe");
+    assert_eq!(calls, 0);
+    let (value, calls) = second_review_request_result(
+        json!({"url":"https://x.test/repos/a","options":{"secret":"key","method":"POST","headers":{"Content-Type":"application/json"},"body":r#"{"nested":{"_method":"DELETE"},"text":"x&_method=GET"}"#}}),
+    );
+    assert_eq!(value["code"], "not_found");
+    assert_eq!(calls, 1);
+    let (value, calls) = second_review_request_result(
+        json!({"url":"https://x.test/repos/a","options":{"secret":"key","method":"POST","headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":r#"{"text":"x&_method=DELETE&other=x"}"#}}),
+    );
+    assert_eq!(value["code"], "secret_request_unsafe");
+    assert_eq!(calls, 0);
+}
+
+#[test]
+fn second_review_epoch_changes_are_scope_changed_not_readiness() {
+    let good = description();
+    let scope = crate::flow_scope::FlowScope {
+        owner: good.scope.as_ref().unwrap().owner.clone(),
+        scope_ref: "flow:scope".into(),
+        epoch: 7,
+    };
+    let host = crate::mock::MockHost::new();
+    let vault = Vault::default();
+    for stamp_epoch in [false, true] {
+        let mut changed = serde_json::to_value(&good).unwrap();
+        if stamp_epoch {
+            changed["scope"]["scope_epoch"] = json!(8);
+        } else {
+            changed["scope_epoch"] = json!(8);
+        }
+        host.set_scope_description(
+            scope.owner.clone(),
+            &scope.scope_ref,
+            Ok(serde_json::from_value(changed).unwrap()),
+        );
+        let error = use_attested(
+            &host,
+            &vault,
+            &scope,
+            &request(json!({})),
+            HASH,
+            json!({"name":"key"}),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, WireError::Typed(refusal) if refusal.reason == crate::flow_refusal::RefusalReason::ScopeChanged && !refusal.readiness())
+        );
+    }
+    assert!(vault.0.lock().unwrap().is_empty());
 }

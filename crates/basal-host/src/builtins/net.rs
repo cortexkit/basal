@@ -435,16 +435,20 @@ pub(crate) fn authorize_secret_request(request: &Request) -> Result<(), Denial> 
             "this script header is not allowed on an authenticated fetch",
         ));
     }
-    if request.headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("content-type")
-            && value
-                .split(';')
-                .next()
-                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("multipart/form-data"))
+    let content_types: Vec<_> = request
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .filter_map(|(_, value)| value.split(';').next())
+        .map(str::trim)
+        .collect();
+    if content_types.iter().any(|mime| {
+        mime.split_once('/')
+            .is_some_and(|(top, _)| top.trim().eq_ignore_ascii_case("multipart"))
     }) {
         return Err(Denial::new(
             "secret_request_unsafe",
-            "multipart forms are not supported on authenticated fetches",
+            "multipart bodies are not supported on authenticated fetches",
         ));
     }
     let query = request
@@ -453,33 +457,99 @@ pub(crate) fn authorize_secret_request(request: &Request) -> Result<(), Denial> 
         .next()
         .and_then(|url| url.split_once('?'))
         .map(|(_, query)| query);
-    for params in query.into_iter().chain(request.body.as_deref()) {
-        for parameter in params.split(['&', ';']) {
-            let mut name = parameter
-                .split('=')
-                .next()
-                .unwrap_or("")
-                .as_bytes()
-                .to_vec();
-            for depth in 0..=8 {
-                if name.eq_ignore_ascii_case(b"_method") {
+    if let Some(query) = query {
+        authorize_secret_parameters(query)?;
+    }
+    if let Some(body) = &request.body {
+        let json_type = content_types.iter().any(|mime| {
+            mime.split_once('/').is_some_and(|(_, subtype)| {
+                let subtype = subtype.trim();
+                subtype.eq_ignore_ascii_case("json")
+                    || subtype
+                        .rsplit_once('+')
+                        .is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case("json"))
+            })
+        });
+        let form_type = content_types
+            .iter()
+            .any(|mime| mime.eq_ignore_ascii_case("application/x-www-form-urlencoded"));
+        match serde_json::from_str::<Value>(body) {
+            Ok(value) => {
+                if value.as_object().is_some_and(|fields| {
+                    fields
+                        .keys()
+                        .any(|name| name.eq_ignore_ascii_case("_method"))
+                }) {
                     return Err(Denial::new(
                         "secret_request_unsafe",
-                        "method override parameters are not allowed on authenticated fetches",
+                        "JSON method overrides are not allowed on authenticated fetches",
                     ));
                 }
-                let decoded = crate::secrets::percent_decode(&name);
-                if decoded == name {
-                    break;
+                if form_type {
+                    authorize_secret_parameters(body)?;
                 }
-                if depth == 8 {
-                    return Err(Denial::new(
-                        "secret_request_unsafe",
-                        "parameter encoding is too deeply nested",
-                    ));
-                }
-                name = decoded;
             }
+            Err(_) if json_type => {
+                return Err(Denial::new(
+                    "secret_request_unsafe",
+                    "authenticated JSON bodies must be valid JSON",
+                ));
+            }
+            Err(_) => authorize_secret_parameters(body)?,
+        }
+    }
+    Ok(())
+}
+
+fn php_parameter_name(input: &[u8]) -> Vec<u8> {
+    let mut name = input.to_vec();
+    let mut open = Vec::new();
+    for (i, b) in input.iter().enumerate() {
+        match b {
+            b'[' => open.push(i),
+            b']' => {
+                open.pop();
+            }
+            _ => {}
+        }
+    }
+    for i in open {
+        name[i] = b'_';
+    }
+    for b in &mut name {
+        if matches!(b, b' ' | b'.') {
+            *b = b'_';
+        }
+    }
+    name
+}
+
+fn authorize_secret_parameters(params: &str) -> Result<(), Denial> {
+    for parameter in params.split(['&', ';']) {
+        let mut name = parameter
+            .split('=')
+            .next()
+            .unwrap_or("")
+            .as_bytes()
+            .to_vec();
+        for depth in 0..=8 {
+            if php_parameter_name(&name).eq_ignore_ascii_case(b"_method") {
+                return Err(Denial::new(
+                    "secret_request_unsafe",
+                    "method override parameters are not allowed on authenticated fetches",
+                ));
+            }
+            let decoded = crate::secrets::percent_decode(&name);
+            if decoded == name {
+                break;
+            }
+            if depth == 8 {
+                return Err(Denial::new(
+                    "secret_request_unsafe",
+                    "parameter encoding is too deeply nested",
+                ));
+            }
+            name = decoded;
         }
     }
     Ok(())
@@ -1384,12 +1454,16 @@ fn finish(response: Response) -> Result<Value, Failure> {
 }
 
 fn finish_secret(mut response: Response, key: &[u8], name: &str) -> Result<Value, Failure> {
-    if response.status == 206 || header(&response.headers, "content-range").is_some() {
-        return Err(Denial::new(
-            "secret_partial_response",
-            "partial authenticated responses are not allowed",
-        )
-        .into());
+    if response.status == 206 {
+        let code = refuse_body(
+            response.effect_possible,
+            Denial::new(
+                "secret_partial_response",
+                "partial authenticated responses are not allowed",
+            ),
+        )?;
+        response.body.clear();
+        response.body_error = Some(code);
     }
     response.headers.retain(|(header, _)| {
         ![
