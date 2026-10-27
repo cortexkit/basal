@@ -885,7 +885,13 @@ impl CaptureHost {
             kind if basal_host::builtins::is_builtin(kind) => {
                 serde_json::from_str::<Value>(request.args.as_str())
                     .ok()
-                    .and_then(|envelope| basal_host::builtins::request_class(kind, &envelope))
+                    .and_then(|envelope| {
+                        if envelope["args"]["options"].get("secret").is_some() {
+                            None
+                        } else {
+                            basal_host::builtins::request_class(kind, &envelope)
+                        }
+                    })
                     == Some(CallClass::Query)
             }
             _ => false,
@@ -987,6 +993,9 @@ impl Host for CaptureHost {
 
 #[derive(Debug)]
 struct CapturedSelector;
+#[cfg(test)]
+#[path = "flow_secrets_dryrun_tests.rs"]
+mod flow_secrets_tests;
 impl basal_host::selector::ModelSelector for CapturedSelector {
     fn select(
         &self,

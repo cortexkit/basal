@@ -1,5 +1,46 @@
 # How a flow script runs
 
+## Authenticated HTTP without exposing a key
+
+```js
+const response = await net.fetch('https://api.github.com/repos/example/project/issues', {
+  method: 'GET',
+  secret: 'github-key'
+});
+```
+
+`secret` names an entry in the approved manifest's `secrets`. The script never
+receives the key. Basal checks the declaration, URL (scheme, host, port and
+whole-segment path prefix) and method before contacting claustrum. An undeclared
+name gives `secret_not_declared`; a target or method outside the declaration
+gives `secret_out_of_scope`. Ordinary network grants still apply. A script still
+cannot set `Authorization`, cookies or other protected headers itself.
+
+Basal describes the flow's live scope and relays the daemon's complete stamp,
+unchanged, to `claustrum secret.use` on its own management route. Missing identity
+attributes give `secret_scope_missing`; a version/hash/flow or scope mismatch
+gives `secret_scope_mismatch`, before any vault call. Basal injects only a
+released API key into `Authorization: Bearer …` or a safe `header:<Name>`.
+Body/query locations give `secret_location_unsupported`; logins cannot be used
+through fetch. Authenticated fetches return redirects without following them:
+a redirect is a new authorization decision and never receives the released key.
+
+Vault final refusals reach `error.data.code` as `not_found`, `invalid_params`,
+`limit_exceeded` or `secret_setup_incomplete`, without provider detail or retries.
+Vault store/route/transport failures defer with bounded backoff. No error text
+contains released material. The journal freezes the public request and a
+`[secret]` credential placeholder, not the injected header. Completed replay
+serves its recorded response without a vault call. An unresolved request follows
+the usual query-versus-mutation recovery rules and must pass authorization again.
+
+Before delivery or journaling, response header names, values and body are
+scrubbed for exact key bytes, standard/base64url (padded or unpadded), and
+fully or selectively percent-encoded forms. A key inside a larger base64-encoded
+payload causes the whole encoded run to be replaced. Matches become
+`{{ck-secret:github-key}}`. This is a backstop, not permission to send a key to
+another target. Both capture and live dry runs capture the fetch with its secret
+name and never call `secret.use` or send authenticated HTTP.
+
 A flow script runs in `ck-basal-worker`, a separate process that confines
 itself before it reads anything from basal. The script reaches the world only
 through host calls: `sink.*`, `facts`, `ops.call`, `llm`, `classify`, `kv` and

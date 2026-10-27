@@ -127,6 +127,13 @@ pub struct Manifest {
     /// Hosts `net.fetch` may reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub net: Option<NetGrant>,
+    /// Vault references approved together with this exact manifest version.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_secrets"
+    )]
+    pub secrets: Option<Vec<basal_host::secrets::Secret>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<String>,
     /// Runs of one flow run one at a time; only 1 is accepted.
@@ -483,6 +490,7 @@ fn check_unix_root(field: &str, root: &str) -> Result<(), ManifestError> {
 /// Why a manifest was refused before any catalog lookup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
+    SecretsRequireFlowInstall,
     TooLarge {
         bytes: usize,
         cap: usize,
@@ -527,6 +535,10 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::SecretsRequireFlowInstall => write!(
+                f,
+                "secrets are supported only on ordinary flow installs for now"
+            ),
             Self::TooLarge { bytes, cap } => {
                 write!(f, "manifest of {bytes} bytes exceeds the cap of {cap}")
             }
@@ -690,6 +702,21 @@ fn check_agent(field: &'static str, agent: &str) -> Result<(), ManifestError> {
     check_name(field, agent, MAX_NAME_BYTES, agent_byte)
 }
 
+// Preserve explicit null as an empty declaration so intake can refuse it
+// without making stored reads apply the nonempty-list policy.
+fn decode_secrets<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<basal_host::secrets::Secret>>, D::Error> {
+    Option::<Vec<basal_host::secrets::Secret>>::deserialize(deserializer)
+        .map(|value| Some(value.unwrap_or_default()))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum IntakeKind {
+    OrdinaryFlow,
+    Package,
+}
+
 impl Manifest {
     /// Decodes and validates new manifest bytes for intake.
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
@@ -774,11 +801,15 @@ impl Manifest {
 
     /// Validates a new manifest without the catalog, including intake policy.
     pub fn check(&self) -> Result<(), ManifestError> {
+        self.check_for_intake(IntakeKind::OrdinaryFlow)
+    }
+
+    pub(crate) fn check_for_intake(&self, kind: IntakeKind) -> Result<(), ManifestError> {
         // Validate literal provider ids before the template placeholder scan so
         // even template grants get the field-specific invalid-id refusal.
         self.check_private_content_providers()?;
         self.check_stored()?;
-        self.check_intake()
+        self.check_intake(kind)
     }
 
     fn check_private_content_providers(&self) -> Result<(), ManifestError> {
@@ -809,7 +840,42 @@ impl Manifest {
         Ok(())
     }
 
-    fn check_intake(&self) -> Result<(), ManifestError> {
+    pub(crate) fn check_package_secret_eligibility(&self) -> Result<(), ManifestError> {
+        if self.secrets.is_some() {
+            return Err(ManifestError::SecretsRequireFlowInstall);
+        }
+        Ok(())
+    }
+
+    fn check_intake(&self, kind: IntakeKind) -> Result<(), ManifestError> {
+        if matches!(kind, IntakeKind::Package) {
+            self.check_package_secret_eligibility()?;
+        }
+        if self
+            .ops
+            .iter()
+            .any(|op| op.module == "claustrum" && op.op.starts_with("secret."))
+        {
+            return Err(invalid(
+                "ops",
+                "vault secret management is parent-only; use net.fetch with a declared secret",
+            ));
+        }
+        if let Some(secrets) = &self.secrets {
+            if !(1..=16).contains(&secrets.len()) {
+                return Err(invalid("secrets", "requires 1 to 16 entries"));
+            }
+            let mut names = std::collections::BTreeSet::new();
+            if secrets
+                .iter()
+                .any(|secret| !secret.valid() || !names.insert(&secret.name))
+            {
+                return Err(invalid(
+                    "secrets",
+                    "invalid or duplicate secret declaration",
+                ));
+            }
+        }
         // Never apply intake policy to stored rows: older approved manifests
         // may predate a required grant and must remain readable.
         for event in self.trigger.events.iter().flatten() {
@@ -1308,6 +1374,7 @@ impl Manifest {
             (!r.is_empty()).then(|| basal_host::builtins::Grant {
                 roots: r.to_vec(),
                 hosts: Vec::new(),
+                secrets: Vec::new(),
                 template_roots: self
                     .template_grants
                     .get(&primitive.code())
@@ -1333,6 +1400,7 @@ impl Manifest {
                         })
                         .collect(),
                     template_roots: Vec::new(),
+                    secrets: self.secrets.clone().unwrap_or_default(),
                 })
             }
             _ => None,
@@ -1420,6 +1488,10 @@ mod board_read_tests;
 #[cfg(test)]
 #[path = "board_sink_tests.rs"]
 mod board_sink_tests;
+
+#[cfg(test)]
+#[path = "flow_secrets_manifest_tests.rs"]
+mod flow_secrets_tests;
 
 #[cfg(test)]
 mod tests {

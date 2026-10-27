@@ -404,7 +404,9 @@ fn outcome_unknown(cause: Option<OutcomeUnknownCause>, message: String) -> WireE
         // cause still means a request may have left, so it uses Unknown rather
         // than NeverSent. New causes are logged with that same uncertainty.
         Some(other) => {
-            tracing::warn!(cause = ?other, %message, "unrecognised subc outcome-unknown cause; recording a lost connection");
+            // Failure messages can reflect a provider payload. Leave logging
+            // them to the caller, after its request-specific sanitization.
+            tracing::warn!(cause = ?other, "unrecognised subc outcome-unknown cause; recording a lost connection");
             WireError::Unknown(message)
         }
     }

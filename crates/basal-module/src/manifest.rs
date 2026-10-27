@@ -183,6 +183,9 @@ pub fn manifest() -> ModuleManifest {
                 cortexkit_role_tool_provider::PROVIDES.into(),
                 cortexkit_role_tool_provider::CALL_MODES_CAPABILITY.into(),
                 "flow-install-policy/v1".into(),
+                // Basal relays the described flow stamp to the vault exactly as
+                // delivered, never edits its fields and never builds a stamp.
+                subc_protocol::scope::FLOW_IDENTITY_SCOPES_CAPABILITY.into(),
                 // basal reads a worker run's `on_behalf_of_agent` from the
                 // daemon's description of the run's scope, which the daemon
                 // includes only for a module declaring this. basal treats

@@ -264,6 +264,7 @@ impl Engine {
         };
         inner.rt.poll_lost_grants().map_err(fatal)?;
         inner.rt.drain_owner_notices().map_err(fatal)?;
+        inner.rt.drain_secret_revocations().map_err(fatal)?;
         inner.rt.drain_event_backlog().map_err(fatal)?;
         let tick = inner.scheduler.tick().map_err(fatal)?;
         let admitted: Vec<String> = tick.new_runs().into_iter().map(str::to_owned).collect();

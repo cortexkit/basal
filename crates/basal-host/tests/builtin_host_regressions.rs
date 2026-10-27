@@ -46,6 +46,7 @@ fn escaped_800kb_file_is_a_typed_refusal_not_successful_null() {
                 &Grant {
                     roots: tree.roots(),
                     hosts: vec![],
+                    secrets: vec![],
                     template_roots: vec![],
                 },
             )
@@ -88,6 +89,7 @@ fn escaped_listing_exceeds_encoded_cap_as_a_typed_refusal() {
                 &Grant {
                     roots: tree.roots(),
                     hosts: vec![],
+                    secrets: vec![],
                     template_roots: vec![],
                 },
             )

@@ -383,6 +383,7 @@ pub struct Request {
     pub method: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    pub secret: Option<String>,
 }
 
 /// The method a `net.fetch` call asks for: `GET` when it names none.
@@ -390,7 +391,7 @@ pub fn method_of(args: &Value) -> Result<String, Denial> {
     if !args.is_object() {
         return Err(Denial::invalid("net.fetch arguments must be an object"));
     }
-    let options = options(args, "options", &["method", "headers", "body"])?;
+    let options = options(args, "options", &["method", "headers", "body", "secret"])?;
     match options.and_then(|o| o.get("method")) {
         None | Some(Value::Null) => Ok("GET".to_owned()),
         Some(Value::String(m)) => {
@@ -419,7 +420,12 @@ fn header_name_ok(name: &str) -> bool {
 pub fn parse_request(args: &Value) -> Result<Request, Denial> {
     let url = string_arg(args, "url")?;
     let method = method_of(args)?;
-    let options = options(args, "options", &["method", "headers", "body"])?;
+    let options = options(args, "options", &["method", "headers", "body", "secret"])?;
+    let secret = match options.and_then(|o| o.get("secret")) {
+        None => None,
+        Some(Value::String(name)) if crate::secrets::valid_name(name) => Some(name.clone()),
+        Some(_) => return Err(Denial::invalid("secret must be a vault secret name")),
+    };
     let mut headers = Vec::new();
     match options.and_then(|o| o.get("headers")) {
         None | Some(Value::Null) => {}
@@ -474,6 +480,7 @@ pub fn parse_request(args: &Value) -> Result<Request, Denial> {
         method,
         headers,
         body,
+        secret,
     })
 }
 
@@ -692,6 +699,91 @@ impl Client {
     /// Runs a fetch: every hop checked against `rules`, the final response
     /// returned as `{status, headers, body}`.
     pub fn fetch(&self, request: &Request, rules: &[HostRule]) -> Result<Value, Failure> {
+        self.fetch_inner(request, rules, None)
+    }
+
+    pub(crate) fn fetch_secret(
+        &self,
+        request: &mut Request,
+        rules: &[HostRule],
+        name: &str,
+        key: &mut [u8],
+        location: &str,
+    ) -> Result<Value, Failure> {
+        if key.is_empty()
+            || key.len() > MAX_HEADER_VALUE_BYTES
+            || key.iter().any(|b| !(0x20..0x7f).contains(b))
+        {
+            return Err(Denial::new(
+                "secret_key_invalid",
+                "the vault key is not a bounded HTTP header value",
+            )
+            .into());
+        }
+        let (header, bearer) = if location == "authorization_bearer" {
+            ("Authorization", true)
+        } else if let Some(header) = location.strip_prefix("header:") {
+            if !header_name_ok(header)
+                || (FORBIDDEN_HEADERS.contains(&header.to_ascii_lowercase().as_str())
+                    && !header.eq_ignore_ascii_case("authorization"))
+            {
+                return Err(Denial::new(
+                    "secret_location_unsupported",
+                    "the vault header location is unsafe",
+                )
+                .into());
+            }
+            (header, false)
+        } else {
+            return Err(Denial::new(
+                "secret_location_unsupported",
+                "body and query secret locations are not supported",
+            )
+            .into());
+        };
+        request
+            .headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case(header));
+        let mut value = if bearer {
+            "Bearer ".to_owned()
+        } else {
+            String::new()
+        };
+        value.push_str(
+            std::str::from_utf8(key)
+                .map_err(|_| Denial::new("secret_key_invalid", "invalid key encoding"))?,
+        );
+        request.headers.push((header.to_owned(), value));
+        let result = self.fetch_inner(request, rules, Some((key, name)));
+        if let Some((_, value)) = request.headers.pop() {
+            let mut bytes = value.into_bytes();
+            bytes.fill(0);
+        }
+        // HTTP diagnostics may reflect server-controlled bytes. Secret fetches
+        // keep only the disposition and a constant explanation on failure.
+        result.map_err(|failure| match failure {
+            Failure::Refused(denial) => Failure::Refused(Denial::new(
+                denial.code,
+                "authenticated HTTP request was refused",
+            )),
+            Failure::Transport(TransportError::Unavailable { sent, .. }) => {
+                Failure::Transport(TransportError::Unavailable {
+                    sent,
+                    detail: "authenticated HTTP transport failed".into(),
+                })
+            }
+            _ => Failure::Transport(TransportError::unsent(
+                "authenticated HTTP transport failed",
+            )),
+        })
+    }
+
+    fn fetch_inner(
+        &self,
+        request: &Request,
+        rules: &[HostRule],
+        secret: Option<(&[u8], &str)>,
+    ) -> Result<Value, Failure> {
         let deadline = Instant::now() + self.config.total_timeout;
         let first = parse_url(&request.url)?;
         let mut url = first.clone();
@@ -734,6 +826,11 @@ impl Client {
             };
             if !is_query_method(&method) {
                 progress.sent_mutation = true;
+            }
+            if let Some((key, name)) = secret {
+                // A redirected path is a different authorization decision. Do
+                // not forward a released key, even to the same origin.
+                return finish_secret(response, key, name);
             }
             if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
                 return finish(response);
@@ -1057,7 +1154,7 @@ fn parse_head(raw: &[u8]) -> Result<(u16, Vec<(String, String)>), Denial> {
         .iter()
         .map(|h| {
             (
-                h.name.to_ascii_lowercase(),
+                h.name.to_owned(),
                 String::from_utf8_lossy(h.value).into_owned(),
             )
         })
@@ -1068,7 +1165,7 @@ fn parse_head(raw: &[u8]) -> Result<(u16, Vec<(String, String)>), Denial> {
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()
-        .find(|(n, _)| n == name)
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
         .map(|(_, v)| v.as_str())
 }
 
@@ -1183,6 +1280,7 @@ fn unreadable(effect_possible: bool, detail: String) -> Failure {
 fn finish(response: Response) -> Result<Value, Failure> {
     let mut headers: Map<String, Value> = Map::new();
     for (name, value) in response.headers {
+        let name = name.to_ascii_lowercase();
         if name == "set-cookie" {
             continue;
         }
@@ -1213,4 +1311,35 @@ fn finish(response: Response) -> Result<Value, Failure> {
             "body_error": code,
         }),
     })
+}
+
+fn finish_secret(mut response: Response, key: &[u8], name: &str) -> Result<Value, Failure> {
+    response
+        .headers
+        .retain(|(header, _)| !header.eq_ignore_ascii_case("set-cookie"));
+    response.body = crate::secrets::redact(&response.body, key, name);
+    for (header, value) in &mut response.headers {
+        *header = String::from_utf8_lossy(&crate::secrets::redact(header.as_bytes(), key, name))
+            .into_owned();
+        *value = String::from_utf8_lossy(&crate::secrets::redact(value.as_bytes(), key, name))
+            .into_owned();
+    }
+    let mut value = finish(response)?;
+    if let Some(headers) = value["headers"].as_object_mut() {
+        // Joining repeated values can reassemble a key from individually safe
+        // fragments; normalization must finish before the last scrub.
+        for (header, value) in std::mem::take(headers) {
+            let header =
+                String::from_utf8_lossy(&crate::secrets::redact(header.as_bytes(), key, name))
+                    .into_owned();
+            let value = String::from_utf8_lossy(&crate::secrets::redact(
+                value.as_str().unwrap_or("").as_bytes(),
+                key,
+                name,
+            ))
+            .into_owned();
+            headers.insert(header, Value::String(value));
+        }
+    }
+    Ok(value)
 }

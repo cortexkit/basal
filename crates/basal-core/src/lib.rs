@@ -48,6 +48,9 @@ pub mod dry_run_text;
 pub mod error;
 pub mod events;
 mod flow_scope;
+#[cfg(test)]
+#[path = "flow_secrets_runtime_tests.rs"]
+mod flow_secrets_runtime_tests;
 pub mod gate;
 pub mod grant_loss;
 pub mod hooks;
@@ -70,6 +73,7 @@ pub mod runs;
 pub mod runtime;
 pub mod schedule;
 pub mod schema;
+mod secret_revocation;
 pub mod state_epoch;
 pub mod store;
 pub mod template_events;

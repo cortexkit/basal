@@ -1,0 +1,77 @@
+{
+  "args_digest": "26555f5ccf6fec5877dc1898e208f4af44159ec9f2dec6362ccfe00ba1b0612f",
+  "dedup_key": "flow_install:secret-sample:1",
+  "default": "decline",
+  "expires_in_ms": 86400000,
+  "facts": [],
+  "flow_install": {
+    "author": {
+      "operator": true
+    },
+    "code_hash": "26555f5ccf6fec5877dc1898e208f4af44159ec9f2dec6362ccfe00ba1b0612f",
+    "dry_run_summary": {
+      "mode": "capture",
+      "partial": false,
+      "runs": [],
+      "warnings": [],
+      "window": {
+        "capped": true,
+        "covered": null,
+        "due_times_in_window": 24,
+        "due_times_is_lower_bound": false,
+        "kind": "schedule",
+        "replayed": 0,
+        "requested": {
+          "from": "2026-04-30T00:00:00Z",
+          "to": "2026-05-01T00:00:00Z"
+        }
+      }
+    },
+    "flow_id": "secret-sample",
+    "install_id": "secret_sample_v1",
+    "manifest_json": "{\"id\":\"secret-sample\",\"net\":{\"fetch\":[{\"host\":\"x.test\",\"methods\":[\"GET\"]}]},\"purpose\":\"Read an authenticated API without exposing its key\",\"secrets\":[{\"methods\":[\"GET\"],\"name\":\"key\",\"target\":{\"host\":\"x.test\",\"path\":\"/repos/a\",\"scheme\":\"https\"}}],\"trigger\":{\"schedule\":{\"interval\":\"1h\"}},\"version\":1}",
+    "script": "return 1;\n",
+    "secrets": [
+      {
+        "request_id": "illustrative-request-1",
+        "statement_b64url": "eyJkdXJhdGlvbnMiOlsidmVyc2lvbiJdLCJmbG93Ijp7ImNvZGVfaGFzaCI6IjI2NTU1ZjVjY2Y2ZmVjNTg3N2RjMTg5OGUyMDhmNGFmNDQxNTllYzlmMmRlYzYzNjJjY2ZlMDBiYTFiMDYxMmYiLCJmbG93X2lkIjoic2VjcmV0LXNhbXBsZSIsImluc3RhbGxfaWQiOiJzZWNyZXRfc2FtcGxlX3YxIiwidmVyc2lvbiI6MX0sIm1lbWJlcl9pZCI6ImZlZC1jb21wdXRlcjppbGx1c3RyYXRpdmUiLCJyZXF1ZXN0X2V4cGlyZXNfYXRfbXMiOjIwMDAwMDAwMDAwMDAsInJlcXVlc3RfaWQiOiJpbGx1c3RyYXRpdmUtcmVxdWVzdC0xIiwic2VjcmV0Ijp7ImluY2FybmF0aW9uIjoiaWxsdXN0cmF0aXZlLWluY2FybmF0aW9uLTEiLCJraW5kIjoiYWdlbnRfYXBpX2tleSIsIm5hbWUiOiJrZXkifSwidXNlIjp7Imhvc3QiOiJ4LnRlc3QiLCJsb2NhdGlvbiI6ImhlYWRlcjpYLUFwaS1LZXkiLCJtZXRob2RzIjpbIkdFVCJdLCJwYXRoX3ByZWZpeCI6Ii9yZXBvcy9hIn0sInYiOiJjay1zZWNyZXQtZmxvdy1zdGF0ZW1lbnQvdjEifQ"
+      }
+    ],
+    "token_usage": {
+      "cache_read": 0,
+      "cache_write": 0,
+      "fresh_input": 0,
+      "output": 0,
+      "window": "1d"
+    },
+    "version": 1,
+    "warnings": []
+  },
+  "kind": "flow_install",
+  "late_execution": "notify_only",
+  "material_damage": false,
+  "on_expiry": "deny",
+  "options": [
+    {
+      "effect": "grant",
+      "id": "approve",
+      "label": "Approve"
+    },
+    {
+      "effect": "decline",
+      "id": "decline",
+      "label": "Decline"
+    }
+  ],
+  "preview": {
+    "label": "Code",
+    "text": "return 1;\n"
+  },
+  "prompt": "Read an authenticated API without exposing its key",
+  "target": {
+    "kind": "flow",
+    "label": "secret-sample v1"
+  },
+  "title": "Install flow secret-sample v1",
+  "urgency": "normal"
+}

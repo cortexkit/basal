@@ -21,6 +21,14 @@ pub const SCOPE_ENDED: &str = "flow_install_scope_ended";
 
 pub(crate) fn error(e: WireError) -> ConsentError {
     match e {
+        WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. }
+            if code == "secret_statement_mismatch" =>
+        {
+            ConsentError::Secret {
+                code,
+                retryable: false,
+            }
+        }
         WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. }
             if code == SCOPE_UNKNOWN || code == SCOPE_ENDED =>
         {
@@ -90,6 +98,7 @@ pub const FLOW_INSTALL_DRY_RUN_TEXT_V1: &str = "flow-install-dry-run-text/v1";
 
 /// Core accepts a stable, basal-minted identity for each install request.
 pub const FLOW_INSTALL_ID_V1: &str = "flow-install-id/v1";
+pub const FLOW_INSTALL_SECRETS_V1: &str = "flow-install-secrets/v1";
 
 /// The `flow.install_request` for an install card. With `dry_run_text`, and
 /// when the card holds one, the body also carries the dry run in plain words
@@ -904,6 +913,68 @@ impl Consent for CoreConsent {
         let mut request = request_for(card, dry_run_text)?;
         if crate::core_host::core_provides(self.state.transport.as_ref(), FLOW_INSTALL_ID_V1) {
             request["flow_install"]["install_id"] = json!(field(&card.fields, "install_id")?);
+        }
+        let manifest: Value = serde_json::from_str(field(&card.fields["code"], "manifest")?)
+            .map_err(|_| ConsentError::Refused("invalid manifest JSON".into()))?;
+        if let Some(secrets) = manifest.get("secrets") {
+            let secrets = secrets.as_array().ok_or_else(|| ConsentError::Secret {
+                code: "invalid_params".into(),
+                retryable: false,
+            })?;
+            if !crate::core_host::core_provides(
+                self.state.transport.as_ref(),
+                FLOW_INSTALL_SECRETS_V1,
+            ) {
+                return Err(ConsentError::Secret {
+                    code: "install_secrets_unsupported".into(),
+                    retryable: false,
+                });
+            }
+            let install_id = field(&card.fields, "install_id")?;
+            request["flow_install"]["install_id"] = json!(install_id);
+            let flow = json!({"flow_id":card.flow_id,"version":card.version,
+                "code_hash":field(&card.fields,"code_hash")?,"install_id":install_id});
+            let mut statements = Vec::with_capacity(secrets.len());
+            for secret in secrets {
+                let mut params =
+                    json!({"name":secret["name"],"flow":flow,"target":secret["target"]});
+                if let Some(methods) = secret.get("methods") {
+                    params["methods"] = methods.clone();
+                }
+                let reply = self
+                    .state
+                    .transport
+                    .management("claustrum", "secret.request_flow_approval", params)
+                    .map_err(|error| {
+                        let code = match &error {
+                            WireError::Refused { code, .. }
+                            | WireError::RefusedDetails { code, .. } => code.as_str(),
+                            _ => "secret_vault_unavailable",
+                        };
+                        ConsentError::Secret {
+                            code: code.into(),
+                            retryable: !matches!(
+                                code,
+                                "invalid_params"
+                                    | "limit_exceeded"
+                                    | "not_found"
+                                    | "secret_setup_incomplete"
+                            ),
+                        }
+                    })?;
+                if reply["status"] != "approval_required"
+                    || !reply["request_id"].is_string()
+                    || !reply["statement_b64url"].is_string()
+                    || !reply["expires_at_ms"].is_i64()
+                {
+                    return Err(ConsentError::Secret {
+                        code: "secret_vault_unreadable".into(),
+                        retryable: true,
+                    });
+                }
+                statements.push(json!({"request_id":reply["request_id"],"statement_b64url":reply["statement_b64url"]}));
+            }
+            request["flow_install"]["secrets"] = json!(statements);
         }
         let reply = self
             .state

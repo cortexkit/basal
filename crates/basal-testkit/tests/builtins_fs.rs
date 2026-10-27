@@ -221,6 +221,7 @@ fn read_refuses_text_that_is_not_utf8_or_is_over_the_cap() {
     let grant = Grant {
         roots: roots.clone(),
         hosts: Vec::new(),
+        secrets: Vec::new(),
         template_roots: Vec::new(),
     };
     let over = json!({ "path": t.p("big"), "options": { "maxBytes": fs::MAX_READ_BYTES + 1 } });
@@ -363,6 +364,7 @@ fn the_host_checks_the_grant_carried_with_the_call() {
     let other = Grant {
         roots: vec![t.outside.display().to_string()],
         hosts: Vec::new(),
+        secrets: Vec::new(),
         template_roots: Vec::new(),
     };
     match host.run(

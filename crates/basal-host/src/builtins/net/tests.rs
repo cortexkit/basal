@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn flow_secrets_header_join_cannot_reassemble_a_released_key() {
+    let response = Response {
+        status: 200,
+        headers: vec![
+            ("X-Echo".into(), "opaque-prefix".into()),
+            ("x-echo".into(), "opaque-suffix".into()),
+        ],
+        body: Vec::new(),
+        body_error: None,
+        effect_possible: false,
+    };
+    let value = finish_secret(response, b"opaque-prefix, opaque-suffix", "key").unwrap();
+    assert_eq!(value["headers"]["x-echo"], "{{ck-secret:key}}");
+}
+
+#[test]
+fn flow_secrets_header_names_are_scrubbed_before_case_normalization() {
+    let key = "MixedCaseVaultKey";
+    let (status, headers) =
+        parse_head(format!("HTTP/1.1 200 OK\r\n{key}: value\r\n\r\n").as_bytes()).unwrap();
+    assert_eq!(header(&headers, "mixedcasevaultkey"), Some("value"));
+    let value = finish_secret(
+        Response {
+            status,
+            headers,
+            body: Vec::new(),
+            body_error: None,
+            effect_possible: false,
+        },
+        key.as_bytes(),
+        "key",
+    )
+    .unwrap();
+    assert_eq!(value["headers"]["{{ck-secret:key}}"], "value");
+    assert!(value["headers"].get(key.to_ascii_lowercase()).is_none());
+}
+
+#[test]
+fn flow_secrets_header_redaction_cannot_make_set_cookie_visible() {
+    let response = Response {
+        status: 200,
+        headers: vec![("Set-Cookie".into(), "private-session".into())],
+        body: Vec::new(),
+        body_error: None,
+        effect_possible: false,
+    };
+    let value = finish_secret(response, b"Set-Cookie", "key").unwrap();
+    assert_eq!(value["headers"], serde_json::json!({}));
+}
+
+#[test]
 fn relative_redirects_keep_embedded_urls_and_the_current_query_path() {
     let base = parse_url("https://api.test/dir/page?old=1").unwrap();
     for (location, expected) in [

@@ -64,6 +64,38 @@ Installation records a version and asks prefrontal-core to authorize it through 
 
 When core's daemon catalog entry advertises `flow-install-id/v1`, basal sends `flow_install.install_id` in `flow.install_request`, beside `flow_id`, `version` and `code_hash` inside `flow_install`. Otherwise the key is omitted. Basal mints 16 bytes from OS entropy, encodes them as 32 lowercase hexadecimal characters (within core's 1–64 character `[A-Za-z0-9_-]` alphabet), and saves the id with the local install card in the same transaction. Each new local card gets a new id. Retrying a pending card, including after a lost reply, reuses its stored id; core assigns `attempt` only in its reply, so basal does not mint ids from attempt numbers. Existing cards without an id acquire one transactionally before their next request is sent. Core binds an id to the exact flow, version and code hash and refuses its reuse for a different install.
 
+For a manifest with `secrets`, core must advertise `flow-install-secrets/v1` or
+the install returns `install_secrets_unsupported`. Basal first makes one unscoped,
+`reserved:basal` call per declaration to `claustrum secret.request_flow_approval`
+with `{name, flow:{flow_id,version,code_hash,install_id}, target, methods?}`.
+These calls happen without a SQLite write lock. Vault request ids and statement
+bytes are relayed unchanged as `flow_install.secrets:
+[{request_id,statement_b64url}]`, beside the same `install_id`. A retry reuses
+the stored identity and the vault's idempotent live request. Core checks each
+statement's flow binding and may return `secret_statement_mismatch`.
+
+Vault `invalid_params`, `limit_exceeded`, `not_found` and
+`secret_setup_incomplete` fail installation with that code; `pending_limit`,
+`store_error` and unavailable routes fail once with `detail.retryable: true`.
+Basal never loops or sends a partial install. Secret versions require a card
+answer and cannot be approved through policy, live or recovered. An active
+secret version becomes approved locally only when core explicitly reports
+`approval.kind: card`; missing provenance leaves the version pending, records
+an `install_checks` reason and logs a warning once for that reason. Basal declares
+`flow-identity-scopes/v1` so the daemon includes all installed-flow identity
+attributes when describing a scope for vault use; it never constructs a stamp.
+
+Secret cleanup is durable best-effort work in the existing outbox. A declined,
+expired or rejected install card enqueues a version-specific
+`claustrum secret.revoke_flow_grants {flow_install_id,flow_version}` in the same
+transaction that settles the card. Uninstall enqueues each secret install's id
+without `flow_version`. Approval of a replacement enqueues retirement of the
+old version, but does not send its revoke until its last run, durable call/model
+obligation and executing dispatch have ended. The engine drains due rows outside
+SQLite transactions; failures remain queued with bounded exponential backoff.
+Successful `{"status":"revoked","grants":0}` is also final success. No new
+store migration is needed: the existing outbox holds these obligations.
+
 Uninstall preserves card history. Repeating an already-approved version after uninstall does not restore it or raise a fresh card: restoration requires a new version, which gets a new local card and install id. A still-pending card keeps its id across uninstall because no grant has been approved under it; approving it afterwards is a fresh approval decision, not revival of an old grant. Startup recovery and `flow.install_decided` only read status, never resend an install request or rotate its id. A later explicit retry sends the saved id if core advertises the capability.
 
 When core's daemon catalog entry lists the capability `flow-install-dry-run-text/v1`, the `flow_install` body also carries `dry_run_text`: the install dry run in plain words, which core and cingulate show as written. Without the capability basal sends exactly the body above, without the key. The raw `dry_run_summary` is sent either way, unchanged, for audits. The card basal records always holds both. The shape is:

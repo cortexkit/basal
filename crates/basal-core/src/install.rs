@@ -1237,6 +1237,7 @@ fn approve_with_resolved_agents(
         });
     }
     supersede_older_pending_cards(tx, flow_id, version, now_ms)?;
+    crate::secret_revocation::retire_approved(tx, flow_id, now_ms)?;
     tx.execute(
         "UPDATE installs SET state = 'superseded' WHERE flow_id = ?1 AND state = 'approved'",
         [flow_id],
@@ -1774,6 +1775,7 @@ impl Runtime {
                 "UPDATE flows SET removed=1, removed_by='operator', removed_at=?2 WHERE flow_id=?1",
                 params![flow_id, now],
             )?;
+            crate::secret_revocation::enqueue(tx, flow_id, None, false, now)?;
             tx.execute(
                 "UPDATE event_receipts SET state='refused' WHERE flow_id=?1 AND state='backlog'",
                 [flow_id],

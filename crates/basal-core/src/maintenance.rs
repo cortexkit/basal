@@ -48,6 +48,7 @@ impl Runtime {
             gate,
             pool_next,
             owner_notice,
+            self.secret_revocation_next_wake()?,
         ]
         .into_iter()
         .flatten()

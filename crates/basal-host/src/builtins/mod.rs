@@ -140,6 +140,8 @@ pub struct Grant {
     pub roots: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<HostRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<crate::secrets::Secret>,
     /// Recorded `under` bounds for paths supplied by template parameters. Each
     /// access rechecks those paths against the instance's creation-time bounds.
     /// Ordinary static roots, including approved symlink roots, are unchanged.
@@ -447,7 +449,26 @@ pub fn authorize(call: &Call, grant: &Grant) -> Result<(), Denial> {
         Call::Git { repo, .. } => git::repo(repo, &roots).map(|_| ()),
         Call::NetFetch(request) => {
             let url = net::parse_url(&request.url)?;
-            net::allowed_url(&grant.hosts, &url, &request.method)
+            net::allowed_url(&grant.hosts, &url, &request.method)?;
+            if let Some(name) = &request.secret {
+                let secret = grant
+                    .secrets
+                    .iter()
+                    .find(|s| &s.name == name)
+                    .ok_or_else(|| {
+                        Denial::new(
+                            "secret_not_declared",
+                            "the manifest does not declare this secret",
+                        )
+                    })?;
+                if !secret.permits(&url, &request.method) {
+                    return Err(Denial::new(
+                        "secret_out_of_scope",
+                        "the secret does not permit this target and method",
+                    ));
+                }
+            }
+            Ok(())
         }
     }
 }
@@ -462,6 +483,7 @@ pub struct BuiltinConfig {
 /// parent journaled; the host checks its scope again, then acts.
 pub struct BuiltinHost {
     net: net::Client,
+    secret_host: Option<Arc<dyn Host>>,
     /// Where `fs.write` records its temporary files, once a runtime has
     /// bound one ([`Host::bind_fs_temps`]).
     temps: std::sync::RwLock<Option<Arc<dyn fs::TempLedger>>>,
@@ -474,11 +496,86 @@ impl Default for BuiltinHost {
 }
 
 impl BuiltinHost {
+    fn secret_fetch(&self, context: &CallRequest, envelope: &Value) -> Result<Value, Failure> {
+        use base64::Engine;
+        let grant: Grant = serde_json::from_value(envelope["grant"].clone())
+            .map_err(|_| Denial::invalid("invalid secret fetch grant"))?;
+        let call = parse(Primitive::NetFetch, &envelope["args"])?;
+        authorize(&call, &grant)?;
+        let Call::NetFetch(mut request) = call else {
+            unreachable!()
+        };
+        let name = request
+            .secret
+            .clone()
+            .ok_or_else(|| Denial::invalid("missing secret name"))?;
+        let url = net::parse_url(&request.url)?;
+        let params = serde_json::json!({"name":name,"target":{"scheme":"https","host":url.host,
+            "port":url.port,"path":url.target.split('?').next().unwrap_or("/")},"method":request.method});
+        let host = self.secret_host.as_ref().ok_or_else(|| {
+            Denial::new("secret_scope_missing", "no secret carrier is configured")
+        })?;
+        let reply = host.secret_use(
+            context,
+            envelope["flow_code_hash"].as_str().unwrap_or(""),
+            params,
+        );
+        let mut reply = reply.map_err(|error| {
+            use crate::transport::WireError;
+            let code = match error {
+                WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. } => code,
+                _ => String::new(),
+            };
+            let final_code = match code.as_str() {
+                "not_found" => Some("not_found"),
+                "invalid_params" => Some("invalid_params"),
+                "limit_exceeded" => Some("limit_exceeded"),
+                "secret_setup_incomplete" => Some("secret_setup_incomplete"),
+                "secret_scope_missing" => Some("secret_scope_missing"),
+                "secret_scope_mismatch" => Some("secret_scope_mismatch"),
+                _ => None,
+            };
+            if let Some(code) = final_code {
+                Failure::Refused(Denial::new(code, "secret use was refused"))
+            } else {
+                Failure::Transport(TransportError::Refused(
+                    crate::flow_refusal::FlowRefusal::new(
+                        crate::flow_refusal::RefusalReason::SecretVaultUnavailable,
+                        "claustrum",
+                        "secret.use",
+                    ),
+                ))
+            }
+        })?;
+        if reply["kind"] != "agent_api_key" || reply["status"] != "released" {
+            crate::secrets::clear_reply(&mut reply);
+            return Err(
+                Denial::new("secret_kind_unsupported", "net.fetch requires an API key").into(),
+            );
+        }
+        let location = reply["location"].as_str().unwrap_or("").to_owned();
+        let mut key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(reply["key_b64url"].as_str().unwrap_or(""))
+            .unwrap_or_default();
+        crate::secrets::clear_reply(&mut reply);
+        let result = self
+            .net
+            .fetch_secret(&mut request, &grant.hosts, &name, &mut key, &location);
+        key.fill(0);
+        result
+    }
+
     pub fn new(config: BuiltinConfig) -> Self {
         Self {
             net: net::Client::new(config.net),
+            secret_host: None,
             temps: std::sync::RwLock::new(None),
         }
+    }
+
+    pub fn with_secret_host(mut self, host: Arc<dyn Host>) -> Self {
+        self.secret_host = Some(host);
+        self
     }
 
     /// Runs one built-in call from its journaled envelope, outside any
@@ -522,7 +619,16 @@ impl BuiltinHost {
                 None => fs::write(&path, &grant.roots, &text)?,
             }),
             Call::Git { repo, op } => Ok(git::run(&repo, &grant.roots, &op)?),
-            Call::NetFetch(request) => self.net.fetch(&request, &grant.hosts),
+            Call::NetFetch(request) => {
+                if request.secret.is_some() {
+                    return Err(Denial::new(
+                        "secret_scope_unavailable",
+                        "secret fetch requires an installed flow scope",
+                    )
+                    .into());
+                }
+                self.net.fetch(&request, &grant.hosts)
+            }
         }
     }
 
@@ -558,7 +664,13 @@ impl BuiltinHost {
                 .outcome(),
             ));
         }
-        match self.run_call(p, &envelope, Some(&request.idempotency_key)) {
+        let result =
+            if p == Primitive::NetFetch && envelope["args"]["options"].get("secret").is_some() {
+                self.secret_fetch(request, &envelope)
+            } else {
+                self.run_call(p, &envelope, Some(&request.idempotency_key))
+            };
+        match result {
             Ok(value) => Ok(Dispatched::Completed(match text(&value) {
                 Ok(value) => HostOutcome::fulfilled(value),
                 Err(denial) => denial.outcome(),
