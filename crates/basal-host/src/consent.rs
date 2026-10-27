@@ -226,11 +226,15 @@ impl DecisionPath {
 /// The consent plane could not take the card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsentError {
+    /// Vault preparations succeeded, but core explicitly refused the install.
+    InstallRefusedWithSecrets(Box<ConsentError>),
     /// It cannot be reached, or none is configured. Raising again later is
     /// safe: the card id makes it idempotent.
     Unavailable(String),
     /// It refused the card.
     Refused(String),
+    /// A secret-declaring install cannot proceed without vault approval.
+    Secret { code: String, retryable: bool },
     /// It refused the card's author: the agent scope the card names is not a
     /// live agent session core knows. `code` is core's refusal code
     /// (`flow_install_scope_unknown` or `flow_install_scope_ended`). The
@@ -243,8 +247,12 @@ pub enum ConsentError {
 impl fmt::Display for ConsentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InstallRefusedWithSecrets(error) => write!(f, "{error}"),
             Self::Unavailable(e) => write!(f, "consent plane unavailable: {e}"),
             Self::Refused(e) => write!(f, "consent plane refused the card: {e}"),
+            Self::Secret { code, retryable } => {
+                write!(f, "secret approval refused ({code}, retryable={retryable})")
+            }
             Self::AuthorScope { code, message } => write!(
                 f,
                 "consent plane refused the card's author ({code}): the agent scope it names is not a live agent session in core: {message}"

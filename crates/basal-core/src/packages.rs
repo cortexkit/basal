@@ -169,7 +169,7 @@ impl Runtime {
             return Err(refused("package_id_too_long"));
         }
         manifest
-            .check()
+            .check_for_intake(crate::manifest::IntakeKind::Package)
             .map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
         if manifest.agents().iter().any(|(_, agent)| *agent != "$self") {
             return Err(refused("package_names_agent"));
@@ -257,6 +257,8 @@ impl Runtime {
             if manifest.params.is_some() {
                 return Err(refused("package_has_params"));
             }
+            manifest.check_package_secret_eligibility()
+                .map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
             match known_agent {
                 Ok(true) => {}
                 Ok(false) => return Err(refused("agent_unknown")),

@@ -27,6 +27,7 @@ pub enum RefusalReason {
     FlowNotApproved,
     SinkAudienceUnavailable,
     SinkStoreFailed,
+    SecretVaultUnavailable,
     SinkBoardTargetUnavailable,
     FlowHasNoAudience,
     ScopeExpiryTooFar,
@@ -56,6 +57,7 @@ impl RefusalReason {
             Self::FlowNotApproved => "flow_not_approved",
             Self::SinkAudienceUnavailable => "sink_audience_unavailable",
             Self::SinkStoreFailed => "sink_store_failed",
+            Self::SecretVaultUnavailable => "secret_vault_unavailable",
             Self::SinkBoardTargetUnavailable => "sink_board_target_unavailable",
             Self::FlowHasNoAudience => "flow_has_no_audience",
             Self::ScopeExpiryTooFar => "scope_expiry_too_far",
@@ -140,6 +142,7 @@ impl FlowRefusal {
                 "core cannot currently read the install audience"
             }
             RefusalReason::SinkStoreFailed => "core could not store the board write",
+            RefusalReason::SecretVaultUnavailable => "the secret vault is temporarily unavailable",
             RefusalReason::SinkBoardTargetUnavailable => "core's agent registry is unavailable",
             RefusalReason::FlowHasNoAudience => "the approved flow has no audience",
             RefusalReason::ScopeExpiryTooFar => {

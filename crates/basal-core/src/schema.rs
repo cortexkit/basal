@@ -480,6 +480,10 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 44,
         statements: CODEMODE_WORKER_RUNS,
     },
+    Migration {
+        version: 45,
+        statements: include_str!("schema_secret_review_v45.sql"),
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,

@@ -42,6 +42,7 @@ pub mod mock;
 pub mod routing;
 pub mod run_scope;
 pub mod scope_describe;
+pub mod secrets;
 pub mod selector;
 pub mod subc_catalog;
 pub mod target_scope;
@@ -496,6 +497,23 @@ pub trait CompletionSink: Send + Sync {
 /// The hosts a flow reaches. Implementations must be safe to call from
 /// several threads at once: the runtime runs a run's calls concurrently.
 pub trait Host: Send + Sync {
+    fn secret_revoke(
+        &self,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, transport::WireError> {
+        Err(transport::WireError::NeverSent(
+            "vault cleanup unavailable".into(),
+        ))
+    }
+    /// Release only to the parent-side HTTP implementation, never to a worker.
+    fn secret_use(
+        &self,
+        _request: &CallRequest,
+        _code_hash: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, transport::WireError> {
+        Err(secrets::not_ready())
+    }
     fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
     /// Runtime-owned notices use basal's management identity, not a flow grant.
     fn owner_notice(

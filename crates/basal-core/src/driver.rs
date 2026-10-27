@@ -1654,9 +1654,15 @@ impl Activation<'_> {
                 // same scope again at the moment it acts, and a resend after
                 // a crash carries the scope the call was approved under.
                 let grant = authorize::builtin_grant(manifest, *p, &args)?;
-                let request =
-                    JsonText::new(basal_host::builtins::envelope(&args, &grant).to_string())
-                        .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
+                let mut envelope = basal_host::builtins::envelope(&args, &grant);
+                if *p == Primitive::NetFetch && args["options"].get("secret").is_some() {
+                    envelope["flow_code_hash"] =
+                        serde_json::json!(crate::ids::hex(&self.run.code_hash));
+                    envelope["credential"] =
+                        serde_json::json!({"name":args["options"]["secret"],"value":"[secret]"});
+                }
+                let request = JsonText::new(envelope.to_string())
+                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
                 Ok(Prepared {
                     request: Some(request),
                     tokens: None,

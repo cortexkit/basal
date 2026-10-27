@@ -35,6 +35,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `fs` | `{read?, write?}` lists of roots | no | none | Directories the file built-ins may read under (`fs.read`, `fs.list`, `fs.stat`) or write under (`fs.write`). Each root is absolute after `~` expansion and must exist at install. See `docs/builtins.md`. |
 | `git` | `{read}` list of repositories | no | none | Repositories the git built-ins may read. Each is absolute after `~` expansion and must exist at install. |
 | `net` | `{fetch}` list of `{host, methods?}` | no | none | Hosts `net.fetch` may reach over HTTPS on port 443 only, including redirect hops. `methods` defaults to `GET` and `HEAD`; others must be listed. Wildcard and IP-literal hosts are refused. |
+| `secrets` | list of `{name, target, methods?}` | no | absent | 1–16 distinct vault references, approved with this exact flow version and install. No secret values belong in the manifest. See below. |
 | `params` | object of bounded parameter declarations | packages only | absent | Declares a [template](templates.md): at most 16 typed parameters with required bounds. Whole-string placeholders may only narrow the documented grants and timing slots. |
 | `template` | `{max_per_agent, max_live?, max_lifetime}` | with `params` | absent | Instance quotas and mandatory expiry ceiling; part of the approved exact bytes. Ordinary install and dry run refuse either field with `params_require_package`. |
 | `placement` | string | no | none | Where the flow runs, such as `"machine:studio"`. 1 to 128 bytes, no control characters. Shown on the card. |
@@ -44,6 +45,50 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 Names: module ids use `a-z`, `0-9`, `-`, `_`; op names add `A-Z` and `.` (`browser.read_page`; the module id and complete op name identify the op, without splitting the op name at dots); event names are 1–4 nonempty dot-separated NATS subject tokens (for example, `run.started`), each using `a-z`, `0-9`, `_`, with no token consisting of `v` followed only by digits (`v2`); source kinds are one token using `a-z`, `0-9`, `_`; agent names use letters, digits, `-` and `_`. Every name is 1 to 128 bytes, including the dots in an event name.
 
 A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d` (`"90s"`, `"10m"`, `"6h"`, `"1d"`).
+
+### `secrets`
+
+An authenticated fetch names a vault secret, never its value:
+
+```json
+"secrets": [{
+  "name": "github-key",
+  "target": {"scheme": "https", "host": "api.github.com", "path": "/repos/example/project"},
+  "methods": ["GET"]
+}]
+```
+
+The optional field, when present, contains 1–16 entries with distinct names.
+Names are 1–64 ASCII bytes matching `[A-Za-z0-9][A-Za-z0-9._-]*`.
+An API-key target has exactly `scheme`, `host`, optional `port`, and `path`.
+HTTPS and port 443 (the default) are required, with a lowercase DNS host, not
+an IP literal or wildcard. `methods` is required: 1–16 distinct strings, each
+1–16 uppercase ASCII letters. The ordinary `net.fetch` host and method grant
+is independently required; declaring a secret does not grant network access.
+
+`path` is a raw path prefix of at most 1024 bytes, with no query or fragment.
+It matches a whole segment (`/repos/a` matches itself and `/repos/a/issues`,
+not `/repos/ab`); `/` covers all paths. Repeated separators, dot segments,
+backslashes, controls, non-ASCII bytes and ambiguous escapes are refused.
+Percent escapes may not decode to `/`, `.`, `%`, `\\`, `;`, controls or non-ASCII.
+No normalization broadens the grant.
+
+A login target is exactly `{"origin":"https://host"}` (explicit `:443` is
+equivalent), with no trailing slash, path, query, fragment or userinfo.
+It forbids `methods`. Login approval can be included in an install card, but
+`net.fetch` cannot use a login or release its username/password to a script.
+Unknown entry/target fields are refused. These semantic checks apply only at
+intake; stored manifests remain readable without applying new intake policy.
+
+The exact manifest bytes, including `secrets`, enter the code hash. A grant is
+bound to that flow version and install, not to the name alone. Core must
+advertise `flow-install-secrets/v1`; otherwise installation is refused with
+`install_secrets_unsupported`, never silently installed without the secrets.
+All secret-declaring versions require a card answer, including during recovery;
+policy approval is refused. Vault `secret.*` operations are parent-only, not
+ordinary script op grants.
+Secrets are supported only on ordinary flow installs for now; package/template
+registration and instance creation refuse them with `secrets_require_flow_install`.
 
 ### Stored-value compatibility
 

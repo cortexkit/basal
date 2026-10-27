@@ -1119,6 +1119,11 @@ pub(crate) fn supersede_older_pending_cards(
     now_ms: i64,
 ) -> Result<()> {
     let approved_version = version_i64(approved_version);
+    let versions = tx.prepare("SELECT version FROM install_cards WHERE flow_id=?1 AND version < ?2 AND state='pending'")?
+        .query_map(params![flow_id, approved_version], |row| row.get::<_, u32>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for version in versions {
+        crate::secret_revocation::enqueue(tx, flow_id, Some(version), false, now_ms)?;
+    }
     tx.execute(
         "UPDATE installs SET state='superseded', approval_ref='basal:superseded', \
              approval_kind='unknown', install_check_error=NULL \
@@ -1143,6 +1148,10 @@ pub(crate) fn supersede_pending_card(
     version: u32,
     now_ms: i64,
 ) -> Result<()> {
+    let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM install_cards WHERE flow_id=?1 AND version=?2 AND state='pending')", params![flow_id, version], |row| row.get(0))?;
+    if pending {
+        crate::secret_revocation::enqueue(tx, flow_id, Some(version), false, now_ms)?;
+    }
     tx.execute(
         "UPDATE installs SET state='superseded', approval_ref='basal:superseded', \
              approval_kind='unknown', install_check_error=NULL \
@@ -1238,6 +1247,7 @@ fn approve_with_resolved_agents(
         });
     }
     supersede_older_pending_cards(tx, flow_id, version, now_ms)?;
+    crate::secret_revocation::retire_approved(tx, flow_id, now_ms)?;
     tx.execute(
         "UPDATE installs SET state = 'superseded' WHERE flow_id = ?1 AND state = 'approved'",
         [flow_id],
@@ -1775,6 +1785,7 @@ impl Runtime {
                 "UPDATE flows SET removed=1, removed_by='operator', removed_at=?2 WHERE flow_id=?1",
                 params![flow_id, now],
             )?;
+            crate::secret_revocation::enqueue(tx, flow_id, None, false, now)?;
             tx.execute(
                 "UPDATE event_receipts SET state='refused' WHERE flow_id=?1 AND state='backlog'",
                 [flow_id],

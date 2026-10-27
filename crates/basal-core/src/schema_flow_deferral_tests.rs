@@ -305,3 +305,87 @@ fn board_deferral_migration_preserves_calls_children_and_indexes() {
         conn.execute("UPDATE journal SET dispatch='deferred',refusal=?1,retry_not_before=100,refusal_detail=json_object('reason',?1,'provider','prefrontal-core','action','sink.board') WHERE position=0", [code]).unwrap();
     }
 }
+
+#[test]
+fn review_secret_migration_45_preserves_populated_rows_and_allows_vault_backoff() {
+    let conn = old_store();
+    for migration in MIGRATIONS.iter().filter(|m| (9..45).contains(&m.version)) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch("INSERT INTO broca_waits(send_id,broca_run_id,check_at) VALUES ('key:2','remote-run',10); INSERT INTO broca_wakes(send_id,event_key,kind,digest,received_at) VALUES ('key:2','notice','ended','digest',10); INSERT INTO outbox(at,kind,flow_id,body) VALUES (1,'legacy','f','{}'); INSERT INTO mailbox(seq,run_id,position,settlement,value,payload_hash,source,arrived_generation) VALUES (100,'r',3,'fulfilled','1',zeroblob(32),'host',1); DELETE FROM mailbox WHERE seq=100").unwrap();
+    let count = conn
+        .prepare("SELECT * FROM journal")
+        .unwrap()
+        .column_count();
+    let journal = rows(&conn, "journal", count);
+    let mailbox = rows(&conn, "mailbox", 9);
+    let broca = rows(&conn, "broca_calls", 4);
+    let waits = rows(&conn, "broca_waits", 4);
+    let wakes = rows(&conn, "broca_wakes", 8);
+    let outbox_count = conn.prepare("SELECT * FROM outbox").unwrap().column_count();
+    let outbox = rows(&conn, "outbox", outbox_count);
+    let indexes = |table: &str| {
+        conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?1 ORDER BY name",
+        )
+        .unwrap()
+        .query_map([table], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    };
+    let journal_indexes = indexes("journal");
+    let broca_indexes = indexes("broca_calls");
+    conn.execute_batch(
+        MIGRATIONS
+            .iter()
+            .find(|m| m.version == 45)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    assert_eq!(rows(&conn, "journal", count), journal);
+    assert_eq!(rows(&conn, "mailbox", 9), mailbox);
+    assert_eq!(rows(&conn, "broca_calls", 4), broca);
+    assert_eq!(rows(&conn, "broca_waits", 4), waits);
+    assert_eq!(rows(&conn, "broca_wakes", 8), wakes);
+    assert_eq!(rows(&conn, "outbox", outbox_count), outbox);
+    assert_eq!(indexes("journal"), journal_indexes);
+    assert_eq!(indexes("broca_calls"), broca_indexes);
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+    conn.execute("UPDATE journal SET dispatch='deferred',refusal='secret_vault_unavailable',retry_not_before=100,refusal_detail=json_object('reason','secret_vault_unavailable','provider','claustrum','action','secret.use') WHERE position=0", []).unwrap();
+    assert!(conn.execute("UPDATE journal SET refusal='unknown',refusal_detail=json_object('reason','unknown','provider','claustrum','action','secret.use') WHERE position=0", []).is_err());
+    conn.execute("DELETE FROM broca_calls WHERE send_id='key:2'", [])
+        .unwrap();
+    assert!(rows(&conn, "broca_waits", 4).is_empty());
+    assert!(rows(&conn, "broca_wakes", 8).is_empty());
+    conn.execute("INSERT INTO mailbox(run_id,position,settlement,value,payload_hash,source,arrived_generation) VALUES ('r',0,'fulfilled','1',zeroblob(32),'host',1)", []).unwrap();
+    assert_eq!(conn.last_insert_rowid(), 101);
+}
+
+#[test]
+fn review_migration45_preserves_mailbox_sequence_with_no_surviving_answers() {
+    let conn = old_store();
+    for migration in MIGRATIONS.iter().filter(|m| (9..45).contains(&m.version)) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch("INSERT INTO mailbox(seq,run_id,position,settlement,value,payload_hash,source,arrived_generation) VALUES (100,'r',3,'fulfilled','1',zeroblob(32),'host',1); DELETE FROM mailbox").unwrap();
+    conn.execute_batch(
+        MIGRATIONS
+            .iter()
+            .find(|m| m.version == 45)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    conn.execute_batch("INSERT INTO mailbox(run_id,position,settlement,value,payload_hash,source,arrived_generation) VALUES ('r',0,'fulfilled','1',zeroblob(32),'host',1)").unwrap();
+    assert_eq!(conn.last_insert_rowid(), 101);
+}

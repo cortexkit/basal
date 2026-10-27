@@ -27,6 +27,7 @@ rig-kill-hook = []
 
 [dependencies]
 basal-proto.workspace = true
+base64.workspace = true
 # Typed decode of a provider's own role.describe and tool.catalog answers,
 # read when the loop install rule needs a tool's emits_events declaration.
 cortexkit-role-tool-provider.workspace = true
@@ -52,6 +53,7 @@ basal-launch.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
+rcgen.workspace = true
 # Give this dependency a different name so --features basal-host/test-support
 # still selects basal-host's own feature rather than this development dependency.
 basal-host-test-support = { package = "basal-host", path = ".", features = ["test-support"] }

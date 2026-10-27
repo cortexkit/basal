@@ -149,6 +149,10 @@ impl Module {
             return OpError::new("store_failure", text);
         }
         match e {
+            InstallError::Manifest(ManifestError::SecretsRequireFlowInstall) => OpError::new(
+                "secrets_require_flow_install",
+                ManifestError::SecretsRequireFlowInstall.to_string(),
+            ),
             InstallError::Manifest(ManifestError::ParamsRequirePackage { ref field }) => {
                 OpError::new("params_require_package", e.to_string())
                     .with_detail(Some(json!({"field":field})))
@@ -417,6 +421,15 @@ impl Module {
     fn template_error(&self, error: basal_core::templates::TemplateError) -> OpError {
         match error {
             basal_core::templates::TemplateError::Store(error) => self.core_error(error),
+            basal_core::templates::TemplateError::Refused(error)
+                if error.code == "secrets_require_flow_install" =>
+            {
+                OpError::new(
+                    error.code,
+                    ManifestError::SecretsRequireFlowInstall.to_string(),
+                )
+                .with_detail((!error.detail.is_null()).then_some(error.detail))
+            }
             basal_core::templates::TemplateError::Refused(error) => {
                 OpError::new(error.code, error.code)
                     .with_detail((!error.detail.is_null()).then_some(error.detail))
@@ -830,10 +843,40 @@ impl Module {
                         })?;
                 }
                 Err(e) => {
+                    let e = match e {
+                        ConsentError::InstallRefusedWithSecrets(cause) => {
+                            let install_id = record.install_id.as_deref().ok_or_else(|| {
+                                OpError::new(
+                                    "store_error",
+                                    "prepared secret install has no identity",
+                                )
+                            })?;
+                            self.rt
+                                .abandon_prepared_secret_install(
+                                    &record.flow_id,
+                                    record.version,
+                                    install_id,
+                                )
+                                .map_err(|error| self.core_error(error))?;
+                            self.rt
+                                .drain_secret_revocations()
+                                .map_err(|error| self.core_error(error))?;
+                            *cause
+                        }
+                        other => other,
+                    };
                     self.rt
                         .record_install_check_error(&record.flow_id, record.version, &e.to_string())
                         .map_err(|e| self.core_error(e))?;
                     let code = match &e {
+                        ConsentError::InstallRefusedWithSecrets(_) => "consent_refused",
+                        ConsentError::Secret { code, retryable } => {
+                            return Err(OpError::new(
+                                code,
+                                "vault approval is required before installation",
+                            )
+                            .with_detail(Some(json!({"retryable":retryable}))));
+                        }
                         ConsentError::Unavailable(_) => "consent_unavailable",
                         ConsentError::Refused(_) => "consent_refused",
                         // Core replied that the author is not authorized for

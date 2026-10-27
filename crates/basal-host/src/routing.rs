@@ -14,6 +14,7 @@ pub struct ModuleOpsHost {
     catalog: Arc<SubcCatalog>,
     keyed: BTreeSet<(String, String)>,
     scope_describer: RwLock<Option<Arc<crate::scope_describe::ModuleScopeDescriber>>>,
+    secret_scopes: RwLock<std::collections::HashMap<String, crate::flow_scope::FlowScope>>,
 }
 impl ModuleOpsHost {
     pub fn new(transport: Arc<dyn Transport>, catalog: Arc<SubcCatalog>) -> Self {
@@ -22,6 +23,7 @@ impl ModuleOpsHost {
             catalog,
             keyed: BTreeSet::new(),
             scope_describer: RwLock::new(None),
+            secret_scopes: RwLock::new(std::collections::HashMap::new()),
         }
     }
     /// Attach the registered module connection that may read daemon scopes.
@@ -80,6 +82,14 @@ impl ModuleOpsHost {
             CallKind::Op { module, op } | CallKind::OpFor { module, op } => (module, op),
             _ => return outcome(Err(WireError::NeverSent("not a module op".into()))),
         };
+        // The vault carrier is basal's authority, not an ordinary op grant.
+        // Returning a release through this path would hand the key to a script.
+        if module == "claustrum" && op.starts_with("secret.") {
+            return outcome(Err(WireError::Refused {
+                code: "secret_control_forbidden".into(),
+                message: "vault secret management is not a script operation".into(),
+            }));
+        }
         let result = (|| {
             let (decl, flow_capable) =
                 self.catalog.resolve_for_dispatch(module, op).map_err(|e| {
@@ -144,6 +154,32 @@ impl ModuleOpsHost {
     }
 }
 impl Host for ModuleOpsHost {
+    fn secret_revoke(&self, params: serde_json::Value) -> Result<serde_json::Value, WireError> {
+        self.transport
+            .management("claustrum", "secret.revoke_flow_grants", params)
+    }
+    fn secret_use(
+        &self,
+        request: &CallRequest,
+        code_hash: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, WireError> {
+        let scope = self
+            .secret_scopes
+            .read()
+            .unwrap()
+            .get(&request.route_key())
+            .cloned()
+            .ok_or_else(crate::secrets::not_ready)?;
+        crate::secrets::use_attested(
+            self,
+            self.transport.as_ref(),
+            &scope,
+            request,
+            code_hash,
+            params,
+        )
+    }
     fn scope_describe(
         &self,
         owner: &subc_protocol::Principal,
@@ -185,9 +221,21 @@ impl Host for ModuleOpsHost {
         }
     }
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
+        let mut scopes = self.secret_scopes.write().unwrap();
+        if let Some(scope) = &scope {
+            scopes.insert(flow_id.into(), scope.selector.clone());
+        } else {
+            scopes.remove(flow_id);
+        }
+        drop(scopes);
         self.transport.configure_flow(flow_id, scope);
     }
     fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
+        let prefix = format!("flow:{}:{flow_id}:", flow_id.len());
+        self.secret_scopes
+            .write()
+            .unwrap()
+            .retain(|key, _| !key.starts_with(&prefix) || live.contains(key));
         self.transport.retain_flow_routes(flow_id, live);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
@@ -223,11 +271,12 @@ impl RoutingHost {
     /// Routes the file, git and network built-ins to basal's own
     /// [`BuiltinHost`] with production settings.
     pub fn new(ops: Arc<dyn Host>, core: Arc<dyn Host>, model: Arc<dyn Host>) -> Self {
+        let builtins = Arc::new(BuiltinHost::default().with_secret_host(ops.clone()));
         Self {
             ops,
             core,
             model,
-            builtins: Arc::new(BuiltinHost::default()),
+            builtins,
         }
     }
     /// Replaces the host the built-ins go to.
@@ -252,6 +301,9 @@ impl RoutingHost {
     }
 }
 impl Host for RoutingHost {
+    fn secret_revoke(&self, params: serde_json::Value) -> Result<serde_json::Value, WireError> {
+        self.ops.secret_revoke(params)
+    }
     fn attach_codemode(&self, sink: Arc<dyn CompletionSink>) {
         self.model.attach_codemode(sink);
     }

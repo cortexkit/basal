@@ -877,6 +877,7 @@ fn late_symlink_case(ancestor: bool, future: bool, within: bool) {
     let grant = Grant {
         roots: vec![instance["params"]["path"].as_str().unwrap().into()],
         hosts: vec![],
+        secrets: vec![],
         template_roots: serde_json::from_str(run.grant_guards.as_str()).unwrap(),
     };
     if ancestor {
@@ -1137,6 +1138,7 @@ fn late_repo_root_symlink_escape_is_refused_and_static_grants_still_apply() {
     let grant = Grant {
         roots: vec![instance["params"]["repo"].as_str().unwrap().into()],
         hosts: vec![],
+        secrets: vec![],
         template_roots: serde_json::from_str(run.grant_guards.as_str()).unwrap(),
     };
     std::fs::rename(&repo, inside.join("saved")).unwrap();
@@ -1224,6 +1226,7 @@ fn missing_stat_with_an_escaped_ancestor_is_refused_not_reported_absent() {
     let grant = Grant {
         roots: vec![instance["params"]["path"].as_str().unwrap().into()],
         hosts: vec![],
+        secrets: vec![],
         template_roots: serde_json::from_str(run.grant_guards.as_str()).unwrap(),
     };
     let host = BuiltinHost::default();
@@ -1266,6 +1269,7 @@ fn repo_creation_checks_layout_and_git_reads_validate_its_contents() {
     let grant = Grant {
         roots: vec![instance["params"]["repo"].as_str().unwrap().into()],
         hosts: vec![],
+        secrets: vec![],
         template_roots: serde_json::from_str(run.grant_guards.as_str()).unwrap(),
     };
     match BuiltinHost::default().run(

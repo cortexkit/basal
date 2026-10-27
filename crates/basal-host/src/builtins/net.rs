@@ -383,6 +383,7 @@ pub struct Request {
     pub method: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    pub secret: Option<String>,
 }
 
 /// The method a `net.fetch` call asks for: `GET` when it names none.
@@ -390,7 +391,7 @@ pub fn method_of(args: &Value) -> Result<String, Denial> {
     if !args.is_object() {
         return Err(Denial::invalid("net.fetch arguments must be an object"));
     }
-    let options = options(args, "options", &["method", "headers", "body"])?;
+    let options = options(args, "options", &["method", "headers", "body", "secret"])?;
     match options.and_then(|o| o.get("method")) {
         None | Some(Value::Null) => Ok("GET".to_owned()),
         Some(Value::String(m)) => {
@@ -415,11 +416,85 @@ fn header_name_ok(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
+/// Credential-bearing requests cannot let script headers select a byte range
+/// or ask a reverse proxy to reinterpret the approved target.
+pub(crate) fn authorize_secret_request(request: &Request) -> Result<(), Denial> {
+    const ALLOWED: [&str; 4] = [
+        "accept",
+        "content-type",
+        "if-none-match",
+        "if-modified-since",
+    ];
+    if request
+        .headers
+        .iter()
+        .any(|(name, _)| !ALLOWED.contains(&name.to_ascii_lowercase().as_str()))
+    {
+        return Err(Denial::new(
+            "secret_request_unsafe",
+            "this script header is not allowed on an authenticated fetch",
+        ));
+    }
+    if request.headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-type")
+            && value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("multipart/form-data"))
+    }) {
+        return Err(Denial::new(
+            "secret_request_unsafe",
+            "multipart forms are not supported on authenticated fetches",
+        ));
+    }
+    let query = request
+        .url
+        .split('#')
+        .next()
+        .and_then(|url| url.split_once('?'))
+        .map(|(_, query)| query);
+    for params in query.into_iter().chain(request.body.as_deref()) {
+        for parameter in params.split(['&', ';']) {
+            let mut name = parameter
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .as_bytes()
+                .to_vec();
+            for depth in 0..=8 {
+                if name.eq_ignore_ascii_case(b"_method") {
+                    return Err(Denial::new(
+                        "secret_request_unsafe",
+                        "method override parameters are not allowed on authenticated fetches",
+                    ));
+                }
+                let decoded = crate::secrets::percent_decode(&name);
+                if decoded == name {
+                    break;
+                }
+                if depth == 8 {
+                    return Err(Denial::new(
+                        "secret_request_unsafe",
+                        "parameter encoding is too deeply nested",
+                    ));
+                }
+                name = decoded;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reads `net.fetch`'s arguments.
 pub fn parse_request(args: &Value) -> Result<Request, Denial> {
     let url = string_arg(args, "url")?;
     let method = method_of(args)?;
-    let options = options(args, "options", &["method", "headers", "body"])?;
+    let options = options(args, "options", &["method", "headers", "body", "secret"])?;
+    let secret = match options.and_then(|o| o.get("secret")) {
+        None => None,
+        Some(Value::String(name)) if crate::secrets::valid_name(name) => Some(name.clone()),
+        Some(_) => return Err(Denial::invalid("secret must be a vault secret name")),
+    };
     let mut headers = Vec::new();
     match options.and_then(|o| o.get("headers")) {
         None | Some(Value::Null) => {}
@@ -474,6 +549,7 @@ pub fn parse_request(args: &Value) -> Result<Request, Denial> {
         method,
         headers,
         body,
+        secret,
     })
 }
 
@@ -692,6 +768,92 @@ impl Client {
     /// Runs a fetch: every hop checked against `rules`, the final response
     /// returned as `{status, headers, body}`.
     pub fn fetch(&self, request: &Request, rules: &[HostRule]) -> Result<Value, Failure> {
+        self.fetch_inner(request, rules, None)
+    }
+
+    pub(crate) fn fetch_secret(
+        &self,
+        request: &mut Request,
+        rules: &[HostRule],
+        name: &str,
+        key: &mut [u8],
+        location: &str,
+    ) -> Result<Value, Failure> {
+        authorize_secret_request(request)?;
+        if key.is_empty()
+            || key.len() > MAX_HEADER_VALUE_BYTES
+            || key.iter().any(|b| !(0x20..0x7f).contains(b))
+        {
+            return Err(Denial::new(
+                "secret_key_invalid",
+                "the vault key is not a bounded HTTP header value",
+            )
+            .into());
+        }
+        let (header, bearer) = if location == "authorization_bearer" {
+            ("Authorization", true)
+        } else if let Some(header) = location.strip_prefix("header:") {
+            if !header_name_ok(header)
+                || (FORBIDDEN_HEADERS.contains(&header.to_ascii_lowercase().as_str())
+                    && !header.eq_ignore_ascii_case("authorization"))
+            {
+                return Err(Denial::new(
+                    "secret_location_unsupported",
+                    "the vault header location is unsafe",
+                )
+                .into());
+            }
+            (header, false)
+        } else {
+            return Err(Denial::new(
+                "secret_location_unsupported",
+                "body and query secret locations are not supported",
+            )
+            .into());
+        };
+        request
+            .headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case(header));
+        let mut value = if bearer {
+            "Bearer ".to_owned()
+        } else {
+            String::new()
+        };
+        value.push_str(
+            std::str::from_utf8(key)
+                .map_err(|_| Denial::new("secret_key_invalid", "invalid key encoding"))?,
+        );
+        request.headers.push((header.to_owned(), value));
+        let result = self.fetch_inner(request, rules, Some((key, name)));
+        if let Some((_, value)) = request.headers.pop() {
+            let mut bytes = value.into_bytes();
+            bytes.fill(0);
+        }
+        // HTTP diagnostics may reflect server-controlled bytes. Secret fetches
+        // keep only the disposition and a constant explanation on failure.
+        result.map_err(|failure| match failure {
+            Failure::Refused(denial) => Failure::Refused(Denial::new(
+                denial.code,
+                "authenticated HTTP request was refused",
+            )),
+            Failure::Transport(TransportError::Unavailable { sent, .. }) => {
+                Failure::Transport(TransportError::Unavailable {
+                    sent,
+                    detail: "authenticated HTTP transport failed".into(),
+                })
+            }
+            _ => Failure::Transport(TransportError::unsent(
+                "authenticated HTTP transport failed",
+            )),
+        })
+    }
+
+    fn fetch_inner(
+        &self,
+        request: &Request,
+        rules: &[HostRule],
+        secret: Option<(&[u8], &str)>,
+    ) -> Result<Value, Failure> {
         let deadline = Instant::now() + self.config.total_timeout;
         let first = parse_url(&request.url)?;
         let mut url = first.clone();
@@ -734,6 +896,11 @@ impl Client {
             };
             if !is_query_method(&method) {
                 progress.sent_mutation = true;
+            }
+            if let Some((key, name)) = secret {
+                // A redirected path is a different authorization decision. Do
+                // not forward a released key, even to the same origin.
+                return finish_secret(response, key, name);
             }
             if !matches!(response.status, 301 | 302 | 303 | 307 | 308) {
                 return finish(response);
@@ -1057,7 +1224,7 @@ fn parse_head(raw: &[u8]) -> Result<(u16, Vec<(String, String)>), Denial> {
         .iter()
         .map(|h| {
             (
-                h.name.to_ascii_lowercase(),
+                h.name.to_owned(),
                 String::from_utf8_lossy(h.value).into_owned(),
             )
         })
@@ -1068,7 +1235,7 @@ fn parse_head(raw: &[u8]) -> Result<(u16, Vec<(String, String)>), Denial> {
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()
-        .find(|(n, _)| n == name)
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
         .map(|(_, v)| v.as_str())
 }
 
@@ -1183,6 +1350,7 @@ fn unreadable(effect_possible: bool, detail: String) -> Failure {
 fn finish(response: Response) -> Result<Value, Failure> {
     let mut headers: Map<String, Value> = Map::new();
     for (name, value) in response.headers {
+        let name = name.to_ascii_lowercase();
         if name == "set-cookie" {
             continue;
         }
@@ -1213,4 +1381,88 @@ fn finish(response: Response) -> Result<Value, Failure> {
             "body_error": code,
         }),
     })
+}
+
+fn finish_secret(mut response: Response, key: &[u8], name: &str) -> Result<Value, Failure> {
+    if response.status == 206 || header(&response.headers, "content-range").is_some() {
+        return Err(Denial::new(
+            "secret_partial_response",
+            "partial authenticated responses are not allowed",
+        )
+        .into());
+    }
+    response.headers.retain(|(header, _)| {
+        ![
+            "set-cookie",
+            "content-length",
+            "etag",
+            "digest",
+            "content-md5",
+            "content-range",
+        ]
+        .iter()
+        .any(|name| header.eq_ignore_ascii_case(name))
+    });
+    let mut guard = crate::secrets::EchoGuard::new(key);
+    let mut header_echoed = false;
+    let body_unsafe = match guard.redact(&response.body, key, name) {
+        Ok(body) => {
+            response.body = body;
+            false
+        }
+        Err(_) => {
+            response.body.clear();
+            true
+        }
+    };
+    response.headers.retain_mut(|(header, value)| {
+        let Ok(safe_header) = guard.redact(header.as_bytes(), key, name) else {
+            header_echoed = true;
+            return false;
+        };
+        let Ok(safe_value) = guard.redact(value.as_bytes(), key, name) else {
+            header_echoed = true;
+            return false;
+        };
+        *header = String::from_utf8_lossy(&safe_header).into_owned();
+        *value = String::from_utf8_lossy(&safe_value).into_owned();
+        let unsafe_header =
+            guard.unsafe_echo(header.as_bytes()) || guard.unsafe_echo(value.as_bytes());
+        header_echoed |= unsafe_header;
+        !unsafe_header
+    });
+    let mut value = finish(response)?;
+    if body_unsafe
+        || value["body"]
+            .as_str()
+            .is_some_and(|body| guard.unsafe_echo(body.as_bytes()))
+    {
+        value["body"] = Value::Null;
+        value["body_error"] = json!("secret_echoed");
+    }
+    if let Some(headers) = value["headers"].as_object_mut() {
+        // Joining repeated values can reassemble a key from individually safe
+        // fragments; normalization must finish before the last scrub.
+        for (header, value) in std::mem::take(headers) {
+            let Ok(header) = guard.redact(header.as_bytes(), key, name) else {
+                header_echoed = true;
+                continue;
+            };
+            let Ok(value) = guard.redact(value.as_str().unwrap_or("").as_bytes(), key, name) else {
+                header_echoed = true;
+                continue;
+            };
+            let header = String::from_utf8_lossy(&header).into_owned();
+            let value = String::from_utf8_lossy(&value).into_owned();
+            if guard.unsafe_echo(header.as_bytes()) || guard.unsafe_echo(value.as_bytes()) {
+                header_echoed = true;
+            } else {
+                headers.insert(header, Value::String(value));
+            }
+        }
+    }
+    if header_echoed {
+        value["headers_error"] = json!("secret_echoed");
+    }
+    Ok(value)
 }

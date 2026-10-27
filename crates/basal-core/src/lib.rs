@@ -49,6 +49,9 @@ pub mod error;
 pub mod events;
 mod flow_ops;
 mod flow_scope;
+#[cfg(test)]
+#[path = "flow_secrets_runtime_tests.rs"]
+mod flow_secrets_runtime_tests;
 pub mod gate;
 pub mod grant_loss;
 pub mod hooks;
@@ -71,8 +74,10 @@ pub mod runs;
 pub mod runtime;
 pub mod schedule;
 pub mod schema;
+mod secret_revocation;
 pub mod state_epoch;
 pub mod store;
+mod stored_secret;
 pub mod template_events;
 pub mod templates;
 #[cfg(any(test, feature = "test-support"))]

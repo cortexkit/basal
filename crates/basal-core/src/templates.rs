@@ -581,6 +581,9 @@ impl crate::Runtime {
         if manifest.params.is_none() {
             return Err(refused("package_not_template", Value::Null));
         }
+        manifest
+            .check_package_secret_eligibility()
+            .map_err(|e| refused("secrets_require_flow_install", Value::String(e.to_string())))?;
         let limits = policy(&manifest).map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
         // The registry read pages core's agent list over the network, so it
         // runs here, before the store's write lock is taken below. A failed
