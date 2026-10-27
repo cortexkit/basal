@@ -1192,6 +1192,15 @@ impl Driver {
                 .as_ref()
                 .and_then(|value| serde_json::from_str::<Value>(value.as_str()).ok())
         });
+        // A provider refusal's spend marker lives in the detail layer that
+        // `deliver` adds later, so settle reads it from there rather than from
+        // a reply value that has none.
+        let cost_value = cost_value.or_else(|| {
+            mapped
+                .detail
+                .as_ref()
+                .map(|detail| json!({"detail": detail}))
+        });
         if self.shared.store.write(|tx| {
             crate::classify_cost::settle(
                 tx,

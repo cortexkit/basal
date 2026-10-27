@@ -276,7 +276,9 @@ fn refusal_from_reply(code: &str, detail: Option<&Value>) -> Refusal {
 }
 
 /// What to charge a refused call, honoring the spend marker its producer set.
-fn refused_charge(code: &str, detail: Option<&Value>, reserved: f64) -> f64 {
+/// `reserved` is the ceiling the call reserved. A malformed marker is not
+/// proof the call was free, so it keeps that reservation.
+pub(crate) fn refused_charge(code: &str, detail: Option<&Value>, reserved: f64) -> f64 {
     use cortexkit_llm_tools::errors::{RefusalSpend, refusal_spend};
 
     match refusal_spend(&refusal_from_reply(code, detail)) {

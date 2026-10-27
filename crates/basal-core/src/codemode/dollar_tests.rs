@@ -185,3 +185,46 @@ fn program_classify_cancelled_before_dispatch_releases_reservation() {
     assert_eq!(spent(&f), 0.0);
     f.cleanup(true);
 }
+
+/// A provider refusal reaches the supervisor with its `detail`, which is where
+/// the spend marker is. Charging must follow the marker, not only the code: the
+/// reservation here is 0.10, so a free and a measured charge both differ from
+/// it, and either would have charged the reservation before.
+#[test]
+fn program_classify_refusal_charges_by_the_spend_marker_in_its_detail() {
+    let f = fixture(0.30, true);
+    // The classify contract requires a ceiling; 0.10 is the reservation the
+    // supervisor records for each call.
+    let mut args = input();
+    args["max_cost_usd"] = json!(0.10);
+    f.issue(0, "llm_classify", args);
+    let first = f.attempt();
+    assert_eq!(first.input["max_cost_usd"], 0.10);
+    first
+        .reply
+        .send(Err(WireError::RefusedDetails {
+            code: "rate_limited".into(),
+            message: "the provider rate-limited the call".into(),
+            detail: json!({"class": "transient", "no_spend": true}),
+        }))
+        .unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Rejected);
+    assert_eq!(spent(&f), 0.0);
+
+    let mut args = input();
+    args["max_cost_usd"] = json!(0.10);
+    f.issue(1, "llm_classify", args);
+    let second = f.attempt();
+    assert_eq!(second.input["max_cost_usd"], 0.10);
+    second
+        .reply
+        .send(Err(WireError::RefusedDetails {
+            code: "provider_error".into(),
+            message: "the provider failed after billing".into(),
+            detail: json!({"class": "transient", "cost_usd": 0.003}),
+        }))
+        .unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Rejected);
+    assert_eq!(spent(&f), 0.003);
+    f.cleanup(true);
+}

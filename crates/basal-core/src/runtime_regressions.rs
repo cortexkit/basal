@@ -966,3 +966,48 @@ fn pruning_keeps_unacknowledged_broca_snapshots_and_open_cards() {
         })
         .unwrap();
 }
+
+/// A flow classifies through its journal: `accept_outcome` hands `settle` the
+/// parsed refusal value and reads the code from the same value. A provider
+/// refusal keeps its own code with its `detail`, which is where the spend
+/// marker lives, so the charge must follow that marker rather than the code.
+/// The reservation is 0.10, and both expected charges differ from it.
+#[test]
+fn a_flow_classify_refusal_charges_by_the_spend_marker_in_its_detail() {
+    for (detail, charged) in [
+        (json!({"class": "permanent", "no_spend": true}), 0.0),
+        (json!({"class": "transient", "cost_usd": 0.003}), 0.003),
+    ] {
+        let f = Fixture::new(100);
+        let _lease = f.call("run", StoredClass::KeyedMutation);
+        // A classify call holds its reserved ceiling until it settles.
+        f.rt.store()
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO classify_costs(kind,run_id,position,flow_id,created_at,reserved,args) \
+                     VALUES ('flow','run',0,'flow',100,0.10,'{}')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let outcome = HostOutcome {
+            settlement: basal_proto::Settlement::Rejected,
+            value: JsonText::new(
+                json!({"code": "provider_error", "message": "failed", "detail": detail})
+                    .to_string(),
+            )
+            .unwrap(),
+            usage: None,
+        };
+        f.rt.accept("run", 0, None, &outcome, Source::Local).unwrap();
+        assert_eq!(
+            f.rt.store()
+                .read(|c| crate::classify_cost::spent(c, "flow", "run"))
+                .unwrap(),
+            charged,
+            "{detail}"
+        );
+        let _ = std::fs::remove_dir_all(&f.path);
+    }
+}
