@@ -320,10 +320,19 @@ mod tests {
     fn pre_provider_refusals_are_free_while_uncertain_ones_keep_the_reservation() {
         let mut conn = migrated();
         // A couple of the newly listed Broca codes: no provider call was made.
-        assert_eq!(charged_after_settle(&mut conn, 0, "parent_scope_pending"), 0.0);
-        assert_eq!(charged_after_settle(&mut conn, 1, "tool_schema_changed"), 0.0);
+        assert_eq!(
+            charged_after_settle(&mut conn, 0, "parent_scope_pending"),
+            0.0
+        );
+        assert_eq!(
+            charged_after_settle(&mut conn, 1, "tool_schema_changed"),
+            0.0
+        );
         // These may have reached the provider, so the reservation is kept.
         assert_eq!(charged_after_settle(&mut conn, 2, "provider_error"), 0.10);
-        assert_eq!(charged_after_settle(&mut conn, 3, "batch_in_progress"), 0.10);
+        assert_eq!(
+            charged_after_settle(&mut conn, 3, "batch_in_progress"),
+            0.10
+        );
     }
 }
