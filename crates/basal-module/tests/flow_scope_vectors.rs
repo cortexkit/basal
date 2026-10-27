@@ -6,6 +6,11 @@ use sha2::{Digest, Sha256};
 use std::sync::{Arc, Mutex};
 
 const VECTORS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/flow-scope-v1");
+const GATE_VECTORS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/vectors/flow-scope-gate-v1"
+);
+
 fn vector(name: &str) -> Value {
     serde_json::from_slice(&std::fs::read(format!("{VECTORS}/{name}")).unwrap()).unwrap()
 }
@@ -31,11 +36,11 @@ fn core_published_flow_scope_vectors_are_pinned_and_decode_exactly() {
         ),
         (
             "registered-scope.json",
-            "7ec1b7b92ff51d95713072155fbb5707f3676a1380da9c379e209ae52859c6f8",
+            "65bb5c060f2f5723f9e8c8e756f20d354f52430cbc34fb94686db02b769d61ba",
         ),
         (
             "registered-global-scope.json",
-            "9ea04c51cf987028ba00040c6abfada7e4780d47d48bcb0008d6f789994a518c",
+            "a537d6f96d7bf8a321cf3ad880895ef82049b213c94ecf2bb07cc13017a4ebba",
         ),
     ] {
         let bytes = std::fs::read(format!("{VECTORS}/{name}")).unwrap();
@@ -79,6 +84,15 @@ fn core_published_flow_scope_vectors_are_pinned_and_decode_exactly() {
     assert_eq!(record.attributes.flow_id.as_deref(), Some("flow-x"));
     assert_eq!(record.attributes.agent_id.as_deref(), Some("ag_fixture"));
     assert!(record.attributes.delegates);
+    assert_eq!(record.attributes.flow_version, Some(1));
+    assert_eq!(
+        record.attributes.flow_code_hash.as_deref(),
+        Some("a".repeat(64).as_str())
+    );
+    assert_eq!(
+        record.attributes.flow_install_id.as_deref(),
+        Some("install-1")
+    );
     assert_eq!(record.carriers.len(), 1);
     assert_eq!(
         record.carriers[0].principal,
@@ -88,7 +102,15 @@ fn core_published_flow_scope_vectors_are_pinned_and_decode_exactly() {
     );
     assert_eq!(
         record.carriers[0].targets.as_deref(),
-        Some(["broca".into(), "plexus".into(), "prefrontal-core".into()].as_slice())
+        Some(
+            [
+                "broca".into(),
+                "plexus".into(),
+                "prefrontal-core".into(),
+                "prefrontal-routing".into()
+            ]
+            .as_slice()
+        )
     );
     let global = vector("registered-global-scope.json");
     let global_record: subc_protocol::scope::ScopeRecord =
@@ -96,8 +118,20 @@ fn core_published_flow_scope_vectors_are_pinned_and_decode_exactly() {
     assert_eq!(global_record.attributes.flow_id.as_deref(), Some("global"));
     assert_eq!(global_record.attributes.agent_id, None);
     assert!(!global_record.attributes.delegates);
+    assert_eq!(global_record.attributes.flow_version, Some(1));
+    assert_eq!(
+        global_record.attributes.flow_code_hash,
+        record.attributes.flow_code_hash
+    );
+    assert_eq!(
+        global_record.attributes.flow_install_id.as_deref(),
+        Some("install-1")
+    );
     assert_eq!(global_record.carriers, record.carriers);
-    let global_status = json!({"state":"active","code_hash":"0".repeat(64),"scope":{"owner":global["owner"],"ref":global_record.scope_ref,"epoch":global_record.scope_epoch},"flow_scope_targets":["broca"]});
+    // Every target the carrier may reach, prefrontal-routing included, must
+    // survive basal's install-status decoder when core reports it as opted in.
+    let carrier_targets = global_record.carriers[0].targets.clone().unwrap();
+    let global_status = json!({"state":"active","code_hash":"0".repeat(64),"scope":{"owner":global["owner"],"ref":global_record.scope_ref,"epoch":global_record.scope_epoch},"flow_scope_targets":carrier_targets});
     let InstallStatus::Active {
         scope: Some(global_scope),
         ..
@@ -106,6 +140,30 @@ fn core_published_flow_scope_vectors_are_pinned_and_decode_exactly() {
         panic!("global selector missing")
     };
     assert_eq!(global_scope.selector, scope.selector);
+    assert_eq!(
+        global_scope.targets,
+        carrier_targets
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+}
+
+#[test]
+fn core_published_flow_scope_refusal_is_pinned() {
+    let bytes = std::fs::read(format!("{GATE_VECTORS}/flow-scope-refusal.json")).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        "c7daea699187a67e88dccd301d4ba9d529f63ecff97633c1878fdde666368c28"
+    );
+    let refusal: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        refusal,
+        json!({
+            "code": "flow_scope_not_supported",
+            "detail": {"allowed_ops": ["diagnostics.findings"], "op": "sink.digest"},
+            "message": "sink.digest does not run under a flow scope; flows may call: diagnostics.findings"
+        })
+    );
 }
 
 #[derive(Default)]
