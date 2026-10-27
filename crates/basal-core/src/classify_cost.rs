@@ -233,6 +233,32 @@ pub fn reserve(
     Ok(Ok(()))
 }
 
+/// Refusals where no provider call was made, so the call is free.
+/// Anything else is charged the reservation because basal can't prove it was
+/// free. A `cost_usd` in the reply always takes precedence over this list.
+const FREE_REFUSAL_CODES: &[&str] = &[
+    "invalid_params",
+    "scope_required",
+    "flow_scope_required",
+    "cost_unpriceable",
+    "cost_exceeded",
+    "provider_not_allowed",
+    "not_started",
+    "tool_unavailable",
+    "denied",
+    "cancelled",
+    "parent_scope_pending",
+    "invalid_request",
+    "tool_schema_changed",
+    "tool_semantics_changed",
+    "model_unknown",
+    "model_not_classifier",
+    "image_unavailable",
+    "image_source_unavailable",
+    "flow_not_approved",
+    "unknown_method",
+];
+
 /// An unknown outcome keeps its reservation; a known pre-model refusal is free.
 pub fn settle(
     tx: &Transaction<'_>,
@@ -253,21 +279,51 @@ pub fn settle(
         .and_then(|v| v["cost_usd"].as_f64())
         .filter(|v| v.is_finite() && *v >= 0.0)
         .unwrap_or(match code {
-            Some(
-                "invalid_params"
-                | "scope_required"
-                | "flow_scope_required"
-                | "cost_unpriceable"
-                | "cost_exceeded"
-                | "provider_not_allowed"
-                | "not_started"
-                | "tool_unavailable"
-                | "denied"
-                | "cancelled",
-            ) => 0.0,
+            Some(code) if FREE_REFUSAL_CODES.contains(&code) => 0.0,
             _ => reserved,
         });
     tx.execute("UPDATE classify_costs SET charged=?4 WHERE kind=?1 AND run_id=?2 AND position=?3 AND charged IS NULL",
         params![kind,run,position,charged])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn migrated() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        for migration in crate::schema::MIGRATIONS {
+            conn.execute_batch(migration.statements).unwrap();
+        }
+        conn
+    }
+
+    fn charged_after_settle(conn: &mut Connection, position: u64, code: &str) -> f64 {
+        conn.execute(
+            "INSERT INTO classify_costs(kind,run_id,position,flow_id,created_at,reserved,args) VALUES ('program','r',?1,NULL,0,0.10,'{}')",
+            params![position],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        settle(&tx, "program", "r", position, None, Some(code)).unwrap();
+        tx.commit().unwrap();
+        conn.query_row(
+            "SELECT charged FROM classify_costs WHERE kind='program' AND run_id='r' AND position=?1",
+            params![position],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn pre_provider_refusals_are_free_while_uncertain_ones_keep_the_reservation() {
+        let mut conn = migrated();
+        // A couple of the newly listed Broca codes: no provider call was made.
+        assert_eq!(charged_after_settle(&mut conn, 0, "parent_scope_pending"), 0.0);
+        assert_eq!(charged_after_settle(&mut conn, 1, "tool_schema_changed"), 0.0);
+        // These may have reached the provider, so the reservation is kept.
+        assert_eq!(charged_after_settle(&mut conn, 2, "provider_error"), 0.10);
+        assert_eq!(charged_after_settle(&mut conn, 3, "batch_in_progress"), 0.10);
+    }
 }
