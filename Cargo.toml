@@ -42,10 +42,18 @@ cortexkit-test-support = "=0.1.10"
 cortexkit-store = { version = "=0.2.5", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
 cortexkit-role-tool-provider = "=0.13.0"
-cortexkit-llm-tools = "=0.1.1"
+cortexkit-llm-tools = "=0.2.1"
 cortexkit-role-tool-provider-conformance = "=0.13.0"
 # The provider-owned resource-busy refusal is shared across the fleet.
 cortexkit-resource-busy = { git = "https://github.com/cortexkit/commons", rev = "c46f324133c5df6411703714e4c147f7cc8554a0" }
+# The model messages and refusal types the LLM tool contracts share. Pinned
+# exactly so basal's refusal-spend handling cannot drift from them.
+cortexkit-model-batch = "=0.3.1"
+# Their refusal codes and question shapes are what the LLM tool contracts test
+# against. Pinned at the versions cortexkit-llm-tools itself asks for, so only
+# one model-batch version is in the graph.
+cortexkit-role-classifier = "=0.5.0"
+cortexkit-role-extractor = "=0.2.0"
 # The driver cortexkit-store is built on. basal-core writes its own queries
 # against the connection the store hands out, so it names the same major.
 rusqlite = "0.32"

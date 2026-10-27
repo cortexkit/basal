@@ -1,6 +1,7 @@
 //! Dollar accounting shared by program and flow calls to the classifier tool.
 
 use basal_host::transport::WireError;
+use cortexkit_llm_tools::errors::{Refusal, RefusalDetail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -235,7 +236,8 @@ pub fn reserve(
 
 /// Refusals where no provider call was made, so the call is free.
 /// Anything else is charged the reservation because basal can't prove it was
-/// free. A `cost_usd` in the reply always takes precedence over this list.
+/// free. Producers that mark a refusal's spend never reach this list: it
+/// settles only refusals that carry no spend marker at all.
 const FREE_REFUSAL_CODES: &[&str] = &[
     "invalid_params",
     "scope_required",
@@ -259,6 +261,51 @@ const FREE_REFUSAL_CODES: &[&str] = &[
     "unknown_method",
 ];
 
+/// Basal builds the shared refusal shape from the reply, so the spend rule has
+/// one implementation rather than one here. A `detail` that does not decode is
+/// dropped: whatever it says is not a well-formed spend marker.
+fn refusal_from_reply(code: &str, detail: Option<&Value>) -> Refusal {
+    let refusal = cortexkit_llm_tools::errors::refusal(code, "")
+        .unwrap_or_else(|| Refusal::new(code, ""));
+    let detail = detail
+        .and_then(|detail| serde_json::from_value::<RefusalDetail>(detail.clone()).ok());
+    match detail {
+        Some(detail) => refusal.with_detail(detail),
+        None => refusal,
+    }
+}
+
+/// What to charge a refused call, honoring the spend marker its producer set.
+fn refused_charge(code: &str, detail: Option<&Value>, reserved: f64) -> f64 {
+    use cortexkit_llm_tools::errors::{RefusalSpend, refusal_spend};
+
+    match refusal_spend(&refusal_from_reply(code, detail)) {
+        Ok(RefusalSpend::Measured(cost)) => cost,
+        Ok(RefusalSpend::ChargeCeiling) => reserved,
+        Ok(RefusalSpend::NoSpend) => 0.0,
+        // No marker at all: an older producer, settled by basal's own policy.
+        Ok(RefusalSpend::Undeclared) => {
+            if FREE_REFUSAL_CODES.contains(&code) {
+                0.0
+            } else {
+                reserved
+            }
+        }
+        // A malformed marker is not proof the call was free.
+        Err(violation) => {
+            tracing::warn!(
+                code,
+                %violation,
+                reserved,
+                "classify refusal carries a malformed spend marker; charging the reservation"
+            );
+            reserved
+        }
+        // The enum is non-exhaustive; a marker basal can't read is unproven.
+        Ok(_) => reserved,
+    }
+}
+
 /// An unknown outcome keeps its reservation; a known pre-model refusal is free.
 pub fn settle(
     tx: &Transaction<'_>,
@@ -275,13 +322,16 @@ pub fn settle(
     };
     let code = code.or_else(|| value.and_then(|v| v["errorCode"].as_str()));
     let value = value.map(|v| v.get("structuredContent").unwrap_or(v));
-    let charged = value
-        .and_then(|v| v["cost_usd"].as_f64())
-        .filter(|v| v.is_finite() && *v >= 0.0)
-        .unwrap_or(match code {
-            Some(code) if FREE_REFUSAL_CODES.contains(&code) => 0.0,
-            _ => reserved,
-        });
+    let charged = match code {
+        // A reply that names a code is a refusal: its producer says what the
+        // call spent.
+        Some(code) => refused_charge(code, value.and_then(|v| v.get("detail")), reserved),
+        // A success: charge the cost it measured.
+        None => value
+            .and_then(|v| v["cost_usd"].as_f64())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(reserved),
+    };
     tx.execute("UPDATE classify_costs SET charged=?4 WHERE kind=?1 AND run_id=?2 AND position=?3 AND charged IS NULL",
         params![kind,run,position,charged])?;
     Ok(())
@@ -290,6 +340,7 @@ pub fn settle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn migrated() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -300,13 +351,22 @@ mod tests {
     }
 
     fn charged_after_settle(conn: &mut Connection, position: u64, code: &str) -> f64 {
+        settle_reply(conn, position, None, Some(code))
+    }
+
+    fn settle_reply(
+        conn: &mut Connection,
+        position: u64,
+        value: Option<&Value>,
+        code: Option<&str>,
+    ) -> f64 {
         conn.execute(
             "INSERT INTO classify_costs(kind,run_id,position,flow_id,created_at,reserved,args) VALUES ('program','r',?1,NULL,0,0.10,'{}')",
             params![position],
         )
         .unwrap();
         let tx = conn.transaction().unwrap();
-        settle(&tx, "program", "r", position, None, Some(code)).unwrap();
+        settle(&tx, "program", "r", position, value, code).unwrap();
         tx.commit().unwrap();
         conn.query_row(
             "SELECT charged FROM classify_costs WHERE kind='program' AND run_id='r' AND position=?1",
@@ -332,6 +392,88 @@ mod tests {
         assert_eq!(charged_after_settle(&mut conn, 2, "provider_error"), 0.10);
         assert_eq!(
             charged_after_settle(&mut conn, 3, "batch_in_progress"),
+            0.10
+        );
+    }
+
+    /// The refusal codes basal itself raises stay free without a spend marker.
+    #[test]
+    fn basal_refusals_carry_no_spend_marker_yet_charge_nothing() {
+        let mut conn = migrated();
+        for (position, code) in ["tool_unavailable", "denied", "cancelled"]
+            .into_iter()
+            .enumerate()
+        {
+            let reply = json!({"code": code, "message": "refused by basal"});
+            assert_eq!(
+                settle_reply(&mut conn, position as u64, Some(&reply), Some(code)),
+                0.0,
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_success_charges_the_cost_it_measured() {
+        let mut conn = migrated();
+        let reply = json!({"structuredContent": {"cost_usd": 0.0004}});
+        assert_eq!(settle_reply(&mut conn, 0, Some(&reply), None), 0.0004);
+    }
+
+    /// Every published refusal-spend case, settled as basal would settle it.
+    /// A valid marker decides the charge on its own: a free-listed code still
+    /// pays a measured cost, and an unlisted one is still free when marked
+    /// `no_spend`. A malformed marker is charged the reservation.
+    #[test]
+    fn every_refusal_spend_vector_settles_by_its_marker() {
+        let document: Value = serde_json::from_str(include_str!(
+            "../../../test-vectors/llm-tools-v1/refusal-spend.json"
+        ))
+        .unwrap();
+        let cases = document["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 14, "the published vector set changed size");
+        let mut conn = migrated();
+        for (position, case) in cases.iter().enumerate() {
+            let name = case["name"].as_str().unwrap();
+            let value = &case["value"];
+            let code = value["code"].as_str().unwrap();
+            // What basal charges before it looks at any spend marker.
+            let by_code = if FREE_REFUSAL_CODES.contains(&code) {
+                0.0
+            } else {
+                0.10
+            };
+            let charged = settle_reply(&mut conn, position as u64, Some(value), Some(code));
+            assert_eq!(charged, match case["expect"]["spend"].as_str() {
+                Some("measured") => case["expect"]["cost_usd"].as_f64().unwrap(),
+                Some("charge_ceiling") => 0.10,
+                Some("no_spend") => 0.0,
+                // No marker: the code alone decides, as it always has.
+                Some("undeclared") => by_code,
+                // A malformed marker can't be proven free.
+                None => 0.10,
+                Some(other) => panic!("{name}: unknown spend {other}"),
+            }, "{name}");
+        }
+    }
+
+    /// An older producer marks no spend at all, so the code alone decides.
+    #[test]
+    fn an_undeclared_free_list_refusal_charges_nothing() {
+        let mut conn = migrated();
+        let reply = json!({"code": "scope_required", "message": "scope required"});
+        assert_eq!(
+            settle_reply(&mut conn, 0, Some(&reply), Some("scope_required")),
+            0.0
+        );
+    }
+
+    #[test]
+    fn an_undeclared_unlisted_refusal_charges_the_reservation() {
+        let mut conn = migrated();
+        let reply = json!({"code": "provider_error", "message": "provider failed"});
+        assert_eq!(
+            settle_reply(&mut conn, 0, Some(&reply), Some("provider_error")),
             0.10
         );
     }
