@@ -1217,7 +1217,7 @@ fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
     grant_lost.fake.catalog.lock().unwrap()["modules"]
         .as_array_mut()
         .unwrap()
-        .push(json!({"module_id":"plexus","roles":[{"role":"management_surface","operations":[{"name":"read","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}));
+        .push(json!({"module_id":"plexus","capabilities":{"provides":["flow-scopes/v1"]},"roles":[{"role":"management_surface","operations":[{"name":"read","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}));
     let mut grant_manifest = manifest();
     grant_manifest["ops"]
         .as_array_mut()
