@@ -6,6 +6,8 @@ mod common;
 mod digest_withdraw;
 #[path = "hosts/dry_run_capabilities.rs"]
 mod dry_run_capabilities;
+#[path = "hosts/flow_scope_refusal.rs"]
+mod flow_scope_refusal;
 #[path = "hosts/room_post.rs"]
 mod room_post;
 #[path = "hosts/wait_resolve.rs"]

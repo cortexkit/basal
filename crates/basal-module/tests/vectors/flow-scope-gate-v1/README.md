@@ -10,5 +10,7 @@ use: the error body carries the code `flow_scope_not_supported`, the refused
 `op`, and the `allowed_ops` a flow may call. Unlike the flow-scope-v1 files it
 is pretty-printed JSON, not compact.
 
-`flow_scope_vectors.rs` pins the digest and drives the refusal through basal's
-flow-call path as core's reply to a flow's `prefrontal-core` call.
+`flow_scope_vectors.rs` pins the digest. `hosts/flow_scope_refusal.rs` drives
+the refusal through basal's flow-call path as core's reply to a flow's
+`prefrontal-core` call, and checks that it reaches the script unchanged and is
+final: never deferred or resent.
