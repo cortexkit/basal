@@ -63,7 +63,7 @@ fn fixture(cap: f64) -> (World, Runtime, Arc<Provider>, Value, Clock) {
     world.catalog.set_tool_contract(
         "mock",
         "echo",
-        json!({"capabilities":[cortexkit_llm_tools::classify::TAG],
+        json!({"modes":["flow"],"capabilities":[cortexkit_llm_tools::classify::TAG],
         "input_schema":cortexkit_llm_tools::classify::input_schema()}),
     );
     let store = Arc::new(Store::open(world.store_path(), Durability::throwaway()).unwrap());
@@ -258,7 +258,7 @@ fn flow_classify_untagged_cost_schema_is_not_installable() {
     world.catalog.set_tool_contract(
         "mock",
         "echo",
-        json!({"input_schema":cortexkit_llm_tools::classify::input_schema()}),
+        json!({"modes":["flow"],"input_schema":cortexkit_llm_tools::classify::input_schema()}),
     );
     let error = rt
         .install(&InstallRequest {

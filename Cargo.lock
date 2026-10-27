@@ -864,7 +864,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1445,7 +1445,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1938,7 +1938,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2203,7 +2203,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2251,9 +2251,9 @@ dependencies = [
 
 [[package]]
 name = "subc-client-rs"
-version = "0.32.4"
+version = "0.32.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf4060b74ccd1790cb4db361903d3f119856fcb6b608989941bde6051914d605"
+checksum = "1e44c9f59069019b1cf2ec6e508020a38068c0ea6c78f081a223761c0aac232b"
 dependencies = [
  "async-trait",
  "serde",
@@ -2270,9 +2270,9 @@ dependencies = [
 
 [[package]]
 name = "subc-control"
-version = "0.33.2"
+version = "0.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19b48d3726a4cacd8b0a060e02d7f91bbc40815d6c7a9fc6df6678c6b938f26c"
+checksum = "ebe969730073dc986efce2565f81900ed323313da5f617b0118dd98c842bc7d9"
 dependencies = [
  "serde",
  "serde_json",
@@ -2292,9 +2292,9 @@ dependencies = [
 
 [[package]]
 name = "subc-protocol"
-version = "0.33.2"
+version = "0.33.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef5e52c6e517a2d3274771e60aa1934e0a417e37608cfdb3cf14b539e14701d"
+checksum = "7d3427bac7ed02fa2a600018859e381ce587424f61b1eac065ec0395229da57d"
 dependencies = [
  "serde",
  "serde_json",

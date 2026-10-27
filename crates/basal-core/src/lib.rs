@@ -47,6 +47,7 @@ pub mod driver;
 pub mod dry_run_text;
 pub mod error;
 pub mod events;
+mod flow_ops;
 mod flow_scope;
 pub mod gate;
 pub mod grant_loss;

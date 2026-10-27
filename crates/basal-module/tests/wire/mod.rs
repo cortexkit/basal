@@ -61,7 +61,7 @@ impl Fake {
         *f.catalog.lock().unwrap() = json!({"generation":1,"subc_ops":["catalog.list"],"modules":[{"module_id":"mock","roles":[
             {"role":"management_surface","operations":[{"name":"echo","kind":"query"},{"name":"post","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"},
             {"role":"tool_provider","tools":[{"name":"send","execution_mode":"mutating","schema":{}},{"name":"read","execution_mode":"pure","schema":{}},{"name":"shell","execution_mode":"unfenceable","schema":{}}],"identity_scope":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}
-        ],"control_ops":[]}]});
+        ],"capabilities":{"provides":["call-modes/v1"]},"control_ops":[]}]});
         for scope_ref in LIVE_SYNAPSE_SCOPES {
             f.scopes.lock().unwrap().insert(
                 (*scope_ref).into(),
@@ -155,6 +155,10 @@ impl Fake {
                             1,
                             schema,
                         )
+                        .with_modes(vec![
+                            cortexkit_role_tool_provider::CallMode::Classic,
+                            cortexkit_role_tool_provider::CallMode::Flow,
+                        ])
                     })
                     .collect();
                 Ok(

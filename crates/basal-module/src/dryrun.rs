@@ -548,6 +548,9 @@ impl DryRunner {
         };
         let installed = install_result.map_err(|e| match e {
             e @ (basal_core::InstallError::ForeignAgentTarget { .. }
+            | basal_core::InstallError::FlowOpNotServed { .. }
+            | basal_core::InstallError::FlowScopeUnsupported { .. }
+            | basal_core::InstallError::ToolContractUnreadable { .. }
             | basal_core::InstallError::AudienceIdNotStable { .. }
             | basal_core::InstallError::UnknownEventHeader { .. }
             | basal_core::InstallError::UnknownWorkspace(_)

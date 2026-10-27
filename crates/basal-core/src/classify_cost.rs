@@ -50,7 +50,17 @@ pub fn policy_for(
             reason: format!("{error:?}"),
         }
     })?;
-    if entry.as_ref().is_some_and(matches) {
+    crate::flow_ops::validate(catalog, module, op, entry.as_ref())?;
+    policy_for_entry(manifest, module, op, entry.as_ref())
+}
+
+pub(crate) fn policy_for_entry(
+    manifest: &crate::Manifest,
+    module: &str,
+    op: &str,
+    entry: Option<&Value>,
+) -> Result<ToolPolicy, crate::InstallError> {
+    if entry.is_some_and(matches) {
         if manifest.model_cost_usd.is_none() {
             return Err(crate::InstallError::ModelCostCapRequired {
                 module: module.into(),
@@ -59,7 +69,7 @@ pub fn policy_for(
         }
         Ok(ToolPolicy::Classify)
     } else {
-        if let Some(entry) = &entry
+        if let Some(entry) = entry
             && requires_ceiling(entry)
         {
             return Err(crate::InstallError::ModelToolUntagged {

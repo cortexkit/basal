@@ -213,6 +213,25 @@ impl Module {
                 "tool_contract_unreadable",
                 format!("{module}.{op}: {reason}"),
             ),
+            InstallError::FlowOpNotServed {
+                module,
+                op,
+                surface,
+                allowed,
+                reason,
+            } => {
+                let surface = match surface {
+                    basal_host::subc_catalog::Surface::Management => "management",
+                    basal_host::subc_catalog::Surface::Tool => "tool",
+                };
+                let mut message = format!("{module}.{op} is not served to flows: {reason}");
+                let mut detail = json!({"module":module,"op":op,"surface":surface});
+                if let Some(allowed) = allowed {
+                    message.push_str(&format!("; allowed management ops: {allowed:?}"));
+                    detail["allowed"] = json!(allowed);
+                }
+                OpError::new("flow_op_not_served", message).with_detail(Some(detail))
+            }
             InstallError::SelfRequiresPackage => OpError::new(
                 "self_requires_package",
                 "$self is available only in package manifests",
