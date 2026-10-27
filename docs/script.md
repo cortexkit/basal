@@ -17,17 +17,21 @@ gives `secret_out_of_scope`. Ordinary network grants still apply. A script still
 cannot set `Authorization`, cookies or other protected headers itself.
 
 Basal describes the flow's live scope and relays the daemon's complete stamp,
-unchanged, to `claustrum secret.use` on its own management route. Missing identity
-attributes give `secret_scope_missing`; a version/hash/flow or scope mismatch
-gives `secret_scope_mismatch`, before any vault call. Basal injects only a
+unchanged, to `claustrum secret.use` on its own management route. A scope that
+is not ready gives `no_flow_scope`, just like ordinary operations: the call is
+provably unsent and reaches the script without waiting to act on stale inputs.
+An otherwise ready stamp with missing identity attributes gives
+`secret_scope_missing`; a version/hash/flow or owner mismatch gives
+`secret_scope_mismatch`, before any vault call. Basal injects only a
 released API key into `Authorization: Bearer …` or a safe `header:<Name>`.
 Body/query locations give `secret_location_unsupported`; logins cannot be used
 through fetch. Authenticated fetches return redirects without following them:
 a redirect is a new authorization decision and never receives the released key.
 
-Vault final refusals reach `error.data.code` as `not_found`, `invalid_params`,
-`limit_exceeded` or `secret_setup_incomplete`, without provider detail or retries.
-Vault store/route/transport failures defer with bounded backoff. No error text
+All vault refusal codes other than `store_error`, including unknown future
+codes, are final and reach `error.data.code` without provider detail or retries.
+Vault store/transport failures defer with bounded backoff; route readiness
+follows the ordinary scope rules. No error text
 contains released material. The journal freezes the public request and a
 `[secret]` credential placeholder, not the injected header. Completed replay
 serves its recorded response without a vault call. An unresolved request follows
@@ -40,6 +44,29 @@ payload causes the whole encoded run to be replaced. Matches become
 `{{ck-secret:github-key}}`. This is a backstop, not permission to send a key to
 another target. Both capture and live dry runs capture the fetch with its secret
 name and never call `secret.use` or send authenticated HTTP.
+
+Secret fetches accept only these script headers: `Accept`, `Content-Type`,
+`If-None-Match` and `If-Modified-Since` (case-insensitive). Other headers, query or
+form `_method` overrides, and multipart forms give `secret_request_unsafe`
+before the vault is contacted. An HTTP 206 reply or any `Content-Range` reply
+gives `secret_partial_response`; the request may already have been sent.
+Response `Content-Length`, `ETag`, `Digest`, `Content-MD5` and `Content-Range`
+are never delivered on secret fetches. Ordinary fetches are unchanged.
+
+After exact substitution, a bounded residual-echo check decodes JSON escapes,
+ASCII-bearing HTML entities/numeric references, repeated percent/form encodings and
+base64 at every alignment (including ASCII whitespace and literal `\n` wraps), comparing
+complete keys case-insensitively in ASCII. An unsafe or unscannable body becomes
+`body: null` with `body_error: "secret_echoed"`. Unsafe headers are dropped,
+whether their name or value carries the echo, with a generic
+`headers_error: "secret_echoed"`; header names are never included in that error.
+Partial key substrings are not matched. Limits on normalization depth, views
+and response-wide work fail closed rather than returning unscanned data.
+
+Basal best-effort zero-fills the decoded vault key, the injected header value
+and owned vault reply string values after use. This does not clear every copy:
+HTTP/TLS transport buffers, allocator copies and redaction/normalization workspaces are
+not guaranteed to be zeroed.
 
 A flow script runs in `ck-basal-worker`, a separate process that confines
 itself before it reads anything from basal. The script reaches the world only

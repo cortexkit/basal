@@ -242,3 +242,39 @@ fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_neve
     drop(rt);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn review_single_stale_secret_card_queues_cleanup_in_its_transaction() {
+    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
+    let rt = &fixture.rt;
+    let manifest = json!({"id":"stale-secret","version":1,"purpose":"stale cleanup",
+        "trigger":{"schedule":{"interval":"1h"}},"secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/"},"methods":["GET"]}]}).to_string();
+    let installed = rt
+        .install(&InstallRequest {
+            script: "return 1;".into(),
+            manifest,
+            author: "operator".into(),
+            loop_override: false,
+        })
+        .unwrap();
+    let card = rt
+        .record_card("stale-secret", 1, &installed.code_hash, "operator", "{}")
+        .unwrap();
+    rt.store()
+        .write(|tx| crate::install::supersede_pending_card(tx, "stale-secret", 1, 100))
+        .unwrap();
+    let body: String = rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT body FROM outbox WHERE kind='secret.revoke_flow_grants'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["request"],
+        json!({"flow_install_id":card.install_id.unwrap(),"flow_version":1})
+    );
+}

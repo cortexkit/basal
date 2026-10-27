@@ -980,7 +980,20 @@ impl Consent for CoreConsent {
             .state
             .transport
             .management(CORE, "flow.install_request", request)
-            .map_err(error)?;
+            .map_err(|failure| {
+                let refused = matches!(
+                    failure,
+                    WireError::Refused { .. }
+                        | WireError::RefusedDetails { .. }
+                        | WireError::Typed(_)
+                );
+                let failure = error(failure);
+                if manifest.get("secrets").is_some() && refused {
+                    ConsentError::InstallRefusedWithSecrets(Box::new(failure))
+                } else {
+                    failure
+                }
+            })?;
         let outcome = decode_install_outcome(&reply)?;
         if let InstallOutcome::CardRaised {
             flow_id, version, ..

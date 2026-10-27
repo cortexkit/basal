@@ -226,6 +226,8 @@ impl DecisionPath {
 /// The consent plane could not take the card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsentError {
+    /// Vault preparations succeeded, but core explicitly refused the install.
+    InstallRefusedWithSecrets(Box<ConsentError>),
     /// It cannot be reached, or none is configured. Raising again later is
     /// safe: the card id makes it idempotent.
     Unavailable(String),
@@ -245,6 +247,7 @@ pub enum ConsentError {
 impl fmt::Display for ConsentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InstallRefusedWithSecrets(error) => write!(f, "{error}"),
             Self::Unavailable(e) => write!(f, "consent plane unavailable: {e}"),
             Self::Refused(e) => write!(f, "consent plane refused the card: {e}"),
             Self::Secret { code, retryable } => {

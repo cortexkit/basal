@@ -12,7 +12,7 @@ pub(crate) fn enqueue(
     retirement: bool,
     now: i64,
 ) -> Result<()> {
-    let mut statement = tx.prepare("SELECT c.install_id,i.version,i.manifest FROM install_cards c JOIN installs i USING(flow_id,version) WHERE c.flow_id=?1 AND (?2 IS NULL OR c.version=?2) AND c.install_id IS NOT NULL")?;
+    let mut statement = tx.prepare("SELECT c.install_id,i.version,i.manifest FROM install_cards c JOIN installs i USING(flow_id,version) WHERE c.flow_id=?1 AND (?2 IS NULL OR c.version=?2) AND c.install_id IS NOT NULL AND (instr(i.manifest,'secrets')>0 OR instr(i.manifest,char(92))>0)")?;
     let rows = statement
         .query_map(params![flow, version], |row| {
             Ok((
@@ -23,21 +23,39 @@ pub(crate) fn enqueue(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, installed_version, manifest) in rows {
-        let manifest = crate::manifest::Manifest::parse_stored(&manifest)
-            .map_err(|_| CoreError::Corrupt("secret revoke manifest does not decode".into()))?;
-        if manifest.secrets.is_none() {
+        if !crate::stored_secret::has_secrets(&manifest, flow, installed_version) {
             continue;
         }
-        let mut request = json!({"flow_install_id":id});
-        if version.is_some() {
-            request["flow_version"] = json!(installed_version);
-        }
-        let body = json!({"request":request,"retirement":retirement,"version":installed_version})
-            .to_string();
-        // A pending card can be approved after uninstall and mint fresh grants
-        // under its retained install id. Deduplicate outstanding work only.
-        tx.execute("INSERT INTO outbox(at,kind,flow_id,body,retry_at) SELECT ?1,?2,?3,?4,?1 WHERE NOT EXISTS (SELECT 1 FROM outbox WHERE kind=?2 AND flow_id=?3 AND body=?4 AND delivered_at IS NULL)", params![now, KIND, flow, body])?;
+        enqueue_install(
+            tx,
+            flow,
+            &id,
+            installed_version,
+            version.is_some(),
+            retirement,
+            now,
+        )?;
     }
+    Ok(())
+}
+
+fn enqueue_install(
+    tx: &Transaction<'_>,
+    flow: &str,
+    id: &str,
+    version: u32,
+    version_specific: bool,
+    retirement: bool,
+    now: i64,
+) -> Result<()> {
+    let mut request = json!({"flow_install_id":id});
+    if version_specific {
+        request["flow_version"] = json!(version);
+    }
+    let body = json!({"request":request,"retirement":retirement,"version":version}).to_string();
+    // A pending card can be approved after uninstall and mint fresh grants
+    // under its retained install id. Deduplicate outstanding work only.
+    tx.execute("INSERT INTO outbox(at,kind,flow_id,body,retry_at) SELECT ?1,?2,?3,?4,?1 WHERE NOT EXISTS (SELECT 1 FROM outbox WHERE kind=?2 AND flow_id=?3 AND body=?4 AND delivered_at IS NULL AND failed_at IS NULL)", params![now, KIND, flow, body])?;
     Ok(())
 }
 
@@ -53,12 +71,35 @@ pub(crate) fn retire_approved(tx: &Transaction<'_>, flow: &str, now: i64) -> Res
 }
 
 impl Runtime {
+    /// An explicit core refusal ends this attempt. Preserve cleanup for its
+    /// old identity atomically with making the next retry mint a fresh one.
+    pub fn abandon_prepared_secret_install(
+        &self,
+        flow: &str,
+        version: u32,
+        install_id: &str,
+    ) -> Result<()> {
+        self.store().write(|tx| {
+            enqueue_install(tx, flow, install_id, version, true, false, self.config().clock.now_ms())?;
+            tx.execute("UPDATE install_cards SET install_id=NULL,attempt=NULL WHERE flow_id=?1 AND version=?2 AND state='pending' AND install_id=?3", params![flow,version,install_id])?;
+            Ok(())
+        })?;
+        self.shared.signal.bump();
+        Ok(())
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn enqueue_secret_install_cleanup(&self, flow: &str, version: u32) -> Result<()> {
+        self.store()
+            .write(|tx| enqueue(tx, flow, Some(version), false, self.config().clock.now_ms()))?;
+        self.shared.signal.bump();
+        Ok(())
+    }
     /// Send due revokes without a SQLite lock. Retired versions first wait for
     /// all admitted runs, durable obligations and executing dispatches to end.
     pub fn drain_secret_revocations(&self) -> Result<()> {
         let now = self.config().clock.now_ms();
         let rows = self.store().read(|connection| {
-            Ok(connection.prepare("SELECT seq,flow_id,body,attempts FROM outbox WHERE kind=?1 AND delivered_at IS NULL AND retry_at<=?2 ORDER BY seq LIMIT 64")?
+            Ok(connection.prepare("SELECT seq,flow_id,body,attempts FROM outbox WHERE kind=?1 AND delivered_at IS NULL AND failed_at IS NULL AND retry_at<=?2 ORDER BY seq LIMIT 64")?
                 .query_map(params![KIND, now], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, u32>(3)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
@@ -84,15 +125,27 @@ impl Runtime {
                         route.flow_id == flow && route.version.map(u64::from) == Some(version)
                     });
             }
-            let success = !busy
-                && self
-                    .shared
-                    .host
-                    .secret_revoke(body["request"].clone())
-                    .is_ok_and(|reply| {
-                        reply["status"] == "revoked" && reply["grants"].as_u64().is_some()
-                    });
-            self.store().write(|tx| {
+            let result = (!busy).then(|| self.shared.host.secret_revoke(body["request"].clone()));
+            let success = result.as_ref().is_some_and(|result| {
+                result.as_ref().is_ok_and(|reply| {
+                    reply["status"] == "revoked" && reply["grants"].as_u64().is_some()
+                })
+            });
+            let permanent = match &result {
+                Some(Err(
+                    basal_host::transport::WireError::Refused { code, .. }
+                    | basal_host::transport::WireError::RefusedDetails { code, .. },
+                )) if code != "store_error" => Some(code.clone()),
+                Some(Err(basal_host::transport::WireError::Typed(refusal))) => {
+                    Some(refusal.reason.as_str().to_owned())
+                }
+                _ => None,
+            };
+            let warned = self.store().write(|tx| {
+                if let Some(code) = &permanent {
+                    let changed = tx.execute("UPDATE outbox SET failed_at=?2,failure_code=?3 WHERE seq=?1 AND delivered_at IS NULL AND failed_at IS NULL", params![seq, now, code])?;
+                    return Ok(changed != 0);
+                }
                 if success {
                     tx.execute(
                         "UPDATE outbox SET delivered_at=?2 WHERE seq=?1",
@@ -109,8 +162,11 @@ impl Runtime {
                         params![seq, now.saturating_add(delay)],
                     )?;
                 }
-                Ok(())
+                Ok(false)
             })?;
+            if warned {
+                tracing::warn!(target:"consent", seq, "vault permanently refused secret cleanup; obligation marked failed");
+            }
         }
         Ok(())
     }
@@ -118,7 +174,7 @@ impl Runtime {
     pub(crate) fn secret_revocation_next_wake(&self) -> Result<Option<i64>> {
         self.store().read(|connection| {
             Ok(connection.query_row(
-                "SELECT MIN(retry_at) FROM outbox WHERE kind=?1 AND delivered_at IS NULL",
+                "SELECT MIN(retry_at) FROM outbox WHERE kind=?1 AND delivered_at IS NULL AND failed_at IS NULL",
                 [KIND],
                 |row| row.get(0),
             )?)

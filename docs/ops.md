@@ -62,7 +62,7 @@ Reply:
 
 Installation records a version and asks prefrontal-core to authorize it through `flow.install_request`, with a `flow_install` consent body containing the exact code, manifest and attested author. Core owns the install record and files its card through cingulate when available, otherwise through its own provider. basal never sends install cards directly to cingulate. The reply `outcome: card_raised` names `flow_id`, `version` and `attempt`, not an elicitation id; basal saves that triple. A reply of any other shape is not accepted. Decision cards (`flow_decision`, including `grant_lost`) use the catalogued consent provider and its answer feed.
 
-When core's daemon catalog entry advertises `flow-install-id/v1`, basal sends `flow_install.install_id` in `flow.install_request`, beside `flow_id`, `version` and `code_hash` inside `flow_install`. Otherwise the key is omitted. Basal mints 16 bytes from OS entropy, encodes them as 32 lowercase hexadecimal characters (within core's 1–64 character `[A-Za-z0-9_-]` alphabet), and saves the id with the local install card in the same transaction. Each new local card gets a new id. Retrying a pending card, including after a lost reply, reuses its stored id; core assigns `attempt` only in its reply, so basal does not mint ids from attempt numbers. Existing cards without an id acquire one transactionally before their next request is sent. Core binds an id to the exact flow, version and code hash and refuses its reuse for a different install.
+When core's daemon catalog entry advertises `flow-install-id/v1`, basal sends `flow_install.install_id` in `flow.install_request`, beside `flow_id`, `version` and `code_hash` inside `flow_install`. Otherwise the key is omitted. Basal mints 16 bytes from OS entropy, encodes them as 32 lowercase hexadecimal characters (within core's 1–64 character `[A-Za-z0-9_-]` alphabet), and saves the id with the local install card in the same transaction. Each new local card gets a new id. Retrying a pending card whose request may still be live, including after a lost reply, reuses its stored id; core assigns `attempt` only in its reply, so basal does not mint ids from attempt numbers. Existing cards without an id acquire one transactionally before their next request is sent. Core binds an id to the exact flow, version and code hash and refuses its reuse for a different install.
 
 For a manifest with `secrets`, core must advertise `flow-install-secrets/v1` or
 the install returns `install_secrets_unsupported`. Basal first makes one unscoped,
@@ -85,16 +85,28 @@ an `install_checks` reason and logs a warning once for that reason. Basal declar
 `flow-identity-scopes/v1` so the daemon includes all installed-flow identity
 attributes when describing a scope for vault use; it never constructs a stamp.
 
-Secret cleanup is durable best-effort work in the existing outbox. A declined,
-expired or rejected install card enqueues a version-specific
+Secret cleanup is durable best-effort work in the outbox. A declined,
+expired, rejected or stale pending install card enqueues a version-specific
 `claustrum secret.revoke_flow_grants {flow_install_id,flow_version}` in the same
 transaction that settles the card. Uninstall enqueues each secret install's id
 without `flow_version`. Approval of a replacement enqueues retirement of the
 old version, but does not send its revoke until its last run, durable call/model
 obligation and executing dispatch have ended. The engine drains due rows outside
 SQLite transactions; failures remain queued with bounded exponential backoff.
-Successful `{"status":"revoked","grants":0}` is also final success. No new
-store migration is needed: the existing outbox holds these obligations.
+Successful `{"status":"revoked","grants":0}` is also final success. An explicit
+`flow.install_request` refusal after vault preparation queues and attempts the
+same cleanup, including unconsumed approval requests; uncertain core replies do
+not trigger cleanup. Explicit refusal ends that attempt: the next install retry
+mints a fresh install id and statements, so delayed cleanup of the old id cannot
+revoke the retry's grant. Uncertain sends still retain their original id.
+Only `store_error` and transport failures retry a revoke.
+Other refusal codes persist `outbox.failed_at` and `failure_code`, stop future
+drain/wake attempts and log one warning without provider prose. Failed rows are
+retained as unresolved history, not marked delivered. Migration 45 preserves
+populated journal/mailbox/Broca rows while adding the vault deferral CHECK value
+and durable cleanup-failure columns. Historical manifest inspection first probes
+for a secret declaration; unreadable rows are ignored by secrets inspection with
+one warning. Pre-existing approval scheduling/corruption checks are unchanged.
 
 Uninstall preserves card history. Repeating an already-approved version after uninstall does not restore it or raise a fresh card: restoration requires a new version, which gets a new local card and install id. A still-pending card keeps its id across uninstall because no grant has been approved under it; approving it afterwards is a fresh approval decision, not revival of an old grant. Startup recovery and `flow.install_decided` only read status, never resend an install request or rotate its id. A later explicit retry sends the saved id if core advertises the capability.
 

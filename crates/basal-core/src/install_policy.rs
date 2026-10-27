@@ -127,9 +127,7 @@ impl Runtime {
                 return Ok(());
             }
             let manifest: String = tx.query_row("SELECT manifest FROM installs WHERE flow_id=?1 AND version=?2", params![flow_id, version], |r| r.get(0))?;
-            let manifest = crate::manifest::Manifest::parse_stored(&manifest)
-                .map_err(|e| CoreError::Corrupt(format!("installed manifest: {e}")))?;
-            if manifest.secrets.is_some() && !matches!(approval, Some(InstallApproval::Card)) {
+            if crate::stored_secret::has_secrets(&manifest, flow_id, version) && !matches!(approval, Some(InstallApproval::Card)) {
                 let reason = "secrets require explicit card approval provenance; policy or missing provenance cannot approve this version";
                 let previous: Option<String> = tx.query_row("SELECT install_check_error FROM installs WHERE flow_id=?1 AND version=?2", params![flow_id, version], |r| r.get(0))?;
                 if previous.as_deref() != Some(reason) {
@@ -143,7 +141,7 @@ impl Runtime {
             if let Some(InstallApproval::Policy { rule }) = &approval {
                 // Global reach always needs a card answer, even if core reports
                 // a matching active version approved by a configurable policy.
-                if matches!(manifest.audience, Some(crate::manifest::Audience::Global {})) {
+                if crate::stored_secret::global_audience(&manifest) {
                     tracing::error!(target: "consent", flow_id, version, rule, "refusing policy approval: global audience requires a card approval");
                     return Err(CoreError::Invalid(format!("global audience requires a card approval; policy rule {rule} cannot approve flow {flow_id} version {version}")));
                 }

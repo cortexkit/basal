@@ -1118,6 +1118,11 @@ pub(crate) fn supersede_older_pending_cards(
     now_ms: i64,
 ) -> Result<()> {
     let approved_version = version_i64(approved_version);
+    let versions = tx.prepare("SELECT version FROM install_cards WHERE flow_id=?1 AND version < ?2 AND state='pending'")?
+        .query_map(params![flow_id, approved_version], |row| row.get::<_, u32>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for version in versions {
+        crate::secret_revocation::enqueue(tx, flow_id, Some(version), false, now_ms)?;
+    }
     tx.execute(
         "UPDATE installs SET state='superseded', approval_ref='basal:superseded', \
              approval_kind='unknown', install_check_error=NULL \
@@ -1142,6 +1147,10 @@ pub(crate) fn supersede_pending_card(
     version: u32,
     now_ms: i64,
 ) -> Result<()> {
+    let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM install_cards WHERE flow_id=?1 AND version=?2 AND state='pending')", params![flow_id, version], |row| row.get(0))?;
+    if pending {
+        crate::secret_revocation::enqueue(tx, flow_id, Some(version), false, now_ms)?;
+    }
     tx.execute(
         "UPDATE installs SET state='superseded', approval_ref='basal:superseded', \
              approval_kind='unknown', install_check_error=NULL \

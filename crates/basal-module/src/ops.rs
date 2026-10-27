@@ -824,10 +824,33 @@ impl Module {
                         })?;
                 }
                 Err(e) => {
+                    let e = match e {
+                        ConsentError::InstallRefusedWithSecrets(cause) => {
+                            let install_id = record.install_id.as_deref().ok_or_else(|| {
+                                OpError::new(
+                                    "store_error",
+                                    "prepared secret install has no identity",
+                                )
+                            })?;
+                            self.rt
+                                .abandon_prepared_secret_install(
+                                    &record.flow_id,
+                                    record.version,
+                                    install_id,
+                                )
+                                .map_err(|error| self.core_error(error))?;
+                            self.rt
+                                .drain_secret_revocations()
+                                .map_err(|error| self.core_error(error))?;
+                            *cause
+                        }
+                        other => other,
+                    };
                     self.rt
                         .record_install_check_error(&record.flow_id, record.version, &e.to_string())
                         .map_err(|e| self.core_error(e))?;
                     let code = match &e {
+                        ConsentError::InstallRefusedWithSecrets(_) => "consent_refused",
                         ConsentError::Secret { code, retryable } => {
                             return Err(OpError::new(
                                 code,

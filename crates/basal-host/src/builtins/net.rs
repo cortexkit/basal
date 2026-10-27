@@ -416,6 +416,75 @@ fn header_name_ok(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
+/// Credential-bearing requests cannot let script headers select a byte range
+/// or ask a reverse proxy to reinterpret the approved target.
+pub(crate) fn authorize_secret_request(request: &Request) -> Result<(), Denial> {
+    const ALLOWED: [&str; 4] = [
+        "accept",
+        "content-type",
+        "if-none-match",
+        "if-modified-since",
+    ];
+    if request
+        .headers
+        .iter()
+        .any(|(name, _)| !ALLOWED.contains(&name.to_ascii_lowercase().as_str()))
+    {
+        return Err(Denial::new(
+            "secret_request_unsafe",
+            "this script header is not allowed on an authenticated fetch",
+        ));
+    }
+    if request.headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-type")
+            && value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("multipart/form-data"))
+    }) {
+        return Err(Denial::new(
+            "secret_request_unsafe",
+            "multipart forms are not supported on authenticated fetches",
+        ));
+    }
+    let query = request
+        .url
+        .split('#')
+        .next()
+        .and_then(|url| url.split_once('?'))
+        .map(|(_, query)| query);
+    for params in query.into_iter().chain(request.body.as_deref()) {
+        for parameter in params.split(['&', ';']) {
+            let mut name = parameter
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .as_bytes()
+                .to_vec();
+            for depth in 0..=8 {
+                if name.eq_ignore_ascii_case(b"_method") {
+                    return Err(Denial::new(
+                        "secret_request_unsafe",
+                        "method override parameters are not allowed on authenticated fetches",
+                    ));
+                }
+                let decoded = crate::secrets::percent_decode(&name);
+                if decoded == name {
+                    break;
+                }
+                if depth == 8 {
+                    return Err(Denial::new(
+                        "secret_request_unsafe",
+                        "parameter encoding is too deeply nested",
+                    ));
+                }
+                name = decoded;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reads `net.fetch`'s arguments.
 pub fn parse_request(args: &Value) -> Result<Request, Denial> {
     let url = string_arg(args, "url")?;
@@ -710,6 +779,7 @@ impl Client {
         key: &mut [u8],
         location: &str,
     ) -> Result<Value, Failure> {
+        authorize_secret_request(request)?;
         if key.is_empty()
             || key.len() > MAX_HEADER_VALUE_BYTES
             || key.iter().any(|b| !(0x20..0x7f).contains(b))
@@ -1314,32 +1384,85 @@ fn finish(response: Response) -> Result<Value, Failure> {
 }
 
 fn finish_secret(mut response: Response, key: &[u8], name: &str) -> Result<Value, Failure> {
-    response
-        .headers
-        .retain(|(header, _)| !header.eq_ignore_ascii_case("set-cookie"));
-    response.body = crate::secrets::redact(&response.body, key, name);
-    for (header, value) in &mut response.headers {
-        *header = String::from_utf8_lossy(&crate::secrets::redact(header.as_bytes(), key, name))
-            .into_owned();
-        *value = String::from_utf8_lossy(&crate::secrets::redact(value.as_bytes(), key, name))
-            .into_owned();
+    if response.status == 206 || header(&response.headers, "content-range").is_some() {
+        return Err(Denial::new(
+            "secret_partial_response",
+            "partial authenticated responses are not allowed",
+        )
+        .into());
     }
+    response.headers.retain(|(header, _)| {
+        ![
+            "set-cookie",
+            "content-length",
+            "etag",
+            "digest",
+            "content-md5",
+            "content-range",
+        ]
+        .iter()
+        .any(|name| header.eq_ignore_ascii_case(name))
+    });
+    let mut guard = crate::secrets::EchoGuard::new(key);
+    let mut header_echoed = false;
+    let body_unsafe = match guard.redact(&response.body, key, name) {
+        Ok(body) => {
+            response.body = body;
+            false
+        }
+        Err(_) => {
+            response.body.clear();
+            true
+        }
+    };
+    response.headers.retain_mut(|(header, value)| {
+        let Ok(safe_header) = guard.redact(header.as_bytes(), key, name) else {
+            header_echoed = true;
+            return false;
+        };
+        let Ok(safe_value) = guard.redact(value.as_bytes(), key, name) else {
+            header_echoed = true;
+            return false;
+        };
+        *header = String::from_utf8_lossy(&safe_header).into_owned();
+        *value = String::from_utf8_lossy(&safe_value).into_owned();
+        let unsafe_header =
+            guard.unsafe_echo(header.as_bytes()) || guard.unsafe_echo(value.as_bytes());
+        header_echoed |= unsafe_header;
+        !unsafe_header
+    });
     let mut value = finish(response)?;
+    if body_unsafe
+        || value["body"]
+            .as_str()
+            .is_some_and(|body| guard.unsafe_echo(body.as_bytes()))
+    {
+        value["body"] = Value::Null;
+        value["body_error"] = json!("secret_echoed");
+    }
     if let Some(headers) = value["headers"].as_object_mut() {
         // Joining repeated values can reassemble a key from individually safe
         // fragments; normalization must finish before the last scrub.
         for (header, value) in std::mem::take(headers) {
-            let header =
-                String::from_utf8_lossy(&crate::secrets::redact(header.as_bytes(), key, name))
-                    .into_owned();
-            let value = String::from_utf8_lossy(&crate::secrets::redact(
-                value.as_str().unwrap_or("").as_bytes(),
-                key,
-                name,
-            ))
-            .into_owned();
-            headers.insert(header, Value::String(value));
+            let Ok(header) = guard.redact(header.as_bytes(), key, name) else {
+                header_echoed = true;
+                continue;
+            };
+            let Ok(value) = guard.redact(value.as_str().unwrap_or("").as_bytes(), key, name) else {
+                header_echoed = true;
+                continue;
+            };
+            let header = String::from_utf8_lossy(&header).into_owned();
+            let value = String::from_utf8_lossy(&value).into_owned();
+            if guard.unsafe_echo(header.as_bytes()) || guard.unsafe_echo(value.as_bytes()) {
+                header_echoed = true;
+            } else {
+                headers.insert(header, Value::String(value));
+            }
         }
+    }
+    if header_echoed {
+        value["headers_error"] = json!("secret_echoed");
     }
     Ok(value)
 }

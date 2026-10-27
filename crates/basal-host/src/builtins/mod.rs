@@ -99,6 +99,8 @@ impl Denial {
 /// How a built-in call ended without a result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
+    /// A provider refusal keeps an owned future code, never provider prose.
+    RefusedCode(String),
     /// A definite answer: the call was refused, or it ran and failed.
     Refused(Denial),
     /// The network could not carry the call; whether a request may have
@@ -109,6 +111,43 @@ pub enum Failure {
 impl From<Denial> for Failure {
     fn from(d: Denial) -> Self {
         Self::Refused(d)
+    }
+}
+
+fn vault_failure(error: crate::transport::WireError) -> Failure {
+    use crate::flow_refusal::{FlowRefusal, RefusalReason as R};
+    use crate::transport::WireError;
+    match error {
+        WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. }
+            if code != "store_error" =>
+        {
+            Failure::RefusedCode(code)
+        }
+        WireError::Typed(refusal) => {
+            if matches!(
+                refusal.reason,
+                R::NoFlowScope
+                    | R::TargetFlowUnsupported
+                    | R::ScopeNotCarrier
+                    | R::ScopeEnded
+                    | R::ScopeNotLive
+                    | R::ScopeEpochRequired
+                    | R::ScopeNotSynced
+                    | R::ScopeChanged
+                    | R::ScopeUnsupported
+                    | R::FlowScopeRequired
+                    | R::FlowDelegationUnsupported
+            ) {
+                Failure::Transport(TransportError::Refused(refusal))
+            } else {
+                Failure::RefusedCode(refusal.reason.as_str().into())
+            }
+        }
+        _ => Failure::Transport(TransportError::Refused(FlowRefusal::new(
+            R::SecretVaultUnavailable,
+            "claustrum",
+            "secret.use",
+        ))),
     }
 }
 
@@ -451,6 +490,7 @@ pub fn authorize(call: &Call, grant: &Grant) -> Result<(), Denial> {
             let url = net::parse_url(&request.url)?;
             net::allowed_url(&grant.hosts, &url, &request.method)?;
             if let Some(name) = &request.secret {
+                net::authorize_secret_request(request)?;
                 let secret = grant
                     .secrets
                     .iter()
@@ -512,41 +552,16 @@ impl BuiltinHost {
         let url = net::parse_url(&request.url)?;
         let params = serde_json::json!({"name":name,"target":{"scheme":"https","host":url.host,
             "port":url.port,"path":url.target.split('?').next().unwrap_or("/")},"method":request.method});
-        let host = self.secret_host.as_ref().ok_or_else(|| {
-            Denial::new("secret_scope_missing", "no secret carrier is configured")
-        })?;
+        let host = self
+            .secret_host
+            .as_ref()
+            .ok_or_else(|| vault_failure(crate::secrets::not_ready()))?;
         let reply = host.secret_use(
             context,
             envelope["flow_code_hash"].as_str().unwrap_or(""),
             params,
         );
-        let mut reply = reply.map_err(|error| {
-            use crate::transport::WireError;
-            let code = match error {
-                WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. } => code,
-                _ => String::new(),
-            };
-            let final_code = match code.as_str() {
-                "not_found" => Some("not_found"),
-                "invalid_params" => Some("invalid_params"),
-                "limit_exceeded" => Some("limit_exceeded"),
-                "secret_setup_incomplete" => Some("secret_setup_incomplete"),
-                "secret_scope_missing" => Some("secret_scope_missing"),
-                "secret_scope_mismatch" => Some("secret_scope_mismatch"),
-                _ => None,
-            };
-            if let Some(code) = final_code {
-                Failure::Refused(Denial::new(code, "secret use was refused"))
-            } else {
-                Failure::Transport(TransportError::Refused(
-                    crate::flow_refusal::FlowRefusal::new(
-                        crate::flow_refusal::RefusalReason::SecretVaultUnavailable,
-                        "claustrum",
-                        "secret.use",
-                    ),
-                ))
-            }
-        })?;
+        let mut reply = reply.map_err(vault_failure)?;
         if reply["kind"] != "agent_api_key" || reply["status"] != "released" {
             crate::secrets::clear_reply(&mut reply);
             return Err(
@@ -561,6 +576,7 @@ impl BuiltinHost {
         let result = self
             .net
             .fetch_secret(&mut request, &grant.hosts, &name, &mut key, &location);
+        // This clears the decoded vault buffer, not copies in HTTP/TLS buffers.
         key.fill(0);
         result
     }
@@ -676,6 +692,12 @@ impl BuiltinHost {
                 Err(denial) => denial.outcome(),
             })),
             Err(Failure::Refused(d)) => Ok(Dispatched::Completed(d.outcome())),
+            Err(Failure::RefusedCode(code)) => Ok(Dispatched::Completed(HostOutcome::rejected(
+                crate::rejection_text(&code, "secret use was refused").unwrap_or_else(|_| {
+                    crate::rejection_text("secret_refused", "secret use was refused")
+                        .expect("bounded refusal")
+                }),
+            ))),
             Err(Failure::Transport(e)) => Err(e),
         }
     }

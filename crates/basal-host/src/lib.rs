@@ -512,10 +512,7 @@ pub trait Host: Send + Sync {
         _code_hash: &str,
         _params: serde_json::Value,
     ) -> Result<serde_json::Value, transport::WireError> {
-        Err(transport::WireError::Refused {
-            code: "secret_scope_missing".into(),
-            message: "no installed flow scope".into(),
-        })
+        Err(secrets::not_ready())
     }
     fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
     /// Runtime-owned notices use basal's management identity, not a flow grant.

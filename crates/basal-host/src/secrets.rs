@@ -2,6 +2,37 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+mod echo;
+pub(crate) use echo::EchoGuard;
+
+pub(crate) fn percent_decode(input: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(input.len());
+    let mut offset = 0;
+    while offset < input.len() {
+        if input[offset] == b'%' {
+            let hi = input
+                .get(offset + 1)
+                .and_then(|b| (*b as char).to_digit(16));
+            let lo = input
+                .get(offset + 2)
+                .and_then(|b| (*b as char).to_digit(16));
+            if let Some((hi, lo)) = hi.zip(lo) {
+                output.push((hi * 16 + lo) as u8);
+                offset += 3;
+                continue;
+            }
+        }
+        output.push(if input[offset] == b'+' {
+            b' '
+        } else {
+            input[offset]
+        });
+        offset += 1;
+    }
+    output
+}
+
+/// Best-effort clearing of owned reply values, not transport or allocator copies.
 pub(crate) fn clear_reply(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(text) => {
@@ -14,12 +45,71 @@ pub(crate) fn clear_reply(value: &mut serde_json::Value) {
     }
 }
 
-/// One response-redaction boundary for raw, base64 and percent-encoded echoes.
-/// It operates on bytes before the HTTP response is serialized or journaled.
+/// Exact raw, base64 and percent-encoded substitution. HTTP responses use the
+/// checked variant with a response-wide budget and withhold exhausted fields.
 pub fn redact(input: &[u8], key: &[u8], name: &str) -> Vec<u8> {
-    if key.is_empty() {
-        return input.to_vec();
+    let mut remaining = REDACTION_WORK;
+    redact_with_budget(input, key, name, &mut remaining)
+        .unwrap_or_else(|_| format!("{{{{ck-secret:{name}}}}}").into_bytes())
+}
+
+pub(crate) const REDACTION_WORK: usize = 8 * 1024 * 1024;
+#[derive(Debug)]
+pub(crate) struct RedactionLimit;
+
+fn charge(remaining: &mut usize, work: usize) -> Result<(), RedactionLimit> {
+    if work > *remaining {
+        *remaining = 0;
+        return Err(RedactionLimit);
     }
+    *remaining -= work;
+    Ok(())
+}
+
+fn prefix_table(pattern: &[u8]) -> Vec<usize> {
+    let mut prefix = vec![0; pattern.len()];
+    for i in 1..pattern.len() {
+        let mut j = prefix[i - 1];
+        while j > 0 && pattern[i] != pattern[j] {
+            j = prefix[j - 1];
+        }
+        if pattern[i] == pattern[j] {
+            j += 1;
+        }
+        prefix[i] = j;
+    }
+    prefix
+}
+
+fn exact_matches(input: &[u8], key: &[u8], prefix: &[usize], mut found: impl FnMut(usize)) {
+    let mut j = 0;
+    for (i, &b) in input.iter().enumerate() {
+        while j > 0 && b != key[j] {
+            j = prefix[j - 1];
+        }
+        if b == key[j] {
+            j += 1;
+        }
+        if j == key.len() {
+            found(i + 1 - j);
+            j = prefix[j - 1];
+        }
+    }
+}
+
+pub(crate) fn redact_with_budget(
+    input: &[u8],
+    key: &[u8],
+    name: &str,
+    remaining: &mut usize,
+) -> Result<Vec<u8>, RedactionLimit> {
+    if key.is_empty() || input.len() < key.len() {
+        return Ok(input.to_vec());
+    }
+    charge(
+        remaining,
+        input.len().saturating_add(key.len().saturating_mul(6)),
+    )?;
     let placeholder = format!("{{{{ck-secret:{name}}}}}");
     let mut patterns = vec![key.to_vec()];
     for engine in [
@@ -31,11 +121,29 @@ pub fn redact(input: &[u8], key: &[u8], name: &str) -> Vec<u8> {
         patterns.push(engine.encode(key).into_bytes());
     }
     patterns.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    patterns.dedup();
+    let mut literals = vec![0; input.len()];
+    for pattern in &patterns {
+        charge(
+            remaining,
+            input.len().saturating_mul(2).saturating_add(pattern.len()),
+        )?;
+        exact_matches(input, pattern, &prefix_table(pattern), |start| {
+            literals[start] = literals[start].max(pattern.len())
+        });
+    }
+    let key_prefix = prefix_table(key);
+    let mut percents = input
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| (*b == b'%').then_some(i))
+        .peekable();
     let mut output = Vec::new();
     let mut offset = 0;
     while offset < input.len() {
+        charge(remaining, 1)?;
         let tail = &input[offset..];
-        let literal = patterns.iter().find(|p| tail.starts_with(p)).map(Vec::len);
+        let literal = (literals[offset] > 0).then_some(literals[offset]);
         let alphabet = |b: u8| b.is_ascii_alphanumeric() || b"+/-_".contains(&b);
         let mut encoded = None;
         if offset == 0 || !alphabet(input[offset - 1]) {
@@ -52,8 +160,11 @@ pub fn redact(input: &[u8], key: &[u8], name: &str) -> Vec<u8> {
                     &base64::engine::general_purpose::URL_SAFE,
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
                 ] {
+                    charge(remaining, end.saturating_mul(2))?;
                     if let Ok(mut decoded) = engine.decode(&tail[..end]) {
-                        let contains_key = decoded.windows(key.len()).any(|window| window == key);
+                        charge(remaining, decoded.len().saturating_mul(2))?;
+                        let mut contains_key = false;
+                        exact_matches(&decoded, key, &key_prefix, |_| contains_key = true);
                         decoded.fill(0);
                         if contains_key {
                             encoded = Some(end);
@@ -63,36 +174,52 @@ pub fn redact(input: &[u8], key: &[u8], name: &str) -> Vec<u8> {
                 }
             }
         }
-        let mut positions = vec![0];
-        for &b in key {
-            let mut next = Vec::new();
-            for position in positions {
-                if tail.get(position) == Some(&b) {
-                    next.push(position + 1);
-                }
-                if tail.get(position) == Some(&b'%') {
-                    let hi = tail
-                        .get(position + 1)
-                        .and_then(|b| (*b as char).to_digit(16));
-                    let lo = tail
-                        .get(position + 2)
-                        .and_then(|b| (*b as char).to_digit(16));
-                    if hi
-                        .zip(lo)
-                        .is_some_and(|(hi, lo)| hi * 16 + lo == u32::from(b))
-                    {
-                        next.push(position + 3);
+        while percents.peek().is_some_and(|p| *p < offset) {
+            percents.next();
+        }
+        let mut positions = Vec::new();
+        if tail.len() >= key.len() && percents.peek().is_some_and(|p| *p < offset + key.len()) {
+            positions.push(0);
+            for &b in key {
+                let mut next = Vec::new();
+                for position in positions {
+                    charge(remaining, 1)?;
+                    if tail.get(position) == Some(&b) {
+                        next.push(position + 1);
+                    }
+                    if tail.get(position) == Some(&b'%') {
+                        let hi = tail
+                            .get(position + 1)
+                            .and_then(|b| (*b as char).to_digit(16));
+                        let lo = tail
+                            .get(position + 2)
+                            .and_then(|b| (*b as char).to_digit(16));
+                        if hi
+                            .zip(lo)
+                            .is_some_and(|(hi, lo)| hi * 16 + lo == u32::from(b))
+                        {
+                            next.push(position + 3);
+                        }
                     }
                 }
-            }
-            next.sort_unstable();
-            next.dedup();
-            positions = next;
-            if positions.is_empty() {
-                break;
+                if next.len() > 32768 {
+                    return Err(RedactionLimit);
+                }
+                charge(
+                    remaining,
+                    next.len()
+                        .saturating_mul((usize::BITS - next.len().leading_zeros()) as usize),
+                )?;
+                next.sort_unstable();
+                next.dedup();
+                positions = next;
+                if positions.is_empty() {
+                    break;
+                }
             }
         }
         if let Some(length) = encoded.or(literal).or(positions.into_iter().max()) {
+            charge(remaining, placeholder.len())?;
             output.extend_from_slice(placeholder.as_bytes());
             offset += length;
         } else {
@@ -103,7 +230,7 @@ pub fn redact(input: &[u8], key: &[u8], name: &str) -> Vec<u8> {
     for pattern in &mut patterns {
         pattern.fill(0);
     }
-    output
+    Ok(output)
 }
 
 pub(crate) fn scope_refusal(code: &str) -> crate::transport::WireError {
@@ -111,6 +238,14 @@ pub(crate) fn scope_refusal(code: &str) -> crate::transport::WireError {
         code: code.into(),
         message: "the daemon did not attest this installed flow identity".into(),
     }
+}
+
+pub(crate) fn not_ready() -> crate::transport::WireError {
+    crate::transport::WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+        crate::flow_refusal::RefusalReason::NoFlowScope,
+        "claustrum",
+        "secret.use",
+    ))
 }
 
 pub(crate) fn use_attested(
@@ -123,9 +258,7 @@ pub(crate) fn use_attested(
 ) -> Result<serde_json::Value, crate::transport::WireError> {
     let description = host
         .scope_describe(&scope.owner, &scope.scope_ref)
-        .map_err(|_| {
-            crate::transport::WireError::NeverSent("vault scope description unavailable".into())
-        })?;
+        .map_err(|_| not_ready())?;
     let stamp = attested_stamp(scope, request, code_hash, description)?;
     params["stamp"] =
         serde_json::to_value(stamp).map_err(|_| scope_refusal("secret_scope_mismatch"))?;
@@ -141,11 +274,15 @@ pub(crate) fn attested_stamp(
     if description.status != crate::ScopeStatus::Live
         || description.scope_epoch != Some(scope.epoch)
     {
-        return Err(scope_refusal("secret_scope_missing"));
+        return Err(not_ready());
     }
-    let stamp = description
-        .scope
-        .ok_or_else(|| scope_refusal("secret_scope_missing"))?;
+    let stamp = description.scope.ok_or_else(not_ready)?;
+    if stamp.scope_epoch != scope.epoch
+        || !description.owner_synced
+        || !description.owner_configured
+    {
+        return Err(not_ready());
+    }
     let attributes = &stamp.attributes;
     if attributes.flow_id.as_ref().is_none_or(|s| s.is_empty())
         || attributes.flow_version.is_none()
@@ -162,10 +299,7 @@ pub(crate) fn attested_stamp(
     }
     if stamp.owner != scope.owner
         || stamp.scope_ref != scope.scope_ref
-        || stamp.scope_epoch != scope.epoch
         || !stamp.owner_authorized
-        || !description.owner_synced
-        || !description.owner_configured
         || attributes.flow_id.as_deref() != Some(request.flow_id.as_str())
         || attributes.flow_version != request.flow_version.map(u64::from)
         || attributes.flow_code_hash.as_deref() != Some(code_hash)

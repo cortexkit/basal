@@ -492,3 +492,168 @@ fn flow_secrets_http_echo_is_scrubbed_before_script_delivery_and_never_follows_r
     assert_eq!(carrier.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     server.join().unwrap();
 }
+
+#[test]
+fn review_secret_request_controls_are_refused_before_vault_release() {
+    let carrier = Arc::new(CountingHost(Mutex::new(0)));
+    let host = BuiltinHost::default().with_secret_host(carrier.clone());
+    let mut unsafe_args = Vec::new();
+    for header in [
+        "Range",
+        "If-Range",
+        "X-Original-URL",
+        "X-Rewrite-URL",
+        "X-Forwarded-For",
+        "Forwarded",
+        "X-Unapproved",
+    ] {
+        unsafe_args.push(json!({"url":"https://x.test/repos/a","options":{"secret":"key","headers":{(header):"unsafe"}}}));
+    }
+    for query in [
+        "_method=DELETE",
+        "%5Fmethod=DELETE",
+        "%255fmethod=DELETE",
+        "x=1;_METHOD=POST",
+    ] {
+        unsafe_args.push(
+            json!({"url":format!("https://x.test/repos/a?{query}"),"options":{"secret":"key"}}),
+        );
+    }
+    unsafe_args.push(json!({"url":"https://x.test/repos/a","options":{"secret":"key","method":"POST","headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":"a=1&_method=DELETE"}}));
+    unsafe_args.push(json!({"url":"https://x.test/repos/a","options":{"secret":"key","method":"POST","headers":{"Content-Type":"multipart/form-data; boundary=x"},"body":"--x"}}));
+    let mut granted = grant();
+    granted.secrets[0].methods = Some(vec!["GET".into(), "POST".into()]);
+    for args in unsafe_args {
+        let frozen = crate::builtins::envelope(&args, &granted);
+        let Dispatched::Completed(outcome) = host.dispatch(&request(frozen)).unwrap() else {
+            panic!("synchronous refusal")
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(outcome.value.as_str()).unwrap()["code"],
+            "secret_request_unsafe"
+        );
+    }
+    assert_eq!(*carrier.0.lock().unwrap(), 0);
+    for header in [
+        "Accept",
+        "Content-Type",
+        "If-None-Match",
+        "If-Modified-Since",
+    ] {
+        let args = json!({"url":"https://x.test/repos/a","options":{"secret":"key","headers":{(header):"safe"}}});
+        host.dispatch(&request(crate::builtins::envelope(&args, &granted)))
+            .unwrap();
+    }
+    assert_eq!(*carrier.0.lock().unwrap(), 4);
+    let ordinary = crate::builtins::parse(Primitive::NetFetch, &json!({"url":"https://x.test/repos/a?_method=DELETE","options":{"headers":{"Range":"bytes=0-2"}}})).unwrap();
+    assert!(crate::builtins::authorize(&ordinary, &granted).is_ok());
+}
+
+#[test]
+fn review_secret_scope_readiness_uses_no_flow_scope_without_contacting_vault() {
+    let good = description();
+    let scope = crate::flow_scope::FlowScope {
+        owner: good.scope.as_ref().unwrap().owner.clone(),
+        scope_ref: "flow:scope".into(),
+        epoch: 7,
+    };
+    let host = crate::mock::MockHost::new();
+    let vault = Arc::new(Vault::default());
+    for (field, value) in [
+        ("status", json!("not_live")),
+        ("scope_epoch", json!(8)),
+        ("scope", Value::Null),
+        ("owner_synced", json!(false)),
+        ("owner_configured", json!(false)),
+    ] {
+        let mut changed = serde_json::to_value(&good).unwrap();
+        changed[field] = value;
+        host.set_scope_description(
+            scope.owner.clone(),
+            &scope.scope_ref,
+            Ok(serde_json::from_value(changed).unwrap()),
+        );
+        let error = use_attested(
+            &host,
+            vault.as_ref(),
+            &scope,
+            &request(json!({})),
+            HASH,
+            json!({"name":"key"}),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, WireError::Typed(refusal) if refusal.reason == crate::flow_refusal::RefusalReason::NoFlowScope && refusal.readiness())
+        );
+    }
+    let ops = crate::routing::ModuleOpsHost::new(
+        vault.clone(),
+        Arc::new(crate::subc_catalog::SubcCatalog::new(vault.clone())),
+    );
+    assert!(
+        matches!(ops.secret_use(&request(json!({})), HASH, json!({})), Err(WireError::Typed(refusal)) if refusal.reason == crate::flow_refusal::RefusalReason::NoFlowScope)
+    );
+    assert!(vault.0.lock().unwrap().is_empty());
+}
+
+struct ErrorCarrier(Mutex<Option<WireError>>);
+impl Host for ErrorCarrier {
+    fn secret_use(&self, _: &CallRequest, _: &str, _: Value) -> Result<Value, WireError> {
+        Err(self.0.lock().unwrap().take().unwrap())
+    }
+    fn classify(&self, _: &CallKind) -> CallClass {
+        CallClass::Query
+    }
+    fn dispatch(&self, _: &CallRequest) -> Result<Dispatched, TransportError> {
+        panic!("not an op")
+    }
+    crate::live_host_services!();
+}
+
+#[test]
+fn review_unknown_vault_refusals_are_final_and_keep_only_the_code() {
+    for code in [
+        "not_found",
+        "invalid_params",
+        "limit_exceeded",
+        "secret_setup_incomplete",
+        "pending_limit",
+        "future_policy_refused",
+    ] {
+        let carrier = Arc::new(ErrorCarrier(Mutex::new(Some(WireError::RefusedDetails {
+            code: code.into(),
+            message: KEY.into(),
+            detail: json!({"unsafe":KEY}),
+        }))));
+        let host = BuiltinHost::default().with_secret_host(carrier);
+        let frozen = crate::builtins::envelope(
+            &json!({"url":"https://x.test/repos/a","options":{"secret":"key"}}),
+            &grant(),
+        );
+        let Dispatched::Completed(outcome) = host.dispatch(&request(frozen)).unwrap() else {
+            panic!("final refusal")
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(outcome.value.as_str()).unwrap()["code"],
+            code
+        );
+        assert!(!outcome.value.as_str().contains(KEY));
+    }
+    for error in [
+        WireError::Refused {
+            code: "store_error".into(),
+            message: KEY.into(),
+        },
+        WireError::NeverSent(KEY.into()),
+    ] {
+        let carrier = Arc::new(ErrorCarrier(Mutex::new(Some(error))));
+        let host = BuiltinHost::default().with_secret_host(carrier);
+        let frozen = crate::builtins::envelope(
+            &json!({"url":"https://x.test/repos/a","options":{"secret":"key"}}),
+            &grant(),
+        );
+        assert!(
+            matches!(host.dispatch(&request(frozen)), Err(TransportError::Refused(refusal)) if refusal.reason == crate::flow_refusal::RefusalReason::SecretVaultUnavailable)
+        );
+    }
+}

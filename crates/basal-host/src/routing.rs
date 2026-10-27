@@ -170,7 +170,7 @@ impl Host for ModuleOpsHost {
             .unwrap()
             .get(&request.route_key())
             .cloned()
-            .ok_or_else(|| crate::secrets::scope_refusal("secret_scope_missing"))?;
+            .ok_or_else(crate::secrets::not_ready)?;
         crate::secrets::use_attested(
             self,
             self.transport.as_ref(),
