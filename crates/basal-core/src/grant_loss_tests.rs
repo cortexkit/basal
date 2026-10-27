@@ -717,6 +717,15 @@ impl basal_host::Catalog for WriterProbeCatalog {
     fn supports_flow_scopes(&self, module: &str) -> bool {
         self.catalog.supports_flow_scopes(module)
     }
+    fn supports_flow_calls(&self, module: &str) -> bool {
+        self.catalog.supports_flow_calls(module)
+    }
+    fn flow_operations(
+        &self,
+        module: &str,
+    ) -> std::result::Result<Option<Vec<String>>, basal_host::transport::WireError> {
+        self.catalog.flow_operations(module)
+    }
     fn event(&self, module: &str, name: &str, version: u32) -> Option<basal_host::EventDecl> {
         self.catalog.event(module, name, version)
     }
