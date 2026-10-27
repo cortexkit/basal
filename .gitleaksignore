@@ -4,3 +4,24 @@
 # Broca run.event.get test vectors: event_key is a public bus message id, not a secret.
 42745e11318d2b161480f25447e5aefb520d8d7f:test-vectors/broca-run-events/run_skipped.event_get.json:generic-api-key:1
 42745e11318d2b161480f25447e5aefb520d8d7f:test-vectors/broca-run-events/run_ended.event_get.json:generic-api-key:1
+# Synthetic JWTs in the secret-redaction response corpus, signed with a public empty fixture key.
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
