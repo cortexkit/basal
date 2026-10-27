@@ -1,0 +1,10 @@
+{
+  "code": "flow_scope_not_supported",
+  "detail": {
+    "allowed_ops": [
+      "diagnostics.findings"
+    ],
+    "op": "sink.digest"
+  },
+  "message": "sink.digest does not run under a flow scope; flows may call: diagnostics.findings"
+}
