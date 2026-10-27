@@ -1,10 +1,13 @@
 use super::*;
 
+#[path = "response_corpus.rs"]
+mod response_corpus;
+
 #[test]
 fn review_secret_partial_responses_are_final_refusals() {
     for (status, headers) in [
         (206, Vec::new()),
-        (200, vec![("Content-Range".into(), "bytes 0-2/30".into())]),
+        (206, vec![("Content-Range".into(), "bytes 0-2/30".into())]),
     ] {
         let result = finish_secret(
             Response {
@@ -432,4 +435,54 @@ fn dns_receives_the_fetch_deadline() {
             .is_err()
     );
     assert_eq!(*resolver.0.lock().unwrap(), Some(deadline));
+}
+
+#[test]
+fn second_review_content_range_on_success_is_metadata_not_a_partial_reply() {
+    for effect_possible in [false, true] {
+        let value = finish_secret(
+            Response {
+                status: 200,
+                headers: vec![
+                    ("Content-Range".into(), "0-24/*".into()),
+                    ("X-Result".into(), "complete".into()),
+                ],
+                body: b"ordinary result".to_vec(),
+                body_error: None,
+                effect_possible,
+            },
+            b"ghp_R4nd0mT0k3nV4lu3",
+            "key",
+        )
+        .unwrap();
+        assert_eq!(value["status"], 200);
+        assert_eq!(value["body"], "ordinary result");
+        assert_eq!(value["headers"]["x-result"], "complete");
+        assert!(value["headers"].get("content-range").is_none());
+        assert!(value.get("body_error").is_none());
+    }
+}
+
+#[test]
+fn second_review_partial_response_after_possible_effect_keeps_the_reply() {
+    let value = finish_secret(
+        Response {
+            status: 206,
+            headers: vec![
+                ("X-Result".into(), "applied".into()),
+                ("Content-Range".into(), "0-24/*".into()),
+            ],
+            body: b"partial result".to_vec(),
+            body_error: None,
+            effect_possible: true,
+        },
+        b"ghp_R4nd0mT0k3nV4lu3",
+        "key",
+    )
+    .unwrap();
+    assert_eq!(value["status"], 206);
+    assert_eq!(value["headers"]["x-result"], "applied");
+    assert!(value["headers"].get("content-range").is_none());
+    assert!(value["body"].is_null());
+    assert_eq!(value["body_error"], "secret_partial_response");
 }

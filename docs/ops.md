@@ -96,17 +96,27 @@ SQLite transactions; failures remain queued with bounded exponential backoff.
 Successful `{"status":"revoked","grants":0}` is also final success. An explicit
 `flow.install_request` refusal after vault preparation queues and attempts the
 same cleanup, including unconsumed approval requests; uncertain core replies do
-not trigger cleanup. Explicit refusal ends that attempt: the next install retry
-mints a fresh install id and statements, so delayed cleanup of the old id cannot
-revoke the retry's grant. Uncertain sends still retain their original id.
-Only `store_error` and transport failures retry a revoke.
+not trigger cleanup. Abandonment is limited to an unconfirmed card and requires
+a core `install_status` probe made without holding a database lock to report
+definitively that no card/install
+exists. Pending, active, failed or unclear status reads retain the id. A guarded
+transaction re-checks that the row is still unconfirmed before retiring the id
+and queuing its cleanup. Only then does a retry mint a fresh id and statements;
+a delayed revoke still names the retired id. Confirmed cards and uncertain sends
+retain their original identity.
+Transport failures, `store_error`, and typed readiness, resource-busy, scope and
+vault-unavailable failures retry a revoke.
 Other refusal codes persist `outbox.failed_at` and `failure_code`, stop future
 drain/wake attempts and log one warning without provider prose. Failed rows are
 retained as unresolved history, not marked delivered. Migration 45 preserves
 populated journal/mailbox/Broca rows while adding the vault deferral CHECK value
 and durable cleanup-failure columns. Historical manifest inspection first probes
-for a secret declaration; unreadable rows are ignored by secrets inspection with
-one warning. Pre-existing approval scheduling/corruption checks are unchanged.
+for a secret declaration. Once the declaration is found, a stored decode failure
+keeps the row secret-declaring, with one warning: cleanup remains queued and
+policy cannot bypass explicit card provenance. Unrelated historical rows avoid
+that full decode. Approval validates the candidate's stored manifest before
+scheduling it; conservative secret inspection does not make an unreadable
+candidate runnable.
 
 Uninstall preserves card history. Repeating an already-approved version after uninstall does not restore it or raise a fresh card: restoration requires a new version, which gets a new local card and install id. A still-pending card keeps its id across uninstall because no grant has been approved under it; approving it afterwards is a fresh approval decision, not revival of an old grant. Startup recovery and `flow.install_decided` only read status, never resend an install request or rotate its id. A later explicit retry sends the saved id if core advertises the capability.
 

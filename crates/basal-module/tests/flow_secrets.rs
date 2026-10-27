@@ -782,3 +782,238 @@ fn review_delayed_refusal_cleanup_cannot_revoke_a_fresh_retry_install() {
     assert!(vault.grants.lock().unwrap().contains(&new));
     assert_eq!(*vault.revokes.lock().unwrap(), vec![old.clone(), old]);
 }
+
+fn second_review_agent_install(
+    f: &common::Fixture,
+    caller: &Caller,
+) -> Result<Value, basal_module::ops::OpError> {
+    f.module.handle(
+        caller,
+        "flow.install",
+        json!({"script":SCRIPT,"manifest":manifest(1).to_string()}),
+    )
+}
+
+fn second_review_agent(fake: &Fake) -> Caller {
+    fake.scopes.lock().unwrap().insert(
+        "second-review-scope".into(),
+        wire::CoreScope {
+            agent: Some("ag_synapse".into()),
+            live: true,
+        },
+    );
+    Caller::Agent {
+        agent_id: "ag_synapse".into(),
+        scope_ref: "second-review-scope".into(),
+    }
+}
+
+#[test]
+fn second_review_confirmed_card_reraise_refusal_keeps_identity_and_grants() {
+    for unknown in [false, true] {
+        let fake = Fake::new();
+        capability(&fake);
+        let caller = second_review_agent(&fake);
+        let vault = Arc::new(GrantVault {
+            inner: fake.clone(),
+            pending: Default::default(),
+            grants: Default::default(),
+            revokes: Default::default(),
+            attempts: Default::default(),
+        });
+        let f = fixture(vault.clone());
+        approval(&fake);
+        second_review_agent_install(&f, &caller).unwrap();
+        let card = f.module.rt.cards(FLOW).unwrap()[0].clone();
+        let id = card.install_id.clone().unwrap();
+        assert_eq!(card.attempt, Some(1));
+        fake.approve_install(FLOW, 1);
+        vault.grants.lock().unwrap().insert(id.clone());
+        if unknown {
+            fake.scopes.lock().unwrap().remove("second-review-scope");
+        } else {
+            fake.scopes
+                .lock()
+                .unwrap()
+                .get_mut("second-review-scope")
+                .unwrap()
+                .live = false;
+        }
+        approval(&fake);
+        let error = second_review_agent_install(&f, &caller).unwrap_err();
+        assert_eq!(
+            error.code,
+            if unknown {
+                "flow_install_scope_unknown"
+            } else {
+                "flow_install_scope_ended"
+            }
+        );
+        let current = &f.module.rt.cards(FLOW).unwrap()[0];
+        assert_eq!(current.install_id.as_deref(), Some(id.as_str()));
+        assert_eq!(current.attempt, Some(1));
+        assert!(vault.revokes.lock().unwrap().is_empty());
+        assert!(vault.grants.lock().unwrap().contains(&id));
+        assert!(fake.calls("flow.install_status").is_empty());
+    }
+}
+
+#[test]
+fn second_review_uncertain_reply_then_refused_reraise_preserves_core_card() {
+    for state in ["pending", "active", "unavailable", "unclear"] {
+        let fake = Fake::new();
+        capability(&fake);
+        let caller = second_review_agent(&fake);
+        let vault = Arc::new(GrantVault {
+            inner: fake.clone(),
+            pending: Default::default(),
+            grants: Default::default(),
+            revokes: Default::default(),
+            attempts: Default::default(),
+        });
+        let f = fixture(vault.clone());
+        approval(&fake);
+        fake.enqueue(
+            "flow.install_request",
+            vec![Err(WireError::Unknown(
+                "reply lost after raising card".into(),
+            ))],
+        );
+        second_review_agent_install(&f, &caller).unwrap_err();
+        let card = f.module.rt.cards(FLOW).unwrap()[0].clone();
+        let id = card.install_id.unwrap();
+        assert!(card.attempt.is_none());
+        fake.scopes
+            .lock()
+            .unwrap()
+            .get_mut("second-review-scope")
+            .unwrap()
+            .live = false;
+        let reply = match state {
+            "unavailable" => Err(WireError::NeverSent("core restarting".into())),
+            "unclear" => Ok(json!({"state":"future-state"})),
+            _ => Ok(
+                json!({"state":state,"code_hash":hash(&f, 1),"attempt":7,"approval":{"kind":"card"}}),
+            ),
+        };
+        fake.enqueue("flow.install_status", vec![reply]);
+        approval(&fake);
+        assert_eq!(
+            second_review_agent_install(&f, &caller).unwrap_err().code,
+            "flow_install_scope_ended"
+        );
+        let current = &f.module.rt.cards(FLOW).unwrap()[0];
+        assert_eq!(current.install_id.as_deref(), Some(id.as_str()), "{state}");
+        assert!(current.attempt.is_none());
+        assert!(vault.revokes.lock().unwrap().is_empty());
+        assert_eq!(fake.calls("flow.install_status").len(), 1);
+        let prepared = fake.calls("secret.request_flow_approval");
+        assert_eq!(
+            prepared[0]["params"]["flow"]["install_id"],
+            prepared[1]["params"]["flow"]["install_id"]
+        );
+    }
+}
+
+#[test]
+fn second_review_typed_revoke_readiness_and_scope_failures_retry() {
+    use basal_host::flow_refusal::{FlowRefusal, RefusalReason as R};
+    for reason in [
+        R::NoFlowScope,
+        R::TargetFlowUnsupported,
+        R::ResourceBusy,
+        R::ScopeChanged,
+        R::ScopeNotSynced,
+        R::ScopeExpiryTooFar,
+        R::SecretVaultUnavailable,
+        R::FlowNotApproved,
+    ] {
+        let fake = Fake::new();
+        capability(&fake);
+        let f = fixture(fake.clone());
+        approval(&fake);
+        install(&f, 1).unwrap();
+        f.module
+            .handle(&Caller::Operator, "flow.uninstall", json!({"flow_id":FLOW}))
+            .unwrap();
+        fake.enqueue(
+            "secret.revoke_flow_grants",
+            vec![Err(WireError::Typed(FlowRefusal::new(
+                reason,
+                "claustrum",
+                "secret.revoke_flow_grants",
+            )))],
+        );
+        f.module.rt.drain_secret_revocations().unwrap();
+        let failed: Option<i64> = f
+            .module
+            .rt
+            .store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT failed_at FROM outbox WHERE kind='secret.revoke_flow_grants'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        let permanent = reason == R::FlowNotApproved;
+        assert_eq!(failed.is_some(), permanent, "{}", reason.as_str());
+        f.clock.advance(1000);
+        fake.enqueue(
+            "secret.revoke_flow_grants",
+            vec![Ok(json!({"status":"revoked","grants":0}))],
+        );
+        f.module.rt.drain_secret_revocations().unwrap();
+        assert_eq!(
+            fake.calls("secret.revoke_flow_grants").len(),
+            if permanent { 1 } else { 2 }
+        );
+    }
+}
+
+#[test]
+fn second_review_unreadable_secret_manifest_requires_card_and_still_cleans_up() {
+    let fake = Fake::new();
+    capability(&fake);
+    let f = fixture(fake.clone());
+    approval(&fake);
+    install(&f, 1).unwrap();
+    let id = f.module.rt.cards(FLOW).unwrap()[0]
+        .install_id
+        .clone()
+        .unwrap();
+    f.module.rt.store().write(|tx| { tx.execute("UPDATE installs SET manifest='{\"secrets\":[],\"old_schema\":true}' WHERE flow_id=?1", [FLOW])?; Ok(()) }).unwrap();
+    status(
+        &fake,
+        &hash(&f, 1),
+        Some(json!({"kind":"policy","rule":"self"})),
+    );
+    f.module.rt.recover_cardless_installs().unwrap();
+    let (state, error): (String, String) = f
+        .module
+        .rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT state,install_check_error FROM installs WHERE flow_id=?1",
+                [FLOW],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(state, "validated");
+    assert!(error.contains("explicit card approval"));
+    f.module
+        .handle(&Caller::Operator, "flow.uninstall", json!({"flow_id":FLOW}))
+        .unwrap();
+    fake.enqueue(
+        "secret.revoke_flow_grants",
+        vec![Ok(json!({"status":"revoked","grants":0}))],
+    );
+    f.module.rt.drain_secret_revocations().unwrap();
+    assert_eq!(
+        fake.calls("secret.revoke_flow_grants")[0]["params"],
+        json!({"flow_install_id":id})
+    );
+}

@@ -71,21 +71,37 @@ pub(crate) fn retire_approved(tx: &Transaction<'_>, flow: &str, now: i64) -> Res
 }
 
 impl Runtime {
-    /// An explicit core refusal ends this attempt. Preserve cleanup for its
-    /// old identity atomically with making the next retry mint a fresh one.
+    /// Retire an unconfirmed identity only after core reports no install/card.
+    /// The status probe holds no database lock; the write then atomically
+    /// rechecks the card's eligibility.
     pub fn abandon_prepared_secret_install(
         &self,
         flow: &str,
         version: u32,
         install_id: &str,
-    ) -> Result<()> {
-        self.store().write(|tx| {
+    ) -> Result<bool> {
+        let eligible = self.store().read(|connection| Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM install_cards WHERE flow_id=?1 AND version=?2 AND state='pending' AND attempt IS NULL AND install_id=?3)",
+            params![flow,version,install_id], |row| row.get::<_, bool>(0))?))?;
+        if !eligible
+            || !self
+                .shared
+                .host
+                .install_status(flow, version)
+                .is_ok_and(|status| matches!(status, basal_host::InstallStatus::Unknown))
+        {
+            return Ok(false);
+        }
+        let changed = self.store().write(|tx| {
+            let changed = tx.execute("UPDATE install_cards SET install_id=NULL,attempt=NULL WHERE flow_id=?1 AND version=?2 AND state='pending' AND attempt IS NULL AND install_id=?3", params![flow,version,install_id])?;
+            if changed != 1 { return Ok(false); }
             enqueue_install(tx, flow, install_id, version, true, false, self.config().clock.now_ms())?;
-            tx.execute("UPDATE install_cards SET install_id=NULL,attempt=NULL WHERE flow_id=?1 AND version=?2 AND state='pending' AND install_id=?3", params![flow,version,install_id])?;
-            Ok(())
+            Ok(true)
         })?;
-        self.shared.signal.bump();
-        Ok(())
+        if changed {
+            self.shared.signal.bump();
+        }
+        Ok(changed)
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn enqueue_secret_install_cleanup(&self, flow: &str, version: u32) -> Result<()> {
@@ -136,6 +152,17 @@ impl Runtime {
                     basal_host::transport::WireError::Refused { code, .. }
                     | basal_host::transport::WireError::RefusedDetails { code, .. },
                 )) if code != "store_error" => Some(code.clone()),
+                Some(Err(basal_host::transport::WireError::Typed(refusal)))
+                    if refusal.readiness()
+                        || matches!(
+                            refusal.reason,
+                            basal_host::flow_refusal::RefusalReason::ResourceBusy
+                                | basal_host::flow_refusal::RefusalReason::SecretVaultUnavailable
+                        )
+                        || refusal.reason.as_str().starts_with("scope_") =>
+                {
+                    None
+                }
                 Some(Err(basal_host::transport::WireError::Typed(refusal))) => {
                     Some(refusal.reason.as_str().to_owned())
                 }

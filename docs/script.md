@@ -20,7 +20,8 @@ Basal describes the flow's live scope and relays the daemon's complete stamp,
 unchanged, to `claustrum secret.use` on its own management route. A scope that
 is not ready gives `no_flow_scope`, just like ordinary operations: the call is
 provably unsent and reaches the script without waiting to act on stale inputs.
-An otherwise ready stamp with missing identity attributes gives
+An epoch change gives `scope_changed` and follows ordinary scope-change retry
+handling. An otherwise ready stamp with missing identity attributes gives
 `secret_scope_missing`; a version/hash/flow or owner mismatch gives
 `secret_scope_mismatch`, before any vault call. Basal injects only a
 released API key into `Authorization: Bearer …` or a safe `header:<Name>`.
@@ -46,10 +47,17 @@ another target. Both capture and live dry runs capture the fetch with its secret
 name and never call `secret.use` or send authenticated HTTP.
 
 Secret fetches accept only these script headers: `Accept`, `Content-Type`,
-`If-None-Match` and `If-Modified-Since` (case-insensitive). Other headers, query or
-form `_method` overrides, and multipart forms give `secret_request_unsafe`
-before the vault is contacted. An HTTP 206 reply or any `Content-Range` reply
-gives `secret_partial_response`; the request may already have been sent.
+`If-None-Match` and `If-Modified-Since` (case-insensitive). Other headers,
+PHP-normalized query/form `_method` names, top-level JSON `_method` keys in any
+letter case, and every `multipart/*` body give `secret_request_unsafe` before the
+vault is contacted. JSON media types require valid JSON bodies. Parameter-name
+normalization percent-decodes, turns `+` into a space, and maps spaces, dots and
+unmatched `[` characters to underscores.
+
+An HTTP 206 query reply gives `secret_partial_response`. If an effect may have
+occurred, the reply keeps its status and safe headers with `body: null` and
+`body_error: "secret_partial_response"` instead of a refusal. `Content-Range` on
+a 200 reply is ordinary metadata, not a partial-response refusal.
 Response `Content-Length`, `ETag`, `Digest`, `Content-MD5` and `Content-Range`
 are never delivered on secret fetches. Ordinary fetches are unchanged.
 
@@ -60,8 +68,10 @@ complete keys case-insensitively in ASCII. An unsafe or unscannable body becomes
 `body: null` with `body_error: "secret_echoed"`. Unsafe headers are dropped,
 whether their name or value carries the echo, with a generic
 `headers_error: "secret_echoed"`; header names are never included in that error.
-Partial key substrings are not matched. Limits on normalization depth, views
-and response-wide work fail closed rather than returning unscanned data.
+Partial key substrings are not matched. Only maximal printable-ASCII runs from
+decoded base64 are considered for further normalization. The normalization
+depth cap, response-wide 8 MiB work budget and separate limits on branches/states
+in the selective escape search fail closed rather than returning unscanned data.
 
 Basal best-effort zero-fills the decoded vault key, the injected header value
 and owned vault reply string values after use. This does not clear every copy:
