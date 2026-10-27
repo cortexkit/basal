@@ -121,14 +121,14 @@ fn flow_secrets_real_install_path_generates_the_phone_vector() {
     }).unwrap();
     capability(&fake);
     let statement = json!({"durations":["version"],"flow":{"flow_id":FLOW,"version":1,"code_hash":hash(&f, 1),"install_id":"secret_sample_v1"},
-        "member_id":"fed-computer:illustrative","request_expires_at_ms":2000000000000_i64,"request_id":"illustrative-request-1",
+        "member_id":"fed-computer:illustrative","request_expires_at_ms":2000000000000_i64,"request_id":"01JBZ7X3QK5N8R2T4V6W9Y0M1A",
         "secret":{"incarnation":"illustrative-incarnation-1","kind":"agent_api_key","name":"key"},
         "use":{"host":"x.test","location":"header:X-Api-Key","methods":["GET"],"path_prefix":"/repos/a"},"v":"ck-secret-flow-statement/v1"});
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(statement.to_string());
     fake.enqueue(
         "secret.request_flow_approval",
         vec![Ok(
-            json!({"status":"approval_required","request_id":"illustrative-request-1",
+            json!({"status":"approval_required","request_id":"01JBZ7X3QK5N8R2T4V6W9Y0M1A",
         "statement_b64url":encoded,"expires_at_ms":2000000000000_i64}),
         )],
     );
@@ -138,7 +138,7 @@ fn flow_secrets_real_install_path_generates_the_phone_vector() {
     let request = &calls[0]["params"];
     assert_eq!(
         request["flow_install"]["secrets"],
-        json!([{"request_id":"illustrative-request-1","statement_b64url":encoded}])
+        json!([{"request_id":"01JBZ7X3QK5N8R2T4V6W9Y0M1A","statement_b64url":encoded}])
     );
     assert_eq!(request["flow_install"]["install_id"], "secret_sample_v1");
     assert_eq!(
