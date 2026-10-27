@@ -24,6 +24,7 @@ fn acknowledge(capabilities: &DaemonCapabilities, advertised: &[&str]) {
 fn entry() -> Value {
     json!({
         "module_id":"plexus",
+        "capabilities":{"provides":["call-modes/v1"]},
         "events":[{"name":"github_pr_changed","version":1,"headers":["repo","project","pr"]}],
         "roles":[{"role":"tool_provider","tools":[{
             "name":"events_get","execution_mode":"pure","schema":{}
@@ -219,6 +220,7 @@ fn recorded_live_plexus_catalog_accepts_github_pr_changed_v1() {
     for module in modules.as_array_mut().unwrap() {
         if module["module_id"] == "plexus" {
             module["roles"] = entry()["roles"].clone();
+            module["capabilities"] = entry()["capabilities"].clone();
         }
     }
     let (f, wire) = fixture(entry(), capabilities.clone());

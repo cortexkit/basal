@@ -400,7 +400,25 @@ agent board (`virtual:flow:<flow_id>`); scripts cannot pick a lane. See
 - is not in the catalog;
 - has no `query` or `mutate` marker;
 - is shell-capable: marked so in the catalog, or on basal's denylist (`ShellDenylist`, by default AFT's `bash` and basal's `codemode`, matched without regard to ASCII case);
+- is a management op excluded by its module's `flow_operations` in the daemon catalog. A present list allows only the named management ops; an empty list allows none. An absent list (including on older daemons that do not relay it) is unknown, not an empty list;
+- is a tool whose entry in the provider's own `tool.catalog` does not include `flow` in `modes`. Omitted `modes` means classic-only, so it does not admit flow calls;
 - is a `mutate` op on a module whose events trigger the flow, unless the op cannot loop back into a trigger (the loop install rule). An op satisfies the rule when it is a management op that declares `cause_echo`, or a tool whose entry in its module's own `tool.catalog` answer declares `emits_events: false`: the module's promise that no call to the tool, with any arguments, makes it emit an event, directly or by relaying an upstream notification the call caused. Only an explicit `false` exempts; an absent field, `true`, or a tool missing from the answer is refused as before. Install reads that declaration live from the module, and only for an op this rule would otherwise refuse. If the read fails or the answer does not decode, the op is refused too, and the refusal's detail carries `"emits_events": "unreadable"` and `"retryable": true`. An op admitted by its `emits_events` declaration shows `"emits_events": false` among the card's ops, with a `loop_exempt_no_events` warning; `emits_events` is null for every other op. Otherwise the operator may override the rule (`InstallRequest::loop_override`), and the card then states that loop protection for the flow is rate limiting only.
+
+Both per-op exclusions return `flow_op_not_served`, naming the module, op and
+`surface` (`management` or `tool`) in `detail`. A management refusal also lists
+the known `allowed` ops, even when the list is empty. Install, dry run (including
+template replay), and package registration apply these checks. Provider metadata
+is read through basal's own unscoped tool-provider route before taking a SQLite
+write lock; each `role.describe` and `tool.catalog` request has a bounded timeout.
+An unreadable provider catalog fails closed with `tool_contract_unreadable` and
+a readable reason. These are intake checks; stored manifest bytes still parse.
+
+Every module called through a flow-scoped route must also advertise either
+`flow-scopes/v1` or `call-modes/v1`, matching the daemon's admission rule. This
+module-wide check still applies when `flow_operations` is absent. Core's
+`board.read` and `work.unsettled` are exempt from the flow-service checks because
+basal sends them over its own carrier route. Sink built-ins use their separate
+sink grants and never enter the manifest `ops` check.
 
 At run time the denylist and the catalog's shell marker are checked again before each dispatch, so an op marked shell-capable after the flow was approved is still refused.
 

@@ -150,7 +150,11 @@ impl Transport for BlockingTransport {
                 } else {
                     let schema = json!({});
                     let tool =
-                        CatalogTool::new("events_get", schema_digest(&schema).unwrap(), 1, schema);
+                        CatalogTool::new("events_get", schema_digest(&schema).unwrap(), 1, schema)
+                            .with_modes(vec![
+                                cortexkit_role_tool_provider::CallMode::Classic,
+                                cortexkit_role_tool_provider::CallMode::Flow,
+                            ]);
                     serde_json::to_value(
                         CatalogAnswer::new("fixture", "fixture").with_tools(vec![tool]),
                     )

@@ -84,6 +84,19 @@ pub trait Catalog: Send + Sync {
     fn supports_flow_scopes(&self, _module: &str) -> bool {
         false
     }
+    /// Whether the daemon admits flow calls to the module, through either
+    /// `flow-scopes/v1` or `call-modes/v1`.
+    fn supports_flow_calls(&self, module: &str) -> bool {
+        self.supports_flow_scopes(module)
+    }
+    /// Management operations the module serves to flows. `None` means the
+    /// daemon did not relay a declaration, not that the module serves none.
+    fn flow_operations(
+        &self,
+        _module: &str,
+    ) -> Result<Option<Vec<String>>, crate::transport::WireError> {
+        Ok(None)
+    }
     /// The declaration of `module`'s event `name` at `version`, if declared.
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl>;
     /// The declaration of `module`'s op `op`, if declared.
@@ -158,6 +171,7 @@ struct Entries {
     tool_contracts: BTreeMap<(String, String), serde_json::Value>,
     tool_contract_reads: Vec<(String, String)>,
     flow_capable: BTreeSet<String>,
+    flow_call_support: BTreeMap<String, bool>,
     events: BTreeMap<(String, String, u32), EventDecl>,
     ops: BTreeMap<(String, String), OpDecl>,
     /// What each tool declares for `emits_events`, or the error reading it
@@ -197,6 +211,9 @@ impl MockCatalog {
             .insert((module.into(), op.into()), entry);
     }
     pub fn set_flow_capable(&self, module: &str, capable: bool) {
+        self.write()
+            .flow_call_support
+            .insert(module.into(), capable);
         if capable {
             self.write().flow_capable.insert(module.into());
         } else {
@@ -393,6 +410,14 @@ impl Catalog for MockCatalog {
     }
     fn supports_flow_scopes(&self, module: &str) -> bool {
         self.read().flow_capable.contains(module)
+    }
+    fn supports_flow_calls(&self, module: &str) -> bool {
+        // Non-core test providers serve flows unless a fixture disables them.
+        self.read()
+            .flow_call_support
+            .get(module)
+            .copied()
+            .unwrap_or(module != crate::subc_catalog::CORE)
     }
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {
         self.read()

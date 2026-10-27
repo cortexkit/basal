@@ -64,6 +64,13 @@ pub enum InstallError {
         module: String,
         op: String,
     },
+    FlowOpNotServed {
+        module: String,
+        op: String,
+        surface: basal_host::subc_catalog::Surface,
+        allowed: Option<Vec<String>>,
+        reason: String,
+    },
     Manifest(ManifestError),
     ScriptTooLarge {
         bytes: usize,
@@ -836,7 +843,6 @@ pub(crate) fn validate_inner(
     let reads_text = manifest.facts.as_ref().is_some_and(|f| f.text);
     for op_ref in &manifest.ops {
         let OpRef { module, op, .. } = op_ref;
-        validate_flow_scope_support(catalog, module, op)?;
         let pair = || (module.clone(), op.clone());
         if denylist.contains(module, op) {
             let (module, op) = pair();
@@ -846,9 +852,17 @@ pub(crate) fn validate_inner(
             let (module, op) = pair();
             return Err(InstallError::UnknownOp { module, op });
         };
+        let tool = catalog.tool_contract(module, op).map_err(|error| {
+            InstallError::ToolContractUnreadable {
+                module: module.clone(),
+                op: op.clone(),
+                reason: format!("{error:?}"),
+            }
+        })?;
+        crate::flow_ops::validate(catalog, module, op, tool.as_ref())?;
         tool_policies.insert(
             (module.clone(), op.clone()),
-            crate::classify_cost::policy_for(manifest, catalog, module, op)?,
+            crate::classify_cost::policy_for_entry(manifest, module, op, tool.as_ref())?,
         );
         if decl.shell_capable {
             let (module, op) = pair();
@@ -866,9 +880,13 @@ pub(crate) fn validate_inner(
                 // Only an explicit `false` exempts: the module's promise that
                 // no call to this tool makes it emit an event, so the call
                 // cannot loop back into a trigger. Absent or `true` may emit.
-                // This is a live read of the module's catalog, made only for
-                // an op this rule would otherwise refuse.
-                let declared = catalog.emits_events(module, op);
+                // Reuse the provider metadata already read for admission.
+                let declared = match &tool {
+                    Some(tool) => Ok(tool
+                        .get("emits_events")
+                        .and_then(serde_json::Value::as_bool)),
+                    None => catalog.emits_events(module, op),
+                };
                 if declared == Ok(Some(false)) {
                     let (module, op) = pair();
                     warnings.push(Warning::LoopExemptNoEvents { module, op });
@@ -988,23 +1006,6 @@ pub(crate) fn validate_inner(
         warnings,
         tool_policies,
     })
-}
-
-fn validate_flow_scope_support(
-    catalog: &dyn Catalog,
-    module: &str,
-    op: &str,
-) -> std::result::Result<(), InstallError> {
-    if basal_host::core_host::is_core_carrier_op(module, op) {
-        return Ok(());
-    }
-    if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) {
-        return Err(InstallError::FlowScopeUnsupported {
-            module: module.to_owned(),
-            op: op.to_owned(),
-        });
-    }
-    Ok(())
 }
 
 /// Validate audience references; core decides whether the requested reach is approved.

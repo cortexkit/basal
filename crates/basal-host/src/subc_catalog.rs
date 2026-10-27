@@ -450,6 +450,38 @@ impl Catalog for SubcCatalog {
             })
             .unwrap_or(false)
     }
+    fn supports_flow_calls(&self, module: &str) -> bool {
+        self.transport
+            .catalog()
+            .ok()
+            .and_then(|c| {
+                c["modules"].as_array().and_then(|modules| {
+                    modules.iter().find(|m| m["module_id"] == module).map(|m| {
+                        m["capabilities"]["provides"]
+                            .as_array()
+                            .is_some_and(|caps| {
+                                caps.iter()
+                                    .any(|c| c == "flow-scopes/v1" || c == "call-modes/v1")
+                            })
+                    })
+                })
+            })
+            .unwrap_or(false)
+    }
+    fn flow_operations(&self, module: &str) -> Result<Option<Vec<String>>, WireError> {
+        let catalog = self.transport.catalog()?;
+        let modules = catalog["modules"]
+            .as_array()
+            .ok_or_else(|| WireError::Unreadable("catalog modules missing".into()))?;
+        let entry = modules
+            .iter()
+            .find(|entry| entry["module_id"] == module)
+            .ok_or_else(|| {
+                WireError::Unreadable(format!("module {module} missing from catalog"))
+            })?;
+        serde_json::from_value(entry.get("flow_operations").cloned().unwrap_or(Value::Null))
+            .map_err(|e| WireError::Unreadable(format!("catalog flow_operations: {e}")))
+    }
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {
         if !self.daemon_capabilities.supports_catalog_events() {
             return None;

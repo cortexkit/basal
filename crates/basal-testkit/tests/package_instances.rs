@@ -55,7 +55,7 @@ fn package_tool_policies_follow_the_runs_version_after_instance_upgrade() {
     world.catalog.set_tool_contract(
         "mock",
         "echo",
-        json!({"capabilities":[cortexkit_llm_tools::classify::TAG]}),
+        json!({"modes":["flow"],"capabilities":[cortexkit_llm_tools::classify::TAG]}),
     );
     let mut m = manifest(1);
     m["model_cost_usd"] = json!({"per_run":0.30,"usd":1,"window":"1h"});
@@ -64,7 +64,9 @@ fn package_tool_policies_follow_the_runs_version_after_instance_upgrade() {
         .as_str()
         .unwrap()
         .to_owned();
-    world.catalog.set_tool_contract("mock", "echo", json!({}));
+    world
+        .catalog
+        .set_tool_contract("mock", "echo", json!({"modes":["flow"]}));
     m["version"] = json!(2);
     rt.register_package("return 2", &m.to_string()).unwrap();
     rt.ensure_instance("dark-wake", 2, OWNER, 2).unwrap();

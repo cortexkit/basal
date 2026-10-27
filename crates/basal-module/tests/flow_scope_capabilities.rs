@@ -1,4 +1,7 @@
 mod common;
+#[path = "flow_scope_capabilities/serving.rs"]
+mod serving;
+mod wire;
 use basal_host::{OpDecl, OpKind};
 use basal_module::caller::Caller;
 use common::{Options, events_manifest, fixture};
