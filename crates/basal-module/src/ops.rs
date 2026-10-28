@@ -649,7 +649,9 @@ impl Module {
                 }
                 agent.clone()
             }
-            Caller::Local => {
+            // An admitted dev operator app is a local caller first: it keeps
+            // every right a local caller has, and gains only the phone ops.
+            Caller::Local | Caller::DevOperatorApp => {
                 if p.author.as_ref().is_some_and(|a| a != LOCAL_AUTHOR) {
                     return Err(OpError::operator_attestation_required(
                         "installing a flow in another author's name",
@@ -677,7 +679,7 @@ impl Module {
                 }
                 LOCAL_AUTHOR.to_owned()
             }
-            Caller::Core | Caller::Module { .. } | Caller::Other(_) | Caller::DevOperatorApp => {
+            Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
                 return Err(OpError::not_permitted("flow.install", caller));
             }
         };
@@ -1348,8 +1350,8 @@ impl Module {
         let owner = match caller {
             Caller::Operator => None,
             Caller::Agent { agent_id, .. } => Some(agent_id.as_str()),
-            Caller::Local => Some(LOCAL_AUTHOR),
-            Caller::Core | Caller::Module { .. } | Caller::Other(_) | Caller::DevOperatorApp => {
+            Caller::Local | Caller::DevOperatorApp => Some(LOCAL_AUTHOR),
+            Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
                 return Err(OpError::not_permitted("flow.list", caller));
             }
         };
@@ -1739,8 +1741,8 @@ fn card_author(caller: &Caller) -> Result<Value, OpError> {
     match caller {
         Caller::Operator => Ok(json!({ "operator": true })),
         Caller::Agent { scope_ref, .. } => Ok(json!({ "scope": scope_ref })),
-        Caller::Local => Ok(json!({ "local": true })),
-        Caller::Core | Caller::Module { .. } | Caller::Other(_) | Caller::DevOperatorApp => {
+        Caller::Local | Caller::DevOperatorApp => Ok(json!({ "local": true })),
+        Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
             Err(OpError::not_permitted("flow.install", caller))
         }
     }

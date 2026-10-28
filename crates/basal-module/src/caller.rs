@@ -70,9 +70,10 @@ pub enum Caller {
     Local,
     /// An admitted dev operator app: a `direct`, unscoped, non-federated
     /// route that is not the OpenCode plugin's shared channel (see
-    /// [`dev_operator_app_admission`]). It may call only `flow.overview`,
-    /// `flow.details` and `flow.uninstall`; every other operator-only op
-    /// refuses it like [`Caller::Local`].
+    /// [`dev_operator_app_admission`]). The admission matches nearly every
+    /// local route, so it is a [`Caller::Local`] first: it keeps every right a
+    /// local caller has, and gains only `flow.overview`, `flow.details` and
+    /// `flow.uninstall`. Every other operator-only op refuses it as local.
     DevOperatorApp,
     /// Core itself, on its own route (not under an agent's scope).
     Core,
@@ -189,9 +190,9 @@ pub fn dev_operator_app_admission(
 ///
 /// A route admitted by [`dev_operator_app_admission`] is a
 /// [`Caller::DevOperatorApp`]; every other route is decided by [`from_route`]
-/// alone, so what [`Caller::Local`] may do elsewhere does not change.
-/// Only `flow.overview`, `flow.details` and `flow.uninstall` accept the
-/// admitted caller, through their shared operator check.
+/// alone. Every op that accepts [`Caller::Local`] also accepts the admitted
+/// caller, so admission only adds `flow.overview`, `flow.details` and
+/// `flow.uninstall` and never takes a local right away.
 pub fn caller_for_route(
     principal: Option<&Principal>,
     scope: Option<&ScopeStamp>,

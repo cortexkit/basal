@@ -157,9 +157,10 @@ impl Module {
 }
 
 fn operator(caller: &Caller, method: &str) -> Result<(), OpError> {
-    // The only basal admission of the dev operator app: the desktop app
-    // admitted by [`crate::caller::dev_operator_app_admission`] may call the
-    // three phone ops. Nothing else in basal accepts [`Caller::DevOperatorApp`].
+    // The dev operator app admitted by
+    // [`crate::caller::dev_operator_app_admission`] may call the three phone
+    // ops. These are the only operator-only ops it gets; elsewhere it is
+    // treated as the local caller it also is.
     if !matches!(caller, Caller::Operator | Caller::DevOperatorApp) {
         return Err(OpError::not_permitted(method, caller));
     }

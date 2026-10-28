@@ -419,6 +419,48 @@ fn a_direct_unscoped_non_fed_route_reaches_all_three_phone_ops() {
     assert_eq!(removed_by.as_deref(), Some("operator:local-direct"));
 }
 
+/// The admission matches nearly every unscoped `direct` route, so it must
+/// never take away what such a route could already do as a local caller.
+/// A test client that only lists flows proves basal is serving, and it used
+/// to be refused once admitted.
+#[test]
+fn an_admitted_route_keeps_the_local_callers_rights() {
+    let handler = handler();
+    let admitted = caller_of(
+        &handler,
+        bind_with(RouteHandle::detached(1, 1), "cke2e", "basal-contract")
+            .with_principal(Principal::Direct),
+    );
+    assert_eq!(admitted, Caller::DevOperatorApp);
+    let f = fixture("caller-admitted-local", Options::default());
+    let listed = call(&f, &admitted, "flow.list", json!({})).expect("flow.list stays local");
+    assert_eq!(
+        listed,
+        call(&f, &Caller::Local, "flow.list", json!({})).unwrap()
+    );
+    // Installing still goes through core's card as an unverified local caller,
+    // so it is refused only for what refuses a local caller too.
+    // Each caller installs into a fresh store, so neither sees the other's flow.
+    let install = |name: &str, caller: &Caller| {
+        let f = fixture(name, Options::default());
+        call(
+            &f,
+            caller,
+            "flow.install",
+            json!({"script": SCRIPT, "manifest": events_manifest(FLOW).to_string()}),
+        )
+        .map(|_| ())
+    };
+    let local = install("caller-install-local", &Caller::Local);
+    assert!(
+        !local
+            .as_ref()
+            .is_err_and(|e| e.contains("operator_attestation_required")),
+        "a local caller may ask to install: {local:?}"
+    );
+    assert_eq!(install("caller-install-admitted", &admitted), local);
+}
+
 #[test]
 fn every_phone_exclusion_is_refused_with_todays_refusal() {
     let handler = handler();
