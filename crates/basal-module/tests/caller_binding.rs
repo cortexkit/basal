@@ -293,7 +293,6 @@ fn a_route_without_a_scope_is_never_an_agent() {
         )
     };
     for (harness, session) in [
-        ("fed_operator", SESSION),
         ("fed-phone", SESSION),
         ("fed-anything", SESSION),
         ("alfonso", "prefrontal-core"),
@@ -439,11 +438,6 @@ fn every_phone_exclusion_is_refused_with_todays_refusal() {
             .with_principal(Principal::Direct)
             .with_scope(scope(CORE_MODULE, OWNER, true, scope_ref_of(11))),
     );
-    let fed_operator = caller_of(
-        &handler,
-        bind_with(RouteHandle::detached(12, 1), "fed_operator", SESSION)
-            .with_principal(Principal::Direct),
-    );
     let fed_dash = caller_of(
         &handler,
         bind_with(RouteHandle::detached(13, 1), "fed-phone", SESSION)
@@ -465,14 +459,12 @@ fn every_phone_exclusion_is_refused_with_todays_refusal() {
         bind_request(RouteHandle::detached(16, 1), SESSION).with_principal(Principal::Unverified),
     );
     assert!(matches!(scoped, Caller::Agent { .. }), "{scoped:?}");
-    assert_eq!(fed_operator, Caller::Local);
     assert_eq!(fed_dash, Caller::Local);
     assert_eq!(shared, Caller::Local);
     assert!(matches!(reserved, Caller::Module { .. }), "{reserved:?}");
     assert!(matches!(unverified, Caller::Other(_)), "{unverified:?}");
     for caller in [
         &scoped,
-        &fed_operator,
         &fed_dash,
         &shared,
         &reserved,

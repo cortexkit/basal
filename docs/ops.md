@@ -322,7 +322,7 @@ Template instance entries additionally contain `template`, `version`, canonical 
 
 ## flow.overview
 
-Operator and admitted dev operator apps: the daemon must attest the unscoped route as `reserved:callosum`, or the route must be a direct, unscoped, non-federated app bind admitted by `dev_operator_app_admission` in `crates/basal-module/src/caller.rs` (not `fed_operator`, no `fed-` harness prefix, and not the OpenCode plugin's shared channel `alfonso` + `prefrontal-core`). Release plan: replace that function with SUBC's `operator_app` stamp (subc-protocol 0.33.5, capability `operator-app/v1`). Core, agents and other modules receive `not_permitted`; an excluded local caller receives `operator_attestation_required`. These same admissions and refusals apply to `flow.details` and `flow.uninstall`, before parameter decoding.
+Operator and admitted dev operator apps: the daemon must attest the unscoped route as `reserved:callosum`, or the route must be a direct, unscoped, non-federated app bind admitted by `dev_operator_app_admission` in `crates/basal-module/src/caller.rs` (no `fed-` harness prefix, and not the OpenCode plugin's shared channel `alfonso` + `prefrontal-core`). Release plan: replace that function with SUBC's `operator_app` stamp (subc-protocol 0.33.5, capability `operator-app/v1`). Core, agents and other modules receive `not_permitted`; an excluded local caller receives `operator_attestation_required`. These same admissions and refusals apply to `flow.details` and `flow.uninstall`, before parameter decoding.
 
 Params (an object with no other keys, or null for defaults):
 ```json
