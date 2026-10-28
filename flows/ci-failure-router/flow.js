@@ -470,18 +470,20 @@ if (jobEvent && mainBranch && knownWorkflow) {
 }
 // Later jobs still enrich the same digest after the first wake. Policy-silenced
 // jobs do not need a log, and superseded attempts have already returned above.
-if (jobEvent && !quiet && !mergeQueueRepeat && !contributorBranch && !notStarted && body.id != null) {
+// A job's log is read once: a repeated notice for the same job reuses what the
+// first read found, or the fact that it found nothing.
+run.failingTests ??= {};
+const jobKey = String(body.id);
+if (jobEvent && !quiet && !mergeQueueRepeat && !contributorBranch && !notStarted && body.id != null &&
+  !Object.hasOwn(run.failingTests, jobKey)) {
+  run.failingTests[jobKey] = { names: [], more: 0 };
   try {
     const answer = await ops.call('plexus', 'github_read', {
       action: 'github.actions.job_log', repository: repo, args: { job_id: body.id, max_bytes: 65536 },
     });
     if (answer?.error) throw { data: answer.error };
     if (typeof answer?.result?.text !== 'string') throw new Error('github_actions_job_log_unreadable');
-    const tests = failingTests(answer.result.text);
-    if (tests.names.length) {
-      run.failingTests ??= {};
-      run.failingTests[String(body.id)] = tests;
-    }
+    run.failingTests[jobKey] = failingTests(answer.result.text);
   } catch (error) {
     refusals.push({repo, owner, code: error.data?.code ?? error.data?.error?.code ?? String(error)});
   }
