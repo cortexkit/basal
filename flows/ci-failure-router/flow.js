@@ -195,6 +195,43 @@ function short(text, maxBytes) {
   return result + '...';
 }
 
+function failingTests(log) {
+  const names = [];
+  const seen = new Set();
+  let failures = false;
+  // Inspect only the tail requested from Plexus. The extra count describes
+  // names found here, not failures that may have scrolled out of the log tail.
+  for (let line of log.slice(-65536).split('\n')) {
+    line = line.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z\s?/, '').replace(/\r$/, '');
+    if (/^\s*failures:\s*$/.test(line)) {
+      failures = true;
+      continue;
+    }
+    let name;
+    const match = line.match(/^\s*test (.+?) \.\.\. FAILED(?:\s|$)/) ??
+      line.match(/^\s*(?:FAIL|TIMEOUT)\s+\[[^\]\r\n]{1,40}\]\s+(.+)$/) ??
+      line.match(/^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:ms|s)\])?\s*$/) ??
+      line.match(/^\s*--- FAIL:\s+(\S+)/) ??
+      line.match(/^\s*FAILED\s+(.+?::.+?)(?:\s+-\s+.*)?$/) ??
+      line.match(/^\s*FAIL\s+(?!\S+\s+[\d.]+s(?:\s|$))(.+)$/) ??
+      line.match(/^\s*[×✕]\s+(.+?)(?:\s+\(?[\d.]+\s*m?s\)?)?\s*$/);
+    if (match) {
+      name = match[1];
+      failures = false;
+    } else if (failures && /^\s{2,}\S/.test(line) && !/^\s*----/.test(line)) {
+      name = line.trim();
+    } else if (line.trim()) {
+      failures = false;
+    }
+    if (name == null) continue;
+    name = name.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    if (names.length < 5) names.push(short(name, 160));
+  }
+  return { names, more: seen.size - names.length };
+}
+
 // Notice headers can name a different repo or branch from the fetched body.
 // Recheck the verified body independently; every branch, including unknown, is eligible.
 function matches(pattern, value, repo = false) {
@@ -361,7 +398,8 @@ const item = boundedDigest(title, {
 }, links.map(url => ({ kind: 'url', url })));
 // data.observed.failed_jobs retains the job list beyond the short body summary;
 // boundedDigest records any metadata truncation in data.truncated.
-const bodyJobs = !jobEvent && newNames.length ? newNames : names;
+const bodyJobIds = !green && !jobEvent && newNames.length ? jobsSinceFirstNotice : Object.keys(run.jobs);
+const bodyJobs = bodyJobIds.map(id => run.jobs[id]);
 // A green run's jobs are the ones that were failing before; call them that,
 // so the body never reads as a fresh failure.
 const failedJobsLine = green ?
@@ -377,8 +415,6 @@ const bodyLines = [
   short(`Run ${runId ?? 'unknown'}, attempt ${attempt ?? 'unknown'}, ${bodyStatus}`, 240),
   `Commit ${run.sha}`,
 ];
-item.body = bodyLines.join('\n');
-while (item.links.length && bytes(JSON.stringify(item)) > 16384) item.links.pop();
 // A run completion can compare its accumulated job IDs with the first notice,
 // even though Plexus v2 does not include per-job conclusions in that event.
 const runHasReportedJob = Object.keys(run.jobs).length > 0;
@@ -432,6 +468,36 @@ if (action === 'wake' && !run.supersessionChecked && !hasFirstNotice) {
 if (jobEvent && mainBranch && knownWorkflow) {
   memory.mainFailures[mainFailureKey] = { repo, workflow: workflowName, completed: run.completed };
 }
+// Later jobs still enrich the same digest after the first wake. Policy-silenced
+// jobs do not need a log, and superseded attempts have already returned above.
+if (jobEvent && !quiet && !mergeQueueRepeat && !contributorBranch && !notStarted && body.id != null) {
+  try {
+    const answer = await ops.call('plexus', 'github_read', {
+      action: 'github.actions.job_log', repository: repo, args: { job_id: body.id, max_bytes: 65536 },
+    });
+    if (answer?.error) throw { data: answer.error };
+    if (typeof answer?.result?.text !== 'string') throw new Error('github_actions_job_log_unreadable');
+    const tests = failingTests(answer.result.text);
+    if (tests.names.length) {
+      run.failingTests ??= {};
+      run.failingTests[String(body.id)] = tests;
+    }
+  } catch (error) {
+    refusals.push({repo, owner, code: error.data?.code ?? error.data?.error?.code ?? String(error)});
+  }
+}
+for (const id of bodyJobIds) {
+  const tests = run.failingTests?.[id];
+  if (!tests?.names.length) continue;
+  const label = green ? 'Previously failing tests' : 'Failing tests';
+  const line = `${label}: ${tests.names.join(', ')}${tests.more ? ` (+${tests.more} more)` : ''}`;
+  const entry = bodyJobIds.length > 1 ? `${run.jobs[id]}\n${line}` : line;
+  // Keep whole per-job summaries rather than cutting a test name mid-line.
+  if (bytes([...bodyLines, entry].join('\n')) > 4096) break;
+  bodyLines.push(entry);
+}
+item.body = bodyLines.join('\n');
+while (item.links.length && bytes(JSON.stringify(item)) > 16384) item.links.pop();
 let digestSucceeded = false;
 try {
   await sink.digest(owner, item, action, identified && bytes(key) <= 200 ? { replace_key: key } : undefined);
