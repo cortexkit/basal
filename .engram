@@ -1,0 +1,8 @@
+.cortexkit/internal-docs/
+.cortexkit/scripts/
+.cortexkit/gate-and-push.sh
+.cortexkit/prefrontal/drafts/
+.cortexkit/prefrontal/plans/
+.cortexkit/prefrontal/prompts/
+.cortexkit/prefrontal/specs/
+.cortexkit/prefrontal/artifacts/
