@@ -188,6 +188,10 @@ pub fn manifest() -> ModuleManifest {
                 cortexkit_role_tool_provider::PROVIDES.into(),
                 cortexkit_role_tool_provider::CALL_MODES_CAPABILITY.into(),
                 "flow-install-policy/v1".into(),
+                // Lets the daemon admit flow-scoped routes to basal, so flows can
+                // read `diagnostics.findings`. The serving loop refuses a flow
+                // scope everything else.
+                subc_protocol::scope::FLOW_SCOPES_CAPABILITY.into(),
                 // Basal relays the described flow stamp to the vault exactly as
                 // delivered, never edits its fields and never builds a stamp.
                 subc_protocol::scope::FLOW_IDENTITY_SCOPES_CAPABILITY.into(),
