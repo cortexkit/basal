@@ -1,10 +1,20 @@
 //! Durable owner-notice episodes and handoff to core. Only error codes leave basal.
 use crate::{Result, Runtime, ops};
 use basal_host::{core_host::FLOW_OWNER_NOTICE_V1, transport::WireError};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
 const KIND: &str = "flow.owner_notice";
+const OWNER_NOTICE_FINAL_CODES: &[&str] = &[
+    "flow_not_installed",
+    "owner_unknown",
+    "flow_owner_notice_invalid",
+];
+// Day-old health notices no longer describe actionable current health.
+pub(crate) const OWNER_NOTICE_MAX_AGE_MS: i64 = 24 * 60 * 60 * 1000;
+// After about an hour of capped backoff, supersede only for a newer undelivered
+// notice of the same flow; a lone notice keeps retrying until it expires.
+pub(crate) const OWNER_NOTICE_SUPERSEDE_ATTEMPTS: u32 = 22;
 
 #[derive(Default)]
 struct Streak {
@@ -170,29 +180,22 @@ pub(crate) fn finish_run(tx: &Transaction, run_id: &str, now: i64) -> Result<()>
 }
 
 pub(crate) fn auto_disabled(tx: &Transaction, flow: &str, now: i64) -> Result<()> {
+    // Rate limits count admissions, including runs outside the terminal failure streak.
+    let latest = tx.query_row(
+        "SELECT run_id,COALESCE(flow_version,0),error_kind,script_started FROM runs WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC LIMIT 1",
+        [flow],
+        |r| Ok(Failure { run_id: r.get(0)?, version: r.get(1)?, kind: r.get(2)?, started: r.get(3)? }),
+    ).optional()?;
+    let Some(latest) = latest else {
+        tracing::warn!(target: "owner_notice", flow_id = flow, code = "run_missing", "cannot enqueue an auto-disabled owner notice without an admitted run");
+        return Ok(());
+    };
     let episode = next_episode(tx, flow)?;
     let streak = streak(tx, flow)?;
-    let fallback = Failure {
-        run_id: String::new(),
-        version: tx.query_row(
-            "SELECT COALESCE(approved_version,0) FROM flows WHERE flow_id=?1",
-            [flow],
-            |r| r.get(0),
-        )?,
-        kind: None,
-        started: false,
-    };
     enqueue(
         tx,
         flow,
-        payload(
-            flow,
-            episode,
-            "auto_disabled",
-            &streak,
-            streak.latest.as_ref().unwrap_or(&fallback),
-            now,
-        ),
+        payload(flow, episode, "auto_disabled", &streak, &latest, now),
         now,
     )
 }
@@ -213,43 +216,77 @@ impl Runtime {
             return Ok(());
         }
         let now = self.config.clock.now_ms();
-        let rows = self.store().read(|c| {
-            let mut stmt = c.prepare_cached("SELECT seq,body,attempts FROM outbox o WHERE kind='flow.owner_notice' AND delivered_at IS NULL AND retry_at<=?1 AND NOT EXISTS (SELECT 1 FROM outbox older WHERE older.kind=o.kind AND older.flow_id=o.flow_id AND older.delivered_at IS NULL AND older.seq<o.seq) ORDER BY seq")?;
-            Ok(stmt.query_map([now], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, String>(1)?,r.get::<_, u32>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        let stale = self.store().write(|tx| {
+            let mut stmt = tx.prepare_cached("UPDATE outbox SET delivered_at=?1,failure_code='stale' WHERE kind='flow.owner_notice' AND delivered_at IS NULL AND at<?2 RETURNING seq,body")?;
+            Ok(stmt.query_map(params![now, now.saturating_sub(OWNER_NOTICE_MAX_AGE_MS)], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
-        for (seq, body, attempts) in rows {
+        for (seq, body) in &stale {
+            let request = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
+            let notice_id = request
+                .get("notice_id")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing>");
+            tracing::warn!(target: "owner_notice", seq, notice_id, code = "stale", "discarded a stale owner notice");
+        }
+        if !stale.is_empty() {
+            self.shared.signal.bump();
+        }
+        let rows = self.store().read(|c| {
+            let mut stmt = c.prepare_cached("SELECT seq,body,attempts,failure_code FROM outbox o WHERE kind='flow.owner_notice' AND delivered_at IS NULL AND retry_at<=?1 AND NOT EXISTS (SELECT 1 FROM outbox older WHERE older.kind=o.kind AND older.flow_id=o.flow_id AND older.delivered_at IS NULL AND older.seq<o.seq) ORDER BY seq")?;
+            Ok(stmt.query_map([now], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, String>(1)?,r.get::<_, u32>(2)?,r.get::<_, Option<String>>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        for (seq, body, attempts, previous_code) in rows {
             let request: Value = serde_json::from_str(&body)
                 .map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
-            let result = self.shared.host.owner_notice(request);
-            let final_code = match &result {
-                Err(WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. }) => {
-                    matches!(code.as_str(), "flow_not_installed" | "owner_unknown")
-                        .then_some(code.as_str())
+            let notice_id = request
+                .get("notice_id")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing>")
+                .to_owned();
+            if attempts >= OWNER_NOTICE_SUPERSEDE_ATTEMPTS {
+                let superseded = self.store().write(|tx| {
+                    Ok(tx.execute("UPDATE outbox AS o SET delivered_at=?2,failure_code='superseded' WHERE seq=?1 AND delivered_at IS NULL AND EXISTS (SELECT 1 FROM outbox newer WHERE newer.kind=o.kind AND newer.flow_id=o.flow_id AND newer.delivered_at IS NULL AND newer.seq>o.seq)", params![seq, now])? > 0)
+                })?;
+                if superseded {
+                    tracing::warn!(target: "owner_notice", seq, notice_id, code = "superseded", "discarded a superseded owner notice");
+                    self.shared.signal.bump();
+                    continue;
                 }
+            }
+            let result = self.shared.host.owner_notice(request);
+            let failure_code = match &result {
+                Err(WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. }) => {
+                    Some(code.as_str())
+                }
+                Err(_) => Some("transport"),
+                Ok(v) if v.get("accepted") != Some(&Value::Bool(true)) => Some("not_accepted"),
                 _ => None,
             };
-            let final_refusal = final_code.is_some();
-            let accepted = result
-                .as_ref()
-                .is_ok_and(|v| v.get("accepted") == Some(&Value::Bool(true)));
-            if let Some(code) = final_code {
-                tracing::warn!(target:"owner_notice", seq, code, "core refused an owner notice permanently");
-            }
+            let final_refusal =
+                failure_code.is_some_and(|code| OWNER_NOTICE_FINAL_CODES.contains(&code));
+            let accepted = failure_code.is_none();
             self.store().write(|tx| {
                 if accepted || final_refusal {
                     tx.execute(
-                        "UPDATE outbox SET delivered_at=?2 WHERE seq=?1",
-                        params![seq, self.config.clock.now_ms()],
+                        "UPDATE outbox SET delivered_at=?2,failure_code=COALESCE(?3,failure_code) WHERE seq=?1",
+                        params![seq, self.config.clock.now_ms(), failure_code],
                     )?;
                 } else {
                     let delay = 1000_i64 * (1_i64 << attempts.min(8));
                     tx.execute(
-                        "UPDATE outbox SET attempts=attempts+1,retry_at=?2 WHERE seq=?1",
-                        params![seq, self.config.clock.now_ms().saturating_add(delay)],
+                        "UPDATE outbox SET attempts=attempts+1,retry_at=?2,failure_code=?3 WHERE seq=?1",
+                        params![seq, self.config.clock.now_ms().saturating_add(delay), failure_code],
                     )?;
                 }
                 Ok(())
             })?;
+            if let Some(code) = failure_code {
+                if final_refusal {
+                    tracing::warn!(target: "owner_notice", seq, notice_id, code, "core refused an owner notice permanently");
+                } else if previous_code.as_deref() != Some(code) {
+                    tracing::warn!(target: "owner_notice", seq, notice_id, code, "owner notice delivery failed; will retry");
+                }
+            }
             if accepted || final_refusal {
                 self.shared.signal.bump();
             }

@@ -106,6 +106,12 @@ fn sends(f: &Fixture) -> Vec<serde_json::Value> {
 fn drain(f: &Fixture) {
     f.rt.drain_owner_notices().unwrap();
 }
+fn delivery(f: &Fixture, id: &str) -> (Option<i64>, u32, Option<String>) {
+    f.rt.store().read(|c| Ok(c.query_row(
+        "SELECT delivered_at,attempts,failure_code FROM outbox WHERE kind='flow.owner_notice' AND json_extract(body,'$.notice_id')=?1",
+        [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    )?)).unwrap()
+}
 fn restart(f: &mut Fixture) {
     let mut scratch = Fixture::new(1000);
     std::mem::swap(&mut scratch.rt, &mut f.rt);
@@ -225,7 +231,11 @@ fn script_failures_use_the_same_health_streak() {
 #[test]
 fn retry_uses_same_id_and_final_refusal_unblocks_recovery() {
     use basal_host::transport::WireError;
-    for final_code in ["flow_not_installed", "owner_unknown"] {
+    for final_code in [
+        "flow_not_installed",
+        "owner_unknown",
+        "flow_owner_notice_invalid",
+    ] {
         let f = setup();
         for n in 1..=3 {
             drive(&f, n, Some("event_not_visible"), false);
@@ -255,6 +265,10 @@ fn retry_uses_same_id_and_final_refusal_unblocks_recovery() {
         assert_eq!(sends(&f)[1]["notice_id"], id);
         assert_eq!(sends(&f)[2]["kind"], "recovered");
         assert!(f.rt.outbox().unwrap().is_empty());
+        let stored: String = f.rt.store().read(|c| Ok(c.query_row(
+            "SELECT failure_code FROM outbox WHERE kind='flow.owner_notice' ORDER BY seq LIMIT 1", [], |r| r.get(0)
+        )?)).unwrap();
+        assert_eq!(stored, final_code);
     }
 }
 #[test]
@@ -288,23 +302,248 @@ fn rate_breaker_enqueues_one_independent_auto_disable() {
 }
 
 #[test]
+fn auto_disabled_notice_carries_the_latest_admitted_run_id() {
+    let mut f = setup();
+    Arc::make_mut(&mut f.rt.config).rate = crate::RateLimits {
+        max_runs: 2,
+        saturated_windows_to_disable: 1,
+        ..Default::default()
+    };
+    drive(&f, 1, Some("event_not_visible"), false);
+    let latest = drive(&f, 2, None, true);
+    f.rt.admit_events(&[notice(3)]).unwrap();
+    drain(&f);
+    assert_eq!(sends(&f).len(), 1);
+    assert_eq!(sends(&f)[0]["kind"], "auto_disabled");
+    assert_eq!(sends(&f)[0]["run_id"], latest);
+}
+
+#[test]
+fn auto_disabled_without_an_admitted_run_is_not_enqueued() {
+    let f = setup();
+    let logs = CapturedLogs::default();
+    let _guard = tracing::subscriber::set_default(logs.clone());
+    f.rt.store()
+        .write(|tx| crate::owner_notice::auto_disabled(tx, "flow", 1000))
+        .unwrap();
+    assert!(f.rt.outbox().unwrap().is_empty());
+    assert!(
+        logs.0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(level, fields)| *level == tracing::Level::WARN
+                && fields.contains("run_missing")
+                && fields.contains("flow_id=\"flow\""))
+    );
+}
+
+#[test]
+fn nonfinal_refusal_persists_code_and_warns_only_when_it_changes() {
+    use basal_host::transport::WireError;
+    let mut f = setup();
+    for n in 1..=3 {
+        drive(&f, n, Some("event_not_visible"), false);
+    }
+    let logs = CapturedLogs::default();
+    let _guard = tracing::subscriber::set_default(logs.clone());
+    for (index, code) in ["reloading", "reloading", "future_refusal"]
+        .into_iter()
+        .enumerate()
+    {
+        f.source
+            .notice_replies
+            .lock()
+            .unwrap()
+            .push(Err(WireError::RefusedDetails {
+                code: code.into(),
+                message: "PRIVATE message".into(),
+                detail: json!({"private":"PRIVATE detail"}),
+            }));
+        drain(&f);
+        let (delivered_at, attempts, stored_code) = delivery(&f, "flow:1:failing");
+        assert_eq!(delivered_at, None);
+        assert_eq!(attempts, index as u32 + 1);
+        assert_eq!(stored_code.as_deref(), Some(code));
+        let warnings = logs
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(level, _)| *level == tracing::Level::WARN)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(warnings.len(), if index == 2 { 2 } else { 1 });
+        let fields = &warnings.last().unwrap().1;
+        assert!(fields.contains("seq="));
+        assert!(fields.contains("notice_id=\"flow:1:failing\""));
+        assert!(fields.contains(&format!("code={code:?}")));
+        assert!(!fields.contains("PRIVATE"));
+        if index == 0 {
+            restart(&mut f);
+        }
+        let retry = f.rt.owner_notice_next_wake().unwrap().unwrap();
+        f.rt.config()
+            .clock
+            .advance(retry - f.rt.config().clock.now_ms());
+    }
+}
+
+#[test]
+fn stuck_head_is_superseded_at_threshold_and_its_sibling_is_sent_next() {
+    use crate::owner_notice::OWNER_NOTICE_SUPERSEDE_ATTEMPTS;
+    let f = setup();
+    for n in 1..=3 {
+        drive(&f, n, Some("event_not_visible"), false);
+    }
+    drive(&f, 4, None, true);
+    f.rt.store().write(|tx| {
+        tx.execute("UPDATE outbox SET attempts=?1 WHERE kind='flow.owner_notice' AND json_extract(body,'$.kind')='failing'", [OWNER_NOTICE_SUPERSEDE_ATTEMPTS - 1])?;
+        Ok(())
+    }).unwrap();
+    f.source
+        .notice_replies
+        .lock()
+        .unwrap()
+        .push(Err(basal_host::transport::WireError::Refused {
+            code: "reloading".into(),
+            message: "private".into(),
+        }));
+    drain(&f);
+    assert_eq!(
+        sends(&f).len(),
+        1,
+        "head is still retried below the threshold"
+    );
+    assert_eq!(delivery(&f, "flow:1:failing").0, None);
+    let retry = f.rt.owner_notice_next_wake().unwrap().unwrap();
+    f.rt.config()
+        .clock
+        .advance(retry - f.rt.config().clock.now_ms());
+    drain(&f);
+    assert_eq!(sends(&f).len(), 1, "superseded head is not sent again");
+    let (delivered_at, attempts, code) = delivery(&f, "flow:1:failing");
+    assert_eq!(delivered_at, Some(f.rt.config().clock.now_ms()));
+    assert_eq!(attempts, OWNER_NOTICE_SUPERSEDE_ATTEMPTS);
+    assert_eq!(code.as_deref(), Some("superseded"));
+    drain(&f);
+    assert_eq!(sends(&f).len(), 2);
+    assert_eq!(sends(&f)[1]["kind"], "recovered");
+    assert!(f.rt.outbox().unwrap().is_empty());
+}
+
+#[test]
+fn lone_stuck_head_is_not_superseded_even_with_a_delivered_newer_row() {
+    use crate::owner_notice::OWNER_NOTICE_SUPERSEDE_ATTEMPTS;
+    let f = setup();
+    for n in 1..=3 {
+        drive(&f, n, Some("event_not_visible"), false);
+    }
+    f.rt.store().write(|tx| {
+        tx.execute("UPDATE outbox SET attempts=?1 WHERE kind='flow.owner_notice'", [OWNER_NOTICE_SUPERSEDE_ATTEMPTS])?;
+        tx.execute("INSERT INTO outbox(at,kind,flow_id,body,delivered_at) VALUES (1000,'flow.owner_notice','flow','{}',1000)", [])?;
+        tx.execute("INSERT INTO outbox(at,kind,flow_id,body) VALUES (1000,'flow.owner_notice','other-flow','{}')", [])?;
+        Ok(())
+    }).unwrap();
+    f.source
+        .notice_replies
+        .lock()
+        .unwrap()
+        .push(Err(basal_host::transport::WireError::Unknown(
+            "private".into(),
+        )));
+    drain(&f);
+    assert_eq!(sends(&f)[0]["notice_id"], "flow:1:failing");
+    assert_eq!(
+        delivery(&f, "flow:1:failing"),
+        (
+            None,
+            OWNER_NOTICE_SUPERSEDE_ATTEMPTS + 1,
+            Some("transport".into())
+        )
+    );
+}
+
+#[test]
+fn stale_notices_are_discarded_once_before_sending_fresh_health() {
+    use crate::owner_notice::OWNER_NOTICE_MAX_AGE_MS;
+    let f = setup();
+    for n in 1..=3 {
+        drive(&f, n, Some("event_not_visible"), false);
+    }
+    drive(&f, 4, None, true);
+    f.rt.config().clock.advance(OWNER_NOTICE_MAX_AGE_MS + 1);
+    let now = f.rt.config().clock.now_ms();
+    f.rt.store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE outbox SET retry_at=?1 WHERE kind='flow.owner_notice'",
+                [now + 256_000],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    for n in 5..=7 {
+        drive(&f, n, Some("event_not_visible"), false);
+    }
+    let logs = CapturedLogs::default();
+    let _guard = tracing::subscriber::set_default(logs.clone());
+    drain(&f);
+    drain(&f);
+    assert_eq!(sends(&f).len(), 1);
+    assert_eq!(sends(&f)[0]["notice_id"], "flow:2:failing");
+    for id in ["flow:1:failing", "flow:1:recovered"] {
+        assert_eq!(delivery(&f, id), (Some(now), 0, Some("stale".into())));
+    }
+    let warnings = logs
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(level, _)| *level == tracing::Level::WARN)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(warnings.len(), 2);
+    for (_, fields) in warnings {
+        assert!(fields.contains("code=\"stale\""));
+        assert!(fields.contains("notice_id=\"flow:1:"));
+        assert!(fields.contains("seq="));
+    }
+    assert!(f.rt.outbox().unwrap().is_empty());
+}
+
+#[test]
 fn unavailable_refusals_and_unaccepted_replies_retry_without_a_sqlite_lock() {
     use basal_host::transport::WireError;
     let f = setup();
     for n in 1..=3 {
         drive(&f, n, Some("event_not_visible"), false);
     }
-    for response in [
-        Err(WireError::Refused {
-            code: "reloading".into(),
-            message: "reload".into(),
-        }),
-        Err(WireError::Refused {
-            code: "future_refusal".into(),
-            message: "unknown".into(),
-        }),
-        Ok(json!({"accepted":false})),
-        Ok(json!({})),
+    for (response, code) in [
+        (
+            Err(WireError::Unknown("private transport error".into())),
+            "transport",
+        ),
+        (
+            Err(WireError::NeverSent("private route error".into())),
+            "transport",
+        ),
+        (
+            Err(WireError::Refused {
+                code: "reloading".into(),
+                message: "reload".into(),
+            }),
+            "reloading",
+        ),
+        (
+            Err(WireError::Refused {
+                code: "future_refusal".into(),
+                message: "unknown".into(),
+            }),
+            "future_refusal",
+        ),
+        (Ok(json!({"accepted":false})), "not_accepted"),
+        (Ok(json!({})), "not_accepted"),
     ] {
         f.source.notice_replies.lock().unwrap().push(response);
         let store = f.rt.shared.store.clone();
@@ -313,6 +552,7 @@ fn unavailable_refusals_and_unaccepted_replies_retry_without_a_sqlite_lock() {
         }));
         drain(&f);
         assert_eq!(f.rt.outbox().unwrap().len(), 1);
+        assert_eq!(delivery(&f, "flow:1:failing").2.as_deref(), Some(code));
         let retry = f.rt.owner_notice_next_wake().unwrap().unwrap();
         assert!(retry > f.rt.config().clock.now_ms());
         f.rt.config()
@@ -321,7 +561,7 @@ fn unavailable_refusals_and_unaccepted_replies_retry_without_a_sqlite_lock() {
     }
     drain(&f);
     let sent = sends(&f);
-    assert_eq!(sent.len(), 5);
+    assert_eq!(sent.len(), 7);
     assert!(
         sent.iter().all(|v| v == &sent[0]),
         "retry preserves every request byte"

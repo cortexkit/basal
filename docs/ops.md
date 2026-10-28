@@ -532,22 +532,33 @@ take up to the fallback interval to become visible without another catalog read.
 Requests contain exactly `notice_id` (`<flow_id>:<episode>:<kind>`), `flow_id`,
 `version`, `kind` (`failing|auto_disabled|recovered`), `consecutive_failures`,
 `error_kind`, `phase`, `failing_since_ms`, `run_id` and `at_ms`. Times are Unix
-milliseconds. Only the latest counted error **code** is sent, never failure
+milliseconds. Error kinds contain only an error **code**, never failure
 detail text: it is truncated to 128 bytes and bytes outside `[a-z0-9_.:-]` become
 `_`. `phase` is `preamble` before script activation or `script` afterward; it is
 null for recovery and auto-disable. Recovery has null `error_kind` and zero
-failures, and retains the episode's first-failure time. Without any counted
-failure, auto-disable has null error/time and an empty run id, using the approved
-version. Exact JSON request-byte vectors live in
+failures, and retains the episode's first-failure time. Auto-disable uses the
+most recently admitted run's id and version, even when that run is not a counted
+failure; without any admitted run, basal warns and skips the notice instead of
+sending an invalid id. Exact JSON request-byte vectors live in
 [`test-vectors/owner-notice/vectors.json`](../test-vectors/owner-notice/vectors.json).
 
 The existing outbox stores these notices with durable backoff metadata. Only
 the oldest undelivered notice per flow is sent. SQLite is unlocked during the
 network call. `{accepted:true}` means core durably owns delivery, not that an
-owner has read it. `flow_not_installed` and `owner_unknown` are final refusals:
-basal warns and marks the row done. All other refusals, malformed replies and
+owner has read it. `flow_not_installed`, `owner_unknown` and
+`flow_owner_notice_invalid` are final refusals: basal warns and marks the row
+done. All other refusals, malformed replies and
 transport errors retry exponentially (1 second up to 256 seconds), preserving
 the exact request and notice id so core can deduplicate after a lost response.
+Failed attempts store only the refusal code, `transport` or `not_accepted` in
+`outbox.failure_code`; a WARN names the sequence, notice id and code only when
+the code first appears or changes. Final refusals still warn. Diagnostics include
+the stored code in `owner_notices_stuck` samples. After 22 failed attempts (about
+an hour of backoff), a head with a newer undelivered notice for the same flow is
+marked delivered with code `superseded`, allowing the newer notice through on
+the next drain. A lone notice is not superseded. Notices older than 24 hours are
+marked delivered with code `stale` and logged once rather than sent, even if
+their retry deadline has not arrived.
 Obsolete install/disable owner-outbox rows without a consumer are discarded;
 install card status and operator decision cards remain authoritative.
 

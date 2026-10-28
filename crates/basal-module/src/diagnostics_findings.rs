@@ -229,10 +229,13 @@ fn store_findings(store: &Store, now: i64, window: i64) -> basal_core::Result<Ve
             Ok((at, json!({"at_ms":at, "flow_id":r.get::<_,String>(1)?, "seq":r.get::<_,i64>(2)?})))
         };
         findings.extend(aggregate(conn,
-            "SELECT at,flow_id,seq FROM outbox WHERE delivered_at IS NULL AND kind='flow.owner_notice' AND at<=?1 ORDER BY at,seq",
+            "SELECT at,flow_id,seq,failure_code FROM outbox WHERE delivered_at IS NULL AND kind='flow.owner_notice' AND at<=?1 ORDER BY at,seq",
             [now.saturating_sub(STUCK_MS)],
             finding("owner_notices_stuck", "undelivered", "warn", "Owner notices remain undelivered for over an hour.",
-                "Inspect owner-notice delivery and its retry state."), outbox_sample, Some(now))?);
+                "Inspect owner-notice delivery and its retry state."),
+            |r| { let (at, mut sample) = outbox_sample(r)?;
+                sample["failure_code"] = json!(r.get::<_,Option<String>>(3)?);
+                Ok((at, sample)) }, Some(now))?);
         findings.extend(aggregate(conn,
             "SELECT at,flow_id,seq FROM outbox WHERE delivered_at IS NULL AND kind<>'flow.owner_notice' AND NOT (kind='secret.revoke_flow_grants' AND failed_at IS NOT NULL) AND at<=?1 ORDER BY at,seq",
             [now.saturating_sub(STUCK_MS)],
@@ -530,6 +533,27 @@ mod tests {
                 only(store, "outbox_stuck", "secret_revocations")["severity"],
                 "error"
             );
+        });
+    }
+
+    #[test]
+    fn owner_notice_samples_include_only_the_stored_failure_code() {
+        with_store("owner-notice-code", |store| {
+            seed(
+                store,
+                &format!(
+                    "INSERT INTO outbox(at,kind,flow_id,body,failure_code) VALUES ({},'flow.owner_notice','f','{SECRET}','flow_owner_notice_invalid'),({},'flow.owner_notice','g','{SECRET}',NULL)",
+                    NOW - STUCK_MS,
+                    NOW - STUCK_MS
+                ),
+            );
+            let finding = only(store, "owner_notices_stuck", "undelivered");
+            assert_eq!(
+                finding["samples"][0]["failure_code"],
+                "flow_owner_notice_invalid"
+            );
+            assert!(finding["samples"][1]["failure_code"].is_null());
+            assert!(!finding.to_string().contains(SECRET));
         });
     }
 
