@@ -28,6 +28,82 @@
     }
   },
   {
+    "name": "mentions_empty",
+    "precondition": "The request has an empty mentions array.",
+    "reply": {
+      "result": {
+        "replayed": false,
+        "room_id": "rm_fleet",
+        "seq": 3
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": [],
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "mentions_omitted",
+    "precondition": "The request omits mentions.",
+    "reply": {
+      "result": {
+        "replayed": false,
+        "room_id": "rm_fleet",
+        "seq": 3
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
+    "name": "mentions_null",
+    "precondition": "The request sets mentions to null.",
+    "reply": {
+      "error": {
+        "code": "sink_item_invalid",
+        "message": "sink_item_invalid: mentions: invalid type: null, expected a sequence"
+      }
+    },
+    "request": {
+      "method": "sink.room.post",
+      "params": {
+        "mentions": null,
+        "receipt_key": "vector",
+        "room_id": "rm_fleet",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "text": "Boat spend: $12\nDaily total"
+      },
+      "principal": "reserved:basal"
+    }
+  },
+  {
     "name": "receipt_replay",
     "precondition": "The original success request has already committed.",
     "reply": {
