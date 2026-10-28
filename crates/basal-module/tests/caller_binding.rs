@@ -463,13 +463,7 @@ fn every_phone_exclusion_is_refused_with_todays_refusal() {
     assert_eq!(shared, Caller::Local);
     assert!(matches!(reserved, Caller::Module { .. }), "{reserved:?}");
     assert!(matches!(unverified, Caller::Other(_)), "{unverified:?}");
-    for caller in [
-        &scoped,
-        &fed_dash,
-        &shared,
-        &reserved,
-        &unverified,
-    ] {
+    for caller in [&scoped, &fed_dash, &shared, &reserved, &unverified] {
         let expected = if *caller == Caller::Local {
             "operator_attestation_required"
         } else {
