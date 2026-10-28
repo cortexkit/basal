@@ -10,6 +10,34 @@
     }
   },
   {
+    "name": "mentions_empty",
+    "reply": {
+      "result": {
+        "replayed": false,
+        "room_id": "rm_fleet",
+        "seq": 3
+      }
+    }
+  },
+  {
+    "name": "mentions_omitted",
+    "reply": {
+      "result": {
+        "replayed": false,
+        "room_id": "rm_fleet",
+        "seq": 3
+      }
+    }
+  },
+  {
+    "name": "mentions_null",
+    "reply": {
+      "error": {
+        "code": "sink_item_invalid"
+      }
+    }
+  },
+  {
     "name": "receipt_replay",
     "reply": {
       "result": {

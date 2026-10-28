@@ -16,6 +16,47 @@
     }
   },
   {
+    "name": "mentions_empty",
+    "params": {
+      "mentions": [],
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "mentions_omitted",
+    "params": {
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
+    "name": "mentions_null",
+    "params": {
+      "mentions": null,
+      "receipt_key": "bk1-vector",
+      "room_id": "rm_fleet",
+      "stamp": {
+        "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "flow_id": "flow-x",
+        "flow_version": 1
+      },
+      "text": "Boat spend: $12\nDaily total"
+    }
+  },
+  {
     "name": "receipt_replay",
     "params": {
       "mentions": [

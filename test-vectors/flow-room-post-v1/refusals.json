@@ -1,16 +1,62 @@
 [
-  {"code":"receipt_mismatch","effect":"final"},
-  {"code":"room_not_granted","effect":"final"},
-  {"code":"room_mention_not_granted","effect":"final"},
-  {"code":"room_all_mention_refused","effect":"final"},
-  {"code":"room_post_requires_agent_flow","effect":"final"},
-  {"code":"room_author_not_member","effect":"final"},
-  {"code":"room_not_found","effect":"final"},
-  {"code":"room_closed","effect":"final"},
-  {"code":"text_invalid","effect":"final"},
-  {"code":"sink_principal_refused","effect":"final"},
-  {"code":"sink_flow_hash_mismatch","effect":"final"},
-  {"code":"sink_flow_not_installed","effect":"final"},
-  {"code":"room_post_rate_limited","effect":"final"},
-  {"code":"sink_store_failed","effect":"retry"}
+  {
+    "code": "sink_item_invalid",
+    "effect": "final"
+  },
+  {
+    "code": "receipt_mismatch",
+    "effect": "final"
+  },
+  {
+    "code": "room_not_granted",
+    "effect": "final"
+  },
+  {
+    "code": "room_mention_not_granted",
+    "effect": "final"
+  },
+  {
+    "code": "room_all_mention_refused",
+    "effect": "final"
+  },
+  {
+    "code": "room_post_requires_agent_flow",
+    "effect": "final"
+  },
+  {
+    "code": "room_author_not_member",
+    "effect": "final"
+  },
+  {
+    "code": "room_not_found",
+    "effect": "final"
+  },
+  {
+    "code": "room_closed",
+    "effect": "final"
+  },
+  {
+    "code": "text_invalid",
+    "effect": "final"
+  },
+  {
+    "code": "sink_principal_refused",
+    "effect": "final"
+  },
+  {
+    "code": "sink_flow_hash_mismatch",
+    "effect": "final"
+  },
+  {
+    "code": "sink_flow_not_installed",
+    "effect": "final"
+  },
+  {
+    "code": "room_post_rate_limited",
+    "effect": "final"
+  },
+  {
+    "code": "sink_store_failed",
+    "effect": "retry"
+  }
 ]

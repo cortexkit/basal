@@ -3,6 +3,16 @@ use super::*;
 const ROOT: &str = "../../test-vectors/flow-room-post-v1";
 const CAPABILITY: &str = include_str!("../../../../test-vectors/flow-room-post-v1/capability.txt");
 const ROOM: &str = "rm_fleet";
+const PINNED_FILES: [&str; 8] = [
+    "README.md",
+    "vectors.json",
+    "CONTRACT.md",
+    "capability.txt",
+    "manifest-grant.json",
+    "refusals.json",
+    "replies.json",
+    "requests.json",
+];
 
 fn path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -61,6 +71,74 @@ fn run_once(f: &common::Fixture, tag: &str) -> (String, Value) {
     (run, value)
 }
 
+/// Regeneration uses BASAL_WRITE_VECTORS=1 and RUST_TEST_THREADS=1 so readers
+/// cannot see partially updated projections or checksums.
+#[test]
+fn room_post_projections_are_generated_from_published_vectors() {
+    use sha2::{Digest, Sha256};
+    let mut requests = Vec::new();
+    let mut replies = Vec::new();
+    let mut refusals = Vec::new();
+    for case in vector("vectors.json").as_array().unwrap() {
+        let name = &case["name"];
+        let mut params = case["request"]["params"].clone();
+        params["receipt_key"] = json!("bk1-vector");
+        requests.push(json!({"name": name, "params": params}));
+        let reply = if let Some(error) = case["reply"].get("error") {
+            let code = error["code"].as_str().unwrap();
+            if !refusals.iter().any(|entry: &Value| entry["code"] == code) {
+                let effect = if code == "sink_store_failed" {
+                    "retry"
+                } else {
+                    "final"
+                };
+                refusals.push(json!({"code": code, "effect": effect}));
+            }
+            json!({"error": {"code": code}})
+        } else {
+            let result = &case["reply"]["result"];
+            json!({"result": {
+                "replayed": result["replayed"],
+                "room_id": result["room_id"],
+                "seq": result["seq"],
+            }})
+        };
+        replies.push(json!({"name": name, "reply": reply}));
+    }
+    let write_vectors = std::env::var_os("BASAL_WRITE_VECTORS").is_some();
+    let regenerate = "regenerate with BASAL_WRITE_VECTORS=1 RUST_TEST_THREADS=1 cargo test --locked -p basal-module --test hosts room_post";
+    for (name, projection) in [
+        ("requests.json", requests),
+        ("replies.json", replies),
+        ("refusals.json", refusals),
+    ] {
+        let bytes = format!("{}\n", serde_json::to_string_pretty(&projection).unwrap());
+        if write_vectors {
+            std::fs::write(path(name), &bytes).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(path(name)).unwrap(),
+            bytes.as_bytes(),
+            "{name} differs from the published projection; {regenerate}"
+        );
+    }
+    let sums: String = PINNED_FILES
+        .iter()
+        .map(|name| {
+            let hash = Sha256::digest(std::fs::read(path(name)).unwrap());
+            format!("{hash:x}  {name}\n")
+        })
+        .collect();
+    if write_vectors {
+        std::fs::write(path("SHA256SUMS"), &sums).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(path("SHA256SUMS")).unwrap(),
+        sums,
+        "SHA256SUMS differs from the generated checksums; {regenerate}"
+    );
+}
+
 #[test]
 fn room_post_vectors_are_byte_pinned() {
     use sha2::{Digest, Sha256};
@@ -73,19 +151,7 @@ fn room_post_vectors_are_byte_pinned() {
         names.push(name.to_owned());
     }
     // The published contract first, byte for byte, then basal's additions.
-    assert_eq!(
-        names,
-        [
-            "README.md",
-            "vectors.json",
-            "CONTRACT.md",
-            "capability.txt",
-            "manifest-grant.json",
-            "refusals.json",
-            "replies.json",
-            "requests.json",
-        ]
-    );
+    assert_eq!(names, PINNED_FILES);
     assert_eq!(CAPABILITY.trim(), basal_host::core_host::FLOW_ROOM_POST_V1);
     // Every published case has a pinned request and reply, in the same order.
     let published: Vec<String> = vector("vectors.json")
@@ -419,8 +485,8 @@ fn room_script_sends_the_pinned_request_and_never_picks_its_own_identity() {
     assert_eq!(row.class, basal_core::StoredClass::KeyedMutation);
 }
 
-/// Core decodes `mentions` as a list and refuses null, so a post that names no
-/// one (options omitted, or `mentions: []`) must send an empty list.
+/// Core's `mentions_empty` vector accepts an empty list, so a post that names no
+/// one (options omitted, or `mentions: []`) must send that same list.
 #[test]
 fn a_post_without_mentions_sends_an_empty_list() {
     let fake = Fake::new();
@@ -438,13 +504,16 @@ fn a_post_without_mentions_sends_an_empty_list() {
         &room_manifest(),
     );
     approve(&fake, &f.module);
-    let success = pinned("replies.json", "success")["reply"]["result"].clone();
+    let expected = published("mentions_empty");
+    let mentions = &expected["request"]["params"]["mentions"];
+    assert_eq!(mentions, &json!([]));
+    let success = expected["reply"]["result"].clone();
     fake.enqueue("sink.room.post", vec![Ok(success.clone()), Ok(success)]);
     run_once(&f, "room-script");
     let sent = fake.calls("sink.room.post");
     assert_eq!(sent.len(), 2);
     for call in &sent {
-        assert_eq!(call["params"]["mentions"], json!([]), "{call}");
+        assert_eq!(&call["params"]["mentions"], mentions, "{call}");
     }
 }
 
