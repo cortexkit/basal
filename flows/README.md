@@ -73,7 +73,28 @@ the same repo, workflow and job name is already failing on the default branch
 (`default_branch` in the body, otherwise `main` or `master`). A green completion
 on that branch clears the workflow's failing-job flags. Repositories in `QUIET_REPOS` still update
 their digest items silently, and their entries should be removed when CI returns.
-Titles identify the repo, run attempt and failing jobs; test names are unavailable.
+Titles identify the repository and branch; the body carries the run attempt and
+failed jobs. Version 15 also names failing tests when a job-log tail is readable
+and recognizable. For each newly reported job it calls Plexus `github_read` with
+`action: 'github.actions.job_log'`, `repository`, and
+`args: { job_id, max_bytes: 65536 }`. Rust libtest and nextest (including timeouts),
+bun, Go, pytest, and vitest/jest failure lines are recognized, including GitHub's
+timestamp prefixes. Names are deduplicated in log order, stripped of control
+characters, and shortened to 160 bytes; at most five appear per job in a
+`Failing tests: a, b (+N more)` line. The extra count covers only distinct matches
+in the tail, not failures outside that window. Multi-job summaries label each
+job, and whole summaries are omitted if the digest's body limit would be exceeded.
+Green updates label retained names as `Previously failing tests`.
+
+Parsed names are retained with their job in run state, so ordinary silent updates
+after the first wake and the second completion alert keep the relevant names
+without rereading logs. Duplicate jobs, ignored jobs/workflows, superseded runs,
+stale notices, never-started jobs, quiet repos, contributor branches and repeated
+merge-queue failures make no job-log call. An unreadable reply, thrown error, or
+refusal (including `job_not_finished` and `github_actions_quota_exhausted`) never
+prevents the digest: it adds no names line or unavailable-names filler, logs the
+refusal code, and does not retry or wait for a quota reset. Log enrichment does
+not change the two-wake limit, replacement keys, or other routing rules.
 
 The clearly marked `OWNERS` block maps lowercase repositories to stable agent IDs
 (display names are comments, not runtime recipients). Update the map and publish

@@ -32,6 +32,8 @@ struct CiHost {
     refuse: AtomicBool,
     reads: Mutex<Vec<Value>>,
     supersession: Mutex<Option<HostOutcome>>,
+    job_log_reads: Mutex<Vec<String>>,
+    job_log: Mutex<Option<HostOutcome>>,
 }
 
 fn text(value: Value) -> JsonText {
@@ -56,6 +58,15 @@ fn supersession_reply(repository: &str, run_id: u64, superseded: bool) -> HostOu
     })))
 }
 
+fn job_log_reply(repository: &str, job_id: u64, log: &str) -> HostOutcome {
+    HostOutcome::fulfilled(text(json!({
+        "result": {
+            "repository": repository, "job_id": job_id, "total_bytes": log.len(),
+            "truncated": false, "text": log
+        }
+    })))
+}
+
 impl CiHost {
     fn answer(&self, request: &CallRequest) -> Option<HostOutcome> {
         let args: Value = serde_json::from_str(request.args.as_str()).unwrap();
@@ -65,11 +76,28 @@ impl CiHost {
                 op: "github_read".into(),
             })
         {
-            assert_eq!(args["action"], "github.actions.run.superseded");
             assert_eq!(args.as_object().unwrap().len(), 3);
             let repository = args["repository"].as_str().unwrap().to_owned();
             assert!(repository.starts_with("cortexkit/"));
             assert_eq!(repository, repository.to_ascii_lowercase());
+            if args["action"] == "github.actions.job_log" {
+                assert_eq!(args["args"].as_object().unwrap().len(), 2);
+                let job_id = args["args"]["job_id"].as_u64().unwrap();
+                assert!(job_id > 0);
+                assert_eq!(args["args"]["max_bytes"], 65536);
+                self.job_log_reads
+                    .lock()
+                    .unwrap()
+                    .push(request.args.as_str().to_owned());
+                return Some(
+                    self.job_log
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_else(|| job_log_reply(&repository, job_id, "")),
+                );
+            }
+            assert_eq!(args["action"], "github.actions.run.superseded");
             assert_eq!(args["args"].as_object().unwrap().len(), 1);
             let run_id = args["args"]["run_id"].as_u64().unwrap();
             assert!(run_id > 0);
@@ -282,6 +310,12 @@ impl Test {
     fn supersession(&self, outcome: HostOutcome) {
         *self.host.supersession.lock().unwrap() = Some(outcome);
     }
+    fn job_log(&self, outcome: HostOutcome) {
+        *self.host.job_log.lock().unwrap() = Some(outcome);
+    }
+    fn job_log_reads(&self) -> Vec<String> {
+        self.host.job_log_reads.lock().unwrap().clone()
+    }
     fn memory(&self) -> Value {
         let stored: String = self
             .f
@@ -333,7 +367,11 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 14);
+    assert_eq!(value["version"], 15);
+    println!(
+        "ci-failure-router v15 code hash: {}",
+        basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &value.to_string()))
+    );
     assert!(
         value["purpose"]
             .as_str()
@@ -680,6 +718,349 @@ fn first_failed_job_wakes_and_later_jobs_are_silent() {
     let run = &t.memory()["runs"]["ci:cortexkit/basal:42:1"];
     assert_eq!(run["firstWakeJobIds"], json!(["101"]));
     assert_eq!(run["jobs"].as_object().unwrap().len(), 7);
+}
+
+fn assert_failing_tests(log: &str, expected: &str) {
+    let t = Test::new();
+    t.job_log(job_log_reply("cortexkit/basal", 101, log));
+    t.ci(job("cortexkit/basal", 101));
+    let writes = t.writes();
+    let body = writes[0]["item"]["body"].as_str().unwrap();
+    assert!(body.lines().any(|line| line == expected), "{body}");
+    assert_eq!(writes[0]["action"], "wake");
+}
+
+#[test]
+fn rust_libtest_log_names_failed_tests() {
+    assert_failing_tests(
+        "2027-01-01T12:00:01.0000000Z running 4 tests\n\
+         2027-01-01T12:00:01.0000000Z test parser::accepts ... ok\n\
+         2027-01-01T12:00:01.0000000Z test parser::rejects ... FAILED\n\
+         2027-01-01T12:00:01.0000000Z test router::wakes ... FAILED\n\
+         2027-01-01T12:00:01.0000000Z failures:\n\
+         2027-01-01T12:00:01.0000000Z \n\
+         2027-01-01T12:00:01.0000000Z ---- parser::rejects stdout ----\n\
+         2027-01-01T12:00:01.0000000Z thread 'parser::rejects' panicked at src/lib.rs:3\n\
+         2027-01-01T12:00:01.0000000Z failures:\n\
+         2027-01-01T12:00:01.0000000Z     parser::rejects\n\
+         2027-01-01T12:00:01.0000000Z     router::wakes\n\
+         2027-01-01T12:00:01.0000000Z     summary_only::fails\n\
+         2027-01-01T12:00:01.0000000Z \n\
+         2027-01-01T12:00:01.0000000Z test result: FAILED. 1 passed; 3 failed\n",
+        "Failing tests: parser::rejects, router::wakes, summary_only::fails",
+    );
+}
+
+#[test]
+fn nextest_log_names_failures_and_timeouts() {
+    assert_failing_tests(
+        "Starting 3 tests across 1 binary\n\
+             PASS [   0.123s] basal::parser::accepts\n\
+             FAIL [   1.234s] basal::parser::rejects\n\
+          TIMEOUT [  60.000s] basal::router::waits\n\
+         Summary [  60.000s] 3 tests run: 1 passed, 1 failed, 1 timed out\n",
+        "Failing tests: basal::parser::rejects, basal::router::waits",
+    );
+}
+
+#[test]
+fn bun_log_names_failed_tests() {
+    assert_failing_tests(
+        "bun test v1.2.0\n\
+         router.test.ts:\n\
+         (pass) router > ignores green [0.12ms]\n\
+         (fail) router > wakes owner [1.23ms]\n\
+         (fail) router > retains digest [0.50ms]\n\
+          1 pass\n 2 fail\nRan 3 tests across 1 file.\n",
+        "Failing tests: router > wakes owner, router > retains digest",
+    );
+}
+
+#[test]
+fn go_log_names_failed_tests_and_subtests() {
+    assert_failing_tests(
+        "=== RUN   TestRouter\n\
+         === RUN   TestRouter/wakes_owner\n\
+             router_test.go:12: got false, want true\n\
+         --- FAIL: TestRouter (0.01s)\n\
+             --- FAIL: TestRouter/wakes_owner (0.00s)\n\
+         --- PASS: TestHealthy (0.00s)\n\
+         FAIL\nFAIL example.com/router 0.015s\n",
+        "Failing tests: TestRouter, TestRouter/wakes_owner",
+    );
+}
+
+#[test]
+fn pytest_log_names_failed_tests_without_assertion_details() {
+    assert_failing_tests(
+        "================ short test summary info ================\n\
+         FAILED tests/test_router.py::test_wakes - AssertionError: assert False\n\
+         FAILED tests/test_router.py::TestDigest::test_replaces[red] - ValueError: stale\n\
+         ================ 2 failed, 1 passed in 0.42s ================\n",
+        "Failing tests: tests/test_router.py::test_wakes, tests/test_router.py::TestDigest::test_replaces[red]",
+    );
+}
+
+#[test]
+fn vitest_and_jest_logs_name_failed_files_and_tests() {
+    assert_failing_tests(
+        " FAIL  tests/router.test.ts > router\n\
+           × wakes owner 12ms\n\
+           ✓ ignores green 1ms\n\
+         FAIL tests/digest.test.js\n\
+           ✕ replaces the previous digest (5 ms)\n\
+         Tests: 2 failed, 1 passed, 3 total\n",
+        "Failing tests: tests/router.test.ts > router, wakes owner, tests/digest.test.js, replaces the previous digest",
+    );
+}
+
+#[test]
+fn job_log_names_are_deduplicated_bounded_and_control_free() {
+    let long_name = "é🦀".repeat(100);
+    let mut log = format!("(fail) {long_name}\n(fail) control\u{0007}free\u{009b}\n");
+    for name in ["third", "fourth", "fifth", "sixth", "seventh", "third"] {
+        log.push_str(&format!("(fail) {name}\n"));
+    }
+    let t = Test::new();
+    t.job_log(job_log_reply("cortexkit/basal", 101, &log));
+    t.ci(job("cortexkit/basal", 101));
+    let writes = t.writes();
+    let line = writes[0]["item"]["body"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .find(|line| line.starts_with("Failing tests: "))
+        .unwrap();
+    assert_eq!(
+        line,
+        format!(
+            "Failing tests: {}..., controlfree, third, fourth, fifth (+2 more)",
+            "é🦀".repeat(26)
+        )
+    );
+    assert!(!line.chars().any(char::is_control));
+    let memory = t.memory();
+    let tests = &memory["runs"]["ci:cortexkit/basal:42:1"]["failingTests"]["101"];
+    assert_eq!(tests["names"].as_array().unwrap().len(), 5);
+    assert_eq!(tests["more"], 2);
+    assert!(tests["names"][0].as_str().unwrap().len() <= 160);
+}
+
+#[test]
+fn job_log_request_bytes_are_pinned_and_names_survive_digest_rewrites() {
+    let t = Test::new();
+    t.job_log(job_log_reply(
+        "cortexkit/basal",
+        101,
+        "test first::fails ... FAILED\n",
+    ));
+    t.ci(job("CortexKit/Basal", 101));
+    assert_eq!(
+        t.job_log_reads(),
+        vec![
+            r#"{"action":"github.actions.job_log","repository":"cortexkit/basal","args":{"job_id":101,"max_bytes":65536}}"#
+        ]
+    );
+    t.job_log(job_log_reply(
+        "cortexkit/basal",
+        102,
+        "test second::fails ... FAILED\n",
+    ));
+    t.ci(job("cortexkit/basal", 102));
+    let writes = t.writes();
+    assert_eq!(writes[1]["action"], "silent");
+    let body = writes[1]["item"]["body"].as_str().unwrap();
+    assert!(
+        body.contains("linux shard 101\nFailing tests: first::fails"),
+        "{body}"
+    );
+    assert!(
+        body.contains("linux shard 102\nFailing tests: second::fails"),
+        "{body}"
+    );
+    t.ci(job("cortexkit/basal", 102));
+    assert_eq!(t.writes().len(), 2);
+    t.ci(run("cortexkit/basal", "failure"));
+    t.ci(run("cortexkit/basal", "failure"));
+    let writes = t.writes();
+    assert_eq!(writes[2]["action"], "wake");
+    assert_eq!(writes[3]["action"], "silent");
+    for write in &writes[2..] {
+        let body = write["item"]["body"].as_str().unwrap();
+        assert!(body.contains("Failing tests: second::fails"), "{body}");
+        assert!(!body.contains("first::fails"), "{body}");
+    }
+    t.ci(run("cortexkit/basal", "success"));
+    let writes = t.writes();
+    let body = writes.last().unwrap()["item"]["body"].as_str().unwrap();
+    assert!(
+        body.contains("Previously failing tests: first::fails"),
+        "{body}"
+    );
+    assert!(
+        body.contains("Previously failing tests: second::fails"),
+        "{body}"
+    );
+    assert!(!body.lines().any(|line| line.starts_with("Failing tests:")));
+    assert_eq!(t.job_log_reads().len(), 2);
+}
+
+#[test]
+fn refused_rejected_or_unreadable_job_logs_never_block_the_digest_or_retry() {
+    let mut outcomes = vec![
+        HostOutcome::fulfilled(text(json!({"result":{"text":null}}))),
+        HostOutcome::rejected(text(json!({"code":"read_dispatch_failed"}))),
+        HostOutcome::rejected(text(json!({"error":{"code":"module_grant_absent"}}))),
+    ];
+    for code in [
+        "job_not_finished",
+        "job_log_unavailable",
+        "job_log_redirect_refused",
+        "job_log_read_limit",
+        "job_log_download_failed",
+        "repository_not_visible",
+        "job_log_arguments_invalid",
+        "github_actions_quota_exhausted",
+    ] {
+        outcomes.push(HostOutcome::fulfilled(text(json!({
+            "error":{"code":code, "detail":{"retry_after_ms":60000}}
+        }))));
+    }
+    for outcome in outcomes {
+        let t = Test::new();
+        t.job_log(outcome);
+        let id = t.ci(job("cortexkit/basal", 101));
+        let done = t.f.module.rt.run(&id).unwrap();
+        let result: Value = serde_json::from_str(done.result.as_ref().unwrap()).unwrap();
+        assert_eq!(result["refusals"].as_array().unwrap().len(), 1);
+        t.ci(job("cortexkit/basal", 101));
+        t.ci(run("cortexkit/basal", "failure"));
+        assert_eq!(t.job_log_reads().len(), 1);
+        assert_eq!(t.writes().len(), 2);
+        assert_eq!(t.writes()[0]["action"], "wake");
+        assert_eq!(
+            t.writes()[0]["item"]["body"],
+            "Failed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
+        );
+        assert!(
+            !t.writes()[1]["item"]["body"]
+                .as_str()
+                .unwrap()
+                .contains("Failing tests:")
+        );
+    }
+}
+
+#[test]
+fn truncated_log_tail_reports_only_names_present_in_the_tail() {
+    let t = Test::new();
+    t.job_log(HostOutcome::fulfilled(text(json!({"result":{
+        "repository":"cortexkit/basal", "job_id":101, "total_bytes":1000000,
+        "truncated":true, "text":"panicked at src/lib.rs:12\nfailures:\n    tail::only\n\ntest result: FAILED\n"
+    }}))));
+    t.ci(job("cortexkit/basal", 101));
+    let writes = t.writes();
+    let body = writes[0]["item"]["body"].as_str().unwrap();
+    assert!(
+        body.lines().any(|line| line == "Failing tests: tail::only"),
+        "{body}"
+    );
+    assert!(!body.contains("more"));
+}
+
+#[test]
+fn policy_silenced_ignored_stale_and_superseded_jobs_never_read_logs() {
+    let quiet = job("cortexkit/cerebellum", 101);
+    let mut contributor = job("cortexkit/basal", 101);
+    contributor["head_branch"] = json!("feature/contributor");
+    contributor["actor"] = json!("outside-contributor");
+    let mut wake_branch = job("cortexkit/magic-context", 101);
+    wake_branch["head_branch"] = json!("feature/seat");
+    let mut ignored_workflow = job("cortexkit/aft", 101);
+    ignored_workflow["workflow_name"] = json!("Design gate");
+    let mut ignored_job = job("cortexkit/aft", 101);
+    ignored_job["name"] = json!("design-gate");
+    let mut unknown = job("cortexkit/unmapped", 101);
+    unknown["workflow_name"] = json!("CI");
+    for event in [
+        quiet,
+        contributor,
+        wake_branch,
+        ignored_workflow,
+        ignored_job,
+        unknown,
+        never_started(101),
+    ] {
+        let t = Test::new();
+        t.ci(event);
+        assert!(t.job_log_reads().is_empty());
+        assert!(t.writes().iter().all(|write| write["action"] == "silent"));
+    }
+    let stale = Test::new();
+    let mut event = job("cortexkit/basal", 101);
+    event["completed_at"] = json!(completed_at(&stale, 7 * common::HOUR));
+    stale.ci(event);
+    assert!(stale.job_log_reads().is_empty());
+    assert!(stale.writes().is_empty());
+
+    let superseded = Test::new();
+    superseded.supersession(supersession_reply("cortexkit/basal", 42, true));
+    superseded.ci(job("cortexkit/basal", 101));
+    superseded.ci(job("cortexkit/basal", 102));
+    superseded.ci(run("cortexkit/basal", "failure"));
+    assert!(superseded.job_log_reads().is_empty());
+    assert!(superseded.writes().is_empty());
+
+    let queue = Test::new();
+    let mut main = job("cortexkit/basal", 101);
+    main["workflow_name"] = json!("CI");
+    queue.ci(main);
+    let before = queue.job_log_reads();
+    let mut repeated = job("cortexkit/basal", 102);
+    repeated["name"] = json!("linux shard 101");
+    repeated["workflow_name"] = json!("CI");
+    repeated["head_branch"] = json!("gh-readonly-queue/main/pr-9");
+    repeated["run_id"] = json!(43);
+    queue.ci(repeated);
+    assert_eq!(queue.job_log_reads(), before);
+    assert_eq!(queue.writes()[1]["action"], "silent");
+}
+
+#[test]
+fn non_test_failures_add_no_names_line() {
+    let t = Test::new();
+    t.job_log(job_log_reply(
+        "cortexkit/basal",
+        101,
+        "error: could not compile `basal`\nProcess completed with exit code 101.\n",
+    ));
+    t.ci(job("cortexkit/basal", 101));
+    let writes = t.writes();
+    assert_eq!(
+        writes[0]["item"]["body"],
+        "Failed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
+    );
+    assert_eq!(t.job_log_reads().len(), 1);
+}
+
+#[test]
+fn many_failing_test_summaries_fit_the_digest_and_memory_limits() {
+    let t = Test::new();
+    let mut log = String::new();
+    for id in 1..=7 {
+        log.push_str(&format!("(fail) test_{id}_{}\n", "é🦀".repeat(100)));
+    }
+    t.job_log(job_log_reply("cortexkit/basal", 101, &log));
+    for id in 101..=108 {
+        t.ci(job("cortexkit/basal", id));
+    }
+    let writes = t.writes();
+    let body = writes.last().unwrap()["item"]["body"].as_str().unwrap();
+    assert!(body.len() <= 4096);
+    assert!(body.contains("Failing tests:"));
+    assert!(body.lines().last().unwrap().ends_with(" (+2 more)"));
+    assert!(serde_json::to_vec(&t.memory()).unwrap().len() <= 48000);
+    assert_eq!(t.job_log_reads().len(), 8);
 }
 
 #[test]
