@@ -154,11 +154,12 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
 
 /// Whether a route is an admitted dev operator app, mirroring core's
 /// `dev_operator_app_admission`: a `direct` carrier with no scope stamp,
-/// whose bind is not `fed_operator`, whose harness does not start with
-/// `fed-`, and whose bind identity is not the OpenCode plugin's shared
-/// channel (`harness == "alfonso"` and `session == "prefrontal-core"`).
-/// `Reserved` and `Unverified` binds are never admitted: the principal check
-/// admits only `Direct`.
+/// whose harness does not start with `fed-`, and whose bind identity is not
+/// the OpenCode plugin's shared channel (`harness == "alfonso"` and
+/// `session == "prefrontal-core"`). `Reserved` and `Unverified` binds are
+/// never admitted: the principal check admits only `Direct`. Core's other
+/// exclusion, a federated operator, is a `reserved:callosum` bind, which
+/// that same check already refuses.
 ///
 /// Release plan: replace this function's body with a check of SUBC's
 /// `operator_app` stamp (subc-protocol 0.33.5, capability `operator-app/v1`).
@@ -171,12 +172,6 @@ pub fn dev_operator_app_admission(
         return false;
     }
     if scope.is_some() {
-        return false;
-    }
-    // The federated operator's own bind is never an app being built.
-    // `fed_operator` is an exact harness match, distinct from the `fed-`
-    // prefix below for federated harnesses.
-    if identity.harness == "fed_operator" {
         return false;
     }
     if identity.harness.starts_with("fed-") {
@@ -379,8 +374,6 @@ mod tests {
                 Some(scoped),
                 identity("ckdesk", "s"),
             ),
-            // The federated operator is never an app being built.
-            (direct.clone(), None, identity("fed_operator", "s")),
             // Federated harnesses keep their own authority.
             (direct.clone(), None, identity("fed-phone", "s")),
             (direct.clone(), None, identity("fed-anything", "s")),
