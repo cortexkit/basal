@@ -419,6 +419,35 @@ fn room_script_sends_the_pinned_request_and_never_picks_its_own_identity() {
     assert_eq!(row.class, basal_core::StoredClass::KeyedMutation);
 }
 
+/// Core decodes `mentions` as a list and refuses null, so a post that names no
+/// one (options omitted, or `mentions: []`) must send an empty list.
+#[test]
+fn a_post_without_mentions_sends_an_empty_list() {
+    let fake = Fake::new();
+    set_core_capability(&fake, CAPABILITY.trim(), true);
+    let f = worker_fixture(
+        fake.clone(),
+        Arc::new(CoreConsent::new(fake.clone())),
+        "room-script",
+    );
+    common::install(
+        &f,
+        &Caller::Operator,
+        "await sink.room.post('rm_fleet', 'a');\n\
+         return await sink.room.post('rm_fleet', 'b', {mentions: []});",
+        &room_manifest(),
+    );
+    approve(&fake, &f.module);
+    let success = pinned("replies.json", "success")["reply"]["result"].clone();
+    fake.enqueue("sink.room.post", vec![Ok(success.clone()), Ok(success)]);
+    run_once(&f, "room-script");
+    let sent = fake.calls("sink.room.post");
+    assert_eq!(sent.len(), 2);
+    for call in &sent {
+        assert_eq!(call["params"]["mentions"], json!([]), "{call}");
+    }
+}
+
 #[test]
 fn room_script_refusals_never_reach_core() {
     let cases = [

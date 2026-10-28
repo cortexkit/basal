@@ -1571,10 +1571,12 @@ impl Activation<'_> {
                 // Freeze the approved identity, room, text and mentions before
                 // sending, so a retry after a lost reply posts the same
                 // message under the same receipt instead of a newer install's.
-                let mut mentions = args.get("mentions").cloned().unwrap_or(Value::Null);
-                if mentions.as_array().is_some_and(Vec::is_empty) {
-                    mentions = Value::Null;
-                }
+                // Core requires a list, so a post that names no one (options
+                // omitted, or `mentions: []`) sends an empty one.
+                let mentions = match args.get("mentions") {
+                    Some(list @ Value::Array(_)) => list.clone(),
+                    _ => Value::Array(Vec::new()),
+                };
                 let value = serde_json::json!({
                     "stamp": {"flow_id":self.run.flow_id, "flow_version":version,
                         "code_hash":crate::ids::hex(&self.run.code_hash)},
