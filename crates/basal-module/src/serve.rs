@@ -447,33 +447,25 @@ fn op_error_outcome(e: crate::ops::OpError) -> HandlerOutcome {
     }
 }
 
-/// The final refusal for a flow-scoped route reaching anything but
-/// `diagnostics.findings`, with core's code for the same case. `method` is
-/// `None` for a tool route.
-fn flow_scope_gate(flow_scoped: bool, method: Option<&str>) -> Option<HandlerOutcome> {
-    if !flow_scoped || method == Some("diagnostics.findings") {
+/// The final refusal for a flow-scoped route reaching any management op but
+/// `diagnostics.findings`, with core's code for the same
+/// case. Basal's tools need no gate here: neither serves the `flow` call
+/// mode, so the tool-provider contract already refuses a flow-scoped bind
+/// with `call_mode_unsupported`.
+fn flow_scope_gate(flow_scoped: bool, method: &str) -> Option<HandlerOutcome> {
+    if !flow_scoped || method == "diagnostics.findings" {
         return None;
     }
     Some(HandlerOutcome::Error {
         code: "flow_scope_not_supported".into(),
-        message: format!(
-            "flows may call only diagnostics.findings on basal, not {}",
-            method.unwrap_or("basal's tools")
-        ),
+        message: format!("flows may call only diagnostics.findings on basal, not {method}"),
     })
 }
 
 #[async_trait]
 impl ModuleHandler for BasalHandler {
     async fn handle(&self, ctx: RequestCtx, body: Vec<u8>) -> HandlerOutcome {
-        // A flow reaches basal only for `diagnostics.findings`. Its scope can
-        // carry its author's agent id, so letting it reach any other op or
-        // either tool would let a flow act as that agent here.
-        let flow_scoped = self.routes.flow_scoped(&ctx.route_handle());
         if let Some(context) = self.routes.tool_context(&ctx.route_handle()) {
-            if let Some(refusal) = flow_scope_gate(flow_scoped, None) {
-                return refusal;
-            }
             return self.tool_request(ctx, context, body).await;
         }
         let request = match serde_json::from_slice::<WireRequest>(&body) {
@@ -485,7 +477,11 @@ impl ModuleHandler for BasalHandler {
                 };
             }
         };
-        if let Some(refusal) = flow_scope_gate(flow_scoped, Some(&request.method)) {
+        // A flow reaches basal's management surface only for
+        // `diagnostics.findings`. Its scope can carry its author's agent id,
+        // so any other op would let a flow act as that agent here.
+        let flow_scoped = self.routes.flow_scoped(&ctx.route_handle());
+        if let Some(refusal) = flow_scope_gate(flow_scoped, &request.method) {
             return refusal;
         }
         let caller = self.caller(&ctx.route_handle());
@@ -816,23 +812,17 @@ mod diagnostics_route_tests {
         assert!(routes.diagnostics_admitted(&handle));
         // Without the gate this route would be its author agent to every op.
         assert!(matches!(routes.caller(&handle), Caller::Agent { .. }));
-        assert!(flow_scope_gate(true, Some("diagnostics.findings")).is_none());
-        for method in [
-            Some("flow.list"),
-            Some("flow.install"),
-            Some("flow.disable"),
-            None,
-        ] {
+        assert!(flow_scope_gate(true, "diagnostics.findings").is_none());
+        for method in ["flow.list", "flow.install", "flow.disable"] {
             match flow_scope_gate(true, method) {
                 Some(HandlerOutcome::Error { code, .. }) => {
-                    assert_eq!(code, "flow_scope_not_supported", "{method:?}")
+                    assert_eq!(code, "flow_scope_not_supported", "{method}")
                 }
-                _ => panic!("{method:?} reached basal from a flow scope"),
+                _ => panic!("{method} reached basal from a flow scope"),
             }
         }
         // An agent's own head route is untouched.
-        assert!(flow_scope_gate(false, Some("flow.list")).is_none());
-        assert!(flow_scope_gate(false, None).is_none());
+        assert!(flow_scope_gate(false, "flow.list").is_none());
     }
 }
 
