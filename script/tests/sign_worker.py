@@ -171,7 +171,10 @@ else:
             pass
     print(json.dumps(report), flush=True)
     if scenario == "crashed":
-        os.kill(os.getpid(), signal.SIGSEGV)
+        # The gate only needs "died by signal". SIGKILL is one macOS's crash
+        # reporter ignores; SIGSEGV would put a "Python quit unexpectedly"
+        # dialog in front of the operator on every local run.
+        os.kill(os.getpid(), signal.SIGKILL)
     if scenario == "exit":
         sys.exit(23)
 '''
