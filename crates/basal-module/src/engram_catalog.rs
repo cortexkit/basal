@@ -8,7 +8,7 @@ const CATALOG_JSON: &str = r#"{
   "module_id": "basal",
   "entries": [
     {
-      "entry_id": "basal-store",
+      "entry_id": "basal/store",
       "class": "portable",
       "reason": "Restoring this database onto another machine while this basal instance still runs would run its flows twice. Restore only onto a machine where this basal instance no longer runs.",
       "mechanism": "page-db",
@@ -16,20 +16,20 @@ const CATALOG_JSON: &str = r#"{
       "writer_interaction": "read-transaction-live"
     },
     {
-      "entry_id": "basal-writer-lease",
+      "entry_id": "basal/writer-lease",
       "class": "portable",
       "reason": "Restore this writer lease only with the matching database and only onto a machine where this basal instance no longer runs; leaving basal running on both machines would run its flows twice.",
       "mechanism": "filetree",
       "path": "a820ffc03d506451.lease"
     },
     {
-      "entry_id": "basal-logs",
+      "entry_id": "basal/logs",
       "class": "excluded",
       "reason": "Operational logs are not durable module state and may contain sensitive operational details.",
       "path": "logs"
     },
     {
-      "entry_id": "basal-dry-run",
+      "entry_id": "basal/dry-run",
       "class": "excluded",
       "reason": "Dry-run output is temporary scratch that can be regenerated and must not be restored.",
       "path": "dry-run"
@@ -166,18 +166,18 @@ mod tests {
         assert_eq!(descriptor["module_id"], "basal");
         let entries = descriptor["entries"].as_array().expect("catalog entries");
         assert_eq!(entries.len(), 4);
-        assert_eq!(entries[0]["entry_id"], "basal-store");
+        assert_eq!(entries[0]["entry_id"], "basal/store");
         assert_eq!(entries[0]["class"], "portable");
         assert_eq!(entries[0]["mechanism"], "page-db");
         assert_eq!(entries[0]["writer_interaction"], "read-transaction-live");
         assert_eq!(entries[0]["path"], "store.db");
-        assert_eq!(entries[1]["entry_id"], "basal-writer-lease");
+        assert_eq!(entries[1]["entry_id"], "basal/writer-lease");
         assert_eq!(entries[1]["class"], "portable");
         assert_eq!(entries[1]["mechanism"], "filetree");
         assert_eq!(entries[1]["path"], "a820ffc03d506451.lease");
-        assert_eq!(entries[2]["entry_id"], "basal-logs");
+        assert_eq!(entries[2]["entry_id"], "basal/logs");
         assert_eq!(entries[2]["class"], "excluded");
-        assert_eq!(entries[3]["entry_id"], "basal-dry-run");
+        assert_eq!(entries[3]["entry_id"], "basal/dry-run");
         assert_eq!(entries[3]["class"], "excluded");
         for entry in entries {
             assert!(
