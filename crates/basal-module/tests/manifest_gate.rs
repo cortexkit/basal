@@ -75,6 +75,15 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
         .map(|(n, k, _)| ((*n).to_owned(), *k == ManagementOperationKind::Query))
         .collect();
     assert_eq!(declared, served);
+    assert!(declared.contains(&("diagnostics.findings".into(), true)));
+    assert!(
+        manifest
+            .flow_operations
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|op| op == "diagnostics.findings")
+    );
     for name in [
         "package.register",
         "package.get",

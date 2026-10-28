@@ -60,7 +60,7 @@ pub struct OpError {
 }
 
 impl OpError {
-    fn new(code: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.to_owned(),
             message: message.into(),
@@ -79,7 +79,7 @@ impl OpError {
     /// admitted dev operator app is still a `direct` route without that
     /// attestation, so it is refused the same way outside the three phone
     /// ops that admit it.
-    fn not_permitted(op: &str, caller: &Caller) -> Self {
+    pub(crate) fn not_permitted(op: &str, caller: &Caller) -> Self {
         if matches!(caller, Caller::Local | Caller::DevOperatorApp) {
             return Self::operator_attestation_required(&format!("calling {op}"));
         }
@@ -306,6 +306,13 @@ impl Module {
     /// Runs one op for `caller`.
     pub fn handle(&self, caller: &Caller, method: &str, params: Value) -> OpResult {
         let result = match method {
+            "diagnostics.findings" => {
+                if matches!(caller, Caller::Operator | Caller::Core) {
+                    self.diagnostics_findings(params)
+                } else {
+                    Err(OpError::not_permitted(method, caller))
+                }
+            }
             "package.register"
             | "package.get"
             | "flow.instance.ensure"

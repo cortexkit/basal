@@ -24,6 +24,7 @@
 pub mod caller;
 pub mod card;
 pub mod codemode;
+mod diagnostics_findings;
 pub mod dryrun;
 pub mod engine;
 pub mod events;

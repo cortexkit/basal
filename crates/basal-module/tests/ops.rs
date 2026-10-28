@@ -66,6 +66,43 @@ fn reserved(module_id: &str) -> Principal {
 }
 
 #[test]
+fn diagnostics_findings_serves_healthy_reads_and_strict_errors() {
+    let f = fixture("ops-diagnostics", Options::default());
+    for caller in [Caller::Operator, Caller::Core] {
+        let result = f
+            .module
+            .handle(&caller, "diagnostics.findings", Value::Null)
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"generated_at_ms":T0,"window_ms":21_600_000,"findings":[]})
+        );
+        for params in [
+            json!({"window_ms":0}),
+            json!({"window_ms":604_800_001i64}),
+            json!({"agent_id":"SYNAPSE"}),
+        ] {
+            assert_eq!(
+                f.module
+                    .handle(&caller, "diagnostics.findings", params)
+                    .unwrap_err()
+                    .code,
+                "invalid_params"
+            );
+        }
+    }
+    for caller in [Caller::Local, Caller::DevOperatorApp] {
+        assert_eq!(
+            f.module
+                .handle(&caller, "diagnostics.findings", json!({}))
+                .unwrap_err()
+                .code,
+            "operator_attestation_required"
+        );
+    }
+}
+
+#[test]
 fn authorization_matrix() {
     let f = fixture("ops-matrix", Options::with_worker());
     install_approved(&f, &agent(OWNER), SCRIPT, &events_manifest(FLOW));

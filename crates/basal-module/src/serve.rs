@@ -110,6 +110,14 @@ impl Routes {
         }
     }
 
+    fn diagnostics_admitted(&self, handle: &RouteHandle) -> bool {
+        lock(&self.stamps)
+            .get(&(handle.channel, handle.epoch))
+            .is_some_and(|stamp| {
+                caller::diagnostics_admitted(stamp.principal.as_ref(), stamp.scope.as_ref())
+            })
+    }
+
     fn tool_context(&self, handle: &RouteHandle) -> Option<crate::tool::Context> {
         let stamps = lock(&self.stamps);
         let stamp = stamps.get(&(handle.channel, handle.epoch))?;
@@ -444,6 +452,7 @@ impl ModuleHandler for BasalHandler {
             }
         };
         let caller = self.caller(&ctx.route_handle());
+        let diagnostics_admitted = self.routes.diagnostics_admitted(&ctx.route_handle());
         let module = match &*lock(&self.phase) {
             Phase::Ready(m) => m.clone(),
             Phase::Starting => {
@@ -461,8 +470,17 @@ impl ModuleHandler for BasalHandler {
         };
         let method = request.method;
         let params = request.params;
-        let outcome =
-            tokio::task::spawn_blocking(move || module.handle(&caller, &method, params)).await;
+        let outcome = tokio::task::spawn_blocking(move || {
+            if method == "diagnostics.findings" {
+                if !diagnostics_admitted {
+                    return Err(crate::ops::OpError::not_permitted(&method, &caller));
+                }
+                module.diagnostics_findings(params)
+            } else {
+                module.handle(&caller, &method, params)
+            }
+        })
+        .await;
         match outcome {
             Ok(Ok(result)) => match serde_json::to_vec(&json!({ "result": result })) {
                 Ok(bytes) => HandlerOutcome::Response(bytes),
@@ -690,6 +708,37 @@ mod capability_tests {
             handler.on_hello_ack(&ack).await;
             assert_eq!(capabilities.supports_catalog_events(), present);
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostics_route_tests {
+    use super::*;
+    use subc_protocol::{BindIdentity, RouteTarget};
+
+    #[test]
+    fn diagnostics_requires_a_bound_stamp_and_rejects_the_dev_app() {
+        let routes = Routes::default();
+        let handle = RouteHandle::detached(12, 1);
+        assert!(!routes.diagnostics_admitted(&handle));
+        let request = RouteBindRequest::new(
+            handle,
+            RouteTarget::ManagementSurface {
+                module_id: "basal".into(),
+            },
+            BindIdentity::new("/work/project", "desktop", "desktop-session"),
+        )
+        .with_principal(Principal::Direct);
+        routes.bind(&request);
+        assert_eq!(routes.caller(&handle), Caller::DevOperatorApp);
+        assert!(!routes.diagnostics_admitted(&handle));
+        let request = request.with_principal(Principal::Reserved {
+            module_id: caller::OPERATOR_MODULE.into(),
+        });
+        routes.bind(&request);
+        assert!(routes.diagnostics_admitted(&handle));
+        routes.forget(&handle);
+        assert!(!routes.diagnostics_admitted(&handle));
     }
 }
 

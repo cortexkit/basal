@@ -99,6 +99,9 @@ pub struct FlowHealth {
     /// Finished runs that failed (or hit an engine mismatch) since the last
     /// one that succeeded. Cancelled runs neither count nor reset it.
     pub consecutive_failures: u64,
+    /// Earliest end time in the counted failure streak, falling back to
+    /// admission time when a terminal run has no recorded end time.
+    pub failure_first_seen_ms: Option<i64>,
     pub needs_reconcile: Vec<String>,
 }
 
@@ -144,6 +147,7 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
         };
         let mut last_run = None;
         let mut consecutive_failures = 0;
+        let mut failure_first_seen_ms: Option<i64> = None;
         let mut counting = true;
         let mut stmt = conn.prepare_cached(
             "SELECT run_id, state, error_kind, COALESCE(ended_at, admitted_at) FROM runs \
@@ -164,6 +168,8 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             if counting {
                 if counted_failure(conn, &run.run_id, &run.state, run.error_kind.as_deref())? {
                     consecutive_failures += 1;
+                    failure_first_seen_ms =
+                        Some(failure_first_seen_ms.map_or(run.ended_at, |at| at.min(run.ended_at)));
                 } else if run.state == "succeeded" {
                     counting = false;
                 }
@@ -287,6 +293,7 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             last_run,
             oldest_overdue_ms,
             consecutive_failures,
+            failure_first_seen_ms,
             needs_reconcile,
         });
     }

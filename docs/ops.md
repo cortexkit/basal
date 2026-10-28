@@ -8,6 +8,57 @@ Package management is not agent-relayed: `package.register` is available to the 
 
 Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present unless a key is marked optional with `?`. `object` and `any` describe open JSON values.
 
+## basal diagnostics.findings
+
+Read-only management **query**, also listed in basal's `flow_operations` for
+self-diagnosis flows. Request: `{"method":"diagnostics.findings","params":{"window_ms":21600000}}`.
+Omitted/null params or window use six hours; integer windows must be in
+1–604,800,000 ms. Unknown params and invalid windows are errors, never clamped.
+The [v1 contract](../test-vectors/diagnostics-findings-v1/README.md) defines the
+reply: `{"result":{"generated_at_ms":…, "window_ms":…, "findings":[…]}}`.
+Every finding includes `check`, stable `key`, `severity`, positive `count`,
+`first_seen_ms`, `last_seen_ms`, `summary`, `samples`, and `hint`.
+
+Admission uses only daemon route stamps: unscoped `reserved:callosum` and
+`reserved:prefrontal-core`; authorized core-owned agent Head scopes with no
+flow/run identity; and authorized core-owned scopes carrying a nonempty
+`flow_id`, except Worker scopes. Workers, foreign/unauthorized owners, direct
+local callers and dev desktop apps are refused. No repair, delivery, reconcile
+or enable operation is performed. A failed store read is an error frame.
+
+| Check | Key | Severity | Threshold / evidence |
+| --- | --- | --- | --- |
+| `event_reader` | `bus` | error | Immediately while the configured reader is disconnected or reports an error/restart. |
+| `flows_failing` | flow ID | warn / error | Enabled flow with at least 3 counted consecutive failures; any runtime auto-disable is error, even without 3 failed runs (rate saturation can disable a flow). Count is the failure streak, or 1 for an auto-disable without failures. |
+| `runs_overdue` | `deadline`, `deferred` | warn | Unfinished run at least 1 minute past its recorded deadline, or active deferred call at least 1 minute past `retry_not_before`; allows the normal engine sweep. |
+| `reconcile_pending` | `runs`, `decisions` | warn | Reconcile run admitted at least 1 hour ago, or open decision card created at least 1 hour ago; avoids nagging during normal human response time. |
+| `grant_lost` | `disabled` | warn | Immediately for flows disabled with reason `grant_lost`. Count is disabled flows. |
+| `owner_notices_stuck` | `undelivered` | warn | Undelivered owner-notice rows at least 1 hour old, allowing normal retries. |
+| `outbox_stuck` | `undelivered` | warn | Other undelivered outbox rows at least 1 hour old, excluding permanent secret-revocation failures. |
+| `outbox_stuck` | `secret_revocations` | error | Immediately for undelivered secret revocations with `failed_at`: grants may still be live. |
+| `quarantined` | `schedules_and_fires`, `outcomes` | warn | Any `schedule.corrupt` audit events or quarantined call outcomes in the requested window. Counts are audit events or outcome rows. |
+| `worker_pool` | `flows`, `codemode` | warn | Immediately while either pool records a spawn error or retry backoff. |
+
+Standing conditions ignore the lookback, including old failure streaks and lost
+grants. Only quarantine history is windowed. Basal does not record reader
+outage start times, restart counts or typed provider cause codes, nor pool
+failure start times: those findings use the report time and fixed safe category
+codes (`reader_failed`, `reader_connecting`, `spawn_backoff`), not raw errors or
+invented outage durations. Run reconcile state-entry time is also unavailable;
+its admission-age proxy can include time spent running before reconciliation.
+Pending runs without a recorded deadline cannot be diagnosed as past-deadline.
+Scheduler quarantine is historical audit evidence, not proof that corruption
+remains unrepaired; fire corruption does not reliably record a fire ID.
+
+Samples contain only identifiers, counts, status flags, codes and times—never scripts,
+arguments, event/card/outbox bodies, grant references or provider error text.
+Store scans are not row-limited. Findings sort by severity, descending count,
+check, then key. Each has at most 5 samples; `count` is before trimming. Basal
+removes samples first, then tail findings, until the compact whole response
+body is strictly below 65,536 bytes. Omission is not proof of health or complete
+evidence; there is no continuation or truncation field. Hints are guidance,
+not instructions to execute automatically.
+
 ## flow tool
 
 Use `flow` with an `action` and the fields for that action only:

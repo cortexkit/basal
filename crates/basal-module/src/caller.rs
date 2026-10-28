@@ -242,6 +242,37 @@ pub fn worker_scope(scope: &ScopeStamp) -> Option<WorkerScope> {
         })
 }
 
+/// Admission for the read-only diagnostics query, using only the daemon's
+/// route stamp. Core owns registered flow scopes; basal is their carrier,
+/// not their owner. Worker attribution never confers head authority.
+pub fn diagnostics_admitted(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> bool {
+    let Some(scope) = scope else {
+        return matches!(principal, Some(Principal::Reserved { module_id })
+            if module_id == OPERATOR_MODULE || module_id == CORE_MODULE);
+    };
+    if !scope.owner_authorized
+        || scope.kind == ScopeKind::Worker
+        || !matches!(&scope.owner, Principal::Reserved { module_id } if module_id == CORE_MODULE)
+    {
+        return false;
+    }
+    let attributes = &scope.attributes;
+    if attributes
+        .flow_id
+        .as_ref()
+        .is_some_and(|id| !id.trim().is_empty())
+    {
+        return true;
+    }
+    scope.kind == ScopeKind::Head
+        && attributes
+            .agent_id
+            .as_ref()
+            .is_some_and(|id| !id.trim().is_empty())
+        && attributes.run_id.is_none()
+        && attributes.flow_id.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use subc_protocol::scope::ScopeAttributes;
@@ -259,6 +290,62 @@ mod tests {
         )
         .with_attributes(ScopeAttributes::new().with_agent_id(agent.map(str::to_owned)))
         .with_owner_authorized(authorized)
+    }
+
+    #[test]
+    fn diagnostics_admission_uses_only_authorized_route_stamps() {
+        let reserved = |id: &str| Principal::Reserved {
+            module_id: id.into(),
+        };
+        for id in [OPERATOR_MODULE, CORE_MODULE] {
+            assert!(diagnostics_admitted(Some(&reserved(id)), None));
+        }
+        let head = scope(CORE_MODULE, Some("agent"), true);
+        assert!(diagnostics_admitted(Some(&Principal::Direct), Some(&head)));
+        for fixture in [
+            include_str!("../tests/vectors/flow-scope-v1/registered-scope.json"),
+            include_str!("../tests/vectors/flow-scope-v1/registered-global-scope.json"),
+        ] {
+            let fixture: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let flow = ScopeStamp::new(
+                serde_json::from_value(fixture["owner"].clone()).unwrap(),
+                "flow-ref",
+                1,
+                ScopeKind::Head,
+            )
+            .with_attributes(
+                serde_json::from_value(fixture["record"]["attributes"].clone()).unwrap(),
+            )
+            .with_owner_authorized(true);
+            assert!(diagnostics_admitted(None, Some(&flow)));
+            let mut worker = flow.clone();
+            worker.kind = ScopeKind::Worker;
+            assert!(!diagnostics_admitted(
+                Some(&reserved(OPERATOR_MODULE)),
+                Some(&worker)
+            ));
+            let mut foreign = flow.clone();
+            foreign.owner = reserved("basal");
+            assert!(!diagnostics_admitted(None, Some(&foreign)));
+            let mut unauthorized = flow;
+            unauthorized.owner_authorized = false;
+            assert!(!diagnostics_admitted(None, Some(&unauthorized)));
+        }
+        for mut rejected in [head.clone(), head.clone(), head.clone(), head]
+            .into_iter()
+            .enumerate()
+        {
+            match rejected.0 {
+                0 => rejected.1.kind = ScopeKind::Worker,
+                1 => rejected.1.owner_authorized = false,
+                2 => rejected.1.owner = reserved("foreign"),
+                _ => rejected.1.attributes.run_id = Some("worker-run".into()),
+            }
+            assert!(!diagnostics_admitted(None, Some(&rejected.1)));
+        }
+        assert!(!diagnostics_admitted(Some(&Principal::Direct), None));
+        assert!(!diagnostics_admitted(Some(&reserved("foreign")), None));
+        assert!(!diagnostics_admitted(None, None));
     }
 
     #[test]

@@ -18,6 +18,11 @@ pub const MODULE_ID: &str = "basal";
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
+        "diagnostics.findings",
+        ManagementOperationKind::Query,
+        "Read bounded, privacy-safe diagnoses of basal's health and standing state.",
+    ),
+    (
         "flow.overview",
         ManagementOperationKind::Query,
         "Summarize flows, optionally filtered by workspace or agent; operator only.",
@@ -198,6 +203,7 @@ pub fn manifest() -> ModuleManifest {
         // basal declares no self-signals: its effects are its flows', and
         // those are reported through flow.health.
         .self_signals(None)
+        .flow_operations(Some(vec!["diagnostics.findings".into()]))
         .events(Some(
             basal_core::template_events::EVENTS
                 .iter()
