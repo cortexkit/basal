@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use basal_proto::{
-    ActivationRequest, ActivationResult, Budgets, CallKind, Failure, HostCall, JsonText, Outcome,
+    ActivationRequest, ActivationResult, BudgetKind, Budgets, CallKind, Failure, HostCall, JsonText, Outcome,
     Primitive, Profile, Settlement,
 };
 
@@ -75,6 +75,47 @@ fn shell_issued(link: &EchoLink) -> bool {
     link.issued
         .iter()
         .any(|c| c.kind == CallKind::Primitive(Primitive::Sh))
+}
+
+#[test]
+fn prelude_stack_exhaustion_is_a_stack_budget() {
+    // Running the real prelude needs more than the minimum stack on Linux.
+    // Check that setup alone fails, so script recursion cannot be the
+    // source of the budget result below.
+    let mut req = request(Profile::Flow, "return 42;");
+    let link = Rc::new(RefCell::new(EchoLink::default()));
+    let shared = Rc::new(super::Shared {
+        clock: crate::clock::JsClock::new(std::time::Duration::from_secs(1)),
+        halted: std::cell::Cell::new(false),
+        bridge: RefCell::new(super::plan(&req, vec![]).unwrap()),
+        link: link.clone(),
+        memory_exhausted: Rc::new(std::cell::Cell::new(false)),
+        stack_exhausted: std::cell::Cell::new(false),
+    });
+    let rt = rquickjs::Runtime::new().unwrap();
+    let ctx = rquickjs::Context::custom::<super::Intrinsics>(&rt).unwrap();
+    rt.set_max_stack_size(super::MIN_STACK_BYTES as usize);
+    ctx.with(|ctx| {
+        let native = super::native_bridge(&ctx, &shared).unwrap();
+        let prelude: rquickjs::Function = ctx.eval(super::PRELUDE).unwrap();
+        assert!(matches!(
+            prelude.call::<_, rquickjs::Object>((native, false, "null", "null", "null")),
+            Err(rquickjs::Error::Exception)
+        ));
+        ctx.catch();
+    });
+
+    assert_eq!(
+        run_activation(&req, link.clone()),
+        ActivationResult::Completed {
+            value: JsonText::new("42").unwrap()
+        }
+    );
+    req.budgets.stack_bytes = super::MIN_STACK_BYTES;
+    assert_eq!(
+        run_activation(&req, link),
+        ActivationResult::BudgetExhausted(BudgetKind::Stack)
+    );
 }
 
 #[test]
