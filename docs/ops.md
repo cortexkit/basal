@@ -322,10 +322,7 @@ Template instance entries additionally contain `template`, `version`, canonical 
 
 ## flow.overview
 
-Operator only: the daemon must attest the unscoped route as `reserved:callosum`.
-Core, agents and other modules receive `not_permitted`; an unverified local
-caller receives `operator_attestation_required`. These same refusals apply to
-`flow.details` and `flow.uninstall`, before parameter decoding.
+Operator and admitted dev operator apps: the daemon must attest the unscoped route as `reserved:callosum`, or the route must be a direct, unscoped, non-federated app bind admitted by `dev_operator_app_admission` in `crates/basal-module/src/caller.rs` (not `fed_operator`, no `fed-` harness prefix, and not the OpenCode plugin's shared channel `alfonso` + `prefrontal-core`). Release plan: replace that function with SUBC's `operator_app` stamp (subc-protocol 0.33.5, capability `operator-app/v1`). Core, agents and other modules receive `not_permitted`; an excluded local caller receives `operator_attestation_required`. These same admissions and refusals apply to `flow.details` and `flow.uninstall`, before parameter decoding.
 
 Params (an object with no other keys, or null for defaults):
 ```json
@@ -432,7 +429,7 @@ the operator must change the persona configuration instead of racing Core's
 reconciler. Template instances are ended just as by `flow.instance.end`,
 including their lifecycle event.
 
-Uninstall keeps all history, records operator removal, uses the normal disable
+Uninstall keeps all history, records operator removal (`operator` for the operator, `operator:local-direct` for the admitted desktop app), uses the normal disable
 path to stop schedules and subsequent calls from runs in flight, and refuses
 queued event receipts so they cannot replay even after a reinstall. New
 notices are not admitted. `flow.enable` returns `flow_removed` for an

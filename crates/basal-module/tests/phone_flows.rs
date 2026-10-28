@@ -777,6 +777,9 @@ fn phone_vectors_match_real_dispatch_and_sha256sums() {
     let mut names: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        // The directory README documents the vectors; it is not a vector
+        // and is not covered by SHA256SUMS.
+        .filter(|name| name != "README.md")
         .collect();
     names.sort();
     let mut expected: Vec<_> = files.keys().cloned().chain(["SHA256SUMS".into()]).collect();
@@ -826,4 +829,127 @@ fn phone_details_default_and_maximum_run_bounds() {
         op(&f, "flow.details", json!({"flow_id":"flow-bounded"}))["installs"][0]["approval"],
         json!({"kind":"unknown"})
     );
+}
+
+#[test]
+fn phone_dev_operator_app_is_admitted_to_all_three_ops() {
+    let f = setup("phone-dev-admit");
+    seed(&f, "flow-dev", None, OWNER);
+    let admitted = Caller::DevOperatorApp;
+    // All three phone ops succeed for the admitted desktop caller, just as
+    // for the operator.
+    let overview = f
+        .module
+        .handle(&admitted, "flow.overview", json!({}))
+        .expect("overview admitted");
+    assert!(ids(&overview).contains(&"flow-dev"));
+    let detail = f
+        .module
+        .handle(&admitted, "flow.details", json!({"flow_id":"flow-dev"}))
+        .expect("details admitted");
+    assert_eq!(detail["flow_id"], "flow-dev");
+    let uninstall = f
+        .module
+        .handle(&admitted, "flow.uninstall", json!({"flow_id":"flow-dev"}))
+        .expect("uninstall admitted");
+    assert_eq!(uninstall["removed"], true);
+    assert_eq!(uninstall["changed"], true);
+    // A desktop uninstall is audited as `operator:local-direct`, matching
+    // core's actor label for it, not as `operator`.
+    let (removed_by, disabled_by): (Option<String>, Option<String>) = f
+        .module
+        .rt
+        .store()
+        .read(|c| {
+            Ok((
+                c.query_row(
+                    "SELECT removed_by FROM flows WHERE flow_id='flow-dev'",
+                    [],
+                    |r| r.get(0),
+                )?,
+                c.query_row(
+                    "SELECT disabled_by FROM flows WHERE flow_id='flow-dev'",
+                    [],
+                    |r| r.get(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(removed_by.as_deref(), Some("operator:local-direct"));
+    assert_eq!(disabled_by.as_deref(), Some("operator:local-direct"));
+    // Repeating the uninstall reports no change, like the operator's.
+    let again = f
+        .module
+        .handle(&admitted, "flow.uninstall", json!({"flow_id":"flow-dev"}))
+        .expect("repeat admitted");
+    assert_eq!(again["changed"], false);
+    // Enabling an app-uninstalled flow still needs fresh approval.
+    assert_eq!(
+        f.module
+            .handle(
+                &Caller::Operator,
+                "flow.enable",
+                json!({"flow_id":"flow-dev"})
+            )
+            .unwrap_err()
+            .code,
+        "flow_removed"
+    );
+}
+
+#[test]
+fn phone_dev_operator_app_is_refused_everywhere_else() {
+    let f = setup("phone-dev-refuse");
+    seed(&f, "flow-refuse", None, OWNER);
+    let admitted = Caller::DevOperatorApp;
+    // `flow.install` never admits the desktop caller, even though a plain
+    // local caller may install its own flows.
+    let mut manifest = events_manifest("flow-dev-install");
+    manifest["sinks"][0]["agent"] = json!("Target");
+    let install_err = f
+        .module
+        .handle(
+            &admitted,
+            "flow.install",
+            json!({"script":"return 1;","manifest":manifest.to_string()}),
+        )
+        .unwrap_err();
+    assert_eq!(install_err.code, "operator_attestation_required");
+    // Every other operator-only op refuses it: like a local caller it has
+    // no attestation, so management refusals stay `operator_attestation_required`
+    // where that code exists, and `not_permitted` where the op names its own
+    // attested route (audience, private content).
+    for (method, params) in [
+        ("flow.health", Value::Null),
+        (
+            "flow.dry_run",
+            json!({"flow_id":"flow-refuse","trigger":{"kind":"synthetic"}}),
+        ),
+        (
+            "flow.reconcile",
+            json!({"run_id":"r","position":0,"resolution":"cancel"}),
+        ),
+        ("flow.drain", Value::Null),
+        ("flow.disable", json!({"flow_id":"flow-refuse"})),
+        ("flow.enable", json!({"flow_id":"flow-refuse"})),
+        ("flow.list", json!({})),
+        ("flow.audience", json!({"flow_id":"flow-refuse"})),
+        (
+            "flow.private_content_providers",
+            json!({"flow_id":"flow-refuse"}),
+        ),
+        (
+            "package.register",
+            json!({"script":"return 1;","manifest":manifest.to_string()}),
+        ),
+    ] {
+        let err = f.module.handle(&admitted, method, params).unwrap_err();
+        assert!(
+            matches!(
+                err.code.as_str(),
+                "operator_attestation_required" | "not_permitted"
+            ),
+            "{method} as desktop: {err:?}"
+        );
+    }
 }

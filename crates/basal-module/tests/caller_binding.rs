@@ -39,12 +39,19 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 /// A bind of `handle` to basal's management surface, from a harness whose
 /// bind identity names `session`, with no principal and no scope yet.
 fn bind_request(handle: RouteHandle, session: &str) -> RouteBindRequest {
+    bind_with(handle, "opencode", session)
+}
+
+/// A bind like [`bind_request`], but from the named harness: the admission
+/// decision reads the bind identity's harness and session, so tests for it
+/// need binds that differ only there.
+fn bind_with(handle: RouteHandle, harness: &str, session: &str) -> RouteBindRequest {
     RouteBindRequest::new(
         handle,
         RouteTarget::ManagementSurface {
             module_id: "basal".into(),
         },
-        BindIdentity::new("/work/project", "opencode", session),
+        BindIdentity::new("/work/project", harness, session),
     )
 }
 
@@ -261,8 +268,9 @@ fn a_route_without_a_scope_is_never_an_agent() {
     };
 
     // Only the route the daemon attests as callosum is the operator. A
-    // direct key-holder with no scope is a local caller, whatever session
-    // its bind identity claims, and core's own route is core.
+    // direct, unscoped, non-federated route that is not the OpenCode
+    // plugin's shared channel is an admitted dev operator app, whatever
+    // session its bind identity claims, and core's own route is core.
     assert_eq!(
         unscoped(
             9,
@@ -272,7 +280,41 @@ fn a_route_without_a_scope_is_never_an_agent() {
         ),
         Caller::Operator
     );
-    let local = unscoped(1, Some(Principal::Direct));
+    let admitted = unscoped(1, Some(Principal::Direct));
+    assert_eq!(admitted, Caller::DevOperatorApp);
+    // The exclusions stay local: a federated operator bind, a federated
+    // harness, and the OpenCode plugin's shared channel are still direct
+    // key-holders the daemon cannot vouch for.
+    let unscoped_with = |channel: u16, harness: &str, session: &str| {
+        caller_of(
+            &handler,
+            bind_with(RouteHandle::detached(channel, 1), harness, session)
+                .with_principal(Principal::Direct),
+        )
+    };
+    for (harness, session) in [
+        ("fed_operator", SESSION),
+        ("fed-phone", SESSION),
+        ("fed-anything", SESSION),
+        ("alfonso", "prefrontal-core"),
+    ] {
+        assert_eq!(
+            unscoped_with(20, harness, session),
+            Caller::Local,
+            "excluded harness {harness:?} session {session:?}"
+        );
+    }
+    // Near misses of the shared channel are still admitted: only the exact
+    // harness and session pair is excluded.
+    assert_eq!(
+        unscoped_with(21, "alfonso", "other"),
+        Caller::DevOperatorApp
+    );
+    assert_eq!(
+        unscoped_with(22, "alfonso-desktop", "prefrontal-core"),
+        Caller::DevOperatorApp
+    );
+    let local = unscoped_with(23, "fed-phone", SESSION);
     assert_eq!(local, Caller::Local);
     assert_eq!(
         unscoped(
@@ -312,22 +354,25 @@ fn a_route_without_a_scope_is_never_an_agent() {
         SCRIPT,
         &events_manifest(FLOW),
     );
-    // The local caller is not the flow's owner either: dry-running,
-    // disabling and enabling the flow are refused as needing the attested
-    // operator.
-    for (method, params) in [
-        (
-            "flow.dry_run",
-            json!({ "flow_id": FLOW, "trigger": { "kind": "synthetic" } }),
-        ),
-        ("flow.disable", json!({ "flow_id": FLOW })),
-        ("flow.enable", json!({ "flow_id": FLOW })),
-    ] {
-        let r = call(&f, &local, method, params);
-        assert!(
-            matches!(&r, Err(e) if e.starts_with("operator_attestation_required")),
-            "{method} as local: {r:?}"
-        );
+    // Neither the admitted app nor the excluded local caller is the flow's
+    // owner: dry-running, disabling and enabling the flow are refused as
+    // needing the attested operator.
+    for caller in [&admitted, &local] {
+        for (method, params) in [
+            (
+                "flow.dry_run",
+                json!({ "flow_id": FLOW, "trigger": { "kind": "synthetic" } }),
+            ),
+            ("flow.disable", json!({ "flow_id": FLOW })),
+            ("flow.enable", json!({ "flow_id": FLOW })),
+        ] {
+            let r = call(&f, caller, method, params);
+            assert!(
+                matches!(&r, Err(e) if e.starts_with("operator_attestation_required")),
+                "{method} as {}: {r:?}",
+                caller.label()
+            );
+        }
     }
     for caller in &others {
         assert!(
@@ -337,6 +382,115 @@ fn a_route_without_a_scope_is_never_an_agent() {
         assert_refused_on_the_flow(&f, caller);
         let r = call(&f, caller, "flow.health", Value::Null);
         assert!(refused(&r), "flow.health as {}: {r:?}", caller.label());
+    }
+}
+
+#[test]
+fn a_direct_unscoped_non_fed_route_reaches_all_three_phone_ops() {
+    let handler = handler();
+    let admitted = caller_of(
+        &handler,
+        bind_with(RouteHandle::detached(1, 1), "ckdesk", "desktop-session")
+            .with_principal(Principal::Direct),
+    );
+    assert_eq!(admitted, Caller::DevOperatorApp);
+    let f = fixture("caller-phone-admit", Options::default());
+    install_approved(
+        &f,
+        &agent_route(&handler, 8, OWNER, SESSION),
+        SCRIPT,
+        &events_manifest(FLOW),
+    );
+    // All three phone ops succeed for the admitted desktop route.
+    call(&f, &admitted, "flow.overview", json!({})).expect("overview admitted");
+    call(&f, &admitted, "flow.details", json!({ "flow_id": FLOW })).expect("details admitted");
+    call(&f, &admitted, "flow.uninstall", json!({ "flow_id": FLOW })).expect("uninstall admitted");
+    let removed_by: Option<String> = f
+        .module
+        .rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT removed_by FROM flows WHERE flow_id=?1",
+                [FLOW],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(removed_by.as_deref(), Some("operator:local-direct"));
+}
+
+#[test]
+fn every_phone_exclusion_is_refused_with_todays_refusal() {
+    let handler = handler();
+    let f = fixture("caller-phone-exclusions", Options::default());
+    install_approved(
+        &f,
+        &agent_route(&handler, 8, OWNER, SESSION),
+        SCRIPT,
+        &events_manifest(FLOW),
+    );
+    // Each exclusion binds its own route, then calls the three phone ops:
+    // scoped, federated and shared-channel direct routes stay local (or
+    // agent/other/module) and are refused exactly as today.
+    let scoped = caller_of(
+        &handler,
+        bind_request(RouteHandle::detached(11, 1), SESSION)
+            .with_principal(Principal::Direct)
+            .with_scope(scope(CORE_MODULE, OWNER, true, scope_ref_of(11))),
+    );
+    let fed_operator = caller_of(
+        &handler,
+        bind_with(RouteHandle::detached(12, 1), "fed_operator", SESSION)
+            .with_principal(Principal::Direct),
+    );
+    let fed_dash = caller_of(
+        &handler,
+        bind_with(RouteHandle::detached(13, 1), "fed-phone", SESSION)
+            .with_principal(Principal::Direct),
+    );
+    let shared = caller_of(
+        &handler,
+        bind_with(RouteHandle::detached(14, 1), "alfonso", "prefrontal-core")
+            .with_principal(Principal::Direct),
+    );
+    let reserved = caller_of(
+        &handler,
+        bind_request(RouteHandle::detached(15, 1), SESSION).with_principal(Principal::Reserved {
+            module_id: "aft".into(),
+        }),
+    );
+    let unverified = caller_of(
+        &handler,
+        bind_request(RouteHandle::detached(16, 1), SESSION).with_principal(Principal::Unverified),
+    );
+    assert!(matches!(scoped, Caller::Agent { .. }), "{scoped:?}");
+    assert_eq!(fed_operator, Caller::Local);
+    assert_eq!(fed_dash, Caller::Local);
+    assert_eq!(shared, Caller::Local);
+    assert!(matches!(reserved, Caller::Module { .. }), "{reserved:?}");
+    assert!(matches!(unverified, Caller::Other(_)), "{unverified:?}");
+    for caller in [
+        &scoped,
+        &fed_operator,
+        &fed_dash,
+        &shared,
+        &reserved,
+        &unverified,
+    ] {
+        let expected = if *caller == Caller::Local {
+            "operator_attestation_required"
+        } else {
+            "not_permitted"
+        };
+        for method in ["flow.overview", "flow.details", "flow.uninstall"] {
+            let r = call(&f, caller, method, json!({ "flow_id": FLOW }));
+            assert!(
+                matches!(&r, Err(e) if e.starts_with(expected)),
+                "{method} as {}: {r:?}, want {expected}",
+                caller.label()
+            );
+        }
     }
 }
 

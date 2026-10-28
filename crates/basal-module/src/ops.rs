@@ -75,9 +75,12 @@ impl OpError {
 
     /// The refusal of `op` for `caller`. A plain local route has neither the
     /// operator's nor core's daemon attestation, so management refusals use a
-    /// distinct code for it rather than treating it as another module.
+    /// distinct code for it rather than treating it as another module. An
+    /// admitted dev operator app is still a `direct` route without that
+    /// attestation, so it is refused the same way outside the three phone
+    /// ops that admit it.
     fn not_permitted(op: &str, caller: &Caller) -> Self {
-        if *caller == Caller::Local {
+        if matches!(caller, Caller::Local | Caller::DevOperatorApp) {
             return Self::operator_attestation_required(&format!("calling {op}"));
         }
         Self::new(
@@ -674,7 +677,7 @@ impl Module {
                 }
                 LOCAL_AUTHOR.to_owned()
             }
-            Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
+            Caller::Core | Caller::Module { .. } | Caller::Other(_) | Caller::DevOperatorApp => {
                 return Err(OpError::not_permitted("flow.install", caller));
             }
         };
@@ -1346,7 +1349,7 @@ impl Module {
             Caller::Operator => None,
             Caller::Agent { agent_id, .. } => Some(agent_id.as_str()),
             Caller::Local => Some(LOCAL_AUTHOR),
-            Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
+            Caller::Core | Caller::Module { .. } | Caller::Other(_) | Caller::DevOperatorApp => {
                 return Err(OpError::not_permitted("flow.list", caller));
             }
         };
@@ -1737,7 +1740,7 @@ fn card_author(caller: &Caller) -> Result<Value, OpError> {
         Caller::Operator => Ok(json!({ "operator": true })),
         Caller::Agent { scope_ref, .. } => Ok(json!({ "scope": scope_ref })),
         Caller::Local => Ok(json!({ "local": true })),
-        Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
+        Caller::Core | Caller::Module { .. } | Caller::Other(_) | Caller::DevOperatorApp => {
             Err(OpError::not_permitted("flow.install", caller))
         }
     }

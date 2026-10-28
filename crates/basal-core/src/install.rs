@@ -1748,6 +1748,18 @@ impl Runtime {
     /// Queued events are refused so approving a later version cannot replay
     /// notices queued before removal.
     pub fn uninstall_flow(&self, flow_id: &str) -> std::result::Result<bool, InstallError> {
+        self.uninstall_flow_as(flow_id, &Actor::Operator("operator".into()))
+    }
+
+    /// Removes a flow as `actor`: the operator as `operator`, or the admitted
+    /// desktop app as `operator:local-direct`. The disable and the removal
+    /// audit both record that actor, so a desktop uninstall is audited as
+    /// `operator:local-direct` rather than `operator`.
+    pub fn uninstall_flow_as(
+        &self,
+        flow_id: &str,
+        actor: &Actor,
+    ) -> std::result::Result<bool, InstallError> {
         let now = self.config().clock.now_ms();
         decide(self, |tx| {
             let package: Option<Option<String>> = tx
@@ -1771,19 +1783,20 @@ impl Runtime {
             if crate::packages::removed(tx, flow_id)? {
                 return Ok(false);
             }
-            disable(
-                tx,
-                flow_id,
-                &Actor::Operator("operator".into()),
-                "uninstalled",
-                now,
-            )?;
+            disable(tx, flow_id, actor, "uninstalled", now)?;
             if template {
                 crate::templates::end(tx, flow_id, now)?;
             }
+            // The operator's own removal is audited as `operator`; any other
+            // operator actor (today only the desktop app's `local-direct`)
+            // is audited by its full `operator:<who>` label.
+            let removed_by = match actor {
+                Actor::Operator(who) if who == "operator" => "operator".to_owned(),
+                _ => actor.label(),
+            };
             tx.execute(
-                "UPDATE flows SET removed=1, removed_by='operator', removed_at=?2 WHERE flow_id=?1",
-                params![flow_id, now],
+                "UPDATE flows SET removed=1, removed_by=?2, removed_at=?3 WHERE flow_id=?1",
+                params![flow_id, removed_by, now],
             )?;
             crate::secret_revocation::enqueue(tx, flow_id, None, false, now)?;
             tx.execute(
@@ -1850,10 +1863,12 @@ const RETIREMENT: &str = "SELECT COALESCE(agent_retirement,CASE WHEN disabled_re
 
 // Core removal and owner-ended templates retain an independent enable switch.
 // Only operator uninstall requires fresh approval instead of a simple enable.
+// The desktop app's `operator:local-direct` removal counts as an operator
+// uninstall too.
 fn uninstalled(conn: &Connection, flow_id: &str) -> Result<bool> {
     Ok(conn
         .query_row(
-            "SELECT removed=1 AND COALESCE(removed_by='operator',0) FROM flows WHERE flow_id=?1",
+            "SELECT removed=1 AND COALESCE(removed_by='operator' OR removed_by='operator:local-direct',0) FROM flows WHERE flow_id=?1",
             [flow_id],
             |r| r.get(0),
         )

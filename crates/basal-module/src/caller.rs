@@ -46,6 +46,7 @@
 //! session there. Where an agent's session matters (the install card), core
 //! reads it from the scope it owns.
 
+use subc_protocol::BindIdentity;
 use subc_protocol::Principal;
 use subc_protocol::scope::{ScopeKind, ScopeStamp};
 
@@ -67,6 +68,12 @@ pub enum Caller {
     /// a route with no scope. It may install a flow (the install card is
     /// what authorizes it) and nothing else the operator may do.
     Local,
+    /// An admitted dev operator app: a `direct`, unscoped, non-federated
+    /// route that is not the OpenCode plugin's shared channel (see
+    /// [`dev_operator_app_admission`]). It may call only `flow.overview`,
+    /// `flow.details` and `flow.uninstall`; every other operator-only op
+    /// refuses it like [`Caller::Local`].
+    DevOperatorApp,
     /// Core itself, on its own route (not under an agent's scope).
     Core,
     /// Another daemon-attested module on an unscoped route.
@@ -86,6 +93,8 @@ impl Caller {
         match self {
             Self::Operator => "operator".to_owned(),
             Self::Local => "local".to_owned(),
+            // The desktop app's actor label, matching core's `operator:local-direct`.
+            Self::DevOperatorApp => "operator:local-direct".to_owned(),
             Self::Core => format!("reserved:{CORE_MODULE}"),
             Self::Module { module_id } => format!("reserved:{module_id}"),
             Self::Agent { agent_id, .. } => format!("agent:{agent_id}"),
@@ -141,6 +150,62 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
         },
         other => Caller::Other(principal_label(other)),
     }
+}
+
+/// Whether a route is an admitted dev operator app, mirroring core's
+/// `dev_operator_app_admission`: a `direct` carrier with no scope stamp,
+/// whose bind is not `fed_operator`, whose harness does not start with
+/// `fed-`, and whose bind identity is not the OpenCode plugin's shared
+/// channel (`harness == "alfonso"` and `session == "prefrontal-core"`).
+/// `Reserved` and `Unverified` binds are never admitted: the principal check
+/// admits only `Direct`.
+///
+/// Release plan: replace this function's body with a check of SUBC's
+/// `operator_app` stamp (subc-protocol 0.33.5, capability `operator-app/v1`).
+pub fn dev_operator_app_admission(
+    principal: Option<&Principal>,
+    scope: Option<&ScopeStamp>,
+    identity: &BindIdentity,
+) -> bool {
+    if !matches!(principal, Some(Principal::Direct)) {
+        return false;
+    }
+    if scope.is_some() {
+        return false;
+    }
+    // The federated operator's own bind is never an app being built.
+    // `fed_operator` is an exact harness match, distinct from the `fed-`
+    // prefix below for federated harnesses.
+    if identity.harness == "fed_operator" {
+        return false;
+    }
+    if identity.harness.starts_with("fed-") {
+        return false;
+    }
+    // The OpenCode plugin's shared channel: an exact harness and session
+    // pair, no prefix match and no other field.
+    if identity.harness == "alfonso" && identity.session == "prefrontal-core" {
+        return false;
+    }
+    true
+}
+
+/// The caller of a route, including the admitted dev operator app.
+///
+/// A route admitted by [`dev_operator_app_admission`] is a
+/// [`Caller::DevOperatorApp`]; every other route is decided by [`from_route`]
+/// alone, so what [`Caller::Local`] may do elsewhere does not change.
+/// Only `flow.overview`, `flow.details` and `flow.uninstall` accept the
+/// admitted caller, through their shared operator check.
+pub fn caller_for_route(
+    principal: Option<&Principal>,
+    scope: Option<&ScopeStamp>,
+    identity: &BindIdentity,
+) -> Caller {
+    if dev_operator_app_admission(principal, scope, identity) {
+        return Caller::DevOperatorApp;
+    }
+    from_route(principal, scope)
 }
 
 /// A worker session's own scope, as codemode reads it: a session that works
@@ -274,6 +339,106 @@ mod tests {
         )
         .with_attributes(attributes)
         .with_owner_authorized(authorized)
+    }
+
+    fn identity(harness: &str, session: &str) -> BindIdentity {
+        BindIdentity::new("/work/project", harness, session)
+    }
+
+    #[test]
+    fn dev_operator_app_admits_only_a_direct_unscoped_non_fed_route() {
+        let direct = Some(Principal::Direct);
+        let admitted = || identity("ckdesk", "desktop-session");
+        // The desktop app's own shape is admitted.
+        assert!(dev_operator_app_admission(
+            direct.as_ref(),
+            None,
+            &admitted()
+        ));
+        assert_eq!(
+            caller_for_route(direct.as_ref(), None, &admitted()),
+            Caller::DevOperatorApp
+        );
+        assert_eq!(
+            caller_for_route(direct.as_ref(), None, &admitted()).label(),
+            "operator:local-direct"
+        );
+        // `from_route` alone still says local: only the bind-aware caller
+        // upgrades the admitted route.
+        assert_eq!(from_route(direct.as_ref(), None), Caller::Local);
+    }
+
+    #[test]
+    fn dev_operator_app_refuses_every_exclusion() {
+        let direct = Some(Principal::Direct);
+        let scoped = scope(CORE_MODULE, Some("SYNAPSE"), true);
+        let cases: Vec<(Option<Principal>, Option<ScopeStamp>, BindIdentity)> = vec![
+            // A scope keeps its own authority, even head, worker and flow sessions.
+            (
+                Some(Principal::Direct),
+                Some(scoped),
+                identity("ckdesk", "s"),
+            ),
+            // The federated operator is never an app being built.
+            (direct.clone(), None, identity("fed_operator", "s")),
+            // Federated harnesses keep their own authority.
+            (direct.clone(), None, identity("fed-phone", "s")),
+            (direct.clone(), None, identity("fed-anything", "s")),
+            // The OpenCode plugin's shared channel is exactly this pair.
+            (direct.clone(), None, identity("alfonso", "prefrontal-core")),
+            // Reserved (other than callosum) and unverified binds are never admitted.
+            (
+                Some(Principal::Reserved {
+                    module_id: "aft".into(),
+                }),
+                None,
+                identity("ckdesk", "s"),
+            ),
+            (
+                Some(Principal::Reserved {
+                    module_id: OPERATOR_MODULE.into(),
+                }),
+                None,
+                identity("ckdesk", "s"),
+            ),
+            (
+                Some(Principal::Reserved {
+                    module_id: CORE_MODULE.into(),
+                }),
+                None,
+                identity("ckdesk", "s"),
+            ),
+            (Some(Principal::Unverified), None, identity("ckdesk", "s")),
+            (None, None, identity("ckdesk", "s")),
+        ];
+        for (principal, scope, id) in cases {
+            assert!(
+                !dev_operator_app_admission(principal.as_ref(), scope.as_ref(), &id),
+                "admitted {principal:?} {scope:?} {} {}",
+                id.harness,
+                id.session
+            );
+            assert_ne!(
+                caller_for_route(principal.as_ref(), scope.as_ref(), &id),
+                Caller::DevOperatorApp,
+                "admitted {principal:?} {scope:?} {} {}",
+                id.harness,
+                id.session
+            );
+        }
+        // Near misses of the shared channel are still admitted: only the
+        // exact harness and session pair is excluded.
+        for (harness, session) in [
+            ("alfonso", "other"),
+            ("alfonso-desktop", "prefrontal-core"),
+            ("ckdesk", "prefrontal-core"),
+        ] {
+            let id = identity(harness, session);
+            assert!(
+                dev_operator_app_admission(direct.as_ref(), None, &id),
+                "refused near miss {harness:?} {session:?}"
+            );
+        }
     }
 
     #[test]

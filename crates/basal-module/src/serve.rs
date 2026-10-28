@@ -49,7 +49,8 @@ type RouteKey = (u16, u32);
 
 /// The daemon records the route's principal and scope when binding it. Keep
 /// those values to identify the caller. Bind identity configures the provider's
-/// workspace and session; it never establishes who the caller is.
+/// workspace and session; it establishes who the caller is only for the
+/// admitted dev operator app (see [`crate::caller::dev_operator_app_admission`]).
 #[derive(Debug, Clone)]
 struct RouteStamp {
     principal: Option<Principal>,
@@ -102,7 +103,9 @@ impl Routes {
             .get(&(handle.channel, handle.epoch))
             .cloned();
         match stamp {
-            Some(s) => caller::from_route(s.principal.as_ref(), s.scope.as_ref()),
+            Some(s) => {
+                caller::caller_for_route(s.principal.as_ref(), s.scope.as_ref(), &s.bind_identity)
+            }
             None => caller::from_route(None, None),
         }
     }

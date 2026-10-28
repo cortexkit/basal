@@ -130,9 +130,16 @@ impl Module {
             flow_id: String,
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        // The desktop app uninstalls as `operator:local-direct`, matching
+        // core's actor label for it, not as `operator`.
+        let actor = match caller {
+            Caller::Operator => basal_core::Actor::Operator("operator".into()),
+            Caller::DevOperatorApp => basal_core::Actor::Operator("local-direct".into()),
+            _ => unreachable!("admitted by operator() above"),
+        };
         let changed = self
             .rt
-            .uninstall_flow(&p.flow_id)
+            .uninstall_flow_as(&p.flow_id, &actor)
             .map_err(|e| self.install_error(e))?;
         Ok(json!({"flow_id":p.flow_id,"removed":true,"changed":changed}))
     }
@@ -150,7 +157,10 @@ impl Module {
 }
 
 fn operator(caller: &Caller, method: &str) -> Result<(), OpError> {
-    if !matches!(caller, Caller::Operator) {
+    // The only basal admission of the dev operator app: the desktop app
+    // admitted by [`crate::caller::dev_operator_app_admission`] may call the
+    // three phone ops. Nothing else in basal accepts [`Caller::DevOperatorApp`].
+    if !matches!(caller, Caller::Operator | Caller::DevOperatorApp) {
         return Err(OpError::not_permitted(method, caller));
     }
     Ok(())
