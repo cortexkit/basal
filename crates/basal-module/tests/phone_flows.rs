@@ -902,20 +902,10 @@ fn phone_dev_operator_app_is_refused_everywhere_else() {
     let f = setup("phone-dev-refuse");
     seed(&f, "flow-refuse", None, OWNER);
     let admitted = Caller::DevOperatorApp;
-    // `flow.install` never admits the desktop caller, even though a plain
-    // local caller may install its own flows.
     let mut manifest = events_manifest("flow-dev-install");
     manifest["sinks"][0]["agent"] = json!("Target");
-    let install_err = f
-        .module
-        .handle(
-            &admitted,
-            "flow.install",
-            json!({"script":"return 1;","manifest":manifest.to_string()}),
-        )
-        .unwrap_err();
-    assert_eq!(install_err.code, "operator_attestation_required");
-    // Every other operator-only op refuses it: like a local caller it has
+    // It keeps what a local caller may do (`flow.install`, `flow.list`; see
+    // `caller_binding.rs`). Every other operator-only op refuses it: like a local caller it has
     // no attestation, so management refusals stay `operator_attestation_required`
     // where that code exists, and `not_permitted` where the op names its own
     // attested route (audience, private content).
@@ -932,7 +922,6 @@ fn phone_dev_operator_app_is_refused_everywhere_else() {
         ("flow.drain", Value::Null),
         ("flow.disable", json!({"flow_id":"flow-refuse"})),
         ("flow.enable", json!({"flow_id":"flow-refuse"})),
-        ("flow.list", json!({})),
         ("flow.audience", json!({"flow_id":"flow-refuse"})),
         (
             "flow.private_content_providers",
