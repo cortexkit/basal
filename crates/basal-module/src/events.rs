@@ -62,6 +62,7 @@ pub struct Health {
 pub struct Reader {
     health: Arc<Mutex<Health>>,
     stop: Arc<AtomicBool>,
+    cancel: Arc<tokio::sync::Notify>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -109,12 +110,24 @@ fn supervise(health: Arc<Mutex<Health>>, stop: Arc<AtomicBool>, mut run: impl Fn
     }
 }
 
+async fn until_cancelled(cancel: &tokio::sync::Notify, work: impl Future<Output = ()>) {
+    // Synchronous SQLite work finishes its poll (and transaction) before this
+    // select can observe shutdown. Dropping an async bus wait cannot cut it.
+    tokio::select! {
+        biased;
+        _ = cancel.notified() => {},
+        _ = work => {},
+    }
+}
+
 impl Reader {
     pub fn start(rt: Runtime, transport: Arc<dyn Transport>) -> Self {
         let health = Arc::new(Mutex::new(Health::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(tokio::sync::Notify::new());
         let thread_health = health.clone();
         let thread_stop = stop.clone();
+        let thread_cancel = cancel.clone();
         let thread = std::thread::spawn(move || {
             let _stopped = ReaderStopped(thread_health.clone());
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -123,17 +136,21 @@ impl Reader {
                 .build()
                 .expect("event reader runtime");
             supervise(thread_health.clone(), thread_stop.clone(), || {
-                runtime.block_on(reader_loop(
-                    rt.clone(),
-                    transport.clone(),
-                    thread_health.clone(),
-                    thread_stop.clone(),
+                runtime.block_on(until_cancelled(
+                    &thread_cancel,
+                    reader_loop(
+                        rt.clone(),
+                        transport.clone(),
+                        thread_health.clone(),
+                        thread_stop.clone(),
+                    ),
                 ));
             });
         });
         Self {
             health,
             stop,
+            cancel,
             thread: Some(thread),
         }
     }
@@ -149,6 +166,7 @@ impl Reader {
 impl Drop for Reader {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.cancel.notify_one();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -607,6 +625,36 @@ async fn reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_cancels_a_parked_bus_wait() {
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let stopped = cancel.clone();
+        let observed = dropped.clone();
+        let session = tokio::spawn(async move {
+            until_cancelled(&stopped, async {
+                let _dropped = Dropped(observed);
+                entered.send(()).unwrap();
+                std::future::pending::<()>().await;
+            })
+            .await;
+        });
+        waiting.await.unwrap();
+        cancel.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), session)
+            .await
+            .expect("shutdown must not wait for an idle bus peer")
+            .unwrap();
+        assert!(dropped.load(Ordering::Acquire));
+    }
 
     #[tokio::test]
     async fn backlog_poll_error_keeps_reader_session_health() {

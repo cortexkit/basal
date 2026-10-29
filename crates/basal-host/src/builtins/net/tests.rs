@@ -4,6 +4,81 @@ use super::*;
 mod response_corpus;
 
 #[test]
+fn shutdown_interrupts_a_fetch_waiting_for_its_http_response() {
+    let certified = rcgen::generate_simple_self_signed(vec!["api.test".into()]).unwrap();
+    let certificate = certified.cert.der().clone();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certificate.clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()).into(),
+    )
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (received, request_received) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let connection = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+        let mut stream = rustls::StreamOwned::new(connection, socket);
+        let mut input = Vec::new();
+        while !input.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            input.push(byte[0]);
+        }
+        received.send(()).unwrap();
+        // Keep the response pending until the test has observed cancellation.
+        let _ = released.recv_timeout(Duration::from_secs(5));
+    });
+    let client = Arc::new(Client::new(NetConfig {
+        resolver: Arc::new(StaticResolver(BTreeMap::from([(
+            "api.test".into(),
+            vec![address],
+        )]))),
+        trust_anchors: Some(vec![certificate.to_vec()]),
+        private_hosts: BTreeSet::from(["api.test".into()]),
+        total_timeout: Duration::from_secs(30),
+        ..NetConfig::default()
+    }));
+    let fetching = client.clone();
+    let (finished, outcome) = mpsc::channel();
+    let fetch = std::thread::spawn(move || {
+        finished
+            .send(fetching.fetch(
+                &parse_request(&json!({"url":"https://api.test/"})).unwrap(),
+                &[HostRule {
+                    host: "api.test".into(),
+                    methods: vec!["GET".into()],
+                }],
+            ))
+            .unwrap();
+    });
+    request_received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("HTTPS peer received the request");
+    client.shutdown();
+    let result = outcome.recv_timeout(Duration::from_secs(1));
+    release.send(()).unwrap();
+    server.join().unwrap();
+    fetch.join().unwrap();
+    assert!(
+        result
+            .expect("shutdown must interrupt HTTP before the 30-second timeout")
+            .is_err()
+    );
+    assert!(client.connections.lock().unwrap().sockets.is_empty());
+}
+
+#[test]
 fn review_secret_partial_responses_are_final_refusals() {
     for (status, headers) in [
         (206, Vec::new()),

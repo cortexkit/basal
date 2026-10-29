@@ -497,6 +497,10 @@ pub trait CompletionSink: Send + Sync {
 /// The hosts a flow reaches. Implementations must be safe to call from
 /// several threads at once: the runtime runs a run's calls concurrently.
 pub trait Host: Send + Sync {
+    /// Stop host-owned I/O before runtime dispatch threads are joined.
+    /// Implementations must tolerate repeated shutdown requests.
+    fn shutdown(&self) {}
+
     fn secret_revoke(
         &self,
         _params: serde_json::Value,

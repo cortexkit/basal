@@ -124,6 +124,52 @@ fn wait_for_spares(f: &PoolFixture) {
     }
 }
 
+#[test]
+fn stopping_the_pool_kills_a_leased_worker_and_unblocks_its_reader() {
+    use basal_core::channel::WorkerChannel;
+
+    let options = Options::default();
+    let mut config = pool_config(&options);
+    // This test checks child shutdown, not Landlock admission. The existing
+    // optional mode still permits that check on kernels without Landlock.
+    config.landlock = basal_module::pool::LandlockPolicy::Optional;
+    let f = fixture(
+        "stop-busy",
+        Options {
+            spawner: Some(Arc::new(ProcessSpawner::new(&config))),
+            ..options
+        },
+    );
+    let mut lease = f
+        .module
+        .pool
+        .acquire(Binding::Flow("stop-busy".into()))
+        .unwrap();
+    lease.serve_run("stop-busy-run");
+    let (done, completed) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let closed = lease.recv(WAIT).is_err();
+        drop(lease);
+        done.send(closed).unwrap();
+    });
+    f.module.pool.stop();
+    let result = completed.recv_timeout(Duration::from_secs(3));
+    // Reap even when the assertion will fail, so a broken stop cannot strand
+    // the test runner behind a worker that is still waiting for its first frame.
+    if result.is_err() {
+        f.module.pool.kill_for_run("stop-busy-run");
+    }
+    reader.join().unwrap();
+    assert!(result.expect("pool stop must unblock a busy worker's reader"));
+    assert_eq!(f.module.pool.stats().busy, 0);
+    assert!(
+        f.module
+            .pool
+            .acquire(Binding::Flow("new-work".into()))
+            .is_err()
+    );
+}
+
 fn workers_of(pool: &Pool, flow: &str) -> Vec<u64> {
     pool.handouts()
         .into_iter()

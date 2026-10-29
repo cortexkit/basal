@@ -32,8 +32,8 @@ use std::collections::BTreeMap;
 #[cfg(any(test, feature = "rig-kill-hook"))]
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::{Arc, OnceLock, mpsc};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use rustls::pki_types::{CertificateDer, ServerName};
@@ -764,6 +764,30 @@ impl Default for NetConfig {
 pub struct Client {
     config: NetConfig,
     tls: OnceLock<Result<Arc<ClientConfig>, String>>,
+    connections: Mutex<Connections>,
+}
+
+#[derive(Default)]
+struct Connections {
+    stopped: bool,
+    next: u64,
+    sockets: Vec<(u64, TcpStream)>,
+}
+
+struct Connection<'a> {
+    client: &'a Client,
+    id: u64,
+}
+
+impl Drop for Connection<'_> {
+    fn drop(&mut self) {
+        self.client
+            .connections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .sockets
+            .retain(|(id, _)| *id != self.id);
+    }
 }
 
 /// What one exchange returned.
@@ -806,7 +830,40 @@ impl Client {
         Self {
             config,
             tls: OnceLock::new(),
+            connections: Mutex::new(Connections::default()),
         }
+    }
+
+    /// Interrupt active HTTP reads without abandoning the runtime thread that
+    /// will record their outcome. Only socket handles are retained; request and
+    /// secret buffers stay on the dispatch thread.
+    pub fn shutdown(&self) {
+        let mut connections = self.connections.lock().unwrap_or_else(|p| p.into_inner());
+        connections.stopped = true;
+        for (_, socket) in &connections.sockets {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.connections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .stopped
+    }
+
+    fn connection(&self, socket: &TcpStream) -> std::io::Result<Connection<'_>> {
+        let mut connections = self.connections.lock().unwrap_or_else(|p| p.into_inner());
+        if connections.stopped {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "HTTP client stopped",
+            ));
+        }
+        let id = connections.next;
+        connections.next = connections.next.wrapping_add(1);
+        connections.sockets.push((id, socket.try_clone()?));
+        Ok(Connection { client: self, id })
     }
 
     fn tls(&self) -> Result<Arc<ClientConfig>, Denial> {
@@ -1004,6 +1061,9 @@ impl Client {
 
     /// The checked addresses of `url`'s host.
     fn addresses(&self, url: &Url, deadline: Instant) -> Result<Vec<SocketAddr>, Failure> {
+        if self.stopped() {
+            return Err(unsent("HTTP client stopped".into()));
+        }
         let addrs = self
             .config
             .resolver
@@ -1058,6 +1118,9 @@ impl Client {
         let mut last_error = String::new();
         let mut tcp = None;
         for addr in addrs.iter().take(MAX_ADDRESS_ATTEMPTS) {
+            if self.stopped() {
+                return Err(before("HTTP client stopped".into()));
+            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
@@ -1073,6 +1136,9 @@ impl Client {
         let Some(tcp) = tcp else {
             return Err(before(last_error));
         };
+        let _connection = self
+            .connection(&tcp)
+            .map_err(|error| before(error.to_string()))?;
         let _ = tcp.set_nodelay(true);
         let name = ServerName::try_from(url.host.clone())
             .map_err(|e| Denial::invalid(format!("{}: {e}", url.host)))?;

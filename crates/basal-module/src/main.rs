@@ -277,9 +277,14 @@ async fn run(
     // The SDK wrapper preserves launch argument, module-id and nonce handling
     // while returning the handle from serve_with_handle. Its future must stay
     // on this runtime while blocking admission threads await describe replies.
-    let (handle, serving) = subc_client_rs::serve_from_env_with_handle(manifest(), handler).await?;
+    let (handle, serving) =
+        subc_client_rs::serve_from_env_with_handle(manifest(), handler.clone()).await?;
     scope_connection.attach(handle, tokio::runtime::Handle::current());
-    serving.await?;
+    let result = serving.await;
+    // Also drain on GOODBYE or a protocol failure, before Tokio waits for any
+    // blocking request closures left behind by the SDK's async cancellation.
+    handler.shutdown().await;
+    result?;
     Ok(())
 }
 

@@ -704,6 +704,10 @@ impl BuiltinHost {
 }
 
 impl Host for BuiltinHost {
+    fn shutdown(&self) {
+        self.net.shutdown();
+    }
+
     fn classify(&self, kind: &CallKind) -> CallClass {
         // Without the arguments, the most careful answer for `net.fetch`.
         // The runtime classes built-ins from their arguments ([`class`]).
