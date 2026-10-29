@@ -929,6 +929,14 @@ fn each_events_get_refusal_preserves_its_failure_kind() {
         "flow_scope_required",
         "flow_carrier_not_admitted",
         "events_get_carrier_refused",
+        "flow_audience_mismatch",
+        "flow_audience_excludes_repository",
+        "flow_unknown",
+        "flow_not_approved",
+        "flow_audience_conflict",
+        "arguments_invalid",
+        "unknown_refusal",
+        "tool_schema_changed",
     ] {
         let f = Fixture::new(60);
         let run = f.run();
@@ -940,7 +948,289 @@ fn each_events_get_refusal_preserves_its_failure_kind() {
             panic!("refusal {code} was not terminal")
         };
         assert_eq!(kind, code);
+        assert_eq!(f.source.calls.lock().unwrap().len(), 1);
     }
+}
+
+#[test]
+fn provider_retryability_field_overrides_legacy_classification() {
+    for code in [
+        "invalid_request",
+        "event_not_visible",
+        "event_name_mismatch",
+        "events_get_carrier_refused",
+        "flow_audience_mismatch",
+        "flow_audience_excludes_repository",
+        "flow_unknown",
+        "flow_not_approved",
+        "flow_audience_conflict",
+        "arguments_invalid",
+        "tool_schema_changed",
+        "tool_disabled",
+        "tool_semantics_changed",
+        "tool_unavailable",
+        "capability_not_admitted",
+        "unknown_tool",
+        "unknown_user_command",
+        "user_command_not_admitted",
+        "call_mode_unsupported",
+        "withdraw_not_permitted",
+        "withdraw_carrier_required",
+        "withdraw_carrier_mismatch",
+        "withdraw_scope_mismatch",
+        "principal_denied",
+    ] {
+        let mut refusal = json!({"error":{
+            "code":code,"transmission":"not_sent","cause":{"code":"unavailable"}
+        }});
+        assert!(!transient_body_refusal(&refusal), "{code}");
+        refusal["error"]["retryable"] = json!(true);
+        assert!(transient_body_refusal(&refusal), "{code}");
+    }
+    for code in [
+        "flow_audience_unavailable",
+        "store_failure",
+        "resource_exhausted",
+        "module_warming",
+        "module_reloading",
+        "scope_not_synced",
+        "target_unavailable",
+        "module_timeout",
+    ] {
+        let mut refusal = json!({"error":{"code":code}});
+        assert!(transient_body_refusal(&refusal), "{code}");
+        refusal["error"]["retryable"] = json!(false);
+        assert!(!transient_body_refusal(&refusal), "{code}");
+    }
+    let mut unknown = json!({"error":{"code":"future_refusal"}});
+    assert!(!transient_body_refusal(&unknown));
+    unknown["error"]["retryable"] = json!(true);
+    assert!(transient_body_refusal(&unknown));
+    unknown["error"]["retryable"] = json!("true");
+    assert!(!transient_body_refusal(&unknown));
+}
+
+#[test]
+fn unsent_unknown_refusal_needs_an_unavailable_or_timeout_cause() {
+    for cause in [
+        json!({"code":"unavailable"}),
+        json!({"code":"module_timeout"}),
+        json!("{\"code\":\"unavailable\",\"message\":\"route unavailable or timed out\"}"),
+        json!("route timed out"),
+        json!("route timeout"),
+    ] {
+        let mut refusal = json!({"error":{
+            "code":"future_refusal","transmission":"not_sent","cause":cause
+        }});
+        assert!(transient_body_refusal(&refusal), "{cause}");
+        refusal["error"]["transmission"] = json!("sent");
+        assert!(!transient_body_refusal(&refusal), "{cause}");
+    }
+    assert!(!transient_body_refusal(&json!({"error":{
+        "code":"future_refusal","transmission":"not_sent","cause":{"code":"denied"}
+    }})));
+    assert!(transient_body_refusal(&json!({"error":{
+        "code":"flow_audience_unavailable","cause":"malformed core reply"
+    }})));
+}
+
+#[test]
+fn transient_provider_refusal_retries_then_delivers_the_body() {
+    let f = Fixture::new(60);
+    let run = f.run();
+    let manifest = Manifest::parse(&run.manifest).unwrap();
+    f.reply(
+        json!({"error":{
+            "code":"flow_audience_unavailable",
+            "message":"flow audience unavailable",
+            "transmission":"not_sent",
+            "cause":"{\"code\":\"unavailable\",\"message\":\"route unavailable or timed out\"}"
+        }}),
+        Settlement::Rejected,
+    );
+    assert!(matches!(
+        f.rt.event_preamble(&run, &manifest).unwrap(),
+        Preamble::Retry
+    ));
+    assert!(f.rt.startable().unwrap().is_empty());
+    let retry_at: i64 =
+        f.rt.store()
+            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
+            .unwrap();
+    f.reply(reply(), Settlement::Fulfilled);
+    assert!(matches!(
+        f.rt.event_preamble(&run, &manifest).unwrap(),
+        Preamble::Retry
+    ));
+    assert_eq!(f.source.calls.lock().unwrap().len(), 1);
+    f.rt.config.clock.set(retry_at);
+    let Preamble::Ready(trigger) = f.rt.event_preamble(&run, &manifest).unwrap() else {
+        panic!("body was not delivered after the provider recovered")
+    };
+    let trigger: serde_json::Value = serde_json::from_str(trigger.as_str()).unwrap();
+    assert_eq!(trigger["event"]["body"], json!({"changed":true}));
+    let calls = f.source.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].attempt, 1);
+    assert_eq!(calls[1].attempt, 2);
+}
+
+#[test]
+fn provider_retry_after_is_a_floor_but_never_outlasts_the_deadline() {
+    for (floor, expected) in [(100, 2_000), (5_000, 6_000), (u64::MAX, 10_000)] {
+        let f = Fixture::new(60);
+        let mut run = f.run();
+        run.deadline_at = Some(10_000);
+        f.reply(
+            json!({"error":{"code":"resource_exhausted","retryable":true,"retry_after_ms":floor}}),
+            Settlement::Fulfilled,
+        );
+        assert!(matches!(
+            f.rt.event_preamble(&run, &Manifest::parse(&run.manifest).unwrap())
+                .unwrap(),
+            Preamble::Retry
+        ));
+        let retry_at: i64 = f
+            .rt
+            .store()
+            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(retry_at, expected);
+    }
+}
+
+#[test]
+fn provider_body_retries_preserve_the_last_code_at_the_deadline() {
+    let f = Fixture::new(60);
+    let mut run = f.run();
+    run.deadline_at = Some(4_500);
+    let manifest = Manifest::parse(&run.manifest).unwrap();
+    for code in ["store_failure", "flow_audience_unavailable"] {
+        f.reply(json!({"error":{"code":code}}), Settlement::Rejected);
+        assert!(matches!(
+            f.rt.event_preamble(&run, &manifest).unwrap(),
+            Preamble::Retry
+        ));
+        let retry_at: i64 = f
+            .rt
+            .store()
+            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
+            .unwrap();
+        f.rt.config.clock.set(retry_at);
+    }
+    f.source
+        .replies
+        .lock()
+        .unwrap()
+        .push(Err(TransportError::unsent("still offline")));
+    assert!(matches!(
+        f.rt.event_preamble(&run, &manifest).unwrap(),
+        Preamble::Retry
+    ));
+    let retry_at: i64 =
+        f.rt.store()
+            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
+            .unwrap();
+    assert_eq!(retry_at, 4_500);
+    f.rt.config.clock.set(retry_at);
+    let Preamble::Failed { kind, detail } = f.rt.event_preamble(&run, &manifest).unwrap() else {
+        panic!("body retry did not fail at the deadline")
+    };
+    assert_eq!(kind, "flow_audience_unavailable");
+    assert!(detail.contains("flow_audience_unavailable"));
+    assert_eq!(f.source.calls.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn body_refusal_migration_preserves_existing_fetch_journal() {
+    let c = rusqlite::Connection::open_in_memory().unwrap();
+    c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    for migration in crate::schema::MIGRATIONS.iter().filter(|m| m.version < 46) {
+        c.execute_batch(migration.statements).unwrap();
+    }
+    c.execute_batch(r#"
+        INSERT INTO flows(flow_id,created_at) VALUES ('f',1);
+        INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at)
+        VALUES ('r','f','t',1,'{}','return 1','{}',zeroblob(32),'pending',1);
+        INSERT INTO event_body_journal(run_id,body,digest,attempt,retry_at)
+        VALUES ('r',X'6162','digest',3,4000);
+    "#).unwrap();
+    c.execute_batch(
+        crate::schema::MIGRATIONS
+            .iter()
+            .find(|m| m.version == 46)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    let saved: (Vec<u8>, String, i64, i64, Option<String>) = c.query_row(
+        "SELECT body,digest,attempt,retry_at,last_provider_refusal FROM event_body_journal WHERE run_id='r'", [],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+    ).unwrap();
+    assert_eq!(saved, (b"ab".to_vec(), "digest".into(), 3, 4_000, None));
+}
+
+#[test]
+fn provider_refusal_returning_at_the_deadline_keeps_its_code() {
+    let f = Fixture::new(60);
+    let mut run = f.run();
+    run.deadline_at = Some(2_000);
+    let clock = f.rt.config.clock.clone();
+    *f.source.on_call.lock().unwrap() = Some(Box::new(move || clock.set(2_000)));
+    f.reply(
+        json!({"error":{"code":"store_failure"}}),
+        Settlement::Rejected,
+    );
+    assert!(matches!(
+        f.rt.event_preamble(&run, &Manifest::parse(&run.manifest).unwrap()).unwrap(),
+        Preamble::Failed { kind, .. } if kind == "store_failure"
+    ));
+}
+
+#[test]
+fn transient_provider_warning_is_logged_once_across_retries() {
+    let f = Fixture::new(60);
+    let run = f.run();
+    let manifest = Manifest::parse(&run.manifest).unwrap();
+    let logs = CapturedLogs::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(logs.clone());
+        for code in [
+            "store_failure",
+            "flow_audience_unavailable",
+            "module_warming",
+        ] {
+            f.reply(json!({"error":{"code":code}}), Settlement::Rejected);
+            assert!(matches!(
+                f.rt.event_preamble(&run, &manifest).unwrap(),
+                Preamble::Retry
+            ));
+            let retry_at: i64 = f
+                .rt
+                .store()
+                .read(|c| {
+                    Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?)
+                })
+                .unwrap();
+            f.rt.config.clock.set(retry_at);
+        }
+    }
+    let events = logs.0.lock().unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, tracing::Level::WARN);
+    for field in [
+        "flow_id=flow",
+        "provider=plexus",
+        "reason=\"store_failure\"",
+        "waiting for the provider",
+    ] {
+        assert!(
+            events[0].1.contains(field),
+            "missing {field}: {:?}",
+            events[0]
+        );
+    }
+    assert!(events[0].1.contains(&format!("run_id={}", run.run_id)));
 }
 
 #[test]

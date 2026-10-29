@@ -10,6 +10,7 @@ struct Worker {
     result: Option<ActivationResult>,
     activation: u64,
     starts: usize,
+    trigger: Option<JsonText>,
 }
 impl Worker {
     fn new(succeeds: bool) -> Self {
@@ -32,6 +33,7 @@ impl Worker {
             }),
             activation: 0,
             starts: 0,
+            trigger: None,
         }
     }
 }
@@ -43,6 +45,7 @@ impl WorkerChannel for Worker {
         if let ParentMessage::Activate(request) = message {
             self.activation = request.activation_id;
             self.starts += 1;
+            self.trigger = Some(request.trigger.clone());
         }
         Ok(())
     }
@@ -106,6 +109,16 @@ fn sends(f: &Fixture) -> Vec<serde_json::Value> {
 fn drain(f: &Fixture) {
     f.rt.drain_owner_notices().unwrap();
 }
+fn failing_latched(f: &Fixture) -> bool {
+    f.rt.store()
+        .read(|c| {
+            Ok(c.query_row(
+        "SELECT failing_episode IS NOT NULL FROM flow_owner_notice_latches WHERE flow_id='flow'",
+        [], |r| r.get(0),
+    )?)
+        })
+        .unwrap()
+}
 fn delivery(f: &Fixture, id: &str) -> (Option<i64>, u32, Option<String>) {
     f.rt.store().read(|c| Ok(c.query_row(
         "SELECT delivered_at,attempts,failure_code FROM outbox WHERE kind='flow.owner_notice' AND json_extract(body,'$.notice_id')=?1",
@@ -147,6 +160,110 @@ fn threshold_counts_real_preamble_failures() {
     assert!(!sent.to_string().contains("private"));
     assert!(f.rt.flow("flow").unwrap().unwrap().enabled);
 }
+
+#[test]
+fn transient_body_deferrals_preserve_the_failure_streak_until_recovery() {
+    let f = setup();
+    drive(&f, 1, Some("event_not_visible"), false);
+    drive(&f, 2, Some("event_not_visible"), false);
+    f.rt.admit_events(&[notice(3)]).unwrap();
+    let id = f.rt.startable().unwrap()[0].0.clone();
+    let mut worker = Worker::new(true);
+    for code in [
+        "flow_audience_unavailable",
+        "store_failure",
+        "module_warming",
+    ] {
+        f.reply(json!({"error":{"code":code}}), Settlement::Rejected);
+        assert_eq!(
+            f.rt.activate(&id, &mut worker).unwrap(),
+            ActivationEnd::Requeued
+        );
+        assert_eq!(f.rt.run(&id).unwrap().state, crate::RunState::Pending);
+        assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 2);
+        assert!(!failing_latched(&f));
+        drain(&f);
+        assert!(sends(&f).is_empty());
+        assert_eq!(worker.starts, 0);
+        let retry_at: i64 =
+            f.rt.store()
+                .read(|c| {
+                    Ok(c.query_row(
+                        "SELECT retry_at FROM event_body_journal WHERE run_id=?1",
+                        [&id],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+        f.rt.config.clock.set(retry_at);
+    }
+    let mut body = reply();
+    body["result"]["event_key"] = json!(notice(3).event_key);
+    f.reply(body, Settlement::Fulfilled);
+    assert!(matches!(
+        f.rt.activate(&id, &mut worker).unwrap(),
+        ActivationEnd::Succeeded { .. }
+    ));
+    assert_eq!(worker.starts, 1);
+    let trigger: serde_json::Value =
+        serde_json::from_str(worker.trigger.unwrap().as_str()).unwrap();
+    assert_eq!(trigger["event"]["body"], json!({"changed":true}));
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
+    drain(&f);
+    assert!(sends(&f).is_empty());
+}
+
+#[test]
+fn deferred_body_expiry_counts_one_failure_with_the_provider_code_after_restart() {
+    for enforce in [false, true] {
+        let mut f = setup();
+        drive(&f, 1, Some("event_not_visible"), false);
+        drive(&f, 2, Some("event_not_visible"), false);
+        f.rt.admit_events(&[notice(3)]).unwrap();
+        let id = f.rt.startable().unwrap()[0].0.clone();
+        let mut worker = Worker::new(true);
+        f.reply(
+            json!({"error":{"code":"flow_audience_unavailable"}}),
+            Settlement::Rejected,
+        );
+        assert_eq!(
+            f.rt.activate(&id, &mut worker).unwrap(),
+            ActivationEnd::Requeued
+        );
+        let deadline = f.rt.run(&id).unwrap().deadline_at.unwrap();
+        assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 2);
+        assert!(!failing_latched(&f));
+        drain(&f);
+        assert!(sends(&f).is_empty());
+        restart(&mut f);
+        f.rt.config.clock.set(deadline);
+        if enforce {
+            assert_eq!(f.rt.enforce_deadlines().unwrap(), vec![id.clone()]);
+        } else {
+            assert_eq!(
+                f.rt.activate(&id, &mut worker).unwrap(),
+                ActivationEnd::NotRunnable {
+                    state: crate::RunState::Failed
+                }
+            );
+        }
+        assert_eq!(
+            f.rt.run(&id).unwrap().error_kind.as_deref(),
+            Some("flow_audience_unavailable")
+        );
+        assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 3);
+        assert!(failing_latched(&f));
+        assert_eq!(worker.starts, 0);
+        drain(&f);
+        let sent = sends(&f);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["error_kind"], "flow_audience_unavailable");
+        assert_eq!(sent[0]["consecutive_failures"], 3);
+        assert!(f.rt.enforce_deadlines().unwrap().is_empty());
+        assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 3);
+    }
+}
+
 #[test]
 fn once_per_episode_survives_delivery_and_restart() {
     let mut f = setup();

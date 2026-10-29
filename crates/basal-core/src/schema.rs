@@ -484,6 +484,12 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 45,
         statements: include_str!("schema_secret_review_v45.sql"),
     },
+    Migration {
+        version: 46,
+        // Preserve the provider's reason through retries and deadline expiry,
+        // without treating a deferred body query as a failed run.
+        statements: "ALTER TABLE event_body_journal ADD COLUMN last_provider_refusal TEXT;",
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,

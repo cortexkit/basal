@@ -590,6 +590,116 @@ pub(crate) enum Preamble {
     Failed { kind: String, detail: String },
 }
 
+// A boolean error.retryable wins over both lists, including future provider codes.
+// Without it, these refusals describe invalid arguments, visibility or approval
+// boundaries, or permanent tool-provider contract refusals; a transport cause
+// must not turn them into retries.
+const FINAL_BODY_REFUSALS: &[&str] = &[
+    "event_not_visible",
+    "event_name_mismatch",
+    "events_get_carrier_refused",
+    "flow_audience_mismatch",
+    "flow_audience_excludes_repository",
+    "flow_unknown",
+    "flow_not_approved",
+    "flow_audience_conflict",
+    cortexkit_role_tool_provider::errors::INVALID_REQUEST,
+    cortexkit_role_tool_provider::errors::TOOL_DISABLED,
+    cortexkit_role_tool_provider::errors::TOOL_SCHEMA_CHANGED,
+    cortexkit_role_tool_provider::errors::TOOL_SEMANTICS_CHANGED,
+    cortexkit_role_tool_provider::errors::TOOL_UNAVAILABLE,
+    cortexkit_role_tool_provider::errors::CAPABILITY_NOT_ADMITTED,
+    cortexkit_role_tool_provider::errors::UNKNOWN_TOOL,
+    cortexkit_role_tool_provider::errors::UNKNOWN_USER_COMMAND,
+    cortexkit_role_tool_provider::errors::USER_COMMAND_NOT_ADMITTED,
+    cortexkit_role_tool_provider::errors::CALL_MODE_UNSUPPORTED,
+    cortexkit_role_tool_provider::errors::WITHDRAW_NOT_PERMITTED,
+    cortexkit_role_tool_provider::errors::WITHDRAW_CARRIER_REQUIRED,
+    cortexkit_role_tool_provider::errors::WITHDRAW_CARRIER_MISMATCH,
+    cortexkit_role_tool_provider::errors::WITHDRAW_SCOPE_MISMATCH,
+    "principal_denied",
+];
+
+// A boolean error.retryable wins here too. These supplement the shared route
+// classifier for events_get, which is a pure query and safe to repeat.
+const TRANSIENT_BODY_REFUSALS: &[&str] = &[
+    // Audience lookup can fail during core deploys, including malformed replies.
+    "flow_audience_unavailable",
+    // The provider could not read its store; a later read may recover.
+    "store_failure",
+    // Capacity may recover; the provider's retry_after_ms sets a retry floor.
+    "resource_exhausted",
+    // Daemon readiness refusals can also arrive inside completed provider replies.
+    "module_warming",
+    "module_reloading",
+];
+
+fn provider_refusal_code(reply: &serde_json::Value) -> &str {
+    reply["error"]["code"]
+        .as_str()
+        .or_else(|| reply["code"].as_str())
+        .unwrap_or("events_get_refused")
+}
+
+fn transient_body_refusal(reply: &serde_json::Value) -> bool {
+    let error = reply.get("error").unwrap_or(reply);
+    if let Some(retryable) = error["retryable"].as_bool() {
+        return retryable;
+    }
+    let code = provider_refusal_code(reply);
+    if FINAL_BODY_REFUSALS.contains(&code) || code.ends_with("_invalid") {
+        return false;
+    }
+    if cortexkit_role_tool_provider::errors::is_transient(code)
+        || TRANSIENT_BODY_REFUSALS.contains(&code)
+    {
+        return true;
+    }
+    if error["transmission"].as_str() != Some("not_sent") {
+        return false;
+    }
+    // Older providers encode the underlying route refusal as a JSON string;
+    // accept structured causes and plain unavailable/timeout messages as well.
+    let cause = &error["cause"];
+    let decoded = cause
+        .as_str()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+    let cause = decoded.as_ref().unwrap_or(cause);
+    let cause_code = cause["code"].as_str().unwrap_or_default();
+    let message = cause["message"]
+        .as_str()
+        .or_else(|| cause.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(cause_code, "unavailable" | "timeout" | "timed_out")
+        || cause_code.ends_with("_unavailable")
+        || cause_code.ends_with("_timeout")
+        || message.contains("unavailable")
+        || message.contains("timeout")
+        || message.contains("timed out")
+}
+
+pub(crate) fn body_deadline_failure(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+) -> Result<Option<(String, String)>> {
+    use rusqlite::OptionalExtension;
+    let last: Option<String> = conn
+        .query_row(
+            "SELECT last_provider_refusal FROM event_body_journal WHERE run_id=?1 AND body IS NULL",
+            [run_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    last.map(|detail| {
+        let reply: serde_json::Value =
+            serde_json::from_str(&detail).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        Ok((provider_refusal_code(&reply).into(), detail))
+    })
+    .transpose()
+}
+
 fn mismatch(detail: impl Into<String>) -> Preamble {
     Preamble::Failed {
         kind: "event_body_mismatch".into(),
@@ -678,20 +788,26 @@ impl Runtime {
         let (module, name, version) = notice.identity()?;
         let now = self.config.clock.now_ms();
         if run.deadline_at.is_some_and(|deadline| now >= deadline) {
-            return Ok(Preamble::Failed {
-                kind: "deadline".into(),
-                detail: "event body unavailable before run deadline".into(),
-            });
+            let (kind, detail) = self
+                .store()
+                .read(|c| body_deadline_failure(c, &run.run_id))?
+                .unwrap_or_else(|| {
+                    (
+                        "deadline".into(),
+                        "event body unavailable before run deadline".into(),
+                    )
+                });
+            return Ok(Preamble::Failed { kind, detail });
         }
-        let saved: Option<(Option<Vec<u8>>, i64, Option<i64>)> = self.store().read(|c| {
+        let saved: Option<(Option<Vec<u8>>, i64, Option<i64>, Option<String>)> = self.store().read(|c| {
             Ok(c.query_row(
-                "SELECT body,attempt,retry_at FROM event_body_journal WHERE run_id=?1",
+                "SELECT body,attempt,retry_at,last_provider_refusal FROM event_body_journal WHERE run_id=?1",
                 [&run.run_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?)
         })?;
-        if let Some((Some(body), _, _)) = &saved {
+        if let Some((Some(body), _, _, _)) = &saved {
             if !body_targets_run(&notice, body, &run.flow_id) {
                 return Ok(mismatch("flow-targeted body does not name the run's flow"));
             }
@@ -699,7 +815,7 @@ impl Runtime {
         }
         if saved
             .as_ref()
-            .is_some_and(|(_, _, at)| at.is_some_and(|at| now < at))
+            .is_some_and(|(_, _, at, _)| at.is_some_and(|at| now < at))
         {
             return Ok(Preamble::Retry);
         }
@@ -714,7 +830,8 @@ impl Runtime {
             module: module.into(),
             op: op.into(),
         };
-        let attempt = saved.map_or(1, |(_, attempt, _)| attempt.saturating_add(1));
+        let first_provider_refusal = saved.as_ref().is_none_or(|(_, _, _, last)| last.is_none());
+        let attempt = saved.map_or(1, |(_, attempt, _, _)| attempt.saturating_add(1));
         // A durable query intent precedes the send; a crash may repeat the
         // read, but a committed body is always replayed without another call.
         self.store().write(|tx| {
@@ -741,15 +858,6 @@ impl Runtime {
                 .dispatch_classified(&request, CallClass::Query),
             Err(refusal) => Err(TransportError::Refused(refusal)),
         };
-        if run
-            .deadline_at
-            .is_some_and(|deadline| self.config.clock.now_ms() >= deadline)
-        {
-            return Ok(Preamble::Failed {
-                kind: "deadline".into(),
-                detail: "event body query returned after the run deadline".into(),
-            });
-        }
         if let Err(TransportError::Refused(refusal)) = &dispatched
             && refusal.reason == basal_host::flow_refusal::RefusalReason::NoFlowScope
         {
@@ -764,6 +872,11 @@ impl Runtime {
                 );
             }
         }
+        let past_deadline = run
+            .deadline_at
+            .is_some_and(|deadline| self.config.clock.now_ms() >= deadline);
+        let mut provider_refusal = None;
+        let mut retry_after_ms = 0;
         match dispatched {
             Ok(Dispatched::Completed(outcome)) => {
                 let reply: serde_json::Value = match serde_json::from_str(outcome.value.as_str()) {
@@ -771,54 +884,84 @@ impl Runtime {
                     Err(e) => return Ok(mismatch(e.to_string())),
                 };
                 if outcome.settlement == Settlement::Rejected || reply.get("error").is_some() {
-                    let code = reply["error"]["code"]
-                        .as_str()
-                        .or_else(|| reply["code"].as_str())
-                        .unwrap_or("events_get_refused");
-                    return Ok(Preamble::Failed {
-                        kind: code.into(),
-                        detail: reply.to_string(),
-                    });
-                }
-                let body = match verify_body(&notice, &reply) {
-                    Ok(body) => body,
-                    Err(kind) => return Ok(mismatch(kind)),
-                };
-                if !body_targets_run(&notice, &body, &run.flow_id) {
-                    return Ok(mismatch("flow-targeted body does not name the run's flow"));
-                }
-                let trigger = script_trigger(&notice, &body)?;
-                self.store().write(|tx| {
+                    let code = provider_refusal_code(&reply);
+                    if !transient_body_refusal(&reply) || past_deadline {
+                        return Ok(Preamble::Failed {
+                            kind: code.into(),
+                            detail: reply.to_string(),
+                        });
+                    }
+                    retry_after_ms = reply.get("error").unwrap_or(&reply)["retry_after_ms"]
+                        .as_u64()
+                        .unwrap_or(0);
+                    provider_refusal = Some((code.to_owned(), reply.to_string()));
+                } else if !past_deadline {
+                    let body = match verify_body(&notice, &reply) {
+                        Ok(body) => body,
+                        Err(kind) => return Ok(mismatch(kind)),
+                    };
+                    if !body_targets_run(&notice, &body, &run.flow_id) {
+                        return Ok(mismatch("flow-targeted body does not name the run's flow"));
+                    }
+                    let trigger = script_trigger(&notice, &body)?;
+                    self.store().write(|tx| {
                     tx.execute("UPDATE event_body_journal SET body=?2,digest=?3,retry_at=NULL WHERE run_id=?1", params![run.run_id, body, notice.digest])?;
                     Ok(())
                 })?;
-                Ok(Preamble::Ready(trigger))
+                    return Ok(Preamble::Ready(trigger));
+                }
             }
-            Err(TransportError::Refused(refusal)) if !refusal.readiness() => Ok(Preamble::Failed {
-                kind: refusal.reason.as_str().into(),
-                detail: refusal.message().into(),
-            }),
-            _ => {
-                let shift = u32::try_from(attempt.saturating_sub(1))
-                    .unwrap_or(31)
-                    .min(31);
-                let delay = self
-                    .config
-                    .deferral_retry
-                    .saturating_mul(1u32 << shift)
-                    .min(self.config.deferral_retry_max);
-                let retry = now
-                    .saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX))
-                    .min(run.deadline_at.unwrap_or(i64::MAX));
-                self.store().write(|tx| {
+            Err(TransportError::Refused(refusal)) if !refusal.readiness() => {
+                return Ok(Preamble::Failed {
+                    kind: refusal.reason.as_str().into(),
+                    detail: refusal.message().into(),
+                });
+            }
+            _ => {}
+        }
+        if past_deadline {
+            let (kind, detail) = self
+                .store()
+                .read(|c| body_deadline_failure(c, &run.run_id))?
+                .unwrap_or_else(|| {
+                    (
+                        "deadline".into(),
+                        "event body query returned after the run deadline".into(),
+                    )
+                });
+            return Ok(Preamble::Failed { kind, detail });
+        }
+        let shift = u32::try_from(attempt.saturating_sub(1))
+            .unwrap_or(31)
+            .min(31);
+        let delay = self
+            .config
+            .deferral_retry
+            .saturating_mul(1u32 << shift)
+            .min(self.config.deferral_retry_max)
+            .max(std::time::Duration::from_millis(retry_after_ms));
+        let retry = self
+            .config
+            .clock
+            .now_ms()
+            .saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX))
+            .min(run.deadline_at.unwrap_or(i64::MAX));
+        self.store().write(|tx| {
                     tx.execute(
-                        "UPDATE event_body_journal SET retry_at=?2 WHERE run_id=?1",
-                        params![run.run_id, retry],
+                        "UPDATE event_body_journal SET retry_at=?2,last_provider_refusal=COALESCE(?3,last_provider_refusal) WHERE run_id=?1",
+                        params![run.run_id, retry, provider_refusal.as_ref().map(|(_, detail)| detail)],
                     )?;
                     Ok(())
                 })?;
-                Ok(Preamble::Retry)
-            }
+        if first_provider_refusal && let Some((code, _)) = provider_refusal {
+            tracing::warn!(
+                flow_id = %run.flow_id,
+                run_id = %run.run_id,
+                provider = %module,
+                reason = code.as_str(),
+                "event body fetch is waiting for the provider"
+            );
         }
+        Ok(Preamble::Retry)
     }
 }
