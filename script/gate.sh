@@ -108,6 +108,24 @@ remote_lane() {
         return
     fi
     check_toolchain
+    if [[ $platform == windows ]]; then
+        local metadata_log="$root/target/gate-windows-metadata.log"
+        mkdir -p "$root/target"
+        if ! cargo metadata --locked --offline --format-version 1 >/dev/null 2>"$metadata_log"; then
+            cat "$metadata_log" >&2
+            if grep -q "can't checkout from" "$metadata_log" && grep -q 'offline mode' "$metadata_log"; then
+                echo 'SKIP windows: MOTOR offline runner lacks locked Git dependency prefetch; Windows tests await runner provisioning'
+                return 0
+            fi
+            return 1
+        fi
+    fi
+    if [[ $platform == macos ]]; then
+        mkdir -p "$root/target"
+        export CARGO_TARGET_DIR
+        CARGO_TARGET_DIR=$(mktemp -d "$root/target/gate-macos.XXXXXX")
+        echo "Isolated macOS build directory: $CARGO_TARGET_DIR"
+    fi
     install_nats
     case "$platform" in
         linux)
@@ -116,7 +134,8 @@ remote_lane() {
             run cargo fmt --all --check
             run cargo clippy --workspace --all-targets --locked -- -D warnings
             run cargo clippy --workspace --all-targets --locked --features basal-module/rig-kill-hook -- -D warnings
-            export BASAL_REQUIRE_VISIBLE_PROC=1
+            unset BASAL_REQUIRE_VISIBLE_PROC
+            echo 'NOTE visible-proc enforcement is CI-only: MOTOR hides other processes in /proc'
             unix_tests linux
             if rustup toolchain list | grep -q '^1\.89\.0[- ]'; then
                 run rustc +1.89.0 --version
@@ -231,6 +250,7 @@ if [[ $print_plan == yes ]]; then
     echo '# Local cleanup; do not commit transient binary inputs:'
     echo 'script/gate.sh --clean-tools'
     echo '# SKIP native linux-arm64/trace and second Windows image: no MOTOR selector'
+    echo '# Windows explicitly skips if MOTOR cannot prefetch locked Git sources for offline Cargo.'
     echo '# minimum-rust runs on Linux only if Rust 1.89.0 is already provisioned; otherwise an explicit skip is logged.'
     exit
 fi
@@ -364,7 +384,11 @@ failed=0
 for ((index=0; index<${#lanes[@]}; index++)); do
     if wait "${pids[$index]}"; then
         read -r duration <"$logs/${lanes[$index]}.seconds"
-        echo "PASS ${lanes[$index]} (${duration}s lane duration)"
+        if grep -q "^SKIP ${lanes[$index]}:" "$logs/${lanes[$index]}.log"; then
+            echo "SKIP ${lanes[$index]} (${duration}s lane duration; reason below)"
+        else
+            echo "PASS ${lanes[$index]} (${duration}s lane duration)"
+        fi
         grep '^SKIP ' "$logs/${lanes[$index]}.log" || true
     else
         result=$?

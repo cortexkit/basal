@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -165,6 +166,44 @@ class GateTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("older than workspace rust-version", result.stderr)
             self.assertNotIn("Missing offline NATS", result.stderr)
+
+    def test_windows_skips_only_unavailable_offline_git_sources(self):
+        script = Path(gate.__file__).with_name("gate.sh")
+        for message, skipped in (("can't checkout from 'https://example.invalid/repo': you are in the offline mode (--offline)", True), ("package version does not match Cargo.lock", False)):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                for tool, response in (("uname", "MINGW64_NT"), ("rustc", "rustc 1.99.0 (fixture)")):
+                    path = Path(tmp) / tool
+                    path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{response}'\n")
+                    path.chmod(0o755)
+                cargo = Path(tmp) / "cargo"
+                cargo.write_text('#!/bin/sh\nif [ "$1" = --version ]; then echo "cargo 1.99.0 (fixture)"; exit 0; fi\nprintf "%s\\n" "$FIXTURE_METADATA_ERROR" >&2\nexit 101\n')
+                cargo.chmod(0o755)
+                result = subprocess.run(["bash", str(script), "--lane", "windows", "basal-proto"], text=True, capture_output=True, env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "FIXTURE_METADATA_ERROR": message})
+                self.assertEqual(result.returncode == 0, skipped)
+                self.assertEqual("SKIP windows:" in result.stdout, skipped)
+                self.assertNotIn("Missing offline NATS", result.stderr)
+
+    def test_macos_build_dir_is_unique_even_with_inherited_target_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "script").mkdir()
+            script = root / "script/gate.sh"
+            shutil.copy2(Path(gate.__file__).with_name("gate.sh"), script)
+            (root / "Cargo.toml").write_text('[workspace.package]\nrust-version = "1.89.0"\n')
+            (root / "bin").mkdir()
+            for tool, response in (("uname", "Darwin"), ("rustc", "rustc 1.99.0 (fixture)"), ("cargo", "cargo 1.99.0 (fixture)")):
+                path = root / "bin" / tool
+                path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{response}'\n")
+                path.chmod(0o755)
+            directories = []
+            for _ in range(2):
+                result = subprocess.run(["bash", str(script), "--lane", "macos", "basal-module"], text=True, capture_output=True, env={**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}", "CARGO_TARGET_DIR": "stale-cache"})
+                self.assertIn("Missing offline NATS", result.stderr)
+                directory = result.stdout.split("Isolated macOS build directory: ", 1)[1].strip()
+                self.assertEqual(Path(directory).parent, root / "target")
+                self.assertTrue(Path(directory).is_dir())
+                directories.append(directory)
+            self.assertNotEqual(*directories)
 
 
 if __name__ == "__main__":
