@@ -80,6 +80,10 @@ const MIN_STACK_BYTES: u64 = 16 * 1024;
 // macOS. QuickJS's limit must stay well inside the real stack, or deep
 // recursion would overflow the thread before the engine noticed.
 const MAX_STACK_BYTES: u64 = 4 * 1024 * 1024;
+// Setup has a bounded stack independent of the user's budget: QuickJS's
+// prelude parser can replace stack overflow with a misleading syntax error.
+// The user's limit is installed after lockdown, before compiling user source.
+const SETUP_STACK_BYTES: usize = 1024 * 1024;
 // Positions cross into JavaScript as numbers, which are exact up to 2^53.
 const MAX_POSITION: u64 = 1 << 53;
 
@@ -697,7 +701,14 @@ pub fn run_activation(
     request: &ActivationRequest,
     link: Rc<RefCell<dyn HostLink>>,
 ) -> ActivationResult {
-    run(request, link, false, request.prefix.clone())
+    run(
+        request,
+        link,
+        false,
+        request.prefix.clone(),
+        #[cfg(test)]
+        None,
+    )
 }
 
 /// Runs an owned IPC request without copying its recorded values.
@@ -706,7 +717,14 @@ pub fn run_activation_owned(
     link: Rc<RefCell<dyn HostLink>>,
 ) -> ActivationResult {
     let prefix = std::mem::take(&mut request.prefix);
-    run(&request, link, false, prefix)
+    run(
+        &request,
+        link,
+        false,
+        prefix,
+        #[cfg(test)]
+        None,
+    )
 }
 
 /// Runs an activation with the raw native bridge exposed to the script as
@@ -717,7 +735,7 @@ pub(crate) fn run_activation_with_raw_bridge(
     request: &ActivationRequest,
     link: Rc<RefCell<dyn HostLink>>,
 ) -> ActivationResult {
-    run(request, link, true, request.prefix.clone())
+    run(request, link, true, request.prefix.clone(), None)
 }
 
 fn run(
@@ -725,11 +743,21 @@ fn run(
     link: Rc<RefCell<dyn HostLink>>,
     #[cfg_attr(not(test), expect(unused_variables))] expose_raw_bridge: bool,
     prefix: Vec<RecordedCall>,
+    #[cfg(test)] stack_bytes_override: Option<u64>,
 ) -> ActivationResult {
     let bridge = match plan(request, prefix) {
         Ok(bridge) => bridge,
         Err(result) => return result,
     };
+    // Tests can use stack limits below the minimum budget accepted for requests.
+    #[cfg(test)]
+    let overridden = stack_bytes_override.map(|bytes| {
+        let mut request = request.clone();
+        request.budgets.stack_bytes = bytes;
+        request
+    });
+    #[cfg(test)]
+    let request = overridden.as_ref().unwrap_or(request);
     let shared = Rc::new(Shared {
         clock: JsClock::new(Duration::from_micros(request.budgets.js_time_micros)),
         halted: Cell::new(false),
@@ -784,7 +812,7 @@ fn run(
             },
         )));
     }
-    rt.set_max_stack_size(request.budgets.stack_bytes as usize);
+    rt.set_max_stack_size(SETUP_STACK_BYTES);
     let interrupt = shared.clone();
     rt.set_interrupt_handler(Some(Box::new(move || {
         interrupt.halted.get()
@@ -1036,6 +1064,8 @@ impl Activation {
             }
         };
         self.hooks = Some(hooks);
+        self.rt
+            .set_max_stack_size(request.budgets.stack_bytes as usize);
 
         // Evaluation is an engine entry under the activation's budgets and
         // lockdown, including any top-level code accepted by the parser. The

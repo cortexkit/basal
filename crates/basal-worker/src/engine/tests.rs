@@ -6,8 +6,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use basal_proto::{
-    ActivationRequest, ActivationResult, Budgets, CallKind, Failure, HostCall, JsonText, Outcome,
-    Primitive, Profile, Settlement,
+    ActivationRequest, ActivationResult, BudgetKind, Budgets, CallKind, Failure, HostCall,
+    JsonText, Outcome, Primitive, Profile, Settlement,
 };
 
 use super::{run_activation, run_activation_with_raw_bridge};
@@ -75,6 +75,75 @@ fn shell_issued(link: &EchoLink) -> bool {
     link.issued
         .iter()
         .any(|c| c.kind == CallKind::Primitive(Primitive::Sh))
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn prelude_stack_exhaustion_is_a_stack_budget() {
+    let rt = rquickjs::Runtime::new().unwrap();
+    let ctx = rquickjs::Context::custom::<super::Intrinsics>(&rt).unwrap();
+    rt.set_max_stack_size(8 * 1024);
+    ctx.with(|ctx| {
+        // No user source is involved: this limit cannot compile the fixed prelude.
+        assert!(matches!(
+            ctx.eval::<rquickjs::Value, _>(super::PRELUDE),
+            Err(rquickjs::Error::Exception)
+        ));
+        ctx.catch();
+    });
+
+    let req = request(
+        Profile::Flow,
+        "function f(n) { return n ? 1 + f(n - 1) : 0; } return f(50);",
+    );
+    assert_eq!(
+        run_activation(&req, Rc::new(RefCell::new(EchoLink::default()))),
+        ActivationResult::Completed {
+            value: JsonText::new("50").unwrap()
+        }
+    );
+    // Parser frame sizes vary across builds. Cover the small limits where
+    // QuickJS can replace stack overflow with a secondary syntax diagnostic.
+    for bytes in (8 * 1024..=16 * 1024).step_by(256) {
+        assert_eq!(
+            super::run(
+                &req,
+                Rc::new(RefCell::new(EchoLink::default())),
+                false,
+                vec![],
+                Some(bytes),
+            ),
+            ActivationResult::BudgetExhausted(BudgetKind::Stack),
+            "stack budget: {bytes}"
+        );
+    }
+}
+
+#[test]
+fn user_script_compilation_obeys_the_stack_budget() {
+    // Construct nested syntax, not recursive execution, to exhaust the parser.
+    for (open, close) in [("{a:", "}"), ("({a:", "})"), ("{a(){ return ", "}} ")] {
+        let source = format!(
+            "const value = {}0{}; return 42;",
+            open.repeat(50),
+            close.repeat(50)
+        );
+        for profile in [Profile::Flow, Profile::Codemode] {
+            let mut req = request(profile, &source);
+            assert_eq!(
+                run_activation(&req, Rc::new(RefCell::new(EchoLink::default()))),
+                ActivationResult::Completed {
+                    value: JsonText::new("42").unwrap()
+                }
+            );
+            req.budgets.stack_bytes = super::MIN_STACK_BYTES;
+            assert_eq!(
+                run_activation(&req, Rc::new(RefCell::new(EchoLink::default()))),
+                ActivationResult::BudgetExhausted(BudgetKind::Stack),
+                "{profile:?}, nesting {open}"
+            );
+        }
+    }
 }
 
 #[test]
