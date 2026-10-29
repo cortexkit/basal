@@ -582,6 +582,10 @@ pub fn prune_receipts(tx: &Transaction, now: i64) -> Result<usize> {
     Ok(tx.execute("DELETE FROM event_receipts WHERE rowid IN (SELECT rowid FROM event_receipts WHERE state<>'backlog' AND received_at<=?1 ORDER BY +rowid LIMIT 128)", [now.saturating_sub(RECEIPT_RETENTION_MS)])?)
 }
 
+/// A run's saved body-fetch row: the body once fetched, the attempt count,
+/// the next retry time, and the provider's last refusal while retrying.
+type SavedBody = (Option<Vec<u8>>, i64, Option<i64>, Option<String>);
+
 /// Outcome before any script instruction executes. Retry times are durable,
 /// so an unavailable source never turns a pending run into a busy-loop.
 pub(crate) enum Preamble {
@@ -799,7 +803,7 @@ impl Runtime {
                 });
             return Ok(Preamble::Failed { kind, detail });
         }
-        let saved: Option<(Option<Vec<u8>>, i64, Option<i64>, Option<String>)> = self.store().read(|c| {
+        let saved: Option<SavedBody> = self.store().read(|c| {
             Ok(c.query_row(
                 "SELECT body,attempt,retry_at,last_provider_refusal FROM event_body_journal WHERE run_id=?1",
                 [&run.run_id],
