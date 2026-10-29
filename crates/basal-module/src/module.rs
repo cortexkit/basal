@@ -87,6 +87,13 @@ pub struct Module {
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 
 impl Module {
+    /// Revoke flow execution before any transport closure or child kill can
+    /// manufacture a failed activation or a rejected provider result.
+    pub(crate) fn stop_execution(&self) {
+        self.engine.stop();
+        self.rt.stop_for_recovery();
+    }
+
     /// Handle a tool call on an already bound daemon route. The caller must
     /// supply Context using the principal and scope the daemon recorded when
     /// binding that route, never values supplied in model arguments.
@@ -422,6 +429,7 @@ impl Module {
             return;
         }
         *started = true;
+        self.stop_execution();
         let event_reader = self
             .event_reader
             .lock()
@@ -440,7 +448,6 @@ impl Module {
         // A stalled host must fail shutdown loudly, not leave drop hung forever.
         let (done, receiver) = std::sync::mpsc::channel();
         let shutdown = std::thread::spawn(move || {
-            engine.stop();
             transport.shutdown();
             host.shutdown();
             pool.stop();

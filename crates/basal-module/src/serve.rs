@@ -193,6 +193,9 @@ impl BasalHandler {
         let startup = lock(&self.startup).take();
         let transport = self.event_transport.clone();
         tokio::task::spawn_blocking(move || {
+            if let Some(module) = module.as_ref() {
+                module.stop_execution();
+            }
             // Close the consumer before joining threads that can be waiting on
             // its reconnect gate or an RPC. Closing never cuts a store write.
             if let Some(transport) = transport.as_ref() {
@@ -671,6 +674,81 @@ impl ModuleHandler for BasalHandler {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use basal_host::transport::{Transport, WireError};
+
+    struct ClosingTransport {
+        runtime: basal_core::Runtime,
+        closed: std::sync::atomic::AtomicBool,
+    }
+    impl Transport for ClosingTransport {
+        fn shutdown(&self) {
+            assert!(
+                matches!(
+                    self.runtime
+                        .admit_trigger("unused", "shutdown", basal_proto::JsonText::null()),
+                    Err(basal_core::CoreError::Unavailable(_))
+                ),
+                "execution must stop before transport closure can produce a rejected result"
+            );
+            self.closed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        fn catalog(&self) -> Result<Value, WireError> {
+            unreachable!()
+        }
+        fn management(&self, _: &str, _: &str, _: Value) -> Result<Value, WireError> {
+            unreachable!()
+        }
+        fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_shutdown_stops_execution_before_closing_the_event_transport() {
+        let dir = basal_testkit::harness::scratch("stop-before-close");
+        let mut pool = crate::pool::PoolConfig::new("unused", crate::process::WorkerLaunch::Plain);
+        pool.warm_spares = 0;
+        let module = Module::start(
+            ModuleConfig {
+                store_path: dir.join("store.db"),
+                durability: basal_core::Durability::throwaway(),
+                runtime: basal_core::Config {
+                    install_gate: basal_core::InstallGate::Off,
+                    ..Default::default()
+                },
+                pool: pool.clone(),
+                engine: Default::default(),
+                dry_run: crate::dryrun::DryRunConfig::new(dir.join("dry")),
+            },
+            Hosts {
+                host: Arc::new(basal_host::mock::MockHost::new()),
+                transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
+                catalog: Arc::new(basal_host::MockCatalog::standard()),
+                consent: Arc::new(basal_host::MockConsent::new()),
+                hooks: Arc::new(basal_core::NoHooks),
+            },
+            Arc::new(ProcessSpawner::new(&pool)),
+        )
+        .unwrap();
+        let transport = Arc::new(ClosingTransport {
+            runtime: module.rt.clone(),
+            closed: std::sync::atomic::AtomicBool::new(false),
+        });
+        let handler = BasalHandler::new(Box::new(|_| unreachable!()), Box::new(|| unreachable!()))
+            .with_event_reader(transport.clone());
+        *lock(&handler.phase) = Phase::Ready(Arc::new(module));
+        handler.shutdown().await;
+        assert!(transport.closed.load(std::sync::atomic::Ordering::Acquire));
+        drop(handler);
+        drop(transport);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

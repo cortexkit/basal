@@ -254,6 +254,9 @@ impl Engine {
             return Err(why);
         }
         let fatal = |e: CoreError| {
+            if matches!(e, CoreError::Unavailable(_)) && inner.wake.snapshot().1 {
+                return e.to_string();
+            }
             // These calls take no input but the store's own contents, so an
             // error means the store failed or holds something this build
             // cannot read. Serving on cannot fix either; a restart runs

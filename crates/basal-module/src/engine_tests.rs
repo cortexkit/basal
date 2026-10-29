@@ -783,6 +783,221 @@ fn module(spawn_panics: bool) -> (crate::module::Module, std::path::PathBuf, Arc
 }
 
 #[test]
+fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
+    use basal_core::{Clock, RunState, Runtime};
+    use basal_host::{CallClass, CallRequest, Dispatched, Host, TransportError};
+    use std::sync::mpsc;
+
+    struct HeldQuery {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl Host for HeldQuery {
+        fn classify(&self, _: &basal_proto::CallKind) -> CallClass {
+            CallClass::Query
+        }
+        fn dispatch(&self, _: &CallRequest) -> Result<Dispatched, TransportError> {
+            let _ = self.entered.send(());
+            let _ = self
+                .release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(60));
+            Err(TransportError::unsent(
+                "daemon connection closed during shutdown",
+            ))
+        }
+        fn now_ms(&self) -> f64 {
+            0.0
+        }
+        fn random(&self) -> f64 {
+            0.0
+        }
+        fn attach(&self, _: Arc<dyn basal_host::CompletionSink>) {}
+    }
+    struct HoldBlocked {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl basal_core::Hooks for HoldBlocked {
+        fn at(&self, _: &str, boundary: &basal_core::Boundary) -> basal_core::Step {
+            if *boundary == basal_core::Boundary::BlockedReceived {
+                let _ = self.entered.send(());
+                let _ = self
+                    .release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(60));
+            }
+            basal_core::Step::Continue
+        }
+    }
+    fn notices(rt: &Runtime) -> i64 {
+        rt.store()
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM outbox WHERE kind='flow.owner_notice'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap()
+    }
+
+    let dir = basal_testkit::harness::scratch("shutdown-cut-recovery");
+    let clock = Clock::manual(0);
+    let (called, calls) = mpsc::channel();
+    let (answer, answered) = mpsc::channel();
+    let (blocked, blocks) = mpsc::channel();
+    let (resume, resumed) = mpsc::channel();
+    let host = Arc::new(HeldQuery {
+        entered: called,
+        release: Mutex::new(answered),
+    });
+    let mut pool = PoolConfig::new(basal_testkit::channel::worker_binary(), WorkerLaunch::Plain);
+    pool.warm_spares = 0;
+    // Admission policy is tested separately; this case needs a real child even
+    // on a test kernel that provides seccomp but not Landlock.
+    pool.landlock = crate::pool::LandlockPolicy::Optional;
+    let mut store = None;
+    let module = crate::module::Module::start_with_store(
+        crate::module::ModuleConfig {
+            store_path: dir.join("store.db"),
+            durability: Durability::throwaway(),
+            runtime: Config {
+                clock: clock.clone(),
+                install_gate: basal_core::InstallGate::Off,
+                max_broken_activations: 1,
+                unavailable_retries: 0,
+                ..Config::default()
+            },
+            pool: pool.clone(),
+            engine: EngineConfig::default(),
+            dry_run: crate::dryrun::DryRunConfig::new(dir.join("dry")),
+        },
+        crate::module::Hosts {
+            host,
+            transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
+            catalog: Arc::new(MockCatalog::standard()),
+            consent: Arc::new(MockConsent::new()),
+            hooks: Arc::new(HoldBlocked {
+                entered: blocked,
+                release: Mutex::new(resumed),
+            }),
+        },
+        Arc::new(crate::pool::ProcessSpawner::new(&pool)),
+        |opened| {
+            store = Some(opened);
+            Ok(())
+        },
+    )
+    .unwrap();
+    let rt = module.rt.clone();
+    let mut request = request("shutdown-cut");
+    request.script = "if (trigger && trigger.seed) throw new Error('prior failure'); return await ops.call('mock', 'echo', {n:1});".into();
+    let mut manifest: serde_json::Value = serde_json::from_str(&request.manifest).unwrap();
+    manifest["ops"] = serde_json::json!([{"module":"mock", "op":"echo"}]);
+    request.manifest = manifest.to_string();
+    let installed = rt.install(&request).unwrap();
+    rt.approve("shutdown-cut", 1, &installed.code_hash, "operator")
+        .unwrap();
+    // Two real failure records make an accidental third failure observable both
+    // in the streak and in the failing-flow owner-notice threshold.
+    for n in 0..2 {
+        clock.advance(1);
+        let seed = rt
+            .admit_trigger(
+                "shutdown-cut",
+                &format!("seed-{n}"),
+                basal_proto::JsonText::new(r#"{"seed":true}"#).unwrap(),
+            )
+            .unwrap()
+            .run_id()
+            .unwrap()
+            .to_owned();
+        let mut worker = module
+            .pool
+            .acquire(Binding::Flow("shutdown-cut".into()))
+            .unwrap();
+        assert!(
+            matches!(rt.activate(&seed, &mut worker).unwrap(), ActivationEnd::Failed { kind, .. } if kind == "script")
+        );
+    }
+    clock.advance(1);
+    let run = rt
+        .admit_trigger("shutdown-cut", "cut", basal_proto::JsonText::null())
+        .unwrap()
+        .run_id()
+        .unwrap()
+        .to_owned();
+    let before_notices = notices(&rt);
+    assert_eq!(rt.flow_health().unwrap()[0].consecutive_failures, 2);
+    module.engine.pass().unwrap();
+    calls.recv_timeout(Duration::from_secs(60)).unwrap();
+    blocks.recv_timeout(Duration::from_secs(60)).unwrap();
+    let before = rt.run(&run).unwrap();
+    assert_eq!(before.state, RunState::Running);
+    assert_eq!(rt.calls(&run).unwrap().len(), 1);
+    assert!(rt.calls(&run).unwrap()[0].outcome.is_none());
+    let (joining, joins) = mpsc::channel();
+    *module.engine.inner.joining.lock().unwrap() = Some(Arc::new(move || {
+        let _ = joining.send(());
+    }));
+    let shutdown = thread::spawn(move || drop(module));
+    // Module shutdown has killed the leased child before joining activations.
+    // Only now release the blocked activation and the shutdown-induced RPC error.
+    joins.recv_timeout(Duration::from_secs(60)).unwrap();
+    answer.send(()).unwrap();
+    resume.send(()).unwrap();
+    shutdown.join().unwrap();
+
+    let cut = rt.run(&run).unwrap();
+    assert_eq!(
+        cut, before,
+        "shutdown must not change the durable run record"
+    );
+    assert_eq!(
+        cut.state,
+        RunState::Running,
+        "shutdown must leave the durable claim for recovery: {cut:?}"
+    );
+    assert_eq!(cut.broken, 0);
+    assert_eq!(cut.error_kind, None);
+    assert_eq!(cut.error_detail, None);
+    assert_eq!(cut.ended_at, None);
+    assert_eq!(rt.flow_health().unwrap()[0].consecutive_failures, 2);
+    assert_eq!(notices(&rt), before_notices);
+    assert!(
+        rt.calls(&run).unwrap()[0].outcome.is_none(),
+        "shutdown must not reject the in-flight query"
+    );
+    drop(rt);
+    let recovered = Runtime::new(
+        store.take().unwrap(),
+        Arc::new(MockHost::new()),
+        Arc::new(MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        Config {
+            clock,
+            auto_resume: false,
+            install_gate: basal_core::InstallGate::Off,
+            ..Config::default()
+        },
+    );
+    assert_eq!(recovered.recover().unwrap(), vec![run.clone()]);
+    let pending = recovered.run(&run).unwrap();
+    assert_eq!(pending.state, RunState::Pending);
+    assert_eq!(pending.error_kind, None);
+    assert_eq!(pending.broken, 0);
+    assert_eq!(recovered.flow_health().unwrap()[0].consecutive_failures, 2);
+    assert_eq!(notices(&recovered), before_notices);
+    assert!(recovered.calls(&run).unwrap()[0].outcome.is_none());
+    drop(recovered);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn module_drop_joins_activation_after_slot_release() {
     use std::sync::{Barrier, mpsc};
 
