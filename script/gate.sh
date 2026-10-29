@@ -254,7 +254,7 @@ if [[ $print_plan == yes ]]; then
             continue
         fi
         target=$lane
-        [[ $lane != linux ]] || target=linux,16c
+        [[ $lane != linux ]] || target=linux,8c
         echo "# runon: $target (entry point runs the same commands as the head gate)"
         echo "bash script/gate.sh --lane $lane $selected"
     done
@@ -376,7 +376,7 @@ for lane in "${lanes[@]}"; do
 done
 for lane in "${lanes[@]}"; do
     cpus=2
-    [[ $lane != linux ]] || cpus=16
+    [[ $lane != linux ]] || cpus=8
     # Separate checkouts avoid MOTOR's per-workspace single-job lock.
     # Package names come from Cargo manifests and are passed as argv, not shell code.
     read -r -a packages <<< "$selected"
