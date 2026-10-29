@@ -335,7 +335,8 @@ async fn reader_subscribed_malformed_notice_still_warns() {
     let server = Server::start().await;
     let (rt, transport) = fixture(&server).await;
     let reader = Reader::start(rt, transport.clone());
-    let key = "invalid";
+    // A space is outside the printable-ASCII key rule.
+    let key = "not valid";
     super::v2::publish(&server, SUBJECT_V2, &format!("{key}.v2"), Some(key)).await;
 
     let health = wait_health(&reader, |h| h.malformed == 1).await;

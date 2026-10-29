@@ -74,13 +74,11 @@ impl Notice {
                             .is_some_and(|n| n > 0 && seq == &n.to_string())
                         && self.event_key == format!("{flow}:{seq}")
                 });
-        if !lifecycle_key
-            && (self.event_key.len() != 64
-                || !self
-                    .event_key
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-        {
+        // Other modules choose their own key shapes (Plexus uses a SHA-256
+        // hex digest, the harness `<session_ref>:<event>:<seq>`). Basal only
+        // stores the key, dedupes on it and passes it back to the module's
+        // `events_get`, so it accepts any bounded printable-ASCII key.
+        if !lifecycle_key && !valid_event_key(&self.event_key) {
             return Err(CoreError::Invalid("invalid event key".into()));
         }
         Ok((module, name, version))
@@ -98,6 +96,15 @@ impl Notice {
 
 /// Parse the event identity directly from a bus subject, without constructing
 /// a notice or validating its transport headers.
+/// Longest event key basal accepts. It bounds the receipt row and trigger id.
+const MAX_EVENT_KEY_BYTES: usize = 256;
+
+/// A non-empty key of printable ASCII with no spaces, at most
+/// `MAX_EVENT_KEY_BYTES` long.
+fn valid_event_key(key: &str) -> bool {
+    !key.is_empty() && key.len() <= MAX_EVENT_KEY_BYTES && key.bytes().all(|b| b.is_ascii_graphic())
+}
+
 pub fn parse_subject_identity(subject: &str) -> Result<(&str, &str, u32)> {
     let parts: Vec<_> = subject.split('.').collect();
     if !(6..=9).contains(&parts.len())

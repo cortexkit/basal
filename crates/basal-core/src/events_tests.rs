@@ -285,6 +285,30 @@ fn hierarchical_subject_identity_borrows_complete_name_and_last_version() {
 }
 
 #[test]
+fn identity_accepts_module_chosen_keys_and_refuses_unprintable_or_oversized_ones() {
+    let mut notice = notice(0);
+    for key in [
+        "a".repeat(64),
+        "ed1234f24de8d5bfb35fafde87f58052:turn_ended:7".into(),
+        "k".into(),
+        "x".repeat(256),
+    ] {
+        notice.event_key = key.clone();
+        assert!(notice.identity().is_ok(), "{key}");
+    }
+    for key in [
+        String::new(),
+        "x".repeat(257),
+        "has space".into(),
+        "tab\tkey".into(),
+        "caf\u{e9}".into(),
+    ] {
+        notice.event_key = key.clone();
+        assert!(notice.identity().is_err(), "{key:?}");
+    }
+}
+
+#[test]
 fn subject_identity_refuses_five_name_tokens() {
     let mut notice = notice(0);
     notice.subject = "ck.account.event.broca.run.task.step.work.started.v1".into();
