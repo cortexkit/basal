@@ -235,8 +235,9 @@ pub struct CallRow {
     pub request: Option<JsonText>,
     /// A daemon scope close cut this call after it may have been sent.
     pub scope_cut: bool,
-    /// Arguments and outcome values render as "payload pruned" once the
-    /// successful run's payload retention expires. Digests and settlement remain.
+    /// Arguments and outcome values render as "payload pruned" after the
+    /// successful run's payloads are pruned; an open obligation can defer that
+    /// past the retention interval. Digests and settlement remain.
     pub payload_pruned: bool,
 }
 

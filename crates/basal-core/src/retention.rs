@@ -1,8 +1,9 @@
 //! Retention in bounded transactions, on the runtime's deadline-service cadence.
 //!
-//! Successful payloads and event bodies keep 24 hours; run summaries, call
-//! metadata, activations and code snapshots keep 90 days by default, and longer
-//! while any call, token reservation or open decision card needs them.
+//! By default, a successful run's payloads and event body become eligible for
+//! pruning 24 hours after it ends; run summaries, call metadata, activations
+//! and code snapshots keep 90 days. Either is deferred while any call, token
+//! reservation or open decision card still needs the run.
 //! Quarantine, call/audit history, delivered
 //! outbox notifications, settled token ledgers and dropped schedules keep
 //! thirty days; any existing run protects its dependent history. Unsent
@@ -173,7 +174,9 @@ fn tombstone_calls(tx: &Transaction, run_id: &str, now: i64) -> Result<()> {
 
 fn prune_payloads_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<bool> {
     // Recheck the same obligation fence while holding the writer transaction.
-    // Failed and uncertain runs retain evidence until full run retention.
+    // Only succeeded runs are pruned early. Failed runs keep their payloads
+    // until the run itself is pruned, and nonterminal runs (needs_reconcile
+    // included) are never pruned while they stay nonterminal.
     let changed = tx.execute(
         &format!(
             "UPDATE runs AS r SET payloads_pruned_at=?3 WHERE r.run_id=?1 AND r.state='succeeded' \

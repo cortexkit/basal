@@ -104,8 +104,10 @@ replay after a crash without repeating a call. That journal sets the limits:
 Run summaries and call metadata are kept for 90 days. Successful runs keep
 their full call arguments, prepared requests, replies and cached event bodies
 for 24 hours after ending; older call inspection shows "payload pruned".
-Failed and uncertain runs retain their payloads, and any open call, reservation,
-decision or unacknowledged completion protects its run from pruning. After
+Only successful runs have their payloads pruned early. Failed runs keep their
+payloads until the run itself ages out, and runs that are still in progress or
+awaiting reconciliation are never pruned. Any open call, reservation, decision
+or unacknowledged completion also protects its run from pruning. After
 those obligations clear, terminal runs can age out normally. Code snapshots
 are shared across runs and freed with their last retained run. These limits
 apply to every flow and template on this basal; codemode keeps its separate
