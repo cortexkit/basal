@@ -80,11 +80,20 @@ pub struct Module {
     /// How long drop waits for shutdown to release the module's threads.
     /// Tests shorten it to exercise a stalled shutdown quickly.
     pub(crate) shutdown_grace: Duration,
+    shutdown_started: Mutex<bool>,
+    host: Arc<dyn Host>,
 }
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 
 impl Module {
+    /// Revoke flow execution before any transport closure or child kill can
+    /// manufacture a failed activation or a rejected provider result.
+    pub(crate) fn stop_execution(&self) {
+        self.engine.stop();
+        self.rt.stop_for_recovery();
+    }
+
     /// Handle a tool call on an already bound daemon route. The caller must
     /// supply Context using the principal and scope the daemon recorded when
     /// binding that route, never values supplied in model arguments.
@@ -216,7 +225,7 @@ impl Module {
         );
         let dry = DryRunner::new(
             hosts.catalog.clone(),
-            hosts.host,
+            hosts.host.clone(),
             pool.clone(),
             config.dry_run,
             runtime_config,
@@ -246,6 +255,8 @@ impl Module {
             event_reader: Mutex::new(None),
             decisions,
             shutdown_grace: SHUTDOWN_GRACE,
+            shutdown_started: Mutex::new(false),
+            host: hosts.host,
         })
     }
 }
@@ -405,11 +416,23 @@ impl DecisionSink for DecisionApplier {
     }
 }
 
-impl Drop for Module {
-    fn drop(&mut self) {
+impl Module {
+    /// Stop module-owned work even when a cancelled async request has left a
+    /// blocking operation holding another module reference. Joins allow its
+    /// synchronous store transactions to finish before shutdown returns.
+    pub(crate) fn shutdown(&self) {
+        let mut started = self
+            .shutdown_started
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if *started {
+            return;
+        }
+        *started = true;
+        self.stop_execution();
         let event_reader = self
             .event_reader
-            .get_mut()
+            .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
         let engine = self.engine.clone();
@@ -418,13 +441,17 @@ impl Drop for Module {
         let codemode = self.codemode.clone();
         let rt = self.rt.clone();
         let decisions = self.decisions.clone();
+        let transport = self.flow_transport.clone();
+        let host = self.host.clone();
         // Waiting for empty run/flow slots is insufficient: an unwinding
         // activation frees its slot before dropping its engine and runtime.
         // A stalled host must fail shutdown loudly, not leave drop hung forever.
         let (done, receiver) = std::sync::mpsc::channel();
         let shutdown = std::thread::spawn(move || {
+            transport.shutdown();
+            host.shutdown();
+            pool.stop();
             drop(event_reader);
-            engine.stop();
             if let Err(error) = codemode.stop() {
                 // Cancellation still kills workers and joins their drivers
                 // when a simulated process death or storage failure prevents
@@ -432,7 +459,6 @@ impl Drop for Module {
                 tracing::error!(%error, "codemode shutdown could not commit");
             }
             codemode_pool.stop();
-            pool.stop();
             engine.join_threads();
             rt.quiesce();
             decisions
@@ -477,5 +503,11 @@ impl Drop for Module {
                 panic!("module shutdown panicked");
             }
         }
+    }
+}
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }

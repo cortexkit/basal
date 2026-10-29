@@ -17,8 +17,8 @@ use cortexkit_store_types::{Isolation, StorageBackend, StorageDescriptor, sqlite
 use serde::Deserialize;
 use serde_json::{Value, json};
 use subc_client_rs::{
-    BindDecision, HandlerOutcome, HealthReport, HealthStatus, ModuleHandler, RequestCtx,
-    RouteBindRequest, RouteHandle,
+    BindDecision, ConnectionEnd, HandlerOutcome, HealthReport, HealthStatus, ModuleHandler,
+    RequestCtx, RouteBindRequest, RouteHandle,
 };
 use subc_protocol::scope::ScopeStamp;
 use subc_protocol::{ModuleHelloAckBody, Principal};
@@ -43,6 +43,7 @@ enum Phase {
     Starting,
     Ready(Arc<Module>),
     Failed(String),
+    Stopped,
 }
 
 type RouteKey = (u16, u32);
@@ -155,6 +156,8 @@ pub struct BasalHandler {
     daemon_capabilities: Arc<basal_host::subc_catalog::DaemonCapabilities>,
     tool_foreground: Duration,
     on_store_failure: Arc<OnStoreFailure>,
+    startup: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
+    shutdown: Arc<tokio::sync::Mutex<()>>,
 }
 
 use basal_proto::util::lock;
@@ -173,7 +176,40 @@ impl BasalHandler {
             daemon_capabilities: Arc::new(basal_host::subc_catalog::DaemonCapabilities::default()),
             tool_foreground: Duration::from_secs(25),
             on_store_failure: Arc::new(Box::new(crate::fatal::exit_after_store_failure)),
+            startup: Arc::new(Mutex::new(None)),
+            shutdown: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    /// End admission before draining blocking work. Aborting an SDK request
+    /// future does not cancel the blocking closure it already started.
+    pub async fn shutdown(&self) {
+        let _serial = self.shutdown.lock().await;
+        let module = match std::mem::replace(&mut *lock(&self.phase), Phase::Stopped) {
+            Phase::Ready(module) => Some(module),
+            Phase::Stopped => return,
+            _ => None,
+        };
+        let startup = lock(&self.startup).take();
+        let transport = self.event_transport.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(module) = module.as_ref() {
+                module.stop_execution();
+            }
+            // Close the consumer before joining threads that can be waiting on
+            // its reconnect gate or an RPC. Closing never cuts a store write.
+            if let Some(transport) = transport.as_ref() {
+                transport.shutdown();
+            }
+            if let Some(startup) = startup {
+                startup.join().expect("module preparation panicked");
+            }
+            if let Some(module) = module {
+                module.shutdown();
+            }
+        })
+        .await
+        .expect("module shutdown panicked");
     }
     pub fn with_daemon_capabilities(
         mut self,
@@ -371,6 +407,7 @@ const OPEN_RETRY: Duration = Duration::from_secs(10);
 /// Opens the store and starts the module on its own thread: opening can wait
 /// for an exiting predecessor's lease, and HELLO_ACK must not wait with it.
 fn start(path: PathBuf, handler: &BasalHandler) {
+    let mut startup = lock(&handler.startup);
     let BasalHandler {
         configure,
         hosts,
@@ -381,9 +418,12 @@ fn start(path: PathBuf, handler: &BasalHandler) {
         on_store_failure,
         ..
     } = handler.clone();
-    std::thread::spawn(move || {
+    *startup = Some(std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + OPEN_RETRY;
         let started = loop {
+            if matches!(*lock(&phase), Phase::Stopped) {
+                return;
+            }
             // Every attempt owns fresh adapters. Retaining a failed attempt's
             // bound Broca store would hold the old write lease across retries.
             let dependencies = hosts();
@@ -402,6 +442,12 @@ fn start(path: PathBuf, handler: &BasalHandler) {
         };
         match started {
             Ok(module) => {
+                let mut phase = lock(&phase);
+                if matches!(*phase, Phase::Stopped) {
+                    drop(phase);
+                    drop(module);
+                    return;
+                }
                 ready();
                 if let Some(transport) = event_transport.as_ref() {
                     *lock(&module.event_reader) = Some(crate::events::Reader::start(
@@ -413,17 +459,21 @@ fn start(path: PathBuf, handler: &BasalHandler) {
                 module.fatal.when_raised(move |why| on_store_failure(why));
                 module.engine.spawn_loop();
                 tracing::info!(target: "engine", "basal is serving");
-                *lock(&phase) = Phase::Ready(module);
+                *phase = Phase::Ready(module);
             }
             Err(e) => {
+                let mut phase = lock(&phase);
+                if matches!(*phase, Phase::Stopped) {
+                    return;
+                }
                 tracing::error!(target: "store", "basal could not start: {e}");
-                *lock(&phase) = Phase::Failed(e);
+                *phase = Phase::Failed(e);
                 // Supervision restarts the process; serving on without a
                 // store would only answer every op with an error.
                 std::process::exit(crate::fatal::EXIT_STORE_FAILURE);
             }
         }
-    });
+    }));
 }
 
 #[derive(Deserialize)]
@@ -500,6 +550,12 @@ impl ModuleHandler for BasalHandler {
                     message: e.clone(),
                 };
             }
+            Phase::Stopped => {
+                return HandlerOutcome::Error {
+                    code: "storage_unavailable".into(),
+                    message: "basal is stopping".into(),
+                };
+            }
         };
         let method = request.method;
         let params = request.params;
@@ -539,6 +595,13 @@ impl ModuleHandler for BasalHandler {
         self.routes.forget(handle);
     }
 
+    async fn on_connection_end(&self, end: ConnectionEnd) {
+        if matches!(end, ConnectionEnd::Eof | ConnectionEnd::Reset) {
+            tracing::info!(?end, "daemon connection ended; stopping basal");
+            self.shutdown().await;
+        }
+    }
+
     async fn on_hello_ack(&self, ack: &ModuleHelloAckBody) {
         // Reconnects can change daemon capabilities without reopening the store.
         self.daemon_capabilities.observe_hello_ack(ack);
@@ -576,6 +639,11 @@ impl ModuleHandler for BasalHandler {
                 detail: Some(e.clone()),
                 metrics: None,
             },
+            Phase::Stopped => HealthReport {
+                status: HealthStatus::Failing,
+                detail: Some("basal is stopping".into()),
+                metrics: None,
+            },
             Phase::Ready(module) => match module.fatal.get() {
                 Some(why) => HealthReport {
                     status: HealthStatus::Failing,
@@ -606,6 +674,81 @@ impl ModuleHandler for BasalHandler {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use basal_host::transport::{Transport, WireError};
+
+    struct ClosingTransport {
+        runtime: basal_core::Runtime,
+        closed: std::sync::atomic::AtomicBool,
+    }
+    impl Transport for ClosingTransport {
+        fn shutdown(&self) {
+            assert!(
+                matches!(
+                    self.runtime
+                        .admit_trigger("unused", "shutdown", basal_proto::JsonText::null()),
+                    Err(basal_core::CoreError::Unavailable(_))
+                ),
+                "execution must stop before transport closure can produce a rejected result"
+            );
+            self.closed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        fn catalog(&self) -> Result<Value, WireError> {
+            unreachable!()
+        }
+        fn management(&self, _: &str, _: &str, _: Value) -> Result<Value, WireError> {
+            unreachable!()
+        }
+        fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_shutdown_stops_execution_before_closing_the_event_transport() {
+        let dir = basal_testkit::harness::scratch("stop-before-close");
+        let mut pool = crate::pool::PoolConfig::new("unused", crate::process::WorkerLaunch::Plain);
+        pool.warm_spares = 0;
+        let module = Module::start(
+            ModuleConfig {
+                store_path: dir.join("store.db"),
+                durability: basal_core::Durability::throwaway(),
+                runtime: basal_core::Config {
+                    install_gate: basal_core::InstallGate::Off,
+                    ..Default::default()
+                },
+                pool: pool.clone(),
+                engine: Default::default(),
+                dry_run: crate::dryrun::DryRunConfig::new(dir.join("dry")),
+            },
+            Hosts {
+                host: Arc::new(basal_host::mock::MockHost::new()),
+                transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
+                catalog: Arc::new(basal_host::MockCatalog::standard()),
+                consent: Arc::new(basal_host::MockConsent::new()),
+                hooks: Arc::new(basal_core::NoHooks),
+            },
+            Arc::new(ProcessSpawner::new(&pool)),
+        )
+        .unwrap();
+        let transport = Arc::new(ClosingTransport {
+            runtime: module.rt.clone(),
+            closed: std::sync::atomic::AtomicBool::new(false),
+        });
+        let handler = BasalHandler::new(Box::new(|_| unreachable!()), Box::new(|| unreachable!()))
+            .with_event_reader(transport.clone());
+        *lock(&handler.phase) = Phase::Ready(Arc::new(module));
+        handler.shutdown().await;
+        assert!(transport.closed.load(std::sync::atomic::Ordering::Acquire));
+        drop(handler);
+        drop(transport);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

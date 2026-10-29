@@ -12,6 +12,7 @@
 //! that embeds this next to an async client calls it from blocking threads.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -239,6 +240,7 @@ impl Signal {
 
 /// State shared by every runtime handle over one store in one process.
 pub(crate) struct Shared {
+    stopping: AtomicBool,
     pub(crate) store: Arc<Store>,
     pub(crate) host: Arc<dyn Host>,
     pub(crate) catalog: Arc<dyn Catalog>,
@@ -385,6 +387,7 @@ impl Runtime {
     ) -> Self {
         store.set_clock(config.clock.clone());
         let shared = Arc::new(Shared {
+            stopping: AtomicBool::new(false),
             store,
             host,
             catalog,
@@ -441,6 +444,34 @@ impl Runtime {
         &self.shared.store
     }
 
+    /// Stop this runtime's execution writes before closing hosts or workers.
+    /// Durable running claims and unfinished calls are left for a new runtime's
+    /// recovery. A transaction already executing is allowed to finish normally.
+    pub fn stop_for_recovery(&self) {
+        self.shared.stopping.store(true, Ordering::Release);
+        self.shared.signal.bump();
+    }
+
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.shared.stopping.load(Ordering::Acquire)
+    }
+
+    fn write_execution<T>(
+        &self,
+        write: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.shared.store.write(|tx| {
+            // Check after acquiring the writer: a queued dispatch/completion may
+            // wake only after shutdown has closed the transport that served it.
+            if self.is_stopping() {
+                return Err(CoreError::Unavailable(
+                    "runtime stopped for recovery".into(),
+                ));
+            }
+            write(tx)
+        })
+    }
+
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -478,10 +509,7 @@ impl Runtime {
     pub fn admit(&self, spec: &TriggerSpec) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
-        let admitted = self
-            .shared
-            .store
-            .write(|tx| admission::admit(tx, &store_id, spec, &ctx))?;
+        let admitted = self.write_execution(|tx| admission::admit(tx, &store_id, spec, &ctx))?;
         self.shared.signal.bump();
         Ok(admitted)
     }
@@ -495,7 +523,7 @@ impl Runtime {
     ) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
-        let admitted = self.shared.store.write(|tx| {
+        let admitted = self.write_execution(|tx| {
             admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
         })?;
         self.shared.signal.bump();
@@ -520,10 +548,8 @@ impl Runtime {
     pub fn retrigger(&self, run_id: &str) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
-        let admitted = self
-            .shared
-            .store
-            .write(|tx| admission::retrigger(tx, &store_id, run_id, &ctx))?;
+        let admitted =
+            self.write_execution(|tx| admission::retrigger(tx, &store_id, run_id, &ctx))?;
         self.shared.signal.bump();
         Ok(admitted)
     }
@@ -556,7 +582,7 @@ impl Runtime {
     /// Moves every `running` run back to `pending`. Called once when the
     /// process starts: the store's lease proves their owners are gone.
     pub fn recover(&self) -> Result<Vec<String>> {
-        let ids = self.shared.store.write(runs::requeue_orphans)?;
+        let ids = self.write_execution(runs::requeue_orphans)?;
         self.flush_refusals()?;
         self.release_unused_flow_routes()?;
         self.shared.signal.bump();
@@ -566,16 +592,13 @@ impl Runtime {
     /// Takes a running run from the activation holding `generation`.
     pub fn take_over(&self, run_id: &str, generation: u64) -> Result<Lease> {
         let owner = self.config.owner.clone();
-        let lease = self
-            .shared
-            .store
-            .write(|tx| runs::take_over(tx, run_id, &owner, generation))?;
+        let lease = self.write_execution(|tx| runs::take_over(tx, run_id, &owner, generation))?;
         self.shared.signal.bump();
         Ok(lease)
     }
 
     pub fn cancel(&self, run_id: &str, actor: &str) -> Result<()> {
-        self.shared.store.write(|tx| {
+        self.write_execution(|tx| {
             runs::cancel(tx, run_id, &format!("cancelled by {actor}"))?;
             crate::reconcile::audit(tx, actor, "cancel", Some(run_id), None, "")
         })?;
@@ -652,6 +675,9 @@ impl Runtime {
     /// activations acknowledging the same intent concurrently. A crash may
     /// redeliver an intent, as the host's acknowledgement API allows.
     pub(crate) fn flush_refusals(&self) -> Result<()> {
+        if self.is_stopping() {
+            return Ok(());
+        }
         let _flush = lock(&self.shared.refusal_flush);
         let rows = self.store().read(|c| {
             let mut stmt = c.prepare(
@@ -667,7 +693,7 @@ impl Runtime {
             self.shared
                 .host
                 .refusal_committed(&saved.request()?, &saved.refusal()?);
-            self.store().write(|tx| {
+            self.write_execution(|tx| {
                 tx.execute(
                     "DELETE FROM outbox WHERE seq=?1 AND kind='refusal_committed'",
                     [seq],
@@ -699,7 +725,7 @@ impl Runtime {
     /// `None` means the run's activation is still running and the report
     /// was not recorded: the host must make it again later.
     pub fn unknown(&self, u: &UnknownOutcome) -> Result<Option<CompletionAck>> {
-        let ack = self.shared.store.write(|tx| {
+        let ack = self.write_execution(|tx| {
             journal::record_host_unknown(tx, &u.run_id, u.position, &u.handle, u.reason, &u.detail)
         })?;
         self.shared.signal.bump();
@@ -717,10 +743,9 @@ impl Runtime {
     ) -> Result<CompletionAck> {
         let capped = self.cap_result(outcome);
         let outcome = capped.as_ref().unwrap_or(outcome);
-        let accepted = self
-            .shared
-            .store
-            .write(|tx| journal::accept_outcome(tx, run_id, position, handle, outcome, source))?;
+        let accepted = self.write_execution(|tx| {
+            journal::accept_outcome(tx, run_id, position, handle, outcome, source)
+        })?;
         self.at(run_id, Boundary::OutcomeCommitted { position })?;
         self.shared.signal.bump();
         if accepted.woke {
@@ -748,7 +773,7 @@ impl Runtime {
 
     /// Starts an activation for a run made runnable, if configured to.
     pub(crate) fn wake(&self, run_id: &str) {
-        if !self.config.auto_resume || self.shared.source.is_none() {
+        if self.is_stopping() || !self.config.auto_resume || self.shared.source.is_none() {
             return;
         }
         let rt = self.clone();
@@ -876,7 +901,7 @@ impl Runtime {
         } else {
             now.saturating_add(i64::try_from(delay).unwrap_or(i64::MAX))
         };
-        self.shared.store.write(|tx| {
+        self.write_execution(|tx| {
             let deadline: Option<i64> = tx.query_row(
                 "SELECT deadline_at FROM runs WHERE run_id = ?1",
                 [&request.run_id],
@@ -911,13 +936,13 @@ impl Runtime {
             // The store serializes attempt authorization with revocation. Do not
             // hold its lock across the host call: an authorized attempt is already
             // in flight, and its eventual outcome remains an obligation.
-            let revoked = self
-                .store()
-                .write(|tx| crate::revocation::dispatch_check(tx, &run_id))?;
+            let revoked =
+                self.write_execution(|tx| crate::revocation::dispatch_check(tx, &run_id))?;
             if let Some(reason) = revoked {
                 if let Some(last) = maybe_sent.filter(|_| class != StoredClass::Query) {
-                    self.store()
-                        .write(|tx| journal::record_unknown(tx, &run_id, position, last))?;
+                    self.write_execution(|tx| {
+                        journal::record_unknown(tx, &run_id, position, last)
+                    })?;
                 } else {
                     self.accept(
                         &run_id,
@@ -954,7 +979,7 @@ impl Runtime {
                             && refusal.reason == RefusalReason::AgentRetired)
                             .then(|| self.retirement_target_id(&request))
                             .flatten();
-                        self.shared.store.write(|tx| {
+                        self.write_execution(|tx| {
                             journal::record_unknown(tx, &run_id, position, reason)?;
                             // Refusing a resend proves nothing about the earlier
                             // send. Keep its outcome unknown while applying the
@@ -996,7 +1021,7 @@ impl Runtime {
                         self.shared.host.refusal_committed(&request, &refusal);
                         return Ok(());
                     } else if refusal.readiness() {
-                        self.shared.store.write(|tx| {
+                        self.write_execution(|tx| {
                             let accepted = journal::accept_outcome(
                                 tx, &run_id, position, None, &refusal.outcome(), Source::Host,
                             )?;
@@ -1018,7 +1043,7 @@ impl Runtime {
                         self.shared.host.refusal_committed(&request, &refusal);
                     } else if refusal.grant_absent() {
                         let now = self.config.clock.now_ms();
-                        self.shared.store.write(|tx| {
+                        self.write_execution(|tx| {
                             journal::defer(tx, &run_id, position, &refusal, i64::MAX)?;
                             crate::grant_loss::record(tx, &request.flow_id, &run_id, &refusal, now)
                         })?;
@@ -1028,7 +1053,7 @@ impl Runtime {
                         // The retirement label's registry read happens first,
                         // before the store's writer is held.
                         let target_id = self.retirement_target_id(&request);
-                        self.shared.store.write(|tx| {
+                        self.write_execution(|tx| {
                             let flow_id = &request.flow_id;
                             crate::grant_loss::record_retirement(
                                 tx,
@@ -1081,7 +1106,7 @@ impl Runtime {
                         request.attempt = request.attempt.saturating_add(1);
                         continue;
                     }
-                    self.shared.store.write(|tx| {
+                    self.write_execution(|tx| {
                         tx.execute(
                             "UPDATE journal SET scope_cut=1 WHERE run_id=?1 AND position=?2",
                             rusqlite::params![run_id, position],
@@ -1116,9 +1141,9 @@ impl Runtime {
                 self.shared.host.dispatch_committed(&request);
             }
             (Ok(Dispatched::Accepted { handle }), _) => {
-                self.shared
-                    .store
-                    .write(|tx| journal::record_accepted(tx, &run_id, position, &handle))?;
+                self.write_execution(|tx| {
+                    journal::record_accepted(tx, &run_id, position, &handle)
+                })?;
                 self.at(&run_id, Boundary::AcceptedCommitted { position })?;
                 self.shared.host.dispatch_committed(&request);
             }
@@ -1131,9 +1156,7 @@ impl Runtime {
                 } else {
                     last
                 };
-                self.shared
-                    .store
-                    .write(|tx| journal::record_unknown(tx, &run_id, position, reason))?;
+                self.write_execution(|tx| journal::record_unknown(tx, &run_id, position, reason))?;
             }
             (Err(detail), _) => {
                 // Nothing can have happened remotely: a query has no effect,
@@ -1201,17 +1224,13 @@ impl Runtime {
     /// Stops admitting runs. Returns the runs not yet finished, by state, so
     /// the caller can wait for suspended ones before an engine upgrade.
     pub fn drain(&self) -> Result<BTreeMap<String, Vec<String>>> {
-        self.shared
-            .store
-            .write(|tx| admission::set_draining(tx, true))?;
+        self.write_execution(|tx| admission::set_draining(tx, true))?;
         let health = self.health()?;
         Ok(health.unfinished)
     }
 
     pub fn undrain(&self) -> Result<()> {
-        self.shared
-            .store
-            .write(|tx| admission::set_draining(tx, false))
+        self.write_execution(|tx| admission::set_draining(tx, false))
     }
 
     pub fn health(&self) -> Result<crate::ops::Health> {
@@ -1234,9 +1253,7 @@ impl Runtime {
     /// Pending runs no earlier run of their flow holds back, as (run,
     /// flow), in admission order: what can start now.
     pub fn startable(&self) -> Result<Vec<(String, String)>> {
-        self.shared
-            .store
-            .write(|tx| journal::wake_deferred(tx, self.config.clock.now_ms(), None))?;
+        self.write_execution(|tx| journal::wake_deferred(tx, self.config.clock.now_ms(), None))?;
         let mut runs = self.shared.store.read(runs::startable)?;
         // A run waiting to ask core again is not offered, so a pass loop
         // cannot ask about it on every pass while core is unreachable.
@@ -1263,7 +1280,7 @@ impl Runtime {
     /// acknowledgements and retention on the runtime's own cadence.
     pub fn enforce_deadlines(&self) -> Result<Vec<String>> {
         let now = self.config.clock.now_ms();
-        let expired = self.shared.store.write(|tx| runs::expire(tx, now, None))?;
+        let expired = self.write_execution(|tx| runs::expire(tx, now, None))?;
         for (run_id, _) in &expired {
             self.clear_event_scope_warning(run_id);
         }
@@ -1311,7 +1328,7 @@ impl Runtime {
     #[cfg(any(test, feature = "test-support"))]
     pub fn report_usage(&self, send_id: &str, usage: crate::tokens::Usage) -> Result<bool> {
         let now = self.config.clock.now_ms();
-        self.shared.store.write(|tx| {
+        self.write_execution(|tx| {
             crate::tokens::settle(
                 tx,
                 crate::tokens::Key::SendId(send_id),

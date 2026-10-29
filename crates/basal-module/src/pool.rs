@@ -779,9 +779,10 @@ impl Pool {
         confinement
     }
 
-    /// Stops handing out workers and kills every idle one.
+    /// Stops handing out workers and kills idle and leased children. Leases
+    /// retain their accounting until their activation observes the closed pipe.
     pub fn stop(&self) {
-        let doomed: Vec<WorkerProcess> = {
+        let (doomed, busy): (Vec<WorkerProcess>, Vec<WorkerKiller>) = {
             let mut state = self.lock();
             state.stopped = true;
             let mut doomed: Vec<WorkerProcess> = state.spares.drain(..).map(|(_, p)| p).collect();
@@ -796,8 +797,16 @@ impl Pool {
                 state.record_end(worker, EndReason::Retired);
             }
             state.live = state.live.saturating_sub(doomed.len());
-            doomed
+            let busy = state
+                .busy
+                .values()
+                .map(|worker| worker.killer.clone())
+                .collect();
+            (doomed, busy)
         };
+        for killer in busy {
+            killer.kill();
+        }
         drop(doomed);
         self.shared.cond.notify_all();
         self.shared.changed();

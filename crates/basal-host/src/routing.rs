@@ -301,6 +301,13 @@ impl RoutingHost {
     }
 }
 impl Host for RoutingHost {
+    fn shutdown(&self) {
+        self.ops.shutdown();
+        self.core.shutdown();
+        self.model.shutdown();
+        self.builtins.shutdown();
+    }
+
     fn secret_revoke(&self, params: serde_json::Value) -> Result<serde_json::Value, WireError> {
         self.ops.secret_revoke(params)
     }

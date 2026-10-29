@@ -152,6 +152,9 @@ impl Runtime {
         let owner = self.config.owner.clone();
         let now = self.config.clock.now_ms();
         let claimed = self.shared.store.write(|tx| {
+            if self.is_stopping() {
+                return Ok(Err(ActivationEnd::OwnerLost));
+            }
             if !runs::expire(tx, now, Some(run_id))?.is_empty() {
                 return Ok(Err(ActivationEnd::NotRunnable {
                     state: RunState::Failed,
@@ -251,6 +254,9 @@ impl Runtime {
             {
                 let detail = e.to_string();
                 match self.store().write(|tx| {
+                    if self.is_stopping() {
+                        return Err(lease.lost());
+                    }
                     runs::exit(
                         tx,
                         &lease,
@@ -298,6 +304,7 @@ impl Runtime {
                 end
             }
             Err(CoreError::OwnerLost { .. }) => ActivationEnd::OwnerLost,
+            Err(CoreError::Unavailable(_)) if self.is_stopping() => ActivationEnd::OwnerLost,
             Err(CoreError::Cut) => ActivationEnd::Crashed,
             // Storage failed: fail closed. The worker is already killed and
             // nothing was sent past the failed commit; the run stays as the
@@ -334,6 +341,17 @@ fn outcome_label(outcome: &basal_host::HostOutcome) -> String {
 }
 
 impl Activation<'_> {
+    fn write<T>(&self, write: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.rt.store().write(|tx| {
+            // Shutdown revokes execution in memory, not by changing the durable
+            // run or settling a call. Recovery must see the last committed state.
+            if self.rt.is_stopping() {
+                return Err(self.lease.lost());
+            }
+            write(tx)
+        })
+    }
+
     fn at(&self, boundary: Boundary) -> Result<()> {
         self.rt.at(&self.lease.run_id, boundary)
     }
@@ -347,10 +365,7 @@ impl Activation<'_> {
     }
 
     fn exit(&self, exit: Exit) -> Result<RunState> {
-        let state = self
-            .rt
-            .store()
-            .write(|tx| runs::exit(tx, &self.lease, &exit))?;
+        let state = self.write(|tx| runs::exit(tx, &self.lease, &exit))?;
         self.at(Boundary::Exited)?;
         Ok(state)
     }
@@ -370,7 +385,7 @@ impl Activation<'_> {
     }
 
     fn end_revoked(&self, detail: String) -> Result<Flow> {
-        let unknown = self.rt.store().write(|tx| {
+        let unknown = self.write(|tx| {
             let unknown = journal::unknown_positions(tx, &self.lease.run_id)?;
             let exit = if unknown.is_empty() {
                 Exit::Failed {
@@ -402,10 +417,8 @@ impl Activation<'_> {
     }
 
     fn finish_revoked_call(&mut self, call: &HostCall, reason: String) -> Result<Flow> {
-        let (outcome, _) = self
-            .rt
-            .store()
-            .write(|tx| journal::release_next(tx, &self.lease, &[call.position]))?;
+        let (outcome, _) =
+            self.write(|tx| journal::release_next(tx, &self.lease, &[call.position]))?;
         if let Some(outcome) = outcome {
             // Commit the typed refusal before ending the run. A script catching
             // this reply cannot dispatch again because its worker is retired.
@@ -429,6 +442,9 @@ impl Activation<'_> {
     }
 
     fn run(&mut self) -> Result<Flow> {
+        if self.rt.is_stopping() {
+            return Err(self.lease.lost());
+        }
         // The install gate (`crate::gate`): the lease is held and nothing
         // has reached the worker or the host yet, not even a resend of a
         // call an earlier activation left open. Verified pushes can record
@@ -511,7 +527,7 @@ impl Activation<'_> {
             budgets: self.rt.config.budgets,
             prefix,
         };
-        self.rt.store().write(|tx| {
+        self.write(|tx| {
             if !self.lease.holds(tx)? {
                 return Err(self.lease.lost());
             }
@@ -627,9 +643,7 @@ impl Activation<'_> {
             }
             Some(_) => Ok(Flow::Continue),
             None => {
-                self.rt
-                    .store()
-                    .write(|tx| runs::record_fingerprint(tx, &self.lease, &current))?;
+                self.write(|tx| runs::record_fingerprint(tx, &self.lease, &current))?;
                 self.at(Boundary::FingerprintRecorded)?;
                 self.run.fingerprint = Some(current);
                 Ok(Flow::Continue)
@@ -680,7 +694,7 @@ impl Activation<'_> {
                     // If only the row remains, recovery completes that intent.
                     let flow_id = self.run.flow_id.clone();
                     let limits = self.rt.config.kv;
-                    let revoked = self.rt.store().write(|tx| {
+                    let revoked = self.write(|tx| {
                         if let Some(reason) = crate::revocation::dispatch_check(tx, &run_id)? {
                             return Ok(Some(reason));
                         }
@@ -716,7 +730,7 @@ impl Activation<'_> {
             }
         }
         if !unknown.is_empty() {
-            self.rt.store().write(|tx| {
+            self.write(|tx| {
                 for p in &unknown {
                     // No thread of this process is sending the call, so
                     // the process that sent it stopped before recording a
@@ -739,17 +753,14 @@ impl Activation<'_> {
         }
         for mut row in resend {
             self.rt.register(&self.run, row.position);
-            let attempt = match self
-                .rt
-                .store()
-                .write(|tx| journal::authorize_resend(tx, &self.lease, row.position))
-            {
-                Ok(a) => a,
-                Err(e) => {
-                    self.rt.unregister(&run_id, row.position);
-                    return Err(e);
-                }
-            };
+            let attempt =
+                match self.write(|tx| journal::authorize_resend(tx, &self.lease, row.position)) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        self.rt.unregister(&run_id, row.position);
+                        return Err(e);
+                    }
+                };
             self.at(Boundary::ResendAuthorized {
                 position: row.position,
             })?;
@@ -828,7 +839,7 @@ impl Activation<'_> {
         let request = prepared
             .request
             .ok_or_else(|| CoreError::Corrupt("board preparation produced no request".into()))?;
-        let fits = self.rt.store().write(|tx| {
+        let fits = self.write(|tx| {
             journal::freeze_request(
                 tx,
                 &self.lease,
@@ -890,7 +901,7 @@ impl Activation<'_> {
                     &Refusal::new("version_revoked", &reason),
                 )?;
             } else if call.position < self.next_position {
-                self.rt.store().write(|tx| {
+                self.write(|tx| {
                     if journal::row(tx, &self.lease.run_id, call.position)?
                         .is_some_and(|r| r.class == StoredClass::Sync && r.outcome.is_none())
                     {
@@ -1000,7 +1011,7 @@ impl Activation<'_> {
             _ => {
                 let run_id = self.lease.run_id.clone();
                 self.rt.register(&self.run, call.position);
-                let committed = self.rt.store().write(|tx| {
+                let committed = self.write(|tx| {
                     self.commit_remote(tx, &flow_id, &call, class, &mut prepared, audited_at)
                 });
                 let key = match committed {
@@ -1062,7 +1073,7 @@ impl Activation<'_> {
         audited_at: i64,
     ) -> Result<Flow> {
         let limits = self.rt.config.kv;
-        let refused = self.rt.store().write(|tx| {
+        let refused = self.write(|tx| {
             if let Some(reason) = crate::revocation::dispatch_check(tx, &self.lease.run_id)? {
                 self.record_refusal(tx, flow_id, call, &Refusal::new("version_revoked", reason))?;
                 return Ok(true);
@@ -1127,7 +1138,7 @@ impl Activation<'_> {
         new: &NewCall<'_>,
         audited_at: i64,
     ) -> Result<Flow> {
-        let outcome = self.rt.store().write(|tx| {
+        let outcome = self.write(|tx| {
             if let Some(reason) = crate::revocation::dispatch_check(tx, &self.lease.run_id)? {
                 self.record_refusal(tx, flow_id, call, &Refusal::new("version_revoked", &reason))?;
                 return Ok(Err(reason));
@@ -1781,9 +1792,7 @@ impl Activation<'_> {
     /// Journals a call refused by a check that needs no store (argument
     /// size, valid JSON, the manifest), in its own transaction.
     fn refuse(&mut self, call: &HostCall, flow_id: &str, refusal: &Refusal) -> Result<Flow> {
-        self.rt
-            .store()
-            .write(|tx| self.record_refusal(tx, flow_id, call, refusal))?;
+        self.write(|tx| self.record_refusal(tx, flow_id, call, refusal))?;
         self.next_position += 1;
         self.at(Boundary::RefusalCommitted {
             position: call.position,
@@ -1948,7 +1957,7 @@ impl Activation<'_> {
                 call.position
             ));
         }
-        let outcome = self.rt.store().write(|tx| {
+        let outcome = self.write(|tx| {
             if let Some(reason) = crate::revocation::dispatch_check(tx, &self.lease.run_id)? {
                 journal::accept_outcome(
                     tx,
@@ -2004,10 +2013,8 @@ impl Activation<'_> {
                     false,
                 ));
             }
-            let (outcome, readiness) = self
-                .rt
-                .store()
-                .write(|tx| journal::release_next(tx, &self.lease, awaiting))?;
+            let (outcome, readiness) =
+                self.write(|tx| journal::release_next(tx, &self.lease, awaiting))?;
             self.readiness_seen = readiness;
             if let Some(outcome) = outcome {
                 let position = outcome.position;
@@ -2084,11 +2091,7 @@ impl Activation<'_> {
                 let exit = Exit::Succeeded {
                     value: value.as_str().to_owned(),
                 };
-                match self
-                    .rt
-                    .store()
-                    .write(|tx| runs::exit(tx, &self.lease, &exit))
-                {
+                match self.write(|tx| runs::exit(tx, &self.lease, &exit)) {
                     Ok(_) => {
                         self.at(Boundary::Exited)?;
                         Ok(done(
@@ -2103,10 +2106,8 @@ impl Activation<'_> {
                 }
             }
             ActivationResult::Suspended { awaited } => {
-                let parked = self
-                    .rt
-                    .store()
-                    .write(|tx| runs::park(tx, &self.lease, &awaited, self.readiness_seen))?;
+                let parked =
+                    self.write(|tx| runs::park(tx, &self.lease, &awaited, self.readiness_seen))?;
                 self.at(Boundary::Exited)?;
                 Ok(done(
                     match parked {

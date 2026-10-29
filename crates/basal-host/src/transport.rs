@@ -57,6 +57,10 @@ impl WireError {
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
+    /// Stop reconnecting and settle pending callers before joining module threads.
+    /// Called on a blocking thread; transports without a connection need no work.
+    fn shutdown(&self) {}
+
     /// Wake durable work when a catalog read observes a different generation.
     fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
 
@@ -842,6 +846,10 @@ impl SubcTransport {
     }
 }
 impl Transport for SubcTransport {
+    fn shutdown(&self) {
+        self.handle.block_on(self.consumer.close());
+    }
+
     fn flow_read_exact(
         &self,
         scope: &subc_protocol::scope::ScopeSelector,
