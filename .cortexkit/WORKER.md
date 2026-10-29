@@ -11,7 +11,9 @@ Standing rules for workers. Follow them without asking. Ask only about what the 
 
 ## Before you deliver
 
-- Run the full test suite of every package you changed on Linux, for example `cargo test -p basal-core` on `linux,16c`, plus clippy with `-D warnings` for those packages. Report the results in your delivery.
+- Before delivery, run `script/gate.sh --print-plan` locally, then execute the printed lane commands through the `runon` tool with the printed targets (`linux,16c`, `windows`, and conditional `macos`; script suites use `linux,2c`). Worker Seatbelt cannot read MOTOR's connection file, so do not call `ck motor run` from a worker shell.
+- Run the printed `script/gate.sh --prepare-tools` locally before dispatch: it caches and verifies the CI-pinned NATS archives without Cargo. Run the printed `script/gate.sh --clean-tools` afterward, before committing; never commit `.gate-inputs/` binary inputs. The remote lanes verify the archives again and report their installed Rust version, refusing versions below the workspace minimum.
+- Package-local changes select changed packages and their dependents; workspace/tooling changes, unknown package paths and an empty diff select all packages. Use `--workspace` to select all packages and `--all-platforms` to force the macOS lane. Report commands and results. The supervising agent with MOTOR access runs `script/gate.sh` before pushing; its read-only local rustfmt check is allowed, but all Cargo commands stay remote.
 - A bug fix comes with a test that fails without the fix. Show it once (revert the fix, run the test, restore) and quote the failure in your report.
 - Run a sidekick comment review on your diff and fix what it flags.
 - Commit as `ualtinok <94532+ualtinok@users.noreply.github.com>`.
