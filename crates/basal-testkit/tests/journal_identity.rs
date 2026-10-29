@@ -68,7 +68,9 @@ fn code_hash_mismatch_is_engine_mismatch_without_replay() {
     let run_id = suspended_run(&world, &rt);
     sql(
         &rt,
-        &format!("UPDATE runs SET script = script || ' ' WHERE run_id = '{run_id}'"),
+        &format!(
+            "UPDATE run_snapshots SET script = script || ' ' WHERE snapshot_id = (SELECT snapshot_id FROM runs WHERE run_id = '{run_id}')"
+        ),
     );
     let run = finish(&rt, &world, &run_id);
     assert_eq!(run.state, RunState::EngineMismatch, "{run:#?}");

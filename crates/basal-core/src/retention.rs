@@ -1,8 +1,9 @@
 //! Retention in bounded transactions, on the runtime's deadline-service cadence.
 //!
-//! Terminal runs, journal, mailbox, activations and Broca snapshots are kept
-//! for seven days by default, and longer while any call, token reservation or
-//! open decision card needs them. Quarantine, call/audit history, delivered
+//! Successful payloads and event bodies keep 24 hours; run summaries, call
+//! metadata, activations and code snapshots keep 90 days by default, and longer
+//! while any call, token reservation or open decision card needs them.
+//! Quarantine, call/audit history, delivered
 //! outbox notifications, settled token ledgers and dropped schedules keep
 //! thirty days; any existing run protects its dependent history. Unsent
 //! notifications and open reservations/cards stay until settled. Old rate
@@ -48,6 +49,7 @@ pub(crate) const BATCH: usize = 128;
 pub struct RetentionConfig {
     pub interval: Duration,
     pub runs: Duration,
+    pub payloads: Duration,
     pub history: Duration,
 }
 
@@ -55,7 +57,8 @@ impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             interval: Duration::from_secs(3600),
-            runs: Duration::from_secs(7 * 24 * 3600),
+            runs: Duration::from_secs(90 * 24 * 3600),
+            payloads: Duration::from_secs(24 * 3600),
             history: Duration::from_secs(30 * 24 * 3600),
         }
     }
@@ -140,13 +143,68 @@ fn candidates(conn: &Connection, cutoff: i64, unsettled: bool) -> Result<Vec<Str
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+macro_rules! payload_candidates_sql {
+    () => {
+        "SELECT r.run_id FROM runs r WHERE r.state='succeeded' AND r.ended_at<=?1 \
+         AND r.payloads_pruned_at IS NULL AND NOT ({OBLIGATIONS}) ORDER BY +r.run_id LIMIT {BATCH}"
+    };
+}
+
+fn payload_candidates(conn: &Connection, cutoff: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!(
+        payload_candidates_sql!(),
+        OBLIGATIONS = OBLIGATIONS,
+        BATCH = BATCH,
+    ))?;
+    Ok(stmt
+        .query_map([cutoff], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn tombstone_calls(tx: &Transaction, run_id: &str, now: i64) -> Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO tombstones (kind, key, run_id, pruned_at) \
+         SELECT 'idempotency_key', idempotency_key, run_id, ?2 FROM journal \
+         WHERE run_id = ?1 AND class IN ('mutation', 'keyed_mutation')",
+        params![run_id, now],
+    )?;
+    Ok(())
+}
+
+fn prune_payloads_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<bool> {
+    // Recheck the same obligation fence while holding the writer transaction.
+    // Failed and uncertain runs retain evidence until full run retention.
+    let changed = tx.execute(
+        &format!(
+            "UPDATE runs AS r SET payloads_pruned_at=?3 WHERE r.run_id=?1 AND r.state='succeeded' \
+         AND r.ended_at<=?2 AND r.payloads_pruned_at IS NULL AND NOT ({OBLIGATIONS})"
+        ),
+        params![run_id, cutoff, now],
+    )?;
+    if changed == 0 {
+        return Ok(false);
+    }
+    tombstone_calls(tx, run_id, now)?;
+    tx.execute("DELETE FROM mailbox WHERE run_id=?1", [run_id])?;
+    tx.execute("DELETE FROM journal_payloads WHERE run_id=?1", [run_id])?;
+    tx.execute("DELETE FROM event_body_journal WHERE run_id=?1", [run_id])?;
+    // Only acknowledged snapshots can pass the fence. Deleting them also
+    // invokes the existing Broca wait/wake cleanup trigger.
+    tx.execute("DELETE FROM broca_calls WHERE run_id=?1", [run_id])?;
+    tx.execute(
+        "UPDATE meta SET value='0' WHERE key=?1",
+        [format!("journal_bytes:{run_id}")],
+    )?;
+    Ok(true)
+}
+
 fn prune_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<PruneReport> {
     // Recheck under the write transaction: an acknowledgement or a decision
     // card may have changed since the candidate scan released the connection.
     let candidate = tx
         .query_row(
             &format!(
-                "SELECT r.flow_id,r.trigger_id,({OBLIGATIONS}) FROM runs r \
+                "SELECT r.flow_id,r.trigger_id,({OBLIGATIONS}),r.snapshot_id FROM runs r \
          WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \
          AND r.ended_at<=?1 AND r.run_id=?2"
             ),
@@ -156,11 +214,12 @@ fn prune_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<Pru
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, bool>(2)?,
+                    r.get::<_, i64>(3)?,
                 ))
             },
         )
         .optional()?;
-    let Some((flow_id, trigger_id, unsettled)) = candidate else {
+    let Some((flow_id, trigger_id, unsettled, snapshot_id)) = candidate else {
         return Ok(PruneReport::default());
     };
     if unsettled {
@@ -175,17 +234,13 @@ fn prune_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<Pru
         "INSERT OR IGNORE INTO tombstones (kind, key, run_id, pruned_at) VALUES ('trigger', ?1, ?2, ?3)",
         params![trigger_key(&flow_id, &trigger_id), run_id, now],
     )?;
-    tx.execute(
-        "INSERT OR IGNORE INTO tombstones (kind, key, run_id, pruned_at) \
-         SELECT 'idempotency_key', idempotency_key, run_id, ?2 FROM journal \
-         WHERE run_id = ?1 AND class IN ('mutation', 'keyed_mutation')",
-        params![run_id, now],
-    )?;
+    tombstone_calls(tx, run_id, now)?;
     tx.execute("DELETE FROM mailbox WHERE run_id = ?1", [run_id])?;
     tx.execute("DELETE FROM journal WHERE run_id = ?1", [run_id])?;
     tx.execute("DELETE FROM activations WHERE run_id = ?1", [run_id])?;
     tx.execute("DELETE FROM trigger_inbox WHERE run_id = ?1", [run_id])?;
     tx.execute("DELETE FROM runs WHERE run_id = ?1", [run_id])?;
+    tx.execute("DELETE FROM run_snapshots WHERE snapshot_id=?1 AND NOT EXISTS(SELECT 1 FROM runs WHERE snapshot_id=?1)", [snapshot_id])?;
     tx.execute(
         "DELETE FROM meta WHERE key IN (?1,?2)",
         params![
@@ -200,6 +255,21 @@ fn prune_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<Pru
 }
 
 impl Runtime {
+    /// Remove successful payloads without removing summaries or call metadata.
+    /// The age is measured from the run's end, not its admission or last call.
+    pub fn prune_payloads(&self, now_ms: i64, retention_ms: i64) -> Result<usize> {
+        let cutoff = now_ms.saturating_sub(retention_ms);
+        let ids = self.store().read(|c| payload_candidates(c, cutoff))?;
+        let mut pruned = 0;
+        for id in ids {
+            pruned += usize::from(
+                self.store()
+                    .write(|tx| prune_payloads_in(tx, cutoff, now_ms, &id))?,
+            );
+        }
+        Ok(pruned)
+    }
+
     /// Prunes terminal runs that ended at least `retention_ms` before
     /// `now_ms` and have no open obligation. Never touches a run that is
     /// not terminal (`needs_reconcile` included).
@@ -238,13 +308,15 @@ impl Runtime {
         // earlier writes went to.
         self.sweep_legacy_fs_temps()?;
         let config = &self.config.retention;
+        let payloads = self.prune_payloads(now, millis(config.payloads))?;
         let runs = self.prune(now, millis(config.runs))?;
         let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;
         let events_full = self
             .store()
             .write(|tx| crate::events::prune_receipts(tx, now))?
             == BATCH;
-        let backlog = runs.pruned.len() == BATCH || history_full || events_full;
+        let backlog =
+            payloads == BATCH || runs.pruned.len() == BATCH || history_full || events_full;
         let interval = if backlog {
             config.interval.min(Duration::from_secs(1))
         } else {
@@ -532,7 +604,7 @@ impl Runtime {
         let writes: Vec<(String, String)> = self.store().read(|c| {
             let mut stmt = c.prepare(
                 "SELECT DISTINCT json_extract(request, '$.args.path'), \
-                 json_extract(request, '$.grant.roots') FROM journal \
+                 json_extract(request, '$.grant.roots') FROM journal_with_payloads \
                  WHERE kind_code = ?1 AND request IS NOT NULL AND json_valid(request)",
             )?;
             Ok(stmt
@@ -633,5 +705,97 @@ mod os_bytes_tests {
         assert_eq!(os_bytes(&value), [0x00, 0xd8, b'a', 0x00]);
         assert_eq!(os_from_bytes(os_bytes(&value)), Some(value));
         assert_eq!(os_from_bytes(vec![b'a']), None);
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+    use crate::{journal, model::StoredClass, runs};
+    use basal_proto::{CallKind, JsonText, Primitive, Settlement};
+
+    #[test]
+    fn payload_pruning_candidates_search_only_unpruned_age_ranges() {
+        let conn = Connection::open_in_memory().unwrap();
+        for m in crate::schema::MIGRATIONS {
+            conn.execute_batch(m.statements).unwrap();
+        }
+        let sql = format!(
+            payload_candidates_sql!(),
+            OBLIGATIONS = OBLIGATIONS,
+            BATCH = BATCH
+        );
+        let plan = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map([0], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("runs_payload_retention") && line.contains("ended_at<?")),
+            "{plan:?}"
+        );
+    }
+
+    #[test]
+    fn payload_pruning_rechecks_obligations_in_the_write_transaction() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        for m in crate::schema::MIGRATIONS {
+            conn.execute_batch(m.statements).unwrap();
+        }
+        let tx = conn.transaction().unwrap();
+        let snapshot = runs::snapshot(&tx, "f", None, &[0; 32], "return 1", "{}").unwrap();
+        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,owner,generation,admitted_at) VALUES ('r','f','t',1,'{}',?1,zeroblob(32),'running','owner',1,0)",[snapshot]).unwrap();
+        let lease = runs::Lease {
+            run_id: "r".into(),
+            owner: "owner".into(),
+            generation: 1,
+        };
+        journal::insert_call(
+            &tx,
+            &lease,
+            "f",
+            &journal::NewCall {
+                position: 0,
+                kind: &CallKind::Primitive(Primitive::Now),
+                args: &JsonText::null(),
+                class: StoredClass::Sync,
+                request: None,
+            },
+        )
+        .unwrap();
+        journal::record_sync(
+            &tx,
+            &lease,
+            0,
+            Settlement::Fulfilled,
+            &JsonText::null(),
+            None,
+        )
+        .unwrap();
+        tx.execute(
+            "UPDATE runs SET state='succeeded',owner=NULL,ended_at=0",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert_eq!(payload_candidates(&conn, 0).unwrap(), vec!["r"]);
+        let tx = conn.transaction().unwrap();
+        tx.execute("INSERT INTO outbox(at,kind,flow_id,body) VALUES (0,'refusal_committed','f','{\"run_id\":\"r\"}')",[]).unwrap();
+        assert!(!prune_payloads_in(&tx, 0, 1, "r").unwrap());
+        assert!(!journal::row(&tx, "r", 0).unwrap().unwrap().payload_pruned);
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM journal_payloads", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        tx.execute("DELETE FROM outbox", []).unwrap();
+        assert!(prune_payloads_in(&tx, 0, 1, "r").unwrap());
+        assert!(!prune_payloads_in(&tx, 0, 1, "r").unwrap());
+        tx.commit().unwrap();
     }
 }

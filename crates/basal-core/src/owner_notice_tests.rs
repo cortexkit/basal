@@ -698,7 +698,8 @@ fn typed_rejection_deadline_is_exempt_at_the_real_driver_boundary() {
     let refusal = FlowRefusal::new(RefusalReason::NoFlowScope, "plexus", "events_get");
     let value = refusal.outcome().value.as_str().to_owned();
     f.rt.store().write(|tx| {
-        tx.execute("INSERT INTO journal(run_id,position,kind_code,module,op,args,args_digest,idempotency_key,class,dispatch,settlement,value,payload_hash,delivery_order,issued_generation) VALUES (?1,0,0,'plexus','events_get','{}',zeroblob(32),?1,'query','none','rejected',?2,zeroblob(32),0,0)",rusqlite::params![id,value])?;
+        tx.execute("INSERT INTO journal(run_id,position,kind_code,module,op,args_bytes,args_digest,idempotency_key,class,dispatch,settlement,value_bytes,payload_hash,delivery_order,issued_generation) VALUES (?1,0,0,'plexus','events_get',2,zeroblob(32),?1,'query','none','rejected',?2,zeroblob(32),0,0)",rusqlite::params![id,value.len() as i64])?;
+        tx.execute("INSERT INTO journal_payloads(run_id,position,args,value) VALUES (?1,0,'{}',?2)",rusqlite::params![id,value])?;
         Ok(())
     }).unwrap();
     f.reply(json!({"error":{"code":"deadline"}}), Settlement::Rejected);

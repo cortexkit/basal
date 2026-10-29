@@ -167,10 +167,11 @@ fn deleting_a_broca_call_drops_its_wait_and_wakes() {
             // where they drive the cascades.
             c.pragma_update(None, "foreign_keys", false)?;
             c.execute_batch(
-                "INSERT INTO journal (run_id, position, kind_code, module, op, args, args_digest,
+                "INSERT INTO journal (run_id, position, kind_code, module, op, args_bytes, args_digest,
                      idempotency_key, class, dispatch, issued_generation)
-                 VALUES ('journal-run', 0, 0, 'provider', 'act', 'null', zeroblob(32),
-                     'journal-key', 'query', 'none', 0);
+                 VALUES ('journal-run', 0, 0, 'provider', 'act', 4, zeroblob(32),
+                      'journal-key', 'query', 'none', 0);
+                 INSERT INTO journal_payloads(run_id,position,args) VALUES ('journal-run',0,'null');
                  INSERT INTO codemode_runs (run_id, agent_id, program, catalog, catalog_digest,
                      limits, scope, deadline_ms, status, admitted_at)
                  VALUES ('codemode-run', 'agent', 'return 1;', '[]',

@@ -1280,7 +1280,7 @@ fn board_read_uses_basal_route_with_journaled_approved_stamp() {
         f.rt.store()
             .read(|c| {
                 Ok(c.query_row(
-                    "SELECT class, request, args FROM journal WHERE run_id=?1 AND position=0",
+                    "SELECT class, request, args FROM journal_with_payloads WHERE run_id=?1 AND position=0",
                     [&run],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )?)

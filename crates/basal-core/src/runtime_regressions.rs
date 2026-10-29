@@ -136,8 +136,8 @@ impl Fixture {
     fn pending(&self, id: &str) {
         self.rt.store().write(|tx| {
             tx.execute("INSERT OR IGNORE INTO flows(flow_id,created_at) VALUES ('flow',0)", [])?;
-            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at,admit_seq) VALUES (?1,'flow',?1,1,'null','return 1;',?2,?3,'pending',0,?4)",
-                params![id, r#"{"id":"flow","version":1,"purpose":"Test runtime transitions","trigger":{"schedule":{"interval":"1h"}}}"#, crate::ids::code_hash("return 1;", r#"{"id":"flow","version":1,"purpose":"Test runtime transitions","trigger":{"schedule":{"interval":"1h"}}}"#).as_slice(), NEXT.fetch_add(1, Ordering::SeqCst) as i64])?;
+            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,admit_seq) VALUES (?1,'flow',?1,1,'null',?2,?3,'pending',0,?4)",
+                params![id, runs::snapshot(tx,"flow",None,&crate::ids::code_hash("return 1;",r#"{"id":"flow","version":1,"purpose":"Test runtime transitions","trigger":{"schedule":{"interval":"1h"}}}"#),"return 1;",r#"{"id":"flow","version":1,"purpose":"Test runtime transitions","trigger":{"schedule":{"interval":"1h"}}}"#)?, crate::ids::code_hash("return 1;", r#"{"id":"flow","version":1,"purpose":"Test runtime transitions","trigger":{"schedule":{"interval":"1h"}}}"#).as_slice(), NEXT.fetch_add(1, Ordering::SeqCst) as i64])?;
             Ok(())
         }).unwrap();
     }
@@ -1011,4 +1011,162 @@ fn a_flow_classify_refusal_charges_by_the_spend_marker_in_its_detail() {
         );
         let _ = std::fs::remove_dir_all(&f.path);
     }
+}
+
+#[test]
+fn payload_pruning_at_24h_keeps_summary_metadata_and_counters() {
+    use basal_proto::Settlement;
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+    let f = Fixture::new(DAY);
+    assert_eq!(
+        f.rt.config.retention.payloads,
+        Duration::from_millis(DAY as u64)
+    );
+    assert_eq!(
+        f.rt.config.retention.runs,
+        Duration::from_millis(90 * DAY as u64)
+    );
+    for (id, state, settled) in [
+        ("success", "succeeded", true),
+        ("failure", "failed", true),
+        ("cancelled", "cancelled", false),
+        ("protected", "succeeded", false),
+        ("uncertain", "needs_reconcile", false),
+    ] {
+        let lease = f.call(id, StoredClass::KeyedMutation);
+        f.rt.store()
+            .write(|tx| {
+                if settled {
+                    journal::record_sync(
+                        tx,
+                        &lease,
+                        0,
+                        Settlement::Fulfilled,
+                        &JsonText::new("\"é\"").unwrap(),
+                        None,
+                    )?;
+                }
+                tx.execute(
+                    "UPDATE runs SET state=?2,owner=NULL,ended_at=0 WHERE run_id=?1",
+                    params![id, state],
+                )?;
+                tx.execute(
+                    "INSERT INTO event_body_journal(run_id,body,digest) VALUES (?1,?2,'digest')",
+                    params![id, b"event body".as_slice()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    let before = f.rt.calls("success").unwrap()[0].clone();
+    assert_eq!(f.rt.prune_payloads(DAY - 1, DAY).unwrap(), 0);
+    assert_eq!(f.rt.prune_payloads(DAY, DAY).unwrap(), 1);
+    let after = f.rt.calls("success").unwrap()[0].clone();
+    assert!(after.payload_pruned);
+    assert_eq!(after.args.as_str(), "\"payload pruned\"");
+    assert_eq!(
+        after.outcome.as_ref().unwrap().value.as_str(),
+        "\"payload pruned\""
+    );
+    assert_eq!(after.args_digest, before.args_digest);
+    assert_eq!(after.idempotency_key, before.idempotency_key);
+    assert_eq!(
+        after.outcome.as_ref().unwrap().settlement,
+        Settlement::Fulfilled
+    );
+    assert_eq!(
+        after.outcome.as_ref().unwrap().delivery_order,
+        before.outcome.as_ref().unwrap().delivery_order
+    );
+    assert_eq!(f.rt.run("success").unwrap().state, RunState::Succeeded);
+    for id in ["failure", "uncertain", "cancelled", "protected"] {
+        assert!(!f.rt.calls(id).unwrap()[0].payload_pruned, "{id}");
+    }
+    f.rt.store().read(|c| {
+        assert_eq!(journal::run_size(c,"success")?, (1,0));
+        assert!(journal::prefix(c,"success").is_err());
+        let counts: (i64,i64,i64) = c.query_row("SELECT (SELECT count(*) FROM journal_payloads WHERE run_id='success'),(SELECT count(*) FROM event_body_journal WHERE run_id='success'),(SELECT count(*) FROM tombstones WHERE kind='idempotency_key')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        assert_eq!(counts,(0,0,1));
+        Ok(())
+    }).unwrap();
+    f.rt.store()
+        .write(|tx| {
+            tx.execute(
+                "DELETE FROM meta WHERE key IN ('journal_calls:success','journal_bytes:success')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        f.rt.store()
+            .read(|c| journal::run_size(c, "success"))
+            .unwrap(),
+        (1, 0)
+    );
+    assert!(
+        f.rt.prune(90 * DAY - 1, 90 * DAY)
+            .unwrap()
+            .pruned
+            .is_empty()
+    );
+    let pruned = f.rt.prune(90 * DAY, 90 * DAY).unwrap().pruned;
+    assert!(pruned.contains(&"success".to_string()));
+    assert!(pruned.contains(&"failure".to_string()));
+    assert!(!pruned.contains(&"uncertain".to_string()));
+    assert!(!pruned.contains(&"cancelled".to_string()));
+}
+
+#[test]
+fn script_dedup_frees_only_the_last_retained_reference() {
+    let f = Fixture::new(100);
+    f.pending("first");
+    f.pending("second");
+    f.rt.store().write(|tx| {
+        let n: i64 = tx.query_row("SELECT count(*) FROM run_snapshots",[],|r|r.get(0))?;
+        assert_eq!(n,1);
+        tx.execute("UPDATE runs SET state='succeeded',ended_at=CASE run_id WHEN 'first' THEN 0 ELSE 100 END",[])?;
+        Ok(())
+    }).unwrap();
+    assert_eq!(f.rt.prune(100, 100).unwrap().pruned, vec!["first"]);
+    assert_eq!(f.rt.run("second").unwrap().script, "return 1;");
+    f.rt.prune(200, 100).unwrap();
+    f.rt.store()
+        .read(|c| {
+            assert_eq!(
+                c.query_row("SELECT count(*) FROM run_snapshots", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn missing_outcome_payload_rolls_back_metadata_and_counters() {
+    let f = Fixture::new(0);
+    let lease = f.call("run", StoredClass::KeyedMutation);
+    let before = f.rt.store().read(|c| journal::run_size(c, "run")).unwrap();
+    let error =
+        f.rt.store()
+            .write(|tx| {
+                tx.execute("DELETE FROM journal_payloads WHERE run_id='run'", [])?;
+                journal::record_sync(
+                    tx,
+                    &lease,
+                    0,
+                    basal_proto::Settlement::Fulfilled,
+                    &JsonText::null(),
+                    None,
+                )?;
+                Ok(())
+            })
+            .unwrap_err();
+    assert!(matches!(error, CoreError::Corrupt(_)));
+    assert!(f.rt.calls("run").unwrap()[0].outcome.is_none());
+    assert_eq!(
+        f.rt.store().read(|c| journal::run_size(c, "run")).unwrap(),
+        before
+    );
 }

@@ -96,7 +96,8 @@ mod tests {
 
     fn pending(rt: &Runtime) {
         rt.store().write(|tx| {
-            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at,deadline_ms) VALUES ('run','flow','trigger',1,'null','return 1','{}',zeroblob(32),'pending',0,600000)", [])?;
+            crate::runs::snapshot(tx,"flow",None,&[0;32],"return 1","{}")?;
+            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,deadline_ms) VALUES ('run','flow','trigger',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='flow'),zeroblob(32),'pending',0,600000)", [])?;
             Ok(())
         }).unwrap();
     }

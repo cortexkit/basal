@@ -6,7 +6,8 @@ fn next_wake_includes_the_install_gate_retry() {
     let rt = &fixture.rt;
     rt.store().write(|tx| {
         tx.execute("INSERT INTO flows(flow_id,created_at) VALUES ('waiting',0)", [])?;
-        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at) VALUES ('waiting','waiting','trigger',1,'null','return 1','{}',zeroblob(32),'pending',0)", [])?;
+        crate::runs::snapshot(tx,"waiting",None,&[0;32],"return 1","{}")?;
+            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at) VALUES ('waiting','waiting','trigger',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='waiting'),zeroblob(32),'pending',0)", [])?;
         Ok(())
     }).unwrap();
     *rt.shared.retention_next.lock().unwrap() = Some(i64::MAX);
@@ -21,7 +22,8 @@ fn new_gate_backoffs_reap_terminal_and_pruned_runs() {
     let rt = &fixture.rt;
     for id in ["done", "gone", "waiting"] {
         rt.store().write(|tx| {
-            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at) VALUES (?1,'f',?1,1,'null','return 1','{}',zeroblob(32),'pending',1)", [id])?;
+            crate::runs::snapshot(tx,"f",None,&[0;32],"return 1","{}")?;
+            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at) VALUES (?1,'f',?1,1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='f'),zeroblob(32),'pending',1)", [id])?;
             Ok(())
         }).unwrap();
         rt.back_off(id).unwrap();
@@ -44,7 +46,7 @@ fn removed_instance_gate_reports_removal_not_revocation() {
     let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
     let rt = &fixture.rt;
     rt.store().write(|tx| {
-        tx.execute_batch("INSERT INTO flows(flow_id,package,removed,created_at) VALUES ('instance','package',1,1); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,owner,generation,admitted_at) VALUES ('run','instance','trigger',1,'null','return 1','{}',zeroblob(32),'running','parent',1,1);")?;
+        tx.execute_batch("INSERT INTO flows(flow_id,package,removed,created_at) VALUES ('instance','package',1,1); INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES ('instance',0,zeroblob(32),'return 1','{}'); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,owner,generation,admitted_at) VALUES ('run','instance','trigger',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='instance'),zeroblob(32),'running','parent',1,1);")?;
         Ok(())
     }).unwrap();
     let lease = Lease {
@@ -67,7 +69,7 @@ fn removed_cancellation_rechecks_mark_in_its_write_transaction() {
     for migration in crate::schema::MIGRATIONS {
         conn.execute_batch(migration.statements).unwrap();
     }
-    conn.execute_batch("INSERT INTO flows(flow_id,package,removed,created_at) VALUES ('instance','package',1,1); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,owner,generation,admitted_at) VALUES ('run','instance','trigger',1,'null','return 1','{}',zeroblob(32),'running','parent',1,1);").unwrap();
+    conn.execute_batch("INSERT INTO flows(flow_id,package,removed,created_at) VALUES ('instance','package',1,1); INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES ('instance',0,zeroblob(32),'return 1','{}'); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,owner,generation,admitted_at) VALUES ('run','instance','trigger',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='instance'),zeroblob(32),'running','parent',1,1);").unwrap();
     let lease = Lease {
         run_id: "run".into(),
         owner: "parent".into(),

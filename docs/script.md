@@ -101,9 +101,15 @@ replay after a crash without repeating a call. That journal sets the limits:
   pass it fails the run.
 - **Calls:** at most 10,000 per run.
 
-A terminal run's journal is kept for seven days, and longer while a call or
-decision card still needs it, then deleted. These limits apply to every flow
-and template on this basal.
+Run summaries and call metadata are kept for 90 days. Successful runs keep
+their full call arguments, prepared requests, replies and cached event bodies
+for 24 hours after ending; older call inspection shows "payload pruned".
+Failed and uncertain runs retain their payloads, and any open call, reservation,
+decision or unacknowledged completion protects its run from pruning. After
+those obligations clear, terminal runs can age out normally. Code snapshots
+are shared across runs and freed with their last retained run. These limits
+apply to every flow and template on this basal; codemode keeps its separate
+24-hour run retention.
 
 ## Install and dry-run warnings
 

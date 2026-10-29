@@ -162,7 +162,7 @@ impl Fixture {
         };
         *lock(&self.host.refusal) = refusal;
         self.rt.store().write(|tx| {
-            tx.execute("INSERT INTO runs(run_id,flow_id,flow_version,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at,deadline_ms) VALUES (?1,'flow',1,?1,1,'null','return 1',?2,zeroblob(32),'pending',0,600000)",params![run,manifest(1,json!([]))])?;
+            tx.execute("INSERT INTO runs(run_id,flow_id,flow_version,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,deadline_ms) VALUES (?1,'flow',1,?1,1,'null',?2,zeroblob(32),'pending',0,600000)",params![run,runs::snapshot(tx,"flow",Some(1),&[0;32],"return 1",&manifest(1,json!([])))?])?;
             let lease = runs::claim(tx,run,"owner",0)?;
             journal::insert_call(tx,&lease,"flow",&journal::NewCall {position:0,kind:&CallKind::Op {module:"plexus".into(),op:"github".into()},args:&JsonText::new(args.to_string()).unwrap(),class,request:None})?;
             Ok(())

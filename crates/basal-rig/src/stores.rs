@@ -295,7 +295,7 @@ impl BasalStore {
     pub fn model_call(&self, run_id: &str) -> Result<Option<Value>, String> {
         let c = open(&self.path)?;
         c.query_row(
-            "SELECT COALESCE(j.request, j.args), b.snapshot FROM journal j JOIN broca_calls b
+            "SELECT COALESCE(j.request, j.args), b.snapshot FROM journal_with_payloads j JOIN broca_calls b
                 ON b.run_id = j.run_id AND b.position = j.position
               WHERE j.run_id = ?1 AND j.position = 0",
             [run_id],
@@ -345,8 +345,8 @@ impl BasalStore {
         let mut statement = c
             .prepare(
                 "SELECT j.run_id, j.position, j.kind_code, j.dispatch, j.attempts,
-                        j.settlement, j.value, j.request
-                   FROM journal j JOIN runs r ON r.run_id = j.run_id
+                        j.settlement, CASE WHEN j.payload_pruned THEN '\"payload pruned\"' ELSE j.value END, CASE WHEN j.payload_pruned THEN '\"payload pruned\"' ELSE j.request END
+                   FROM journal_with_payloads j JOIN runs r ON r.run_id = j.run_id
                   WHERE r.flow_id = ?1
                   ORDER BY r.rowid, j.position",
             )

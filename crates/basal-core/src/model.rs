@@ -235,11 +235,14 @@ pub struct CallRow {
     pub request: Option<JsonText>,
     /// A daemon scope close cut this call after it may have been sent.
     pub scope_cut: bool,
+    /// Arguments and outcome values render as "payload pruned" once the
+    /// successful run's payload retention expires. Digests and settlement remain.
+    pub payload_pruned: bool,
 }
 
 /// The columns [`CallRow::from_row`] expects, in order.
 pub const CALL_COLUMNS: &str = "position, kind_code, module, op, args, args_digest, \
-    idempotency_key, class, dispatch, attempts, handle, settlement, value, delivery_order, request, targeted, scope_cut";
+    idempotency_key, class, dispatch, attempts, handle, settlement, value, delivery_order, request, targeted, scope_cut, payload_pruned";
 
 impl CallRow {
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Result<Self>> {
@@ -247,7 +250,7 @@ impl CallRow {
         let code: i64 = row.get(1)?;
         let module: Option<String> = row.get(2)?;
         let op: Option<String> = row.get(3)?;
-        let args: String = row.get(4)?;
+        let args: Option<String> = row.get(4)?;
         let args_digest: Vec<u8> = row.get(5)?;
         let key: String = row.get(6)?;
         let class: String = row.get(7)?;
@@ -260,7 +263,19 @@ impl CallRow {
         let request: Option<String> = row.get(14)?;
         let targeted: bool = row.get(15)?;
         let scope_cut: bool = row.get(16)?;
+        let payload_pruned: bool = row.get(17)?;
         Ok((|| {
+            let marker = || "\"payload pruned\"".to_owned();
+            let args = if payload_pruned {
+                marker()
+            } else {
+                args.ok_or_else(|| CoreError::Corrupt("missing call payload".into()))?
+            };
+            let value = if payload_pruned && settlement.is_some() {
+                Some(marker())
+            } else {
+                value
+            };
             let outcome = match (settlement, value, order) {
                 (Some(s), Some(v), Some(o)) => Some(RecordedOutcome {
                     settlement: parse_settlement(&s)?,
@@ -287,6 +302,7 @@ impl CallRow {
                 outcome,
                 request: request.map(|r| json(r, "request")).transpose()?,
                 scope_cut,
+                payload_pruned,
             })
         })())
     }

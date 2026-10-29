@@ -657,7 +657,7 @@ async fn newer_version_keeps_first_approval_cutoff() {
     assert_eq!(report.skipped_before_install, 0);
     let script: String = rt
         .store()
-        .read(|c| Ok(c.query_row("SELECT script FROM runs", [], |r| r.get(0))?))
+        .read(|c| Ok(c.query_row("SELECT script FROM runs_with_snapshots", [], |r| r.get(0))?))
         .unwrap();
     assert_eq!(
         script, "return 2;",

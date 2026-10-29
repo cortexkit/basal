@@ -310,9 +310,9 @@ fn list_last_run_carries_the_failure_on_one_bounded_line() {
         .store()
         .write(|tx| {
             tx.execute(
-                "INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at,ended_at,admit_seq,error_kind,error_detail)
-                 VALUES ('run-failed','a','run-failed',1,'{}','return 1;','{}',zeroblob(32),'failed',?1,?2,1,'script',?3)",
-                rusqlite::params![T0, T0 + 5, detail],
+                "INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,ended_at,admit_seq,error_kind,error_detail)
+                 VALUES ('run-failed','a','run-failed',1,'{}',?4,zeroblob(32),'failed',?1,?2,1,'script',?3)",
+                rusqlite::params![T0, T0 + 5, detail, basal_core::runs::snapshot(tx,"a",None,&[0;32],"return 1;","{}")?],
             )?;
             Ok(())
         })

@@ -174,14 +174,14 @@ fn current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set()
     let store = Store::open(dir.join("core.db"), Durability::throwaway()).unwrap();
     store
         .write(|tx| {
-            tx.execute_batch("INSERT INTO flows (flow_id,created_at) VALUES ('f',1); INSERT INTO runs (run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at) VALUES ('r','f','t',1,'{}','return 1','{}',zeroblob(32),'pending',1)")?;
+            tx.execute_batch("INSERT INTO flows (flow_id,created_at) VALUES ('f',1); INSERT INTO run_snapshots(snapshot_id,flow_id,flow_version,code_hash,script,manifest) VALUES (1,'f',0,zeroblob(32),'return 1','{}'); INSERT INTO runs (run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at) VALUES ('r','f','t',1,'{}',1,zeroblob(32),'pending',1)")?;
             Ok(())
         })
         .unwrap();
     let defer = |position: i64, refusal: &str| {
         store.write(|tx| {
             Ok(tx.execute(
-                "INSERT INTO journal (run_id,position,kind_code,args,args_digest,idempotency_key,class,dispatch,issued_generation,refusal,retry_not_before,refusal_detail) VALUES ('r',?1,1,'{}',zeroblob(32),?2,'query','deferred',1,?3,250,json_object('reason',?3,'provider','mock','action','send'))",
+                "INSERT INTO journal (run_id,position,kind_code,args_bytes,args_digest,idempotency_key,class,dispatch,issued_generation,refusal,retry_not_before,refusal_detail) VALUES ('r',?1,1,2,zeroblob(32),?2,'query','deferred',1,?3,250,json_object('reason',?3,'provider','mock','action','send'))",
                 rusqlite::params![position, format!("key:{position}"), refusal],
             ))
         })
@@ -253,11 +253,14 @@ fn target_scope_migration_preserves_existing_calls_and_children() {
         "UPDATE journal SET kind_code=0,module='mock',op='echo',targeted=1 WHERE position=0",
     )
     .unwrap();
+    conn.execute_batch("UPDATE journal SET dispatch='deferred',refusal='sink_audience_unavailable',retry_not_before=100,refusal_detail='{\"reason\":\"sink_audience_unavailable\",\"provider\":\"prefrontal-core\",\"action\":\"flow.target_scope\"}' WHERE position=0").unwrap();
+    for m in MIGRATIONS.iter().filter(|m| m.version > 23) {
+        conn.execute_batch(m.statements).unwrap();
+    }
     assert!(matches!(
         crate::journal::row(&conn, "r", 0).unwrap().unwrap().kind,
         basal_proto::CallKind::OpFor { .. }
     ));
-    conn.execute_batch("UPDATE journal SET dispatch='deferred',refusal='sink_audience_unavailable',retry_not_before=100,refusal_detail='{\"reason\":\"sink_audience_unavailable\",\"provider\":\"prefrontal-core\",\"action\":\"flow.target_scope\"}' WHERE position=0").unwrap();
     assert!(
         conn.prepare("PRAGMA foreign_key_check")
             .unwrap()

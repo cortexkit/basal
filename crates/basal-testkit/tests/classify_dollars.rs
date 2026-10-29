@@ -28,7 +28,7 @@ impl Host for Provider {
         self.store
             .read(|c| {
                 let saved: String = c.query_row(
-                    "SELECT request FROM journal WHERE run_id=?1 AND position=?2",
+                    "SELECT request FROM journal_payloads WHERE run_id=?1 AND position=?2",
                     rusqlite::params![request.run_id, request.position],
                     |r| r.get(0),
                 )?;
