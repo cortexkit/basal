@@ -252,11 +252,20 @@ pub(crate) fn expire(
     drop(stmt);
     for (run_id, _) in &expired {
         crate::journal::expire_deferred(tx, run_id)?;
+        // An unfinished event-body query retains the provider's last refusal,
+        // so expiry reports why the body never became available to the script.
+        let (kind, detail) =
+            crate::events::body_deadline_failure(tx, run_id)?.unwrap_or_else(|| {
+                (
+                    "deadline".into(),
+                    "the run passed its wall-clock deadline".into(),
+                )
+            });
         tx.execute(
             "UPDATE runs SET state = 'failed', owner = NULL, generation = generation + 1, \
-             awaited = NULL, error_kind = 'deadline', error_detail = ?2, ended_at = ?3 \
+             awaited = NULL, error_kind = ?2, error_detail = ?3, ended_at = ?4 \
              WHERE run_id = ?1 AND state IN ('pending', 'running', 'suspended')",
-            params![run_id, "the run passed its wall-clock deadline", now_ms()],
+            params![run_id, kind, detail, now_ms()],
         )?;
         crate::owner_notice::finish_run(tx, run_id, now_ms())?;
         crate::templates::finish_run(tx, run_id)?;
