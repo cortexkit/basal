@@ -1295,9 +1295,23 @@ fn too_large(cap: usize) -> Denial {
     )
 }
 
+/// How often a blocked read wakes to check for shutdown, on Windows only.
+/// There, shutting down the duplicated socket `Client::shutdown` holds doesn't
+/// wake a `recv` blocked on the original, so the read has to look. Elsewhere
+/// that shutdown wakes the read itself, so reads wait out the whole deadline
+/// and an idle fetch costs no wakeups.
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Bounds the next read by the cancellation poll and the next write by the deadline.
+fn read_timeout(left: Duration) -> Duration {
+    if cfg!(windows) {
+        left.min(READ_POLL_INTERVAL)
+    } else {
+        left
+    }
+}
+
+/// Bounds the next read by the deadline (and, on Windows, the shutdown poll)
+/// and the next write by the deadline.
 fn set_timeouts(sock: &TcpStream, deadline: Instant) -> std::io::Result<()> {
     let left = deadline.saturating_duration_since(Instant::now());
     if left.is_zero() {
@@ -1306,7 +1320,7 @@ fn set_timeouts(sock: &TcpStream, deadline: Instant) -> std::io::Result<()> {
             "the fetch ran past its deadline",
         ));
     }
-    sock.set_read_timeout(Some(left.min(READ_POLL_INTERVAL)))?;
+    sock.set_read_timeout(Some(read_timeout(left)))?;
     sock.set_write_timeout(Some(left))
 }
 
