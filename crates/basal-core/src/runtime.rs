@@ -631,6 +631,12 @@ impl Runtime {
         }
     }
 
+    /// Includes finished threads while their handles remain in the runtime's thread list.
+    #[cfg(test)]
+    pub(crate) fn thread_handle_count(&self) -> usize {
+        lock(&self.shared.threads).len()
+    }
+
     pub(crate) fn spawn(&self, f: impl FnOnce() + Send + 'static) {
         let handle = thread::spawn(f);
         let mut threads = lock(&self.shared.threads);

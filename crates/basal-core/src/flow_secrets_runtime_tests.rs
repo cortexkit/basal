@@ -164,6 +164,7 @@ fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_neve
     let path = std::env::temp_dir().join(format!("basal-secret-journal-{}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     let store = Arc::new(Store::open(path.join("store.sqlite"), Durability::throwaway()).unwrap());
+    let store_lifetime = Arc::downgrade(&store);
     let carrier = Arc::new(Carrier(AtomicUsize::new(0)));
     let host =
         Arc::new(basal_host::builtins::BuiltinHost::default().with_secret_host(carrier.clone()));
@@ -239,7 +240,19 @@ fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_neve
         assert!(!text.contains(KEY));
         assert!(!text.contains(ENCODED));
     }
+    // Dispatch threads can retain the SQLite store after delivery has finished.
+    // Join them before dropping the runtime and deleting its files on Windows.
+    rt.quiesce();
+    assert_eq!(
+        rt.thread_handle_count(),
+        0,
+        "dispatch and wake threads must be joined before deleting the store"
+    );
     drop(rt);
+    assert!(
+        store_lifetime.upgrade().is_none(),
+        "the store must be closed before deleting its files"
+    );
     std::fs::remove_dir_all(path).unwrap();
 }
 
