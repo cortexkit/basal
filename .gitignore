@@ -2,5 +2,8 @@ target/
 node_modules/
 dist/
 .DS_Store
-.cortexkit/
+# Internal docs, scripts and drafts stay local; only the standing worker rules
+# are shared.
+.cortexkit/*
+!.cortexkit/WORKER.md
 __pycache__/
