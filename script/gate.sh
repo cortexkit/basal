@@ -28,6 +28,17 @@ system_scratch() {
     mktemp -d "/tmp/$1.XXXXXX"
 }
 
+lane_scratch() {
+    # Lane snapshots are submitted to MOTOR as checkouts, so they must be
+    # top-level (not nested in this checkout, or Git dependencies don't ship)
+    # and under a root MOTOR accepts (it refuses /tmp: "destination outside
+    # runner-owned roots"). The fleet's side-checkout folder is both.
+    local parent="$HOME/Work/Projects/CortexKit-scratch"
+    [[ -d $parent ]] || parent="$HOME/.cache"
+    mkdir -p "$parent"
+    mktemp -d "$parent/$1.XXXXXX"
+}
+
 install_nats() {
     local platform extension sha archive
     if [[ ! -f $root/.gate-inputs/nats/manifest.sh ]]; then
@@ -258,7 +269,10 @@ for tool in ck rustfmt shellcheck gitleaks; do
 done
 
 mkdir -p target/scratch .cortexkit/internal-docs/audits/gate-logs
-scratch=$(system_scratch basal-gate)
+scratch=$(lane_scratch basal-gate)
+# Lane snapshots are full checkout copies outside this repository; remove them
+# however the gate ends. Logs live under .cortexkit/internal-docs, not here.
+trap 'rm -rf "$scratch"' EXIT
 export TMPDIR="$scratch"
 mkdir -p "$scratch/no-cargo"
 printf '#!/bin/sh\necho "Cargo is forbidden in local gate checks; use a remote lane" >&2\nexit 99\n' >"$scratch/no-cargo/cargo"
