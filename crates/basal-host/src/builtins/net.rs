@@ -840,6 +840,8 @@ impl Client {
     pub fn shutdown(&self) {
         let mut connections = self.connections.lock().unwrap_or_else(|p| p.into_inner());
         connections.stopped = true;
+        // This also prevents later writes. On Windows a duplicate socket's
+        // shutdown need not wake recv, so reads additionally poll stopped.
         for (_, socket) in &connections.sockets {
             let _ = socket.shutdown(Shutdown::Both);
         }
@@ -1145,9 +1147,15 @@ impl Client {
         let tls = self.tls()?;
         let conn =
             ClientConnection::new(tls, name).map_err(|e| Denial::new(codes::TLS, e.to_string()))?;
-        let mut stream = StreamOwned::new(conn, tcp);
+        let mut stream = StreamOwned::new(
+            conn,
+            Interruptible {
+                socket: tcp,
+                client: self,
+                deadline,
+            },
+        );
         while stream.conn.is_handshaking() {
-            set_timeouts(&stream.sock, deadline).map_err(|e| before(e.to_string()))?;
             if let Err(e) = stream.conn.complete_io(&mut stream.sock) {
                 let refused = e
                     .get_ref()
@@ -1196,14 +1204,13 @@ impl Client {
         // one: `refuse_body` keeps the answer without its body, and
         // `unreadable` makes the outcome unknown.
         let effect_possible = sent_mutation || !is_query_method(method);
-        set_timeouts(&stream.sock, deadline).map_err(lost)?;
         stream.write_all(head.as_bytes()).map_err(lost)?;
         if let Some(b) = body {
             stream.write_all(b.as_bytes()).map_err(lost)?;
         }
         stream.flush().map_err(lost)?;
 
-        let mut reader = BufReader::new(Deadlined { stream, deadline });
+        let mut reader = BufReader::new(Deadlined { stream });
         let (status, headers) = loop {
             // A head over its cap reads as invalid data. Either way the
             // outcome is already unknown for a query; for a mutation, the
@@ -1288,7 +1295,9 @@ fn too_large(cap: usize) -> Denial {
     )
 }
 
-/// Bounds the next read or write by what is left of the deadline.
+const READ_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Bounds the next read by the cancellation poll and the next write by the deadline.
 fn set_timeouts(sock: &TcpStream, deadline: Instant) -> std::io::Result<()> {
     let left = deadline.saturating_duration_since(Instant::now());
     if left.is_zero() {
@@ -1297,20 +1306,68 @@ fn set_timeouts(sock: &TcpStream, deadline: Instant) -> std::io::Result<()> {
             "the fetch ran past its deadline",
         ));
     }
-    sock.set_read_timeout(Some(left))?;
+    sock.set_read_timeout(Some(left.min(READ_POLL_INTERVAL)))?;
     sock.set_write_timeout(Some(left))
+}
+
+/// Poll below TLS, including during the handshake. Transient socket timeouts
+/// never escape to rustls, even when only part of a TLS record has arrived.
+struct Interruptible<'a> {
+    socket: TcpStream,
+    client: &'a Client,
+    deadline: Instant,
+}
+
+impl Interruptible<'_> {
+    fn prepare(&self) -> std::io::Result<()> {
+        if self.client.stopped() {
+            // Read helpers retry Interrupted; cancellation must be terminal.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "HTTP client stopped",
+            ));
+        }
+        set_timeouts(&self.socket, self.deadline)
+    }
+}
+
+impl Read for Interruptible<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            self.prepare()?;
+            match self.socket.read(buf) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
+                result => return result,
+            }
+        }
+    }
+}
+
+impl Write for Interruptible<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.prepare()?;
+        self.socket.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.prepare()?;
+        self.socket.flush()
+    }
 }
 
 /// A TLS stream whose every read is bounded by the fetch's deadline, so a
 /// server trickling bytes cannot hold a fetch past it.
-struct Deadlined {
-    stream: StreamOwned<ClientConnection, TcpStream>,
-    deadline: Instant,
+struct Deadlined<'a> {
+    stream: StreamOwned<ClientConnection, Interruptible<'a>>,
 }
 
-impl Read for Deadlined {
+impl Read for Deadlined<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        set_timeouts(&self.stream.sock, self.deadline)?;
+        self.stream.sock.prepare()?;
         // Without authenticated TLS EOF a connection-framed body may be
         // truncated; preserve rustls's UnexpectedEof instead of inventing EOF.
         self.stream.read(buf)

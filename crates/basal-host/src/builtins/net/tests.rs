@@ -3,8 +3,7 @@ use super::*;
 #[path = "response_corpus.rs"]
 mod response_corpus;
 
-#[test]
-fn shutdown_interrupts_a_fetch_waiting_for_its_http_response() {
+fn tls_server_config() -> (rustls::ServerConfig, Vec<u8>) {
     let certified = rcgen::generate_simple_self_signed(vec!["api.test".into()]).unwrap();
     let certificate = certified.cert.der().clone();
     let config = rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -18,6 +17,12 @@ fn shutdown_interrupts_a_fetch_waiting_for_its_http_response() {
         rustls::pki_types::PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()).into(),
     )
     .unwrap();
+    (config, certificate.to_vec())
+}
+
+#[test]
+fn shutdown_interrupts_a_fetch_waiting_for_its_http_response() {
+    let (config, certificate) = tls_server_config();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let (received, request_received) = mpsc::channel();
@@ -70,12 +75,129 @@ fn shutdown_interrupts_a_fetch_waiting_for_its_http_response() {
     release.send(()).unwrap();
     server.join().unwrap();
     fetch.join().unwrap();
-    assert!(
-        result
-            .expect("shutdown must interrupt HTTP before the 30-second timeout")
-            .is_err()
-    );
+    assert!(matches!(
+        result.expect("shutdown must interrupt HTTP before the 30-second timeout"),
+        Err(Failure::Transport(TransportError::Unavailable {
+            sent: crate::Sent::Maybe(UnknownReason::ConnectionLost),
+            ..
+        }))
+    ));
     assert!(client.connections.lock().unwrap().sockets.is_empty());
+}
+
+#[test]
+fn polling_timeouts_preserve_partial_tls_records() {
+    let (config, certificate) = tls_server_config();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        // Exercise polling during the handshake as well as the response.
+        std::thread::sleep(READ_POLL_INTERVAL * 3);
+        let connection = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+        let mut stream = rustls::StreamOwned::new(connection, socket);
+        let mut input = Vec::new();
+        while !input.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            input.push(byte[0]);
+        }
+        stream
+            .conn
+            .writer()
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+            .unwrap();
+        let mut record = Vec::new();
+        while stream.conn.wants_write() {
+            stream.conn.write_tls(&mut record).unwrap();
+        }
+        let middle = record.len() / 2;
+        assert!(
+            middle > 5,
+            "response contains a TLS record header and payload"
+        );
+        // Pause in the TLS header, then in the encrypted payload. Neither
+        // polling timeout may become a TLS error or discard buffered bytes.
+        stream.sock.write_all(&record[..3]).unwrap();
+        std::thread::sleep(READ_POLL_INTERVAL * 3);
+        stream.sock.write_all(&record[3..middle]).unwrap();
+        std::thread::sleep(READ_POLL_INTERVAL * 3);
+        stream.sock.write_all(&record[middle..]).unwrap();
+    });
+    let client = Client::new(NetConfig {
+        resolver: Arc::new(StaticResolver(BTreeMap::from([(
+            "api.test".into(),
+            vec![address],
+        )]))),
+        trust_anchors: Some(vec![certificate]),
+        private_hosts: BTreeSet::from(["api.test".into()]),
+        total_timeout: Duration::from_secs(5),
+        ..NetConfig::default()
+    });
+    let result = client.fetch(
+        &parse_request(&json!({"url":"https://api.test/"})).unwrap(),
+        &[HostRule {
+            host: "api.test".into(),
+            methods: vec!["GET".into()],
+        }],
+    );
+    server.join().unwrap();
+    assert_eq!(result.unwrap()["body"], "hello");
+}
+
+#[test]
+fn polling_reads_remain_bounded_by_the_fetch_deadline() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (peer, _) = listener.accept().unwrap();
+    let (finished, outcome) = mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        let client = Client::new(NetConfig::default());
+        let mut transport = Interruptible {
+            socket,
+            client: &client,
+            deadline: Instant::now() + READ_POLL_INTERVAL * 3,
+        };
+        let error = transport.read(&mut [0]).unwrap_err();
+        finished
+            .send((error.kind(), Instant::now() >= transport.deadline))
+            .unwrap();
+    });
+    let result = outcome.recv_timeout(Duration::from_secs(1));
+    drop(peer);
+    reading.join().unwrap();
+    assert_eq!(result.unwrap(), (std::io::ErrorKind::TimedOut, true));
+}
+
+#[test]
+fn stopped_transport_cannot_send_or_read_even_without_a_socket_shutdown() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let socket = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut peer, _) = listener.accept().unwrap();
+    let client = Client::new(NetConfig::default());
+    let mut transport = Interruptible {
+        socket,
+        client: &client,
+        deadline: Instant::now() + Duration::from_secs(30),
+    };
+    // No registered clone can mask the transport's own stopped checks.
+    client.shutdown();
+    assert_eq!(
+        transport.write(b"request").unwrap_err().kind(),
+        std::io::ErrorKind::ConnectionAborted
+    );
+    assert_eq!(
+        transport.read(&mut [0]).unwrap_err().kind(),
+        std::io::ErrorKind::ConnectionAborted
+    );
+    peer.set_nonblocking(true).unwrap();
+    assert_eq!(
+        peer.read(&mut [0]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
 }
 
 #[test]
