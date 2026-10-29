@@ -1462,7 +1462,7 @@ impl Activation<'_> {
                     }
                 };
                 let targets = self.rt.store().read(|c| {
-                    let mut stmt = c.prepare("SELECT DISTINCT json_extract(request,'$.agent') FROM journal WHERE run_id=?1 AND targeted=1 AND request IS NOT NULL")?;
+                    let mut stmt = c.prepare("SELECT DISTINCT json_extract(request,'$.agent') FROM journal_with_payloads WHERE run_id=?1 AND targeted=1 AND request IS NOT NULL")?;
                     Ok(stmt.query_map([&self.run.run_id], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
                 }).map_err(|e| Refusal::new("store_failure", e.to_string()))?;
                 if !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize {

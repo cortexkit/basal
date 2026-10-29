@@ -266,7 +266,7 @@ fn withdrawal_journals_before_send_and_replays_identical_intent_after_cut() {
     .unwrap();
     let stored_text: String = connection
         .query_row(
-            "SELECT request FROM journal WHERE run_id=?1 AND position=0",
+            "SELECT request FROM journal_payloads WHERE run_id=?1 AND position=0",
             [&run],
             |row| row.get(0),
         )

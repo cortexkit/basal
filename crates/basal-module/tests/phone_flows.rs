@@ -71,9 +71,9 @@ fn seed_run(
     error: Option<&str>,
 ) {
     f.module.rt.store().write(|tx| {
-        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at,ended_at,admit_seq,error_kind,error_detail)
-            VALUES (?1,?2,?1,1,?3,'SECRET SCRIPT','{}',zeroblob(32),?4,?5,?6,?7,?8,?9)",
-            params![id,flow,trigger.to_string(),state,T0+seq,ended,seq,error.map(|_|"script"),error])?;
+        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,ended_at,admit_seq,error_kind,error_detail)
+            VALUES (?1,?2,?1,1,?3,?10,zeroblob(32),?4,?5,?6,?7,?8,?9)",
+            params![id,flow,trigger.to_string(),state,T0+seq,ended,seq,error.map(|_|"script"),error,basal_core::runs::snapshot(tx,flow,None,&[0;32],"SECRET SCRIPT","{}")?])?;
         Ok(())
     }).unwrap();
 }

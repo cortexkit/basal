@@ -89,9 +89,11 @@ fn terminal_model_acknowledgement_retires_its_flow_without_a_global_sweep() {
     );
     rt.store().write(|tx| {
         tx.execute_batch("INSERT INTO flows(flow_id,removed,created_at) VALUES ('f',1,0);\
-            INSERT INTO runs(run_id,flow_id,flow_version,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at) VALUES ('r','f',1,'t',1,'null','return 1','{}',zeroblob(32),'cancelled',0);\
-            INSERT INTO journal(run_id,position,kind_code,args,args_digest,idempotency_key,class,dispatch,issued_generation) VALUES ('r',0,1,'{}',zeroblob(32),'k','query','sent',1);\
-            INSERT INTO broca_calls VALUES ('k','r',0,'{\"acknowledged\":false,\"deferred\":false}');")?;
+            INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES ('f',1,zeroblob(32),'return 1','{}');\
+             INSERT INTO runs(run_id,flow_id,flow_version,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at) VALUES ('r','f',1,'t',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='f'),zeroblob(32),'cancelled',0);\
+            INSERT INTO journal(run_id,position,kind_code,args_bytes,args_digest,idempotency_key,class,dispatch,issued_generation) VALUES ('r',0,1,2,zeroblob(32),'k','query','sent',1);\
+            INSERT INTO journal_payloads VALUES ('r',0,'{}',NULL,NULL);\
+             INSERT INTO broca_calls VALUES ('k','r',0,'{\"acknowledged\":false,\"deferred\":false}');")?;
         Ok(())
     }).unwrap();
     rt.flush_refusals().unwrap();

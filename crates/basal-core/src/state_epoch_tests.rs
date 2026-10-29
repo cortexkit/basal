@@ -285,7 +285,8 @@ fn epoch_reset_preserves_token_rate_and_runtime_records() {
             INSERT INTO schedule_fires(flow_id,trigger_id,version,due_ms,payload,planned_at) VALUES ('flow','planned',2,2000,'{}',1000);
             INSERT INTO tombstones VALUES ('trigger','old-key','pruned-run',0);
             INSERT INTO decision_cards(dedup_key,kind,flow_id,version,instance,card,state,created_at) VALUES ('card','reenable','flow',1,1,'{}','open',0);")?;
-        tx.execute("INSERT INTO journal(run_id,position,kind_code,args,args_digest,idempotency_key,class,dispatch,issued_generation) VALUES (?1,0,1,'{}',zeroblob(32),'journal-key','query','sent',1)", [&old_run])?;
+        tx.execute("INSERT INTO journal(run_id,position,kind_code,args_bytes,args_digest,idempotency_key,class,dispatch,issued_generation) VALUES (?1,0,1,2,zeroblob(32),'journal-key','query','sent',1)", [&old_run])?;
+        tx.execute("INSERT INTO journal_payloads(run_id,position,args) VALUES (?1,0,'{}')", [&old_run])?;
         Ok(())
     }).unwrap();
     seed(&f, "other");

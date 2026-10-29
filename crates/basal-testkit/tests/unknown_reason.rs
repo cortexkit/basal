@@ -17,7 +17,11 @@ fn migrated(upto: u32) -> Connection {
 }
 
 /// A run with one sent call of `mock.post`, its dispatch state `dispatch`.
-fn call(conn: &Connection, dispatch: &str) {
+fn call(conn: &Connection, dispatch: &str, current: bool) {
+    if current {
+        conn.execute_batch("INSERT INTO run_snapshots(snapshot_id,flow_id,flow_version,code_hash,script,manifest) VALUES (1,'f',0,zeroblob(32),'','{}'); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at) VALUES ('r','f','t',1,'null',1,zeroblob(32),'needs_reconcile',0); INSERT INTO journal(run_id,position,kind_code,module,op,args_bytes,args_digest,idempotency_key,class,dispatch,attempts,issued_generation) VALUES ('r',0,0,'mock','post',2,zeroblob(32),'k','mutation','sent',1,1); INSERT INTO journal_payloads(run_id,position,args) VALUES ('r',0,'{}');").unwrap();
+        return;
+    }
     conn.execute(
         "INSERT INTO runs (run_id, flow_id, trigger_id, attempt, trigger, script, manifest, \
          code_hash, state, admitted_at) VALUES ('r', 'f', 't', 1, 'null', '', '{}', ?1, \
@@ -44,7 +48,7 @@ fn the_migration_refuses_a_store_that_already_holds_an_unknown_call() {
         .expect("the unknown-reason migration");
     let version = last.version;
     let conn = migrated(version);
-    call(&conn, "unknown");
+    call(&conn, "unknown", false);
     let error = conn
         .execute_batch(last.statements)
         .expect_err("the migration refuses")
@@ -55,14 +59,14 @@ fn the_migration_refuses_a_store_that_already_holds_an_unknown_call() {
     );
     // A store without an unknown call migrates.
     let conn = migrated(version);
-    call(&conn, "sent");
+    call(&conn, "sent", false);
     conn.execute_batch(last.statements).expect("migrates");
 }
 
 #[test]
 fn a_call_marked_unknown_needs_a_reason_from_the_closed_set() {
     let conn = migrated(u32::MAX);
-    call(&conn, "sent");
+    call(&conn, "sent", true);
     let set = |dispatch: &str, reason: Option<&str>| {
         conn.execute(
             "UPDATE journal SET dispatch = ?1, unknown_reason = ?2 WHERE run_id = 'r'",

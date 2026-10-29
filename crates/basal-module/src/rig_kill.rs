@@ -110,7 +110,7 @@ impl RigKillHook {
         let c = Connection::open_with_flags(self.store.get()?, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .ok()?;
         let row = c.query_row(
-            "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = ?2",
+            "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal_with_payloads WHERE run_id = ?1 AND position = ?2",
             rusqlite::params![run_id, position], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?)),
         ).ok()?;
         let snapshots: i64 = c
@@ -275,6 +275,7 @@ mod tests {
         c.execute_batch("CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT,
             dispatch TEXT, attempts INTEGER, settlement TEXT);
             CREATE TABLE broca_calls (run_id TEXT);
+            CREATE VIEW journal_with_payloads AS SELECT * FROM journal;
             INSERT INTO journal VALUES ('r', 0, '{\"prompt\":\"authored\"}', '{\"selection\":{\"decisionID\":\"d1\"}}', 'sent', 1, NULL);").unwrap();
         let store = Arc::new(OnceLock::new());
         store.set(path.clone()).unwrap();
@@ -312,6 +313,7 @@ mod position_tests {
         c.pragma_update(None, "synchronous", "OFF").unwrap();
         c.execute_batch("CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT, dispatch TEXT, attempts INTEGER, settlement TEXT);
             CREATE TABLE broca_calls (run_id TEXT);
+            CREATE VIEW journal_with_payloads AS SELECT * FROM journal;
             INSERT INTO journal VALUES ('r',0,'0',NULL,'sent',1,NULL), ('r',3,'3',NULL,'answered',2,'fulfilled');").unwrap();
         let store = Arc::new(OnceLock::new());
         store.set(path).unwrap();

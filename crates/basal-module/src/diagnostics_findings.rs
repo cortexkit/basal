@@ -347,8 +347,8 @@ mod tests {
 
     fn run(store: &Store, id: &str, state: &str, at: i64, seq: i64) {
         store.write(|tx| {
-            tx.execute("INSERT INTO runs (run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at,admit_seq,ended_at,error_kind) VALUES (?1,'f',?1,1,?2,?2,'{}',zeroblob(32),?3,?4,?5,?6,?7)",
-                rusqlite::params![id, SECRET, state,at,seq, if state=="failed" {Some(at+1)} else {None}, if state=="failed" {Some("script")} else {None}])?;
+            tx.execute("INSERT INTO runs (run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,admit_seq,ended_at,error_kind) VALUES (?1,'f',?1,1,?2,?8,zeroblob(32),?3,?4,?5,?6,?7)",
+                rusqlite::params![id, SECRET, state,at,seq, if state=="failed" {Some(at+1)} else {None}, if state=="failed" {Some("script")} else {None},basal_core::runs::snapshot(tx,"f",None,&[0;32],SECRET,"{}")?])?;
             Ok(())
         }).unwrap();
     }
@@ -434,7 +434,7 @@ mod tests {
             seed(
                 store,
                 &format!(
-                    "INSERT INTO journal(run_id,position,kind_code,args,args_digest,idempotency_key,class,dispatch,issued_generation,refusal,retry_not_before,refusal_detail) VALUES ('r',0,1,'{SECRET}',zeroblob(32),'j','query','deferred',1,'scope_ended',{},'{{\"reason\":\"scope_ended\",\"provider\":\"{SECRET}\",\"action\":\"{SECRET}\"}}')",
+                    "INSERT INTO journal(run_id,position,kind_code,args_bytes,args_digest,idempotency_key,class,dispatch,issued_generation,refusal,retry_not_before,refusal_detail) VALUES ('r',0,1,length(CAST('{SECRET}' AS BLOB)),zeroblob(32),'j','query','deferred',1,'scope_ended',{},'{{\"reason\":\"scope_ended\",\"provider\":\"{SECRET}\",\"action\":\"{SECRET}\"}}'); INSERT INTO journal_payloads(run_id,position,args) VALUES ('r',0,'{SECRET}')",
                     NOW - 60_000 + 1
                 ),
             );

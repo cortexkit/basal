@@ -36,7 +36,7 @@ use crate::model::position_i64 as pos;
 /// Every call row of a run, in position order.
 pub fn rows(conn: &Connection, run_id: &str) -> Result<Vec<CallRow>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {CALL_COLUMNS} FROM journal WHERE run_id = ?1 ORDER BY position"
+        "SELECT {CALL_COLUMNS} FROM journal_with_payloads WHERE run_id = ?1 ORDER BY position"
     ))?;
     let rows = stmt
         .query_map([run_id], CallRow::from_row)?
@@ -46,7 +46,9 @@ pub fn rows(conn: &Connection, run_id: &str) -> Result<Vec<CallRow>> {
 
 pub fn row(conn: &Connection, run_id: &str, position: u64) -> Result<Option<CallRow>> {
     conn.query_row(
-        &format!("SELECT {CALL_COLUMNS} FROM journal WHERE run_id = ?1 AND position = ?2"),
+        &format!(
+            "SELECT {CALL_COLUMNS} FROM journal_with_payloads WHERE run_id = ?1 AND position = ?2"
+        ),
         params![run_id, pos(position)?],
         CallRow::from_row,
     )
@@ -65,9 +67,9 @@ pub fn run_size(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
 
 fn scan_size(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
     let (calls, journal_bytes): (i64, i64) = conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(length(CAST(args AS BLOB)) \
+        "SELECT COUNT(*), COALESCE(SUM(COALESCE(length(CAST(args AS BLOB)),0) \
          + COALESCE(length(CAST(value AS BLOB)), 0) \
-         + COALESCE(length(CAST(request AS BLOB)), 0)), 0) FROM journal WHERE run_id = ?1",
+         + COALESCE(length(CAST(request AS BLOB)), 0)), 0) FROM journal_with_payloads WHERE run_id = ?1",
         [run_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
@@ -157,6 +159,11 @@ fn bump_size(tx: &Transaction, run_id: &str, calls: u64, bytes: usize) -> Result
 /// replayed this prefix and reports itself blocked.
 pub fn prefix(conn: &Connection, run_id: &str) -> Result<Vec<RecordedCall>> {
     let rows = rows(conn, run_id)?;
+    if rows.iter().any(|r| r.payload_pruned) {
+        return Err(CoreError::Invalid(
+            "run payload pruned; replay unavailable".into(),
+        ));
+    }
     let prefix: Vec<RecordedCall> = rows.iter().map(CallRow::recorded).collect();
     Ok(prefix)
 }
@@ -192,8 +199,8 @@ pub fn insert_call(
     ensure_size(tx, &lease.run_id)?;
     let changed = tx.execute(
         &format!(
-            "INSERT INTO journal (run_id, position, kind_code, module, op, args, args_digest, \
-             idempotency_key, class, dispatch, attempts, issued_generation, request, targeted) \
+            "INSERT INTO journal (run_id, position, kind_code, module, op, args_bytes, args_digest, \
+             idempotency_key, class, dispatch, attempts, issued_generation, request_bytes, targeted) \
              SELECT ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?3, ?14, ?16 \
              WHERE {FENCE} AND ?4 = ?15"
         ),
@@ -205,13 +212,13 @@ pub fn insert_call(
             code,
             module,
             op,
-            call.args.as_str(),
+            call.args.len() as i64,
             digest.0.as_slice(),
             key,
             call.class.as_str(),
             dispatch.as_str(),
             attempts,
-            call.request.map(JsonText::as_str),
+            call.request.map_or(0, JsonText::len) as i64,
             pos(next)?,
             matches!(call.kind, CallKind::OpFor { .. }),
         ],
@@ -226,6 +233,15 @@ pub fn insert_call(
             )),
         ));
     }
+    tx.execute(
+        "INSERT INTO journal_payloads(run_id,position,args,request) VALUES (?1,?2,?3,?4)",
+        params![
+            lease.run_id,
+            pos(call.position)?,
+            call.args.as_str(),
+            call.request.map(JsonText::as_str)
+        ],
+    )?;
     bump_size(
         tx,
         &lease.run_id,
@@ -238,6 +254,19 @@ pub fn insert_call(
 /// The next delivery order for the run: one above every committed order.
 const NEXT_ORDER: &str =
     "(SELECT COALESCE(MAX(delivery_order) + 1, 0) FROM journal WHERE run_id = ?1)";
+
+fn store_value(tx: &Transaction, run_id: &str, position: i64, value: &str) -> Result<()> {
+    if tx.execute(
+        "UPDATE journal_payloads SET value=?3 WHERE run_id=?1 AND position=?2",
+        params![run_id, position, value],
+    )? != 1
+    {
+        return Err(CoreError::Corrupt(
+            "missing call payload for outcome".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Records a synchronous call's value together with its delivery order,
 /// only while the activation's lease still holds (same owner and lease
@@ -257,7 +286,7 @@ pub fn record_sync(
     let hash = payload_hash(settlement, value);
     let changed = tx.execute(
         &format!(
-            "UPDATE journal SET settlement = ?5, value = ?6, payload_hash = ?7, clock_ms = ?8, \
+            "UPDATE journal SET settlement = ?5, value_bytes = ?6, payload_hash = ?7, clock_ms = ?8, \
              delivery_order = {NEXT_ORDER} \
              WHERE run_id = ?1 AND position = ?4 AND settlement IS NULL AND {FENCE}"
         ),
@@ -267,7 +296,7 @@ pub fn record_sync(
             lease.generation_i64()?,
             pos(position)?,
             settlement_str(settlement),
-            value.as_str(),
+            value.len() as i64,
             hash.as_slice(),
             clock_ms,
         ],
@@ -278,6 +307,7 @@ pub fn record_sync(
             CoreError::Worker(format!("no unresolved call at position {position}")),
         ));
     }
+    store_value(tx, &lease.run_id, pos(position)?, value.as_str())?;
     let order: i64 = tx.query_row(
         "SELECT delivery_order FROM journal WHERE run_id = ?1 AND position = ?2",
         params![lease.run_id, pos(position)?],
@@ -353,14 +383,14 @@ pub fn freeze_request(
     }
     let changed = tx.execute(
         &format!(
-            "UPDATE journal SET request=?4 WHERE run_id=?1 AND position=?5 \
-            AND request IS NULL AND settlement IS NULL AND {FENCE}"
+            "UPDATE journal SET request_bytes=?4 WHERE run_id=?1 AND position=?5 \
+             AND EXISTS(SELECT 1 FROM journal_payloads p WHERE p.run_id=journal.run_id AND p.position=journal.position AND p.request IS NULL) AND settlement IS NULL AND {FENCE}"
         ),
         params![
             lease.run_id,
             lease.owner,
             lease.generation_i64()?,
-            request.as_str(),
+            request.len() as i64,
             pos(position)?
         ],
     )?;
@@ -370,6 +400,10 @@ pub fn freeze_request(
             CoreError::Corrupt("pending request already prepared or settled".into()),
         ));
     }
+    tx.execute(
+        "UPDATE journal_payloads SET request=?3 WHERE run_id=?1 AND position=?2",
+        params![lease.run_id, pos(position)?, request.as_str()],
+    )?;
     bump_size(tx, &lease.run_id, 0, request.len())?;
     Ok(true)
 }
@@ -385,8 +419,9 @@ mod request_tests {
             conn.execute_batch(migration.statements).unwrap();
         }
         conn.execute_batch("INSERT INTO flows(flow_id,created_at) VALUES ('f',1);
-            INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,owner,generation,admitted_at)
-            VALUES ('r','f','t',1,'{}','return 1','{}',zeroblob(32),'running','owner',1,1)").unwrap();
+            INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES ('f',0,zeroblob(32),'return 1','{}');
+            INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,owner,generation,admitted_at)
+            VALUES ('r','f','t',1,'{}',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='f'),zeroblob(32),'running','owner',1,1)").unwrap();
         let lease = Lease {
             run_id: "r".into(),
             owner: "owner".into(),
@@ -544,7 +579,7 @@ impl SavedRefusal {
 pub fn expire_deferred(tx: &Transaction, run_id: &str) -> Result<()> {
     let mut stmt = tx.prepare(
         "SELECT r.flow_id,j.position,j.kind_code,j.module,j.op,COALESCE(j.request,j.args),\
-         j.idempotency_key,j.attempts,j.refusal_detail,j.targeted FROM journal j JOIN runs r USING(run_id) \
+         j.idempotency_key,j.attempts,j.refusal_detail,j.targeted FROM journal_with_payloads j JOIN runs r USING(run_id) \
          WHERE j.run_id=?1 AND j.dispatch='deferred' ORDER BY j.position",
     )?;
     let rows = stmt
@@ -636,7 +671,7 @@ pub fn release_next(
     };
     let changed = tx.execute(
         &format!(
-            "UPDATE journal SET settlement = ?5, value = ?6, payload_hash = ?7, \
+            "UPDATE journal SET settlement = ?5, value_bytes = ?6, payload_hash = ?7, \
              delivery_order = {NEXT_ORDER} \
              WHERE run_id = ?1 AND position = ?4 AND settlement IS NULL AND {FENCE}"
         ),
@@ -646,7 +681,7 @@ pub fn release_next(
             lease.generation_i64()?,
             position,
             settlement,
-            value,
+            value.len() as i64,
             hash
         ],
     )?;
@@ -656,6 +691,7 @@ pub fn release_next(
             CoreError::Corrupt(format!("mailbox entry for a resolved call at {position}")),
         ));
     }
+    store_value(tx, &lease.run_id, position, &value)?;
     tx.execute("DELETE FROM mailbox WHERE seq = ?1", [seq])?;
     let order: i64 = tx.query_row(
         "SELECT delivery_order FROM journal WHERE run_id = ?1 AND position = ?2",

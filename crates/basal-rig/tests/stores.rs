@@ -111,16 +111,23 @@ fn journal_evidence_rejects_negative_positions() {
         CREATE TABLE journal(run_id TEXT, position INTEGER, kind_code INTEGER, dispatch TEXT,
             attempts INTEGER, settlement TEXT, value TEXT, request TEXT);
         INSERT INTO runs VALUES ('run', 'flow');
-        INSERT INTO journal VALUES ('run', -1, 7, 'sent', 1, 'fulfilled', '{}', '{}');",
+        INSERT INTO journal VALUES ('run', -1, 7, 'sent', 1, 'fulfilled', '{}', '{}'); CREATE VIEW journal_with_payloads AS SELECT *,0 AS payload_pruned FROM journal;",
     )
     .unwrap();
+    let store = BasalStore {
+        path: scratch.0.clone(),
+    };
     assert!(
-        BasalStore {
-            path: scratch.0.clone()
-        }
-        .calls("flow")
-        .is_err()
+        store
+            .calls("flow")
+            .unwrap_err()
+            .contains("negative journal position")
     );
+    c.execute("UPDATE journal SET position=0", []).unwrap();
+    c.execute_batch("DROP VIEW journal_with_payloads; CREATE VIEW journal_with_payloads AS SELECT *,1 AS payload_pruned FROM journal;").unwrap();
+    let calls = store.calls("flow").unwrap();
+    assert_eq!(calls[0].value, Some(json!("payload pruned")));
+    assert_eq!(calls[0].request, Some(json!("payload pruned")));
 }
 
 #[test]
@@ -198,6 +205,7 @@ fn model_journal_and_ledger_reads_are_scoped_to_the_run_and_preserve_missing_usa
     let c = throwaway_connection(&scratch.0);
     c.execute_batch(
         "CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT);
+        CREATE VIEW journal_with_payloads AS SELECT * FROM journal;
         CREATE TABLE broca_calls (run_id TEXT, position INTEGER, snapshot TEXT);
         CREATE TABLE token_ledger (run_id TEXT, position INTEGER, state TEXT, reserved INTEGER,
             input_tokens INTEGER, cache_write_tokens INTEGER, output_tokens INTEGER,

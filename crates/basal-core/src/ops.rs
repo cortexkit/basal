@@ -125,7 +125,7 @@ pub(crate) fn counted_failure(
         return Ok(false);
     }
     if kind == Some("deadline") {
-        let mut stmt = conn.prepare_cached("SELECT value FROM mailbox WHERE run_id=?1 AND settlement='rejected' UNION ALL SELECT value FROM journal WHERE run_id=?1 AND settlement='rejected'")?;
+        let mut stmt = conn.prepare_cached("SELECT value FROM mailbox WHERE run_id=?1 AND settlement='rejected' UNION ALL SELECT value FROM journal_with_payloads WHERE run_id=?1 AND settlement='rejected' AND value IS NOT NULL")?;
         for value in stmt.query_map([run_id], |r| r.get::<_, String>(0))? {
             if typed_scope_rejection(&value?, false) {
                 return Ok(false);

@@ -60,9 +60,36 @@ impl Lease {
     }
 }
 
+/// Store the immutable code admitted with a run, sharing it with other runs of
+/// the same flow version. Legacy unversioned runs use version zero.
+pub fn snapshot(
+    tx: &Transaction,
+    flow_id: &str,
+    version: Option<u32>,
+    code_hash: &[u8],
+    script: &str,
+    manifest: &str,
+) -> Result<i64> {
+    tx.execute(
+        "INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(flow_id,flow_version,code_hash) DO NOTHING",
+        params![flow_id,version.unwrap_or(0),code_hash,script,manifest],
+    )?;
+    let (id, same): (i64, bool) = tx.query_row(
+        "SELECT snapshot_id,script=?4 AND manifest=?5 FROM run_snapshots WHERE flow_id=?1 AND flow_version=?2 AND code_hash=?3",
+        params![flow_id,version.unwrap_or(0),code_hash,script,manifest],
+        |r| Ok((r.get(0)?,r.get(1)?)),
+    )?;
+    if !same {
+        return Err(CoreError::Corrupt(
+            "conflicting run snapshot identity".into(),
+        ));
+    }
+    Ok(id)
+}
+
 pub(crate) fn load(conn: &Connection, run_id: &str) -> Result<Run> {
     conn.query_row(
-        &format!("SELECT {RUN_COLUMNS} FROM runs WHERE run_id = ?1"),
+        &format!("SELECT {RUN_COLUMNS} FROM runs_with_snapshots WHERE run_id = ?1"),
         [run_id],
         Run::from_row,
     )

@@ -14,8 +14,9 @@ use cortexkit_store::Migration;
 /// The namespace basal's chain is recorded under in the shared version table.
 pub const NAMESPACE: &str = "basal_core";
 
-/// The journal layout, part of a run's runtime fingerprint: a run recorded
-/// under one layout is never replayed under another.
+/// The logical replay layout, part of a run's runtime fingerprint: a run
+/// recorded under one format is never replayed under another. Physical store
+/// normalization does not change this format when replay bytes are preserved.
 pub const JOURNAL_FORMAT: u32 = 1;
 
 pub const MIGRATIONS: &[Migration] = &[
@@ -489,6 +490,10 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         // Preserve the provider's reason through retries and deadline expiry,
         // without treating a deferred body query as a failed run.
         statements: "ALTER TABLE event_body_journal ADD COLUMN last_provider_refusal TEXT;",
+    },
+    Migration {
+        version: 47,
+        statements: include_str!("schema_run_history_v47.sql"),
     },
 ];
 
@@ -1817,3 +1822,7 @@ END;
     codemode_call_triggers!(),
     codemode_end_trigger!()
 );
+
+#[cfg(test)]
+#[path = "schema_payload_tests.rs"]
+mod payload_tests;

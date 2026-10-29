@@ -349,8 +349,9 @@ fn sync_call_journaled_without_value_is_answered_again() {
     sql(
         &rt,
         &format!(
-            "UPDATE journal SET settlement = NULL, value = NULL, payload_hash = NULL, \
-             delivery_order = NULL, clock_ms = NULL WHERE run_id = '{run_id}' AND position = 0"
+            "UPDATE journal SET settlement = NULL, value_bytes = NULL, payload_hash = NULL, \
+             delivery_order = NULL, clock_ms = NULL WHERE run_id = '{run_id}' AND position = 0; \
+             UPDATE journal_payloads SET value=NULL WHERE run_id='{run_id}' AND position=0"
         ),
     );
     let run = finish(&rt, &world, &run_id);

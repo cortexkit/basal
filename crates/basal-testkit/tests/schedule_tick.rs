@@ -191,7 +191,7 @@ impl Fixture {
             .read(|c| {
                 let mut stmt = c.prepare(
                     "SELECT i.trigger_id, r.trigger, r.script FROM trigger_inbox i \
-                     JOIN runs r ON r.run_id = i.run_id WHERE i.flow_id = ?1 ORDER BY i.rowid",
+                     JOIN runs_with_snapshots r ON r.run_id = i.run_id WHERE i.flow_id = ?1 ORDER BY i.rowid",
                 )?;
                 let rows = stmt
                     .query_map([flow_id], |r| {

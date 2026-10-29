@@ -226,18 +226,25 @@ fn insert_run(
     // together, before any worker can read or write the new epoch's values.
     crate::state_epoch::reset(tx, &spec.flow_id, &spec.manifest, now)?;
     let (run_id, seq) = next_run_id(tx, store_id)?;
+    let snapshot = runs::snapshot(
+        tx,
+        &spec.flow_id,
+        Some(grant.version),
+        &grant.code_hash,
+        &spec.script,
+        &spec.manifest,
+    )?;
     tx.execute(
-        "INSERT INTO runs (run_id, flow_id, trigger_id, attempt, trigger, script, manifest, \
+        "INSERT INTO runs (run_id, flow_id, trigger_id, attempt, trigger, snapshot_id, \
          code_hash, state, admitted_at, flow_version, admit_seq, deadline_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', ?9, ?10, ?11, ?12)",
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)",
         params![
             run_id,
             spec.flow_id,
             spec.trigger_id,
             attempt,
             spec.trigger.as_str(),
-            spec.script,
-            spec.manifest,
+            snapshot,
             grant.code_hash.as_slice(),
             now,
             i64::from(grant.version),
@@ -249,7 +256,7 @@ fn insert_run(
         "UPDATE runs SET self_input=(SELECT json_object('agent_id',owner) FROM flows WHERE flow_id=?2 AND package IS NOT NULL) WHERE run_id=?1",
         params![run_id, spec.flow_id],
     )?;
-    tx.execute("UPDATE runs SET params_input=(SELECT params FROM template_instances WHERE flow_id=?2),grant_guards=(SELECT grant_guards FROM template_instances WHERE flow_id=?2),template_incarnation=(SELECT incarnation FROM template_instances WHERE flow_id=?2),end_instance=CASE WHEN EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?2) AND json_type(manifest,'$.trigger.schedule.at')='text' THEN 1 ELSE 0 END WHERE run_id=?1", params![run_id,spec.flow_id])?;
+    tx.execute("UPDATE runs SET params_input=(SELECT params FROM template_instances WHERE flow_id=?2),grant_guards=(SELECT grant_guards FROM template_instances WHERE flow_id=?2),template_incarnation=(SELECT incarnation FROM template_instances WHERE flow_id=?2),end_instance=CASE WHEN EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?2) AND json_type(?3,'$.trigger.schedule.at')='text' THEN 1 ELSE 0 END WHERE run_id=?1", params![run_id,spec.flow_id,spec.manifest])?;
     tx.execute(
         "INSERT INTO trigger_inbox (flow_id, trigger_id, attempt, run_id, admitted_at) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
