@@ -675,6 +675,78 @@ fn classify_exception<'js>(value: Value<'js>) -> ActivationResult {
     })
 }
 
+fn is_syntax_error(value: &Value<'_>) -> bool {
+    // Only native errors can be inspected without invoking proxy traps.
+    // SAFETY: value is a live handle; this only checks the engine's class tag.
+    if !unsafe { qjs::JS_IsError(value.as_raw()) } {
+        return false;
+    }
+    let prototype: Option<Object> = value
+        .ctx()
+        .globals()
+        .get::<_, Object>("SyntaxError")
+        .ok()
+        .and_then(|ctor| ctor.get("prototype").ok());
+    value.as_object().and_then(|obj| obj.get_prototype()) == prototype
+}
+
+fn compile_only<'js>(ctx: &Ctx<'js>, source: &std::ffi::CStr) -> rquickjs::Result<Value<'js>> {
+    let strict = if EvalOptions::default().strict {
+        qjs::JS_EVAL_FLAG_STRICT
+    } else {
+        0
+    };
+    // SAFETY: both strings are NUL-terminated and remain live through the call.
+    // COMPILE_ONLY returns owned bytecode without executing any source text.
+    unsafe {
+        let raw = qjs::JS_Eval(
+            ctx.as_raw().as_ptr(),
+            source.as_ptr(),
+            source.to_bytes().len() as _,
+            c"flow.js".as_ptr(),
+            (qjs::JS_EVAL_TYPE_GLOBAL | strict | qjs::JS_EVAL_FLAG_COMPILE_ONLY) as i32,
+        );
+        if raw.tag == qjs::JS_TAG_EXCEPTION as i64 {
+            Err(rquickjs::Error::Exception)
+        } else {
+            Ok(Value::from_raw(ctx.clone(), raw))
+        }
+    }
+}
+
+/// Returns no bytecode when a syntax diagnostic concealed parser stack exhaustion.
+fn compile_user_source<'js>(
+    ctx: &Ctx<'js>,
+    source: &str,
+    stack_bytes: usize,
+) -> rquickjs::Result<Option<Value<'js>>> {
+    let source = std::ffi::CString::new(source)?;
+    match compile_only(ctx, &source) {
+        Ok(compiled) => Ok(Some(compiled)),
+        Err(rquickjs::Error::Exception) => {
+            let original = ctx.catch();
+            if is_syntax_error(&original) {
+                // QuickJS's parser can replace stack overflow with a syntax error.
+                // Reparse only to classify it: neither parse executes user code,
+                // and the user's limit is restored before handling either result.
+                // SAFETY: ctx keeps its runtime live and exclusively borrowed;
+                // the raw setter avoids borrowing Runtime again inside Ctx::with.
+                let raw_rt = unsafe { qjs::JS_GetRuntime(ctx.as_raw().as_ptr()) };
+                unsafe { qjs::JS_SetMaxStackSize(raw_rt, MAX_STACK_BYTES as _) };
+                let retry = compile_only(ctx, &source);
+                // SAFETY: the same runtime is still live and borrowed by ctx.
+                unsafe { qjs::JS_SetMaxStackSize(raw_rt, stack_bytes as _) };
+                if retry.is_ok() {
+                    return Ok(None);
+                }
+                ctx.catch();
+            }
+            Err(ctx.throw(original))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 type Rejections = Rc<RefCell<Vec<(Persistent<Value<'static>>, String)>>>;
 
 struct Activation {
@@ -1073,11 +1145,26 @@ impl Activation {
         // statements outside it; those get the same confinement, budgets and
         // checked host calls. See docs/script.md.
         let source = format!("(async function () {{{}\n}})", request.script);
+        let mut parser_stack_exhausted = false;
         let started = self.enter(|ctx| {
             let start = start.clone().restore(ctx)?;
-            let mut options = EvalOptions::default();
-            options.filename = Some("flow.js".into());
-            let main: Value = ctx.eval_with_options(source, options)?;
+            let Some(compiled) =
+                compile_user_source(ctx, &source, request.budgets.stack_bytes as usize)?
+            else {
+                parser_stack_exhausted = true;
+                return Ok(());
+            };
+            // SAFETY: EvalFunction consumes the duplicated bytecode reference
+            // and returns an owned value, still under the user's stack limit.
+            let raw = unsafe {
+                let raw_ctx = ctx.as_raw().as_ptr();
+                qjs::JS_EvalFunction(raw_ctx, qjs::JS_DupValue(raw_ctx, compiled.as_raw()))
+            };
+            if raw.tag == qjs::JS_TAG_EXCEPTION as i64 {
+                return Err(rquickjs::Error::Exception);
+            }
+            // SAFETY: EvalFunction returned an owned, non-exception value.
+            let main = unsafe { Value::from_raw(ctx.clone(), raw) };
             if !main.is_function() {
                 return Err(Exception::throw_type(
                     ctx,
@@ -1088,7 +1175,12 @@ impl Activation {
         });
         // Drop the start handle inside the context's lifetime either way.
         drop(start);
-        started
+        started?;
+        if parser_stack_exhausted {
+            Err(ActivationResult::BudgetExhausted(BudgetKind::Stack))
+        } else {
+            Ok(())
+        }
     }
 
     fn deliver(
