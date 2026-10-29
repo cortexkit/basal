@@ -1419,7 +1419,7 @@ fn malformed_notices_are_refused_before_admission() {
         );
     }
     let mut invalid = notice(0);
-    invalid.event_key = "A".repeat(64);
+    invalid.event_key = "key with spaces".into();
     assert!(f.rt.admit_events(&[invalid]).is_err());
 }
 
