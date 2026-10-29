@@ -129,21 +129,121 @@ fn user_script_compilation_obeys_the_stack_budget() {
             close.repeat(50)
         );
         for profile in [Profile::Flow, Profile::Codemode] {
-            let mut req = request(profile, &source);
+            let req = request(profile, &source);
             assert_eq!(
                 run_activation(&req, Rc::new(RefCell::new(EchoLink::default()))),
                 ActivationResult::Completed {
                     value: JsonText::new("42").unwrap()
                 }
             );
-            req.budgets.stack_bytes = super::MIN_STACK_BYTES;
-            assert_eq!(
-                run_activation(&req, Rc::new(RefCell::new(EchoLink::default()))),
-                ActivationResult::BudgetExhausted(BudgetKind::Stack),
-                "{profile:?}, nesting {open}"
+            for bytes in (8 * 1024..=16 * 1024).step_by(256) {
+                assert_eq!(
+                    super::run(
+                        &req,
+                        Rc::new(RefCell::new(EchoLink::default())),
+                        false,
+                        vec![],
+                        Some(bytes),
+                    ),
+                    ActivationResult::BudgetExhausted(BudgetKind::Stack),
+                    "{profile:?}, nesting {open}, stack budget {bytes}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn genuine_syntax_errors_remain_script_failures_at_small_stack_limits() {
+    for profile in [Profile::Flow, Profile::Codemode] {
+        let req = request(profile, "return @;");
+        for bytes in (8 * 1024..=16 * 1024).step_by(256) {
+            let result = super::run(
+                &req,
+                Rc::new(RefCell::new(EchoLink::default())),
+                false,
+                vec![],
+                Some(bytes),
+            );
+            assert!(
+                matches!(result, ActivationResult::Failed(Failure::Script { .. })),
+                "{profile:?}, stack budget {bytes}: {result:?}"
             );
         }
     }
+}
+
+#[test]
+fn user_thrown_syntax_errors_are_not_parser_stack_exhaustion() {
+    for profile in [Profile::Flow, Profile::Codemode] {
+        let req = request(
+            profile,
+            "}); throw new SyntaxError('intentional syntax error'); (async function () { return 42;",
+        );
+        let result = run_activation(&req, Rc::new(RefCell::new(EchoLink::default())));
+        assert!(
+            matches!(&result, ActivationResult::Failed(Failure::Script { message }) if message.contains("intentional syntax error")),
+            "{profile:?}: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn parser_stack_retry_does_not_execute_escaped_top_level_code() {
+    let source = format!(
+        "}}); throw 'compile-only retry executed'; (async function () {{ const value = {}0{}; return 42;",
+        "{a:".repeat(50),
+        "}".repeat(50)
+    );
+    for profile in [Profile::Flow, Profile::Codemode] {
+        let req = request(profile, &source);
+        assert_eq!(
+            run_activation(&req, Rc::new(RefCell::new(EchoLink::default()))),
+            ActivationResult::Failed(Failure::Script {
+                message: "compile-only retry executed".into()
+            })
+        );
+        for bytes in (8 * 1024..=16 * 1024).step_by(256) {
+            assert_eq!(
+                super::run(
+                    &req,
+                    Rc::new(RefCell::new(EchoLink::default())),
+                    false,
+                    vec![],
+                    Some(bytes),
+                ),
+                ActivationResult::BudgetExhausted(BudgetKind::Stack),
+                "{profile:?}, stack budget {bytes}"
+            );
+        }
+    }
+}
+
+#[test]
+fn parser_retry_restores_the_stack_limit_after_a_genuine_syntax_error() {
+    let rt = rquickjs::Runtime::new().unwrap();
+    let ctx = rquickjs::Context::custom::<super::Intrinsics>(&rt).unwrap();
+    let bytes = super::MIN_STACK_BYTES as usize;
+    rt.set_max_stack_size(bytes);
+    ctx.with(|ctx| {
+        assert!(matches!(
+            super::compile_user_source(&ctx, "(async function () { return @; })", bytes),
+            Err(rquickjs::Error::Exception)
+        ));
+        assert!(matches!(
+            super::classify_exception(ctx.catch()),
+            ActivationResult::Failed(Failure::Script { .. })
+        ));
+        // Fifty calls fit at MAX_STACK_BYTES, but not at the configured limit.
+        assert!(matches!(
+            ctx.eval::<rquickjs::Value, _>("(function f(n) { return n ? 1 + f(n - 1) : 0; })(50)"),
+            Err(rquickjs::Error::Exception)
+        ));
+        assert_eq!(
+            super::classify_exception(ctx.catch()),
+            ActivationResult::BudgetExhausted(BudgetKind::Stack)
+        );
+    });
 }
 
 #[test]
