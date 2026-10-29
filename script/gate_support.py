@@ -162,7 +162,8 @@ def unavailable_reason(exit_code, output):
     for line in output.splitlines():
         if line.startswith(prefix):
             reason = line[len(prefix):]
-            if re.match(r"^(unreachable|runner_draining)(?::|\s|$)", reason):
+            # runner_full: MOTOR's hosts stayed full for the job's whole wait.
+            if re.match(r"^(unreachable|runner_draining|runner_full)(?::|\s|$)", reason):
                 return reason
     return ""
 

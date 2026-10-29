@@ -14,7 +14,8 @@ usage() {
     echo 'Logs: .cortexkit/internal-docs/audits/gate-logs/<run>/. Never pushes.'
     echo 'Workers: --print-plan lists runon commands; --prepare-tools stages offline NATS inputs.'
     echo 'After runon checks, --clean-tools removes only those transient inputs (cache is retained).'
-    echo '--allow-unavailable permits only unreachable/draining runners refused before start, never failed tests.'
+    echo '--allow-unavailable permits only unreachable, draining or full runners refused before start, never failed tests.'
+    echo '--skip-lane NAME leaves a lane to the CI run on main, printed as SKIP.'
 }
 
 run() {
@@ -206,6 +207,7 @@ print_plan=no
 prepare_tools=no
 clean_tools=no
 allow_unavailable=no
+skip_lanes=" "
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --workspace) mode=workspace ;;
@@ -214,6 +216,7 @@ while [[ $# -gt 0 ]]; do
         --prepare-tools) prepare_tools=yes ;;
         --clean-tools) clean_tools=yes ;;
         --allow-unavailable) allow_unavailable=yes ;;
+        --skip-lane) shift; skip_lanes+="${1:?--skip-lane requires a lane name} " ;;
         --base) shift; base=${1:?--base requires a Git ref} ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -350,6 +353,18 @@ else
 fi
 echo 'SKIP linux-arm64 and native syscall trace: MOTOR has no architecture/image selector' | tee "$logs/linux-arm64.log"
 echo 'NOTE Windows uses the configured MOTOR image, not both GitHub hosted images' | tee "$logs/windows-images.log"
+# The operator can leave a lane to main's CI when its runner can't run it,
+# such as a Windows image that refuses the confined worker's window station.
+# The skip is printed in the summary, never silent.
+kept=()
+for lane in "${lanes[@]}"; do
+    if [[ $skip_lanes == *" $lane "* ]]; then
+        echo "SKIP $lane: skipped by --skip-lane; main's CI covers it" | tee "$logs/$lane.log"
+    else
+        kept+=("$lane")
+    fi
+done
+lanes=("${kept[@]}")
 pids=()
 for lane in "${lanes[@]}"; do
     if [[ $lane != linux ]]; then

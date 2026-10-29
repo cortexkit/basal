@@ -219,7 +219,11 @@ exit 101
             self.assertNotEqual(*directories)
 
     def test_runner_unavailable_requires_refusal_before_lane_start(self):
-        for reason in ("unreachable: Windows handshake timed out", "runner_draining: retry after 2000 ms"):
+        for reason in (
+            "unreachable: Windows handshake timed out",
+            "runner_draining: retry after 2000 ms",
+            "runner_full: hosted_capacity (retry after 5000 ms)",
+        ):
             output = f"ck motor run: refused before start: {reason}\n"
             self.assertEqual(gate.unavailable_reason(200, output), reason)
             for status in (0, 1, 101, 201, 202):
