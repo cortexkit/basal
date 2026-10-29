@@ -367,7 +367,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 15);
+    assert_eq!(value["version"], 16);
     println!(
         "ci-failure-router v15 code hash: {}",
         basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &value.to_string()))
@@ -760,6 +760,20 @@ fn nextest_log_names_failures_and_timeouts() {
           TIMEOUT [  60.000s] basal::router::waits\n\
          Summary [  60.000s] 3 tests run: 1 passed, 1 failed, 1 timed out\n",
         "Failing tests: basal::parser::rejects, basal::router::waits",
+    );
+}
+
+/// Real nextest output carries a progress counter and the binary id before the
+/// test path, and libtest's own line for the same test must not count twice.
+#[test]
+fn nextest_progress_counter_and_binary_id_are_dropped() {
+    assert_failing_tests(
+        "    FAIL [   0.412s] ( 623/2506) motor-module storage::journal_tests::hard_budget\n\
+         test storage::journal_tests::hard_budget ... FAILED\n\
+         TIMEOUT [  60.001s] (2506/2506) basal-module::ci_failure_router waits_for_ever\n\
+         Summary [  61.000s] 2506 tests run: 2504 passed, 1 failed, 1 timed out\n\
+            FAIL [   0.412s] ( 623/2506) motor-module storage::journal_tests::hard_budget\n",
+        "Failing tests: storage::journal_tests::hard_budget, waits_for_ever",
     );
 }
 

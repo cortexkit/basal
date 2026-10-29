@@ -208,8 +208,14 @@ function failingTests(log) {
       continue;
     }
     let name;
+    // nextest prints `FAIL [ 1.2s] ( 623/2506) binary-id test::path`. Keep only
+    // the test path, so it reads cleanly and deduplicates against libtest's
+    // `test test::path ... FAILED` lines for the same test.
+    const nextest = line.match(
+      /^\s*(?:FAIL|TIMEOUT)\s+\[[^\]\r\n]{1,40}\]\s+(?:\(\s*\d+\/\d+\)\s+)?(?:[A-Za-z0-9_-]+(?:::[A-Za-z0-9_-]+)?\s+)?(\S.*)$/,
+    );
     const match = line.match(/^\s*test (.+?) \.\.\. FAILED(?:\s|$)/) ??
-      line.match(/^\s*(?:FAIL|TIMEOUT)\s+\[[^\]\r\n]{1,40}\]\s+(.+)$/) ??
+      nextest ??
       line.match(/^\s*\(fail\)\s+(.+?)(?:\s+\[[\d.]+(?:ms|s)\])?\s*$/) ??
       line.match(/^\s*--- FAIL:\s+(\S+)/) ??
       line.match(/^\s*FAILED\s+(.+?::.+?)(?:\s+-\s+.*)?$/) ??
