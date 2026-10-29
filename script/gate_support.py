@@ -154,6 +154,25 @@ def check_author(base):
     print(f"Author email: {expected} ({len(authors) - 1} commits plus current identity)")
 
 
+def unavailable_reason(exit_code, output):
+    # MOTOR reserves 200 for refusal before start. A started lane must never be waived.
+    if exit_code != 200 or "BASAL_GATE_LANE_STARTED " in output:
+        return ""
+    prefix = "ck motor run: refused before start: "
+    for line in output.splitlines():
+        if line.startswith(prefix):
+            reason = line[len(prefix):]
+            if re.match(r"^(unreachable|runner_draining)(?::|\s|$)", reason):
+                return reason
+    return ""
+
+
+def gate_result(outcomes, allow_unavailable):
+    if any(outcome not in {"pass", "fail", "unavailable"} for outcome in outcomes):
+        raise ValueError("Unknown gate lane outcome")
+    return int("fail" in outcomes or ("unavailable" in outcomes and not allow_unavailable))
+
+
 def nats_pins():
     action = Path(".github/actions/install-nats-server/action.yml").read_text()
     version = re.search(r'archive="nats-server-v([0-9.]+)-\$platform', action)
@@ -206,6 +225,11 @@ def main():
         snapshot(args[0])
     elif command == "author":
         check_author(args[0])
+    elif command == "unavailable":
+        exit_code = int(args[0])
+        print(unavailable_reason(exit_code, Path(args[1]).read_text() if exit_code == 200 else ""))
+    elif command == "result":
+        print(gate_result(args[1:], args[0] == "yes"))
     elif command == "tools":
         prepare_tools(args[0], args[1:] or ["linux", "windows", "macos"])
     elif command == "clean-tools":

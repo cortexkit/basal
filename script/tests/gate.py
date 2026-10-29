@@ -147,7 +147,7 @@ class GateTests(unittest.TestCase):
 
     def test_print_plan_is_read_only_and_lists_every_forced_lane(self):
         script = Path(gate.__file__).with_name("gate.sh")
-        result = subprocess.run(["bash", str(script), "--print-plan", "--workspace", "--all-platforms", "--base", "HEAD"], text=True, capture_output=True, check=True)
+        result = subprocess.run(["bash", str(script), "--print-plan", "--workspace", "--all-platforms", "--allow-unavailable", "--base", "HEAD"], text=True, capture_output=True, check=True)
         self.assertIn("script/gate.sh --prepare-tools", result.stdout)
         for lane in ("linux", "windows", "macos", "scripts"):
             self.assertIn(f"bash script/gate.sh --lane {lane}", result.stdout)
@@ -167,21 +167,31 @@ class GateTests(unittest.TestCase):
             self.assertIn("older than workspace rust-version", result.stderr)
             self.assertNotIn("Missing offline NATS", result.stderr)
 
-    def test_windows_skips_only_unavailable_offline_git_sources(self):
-        script = Path(gate.__file__).with_name("gate.sh")
-        for message, skipped in (("can't checkout from 'https://example.invalid/repo': you are in the offline mode (--offline)", True), ("package version does not match Cargo.lock", False)):
-            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
-                for tool, response in (("uname", "MINGW64_NT"), ("rustc", "rustc 1.99.0 (fixture)")):
-                    path = Path(tmp) / tool
-                    path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{response}'\n")
-                    path.chmod(0o755)
-                cargo = Path(tmp) / "cargo"
-                cargo.write_text('#!/bin/sh\nif [ "$1" = --version ]; then echo "cargo 1.99.0 (fixture)"; exit 0; fi\nprintf "%s\\n" "$FIXTURE_METADATA_ERROR" >&2\nexit 101\n')
-                cargo.chmod(0o755)
-                result = subprocess.run(["bash", str(script), "--lane", "windows", "basal-proto"], text=True, capture_output=True, env={**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "FIXTURE_METADATA_ERROR": message})
-                self.assertEqual(result.returncode == 0, skipped)
-                self.assertEqual("SKIP windows:" in result.stdout, skipped)
-                self.assertNotIn("Missing offline NATS", result.stderr)
+    def test_windows_git_fetch_errors_fail_without_skip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "script").mkdir()
+            script = root / "script/gate.sh"
+            shutil.copy2(Path(gate.__file__).with_name("gate.sh"), script)
+            (root / "Cargo.toml").write_text('[workspace.package]\nrust-version = "1.89.0"\n')
+            (root / ".gate-inputs/nats").mkdir(parents=True)
+            (root / ".gate-inputs/nats/manifest.sh").write_text('platform=windows-amd64; extension=zip; sha=fixture; archive=fixture.zip\n')
+            (root / "bin").mkdir()
+            for tool, response in (("uname", "MINGW64_NT"), ("rustc", "rustc 1.99.0 (fixture)"), ("nats-server", "nats-server: fixture"), ("sha256sum", "fixture: OK"), ("unzip", "")):
+                path = root / "bin" / tool
+                path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{response}'\n")
+                path.chmod(0o755)
+            cargo = root / "bin/cargo"
+            cargo.write_text('''#!/bin/sh
+if [ "$1" = --version ]; then echo "cargo 1.99.0 (fixture)"; exit 0; fi
+echo "can't checkout from Git: offline mode" >&2
+exit 101
+''')
+            cargo.chmod(0o755)
+            result = subprocess.run(["bash", str(script), "--lane", "windows", "basal-proto"], text=True, capture_output=True, env={**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}"})
+            self.assertEqual(result.returncode, 101)
+            self.assertIn("offline mode", result.stderr)
+            self.assertNotIn("SKIP windows:", result.stdout)
 
     def test_macos_build_dir_is_unique_even_with_inherited_target_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -191,19 +201,40 @@ class GateTests(unittest.TestCase):
             shutil.copy2(Path(gate.__file__).with_name("gate.sh"), script)
             (root / "Cargo.toml").write_text('[workspace.package]\nrust-version = "1.89.0"\n')
             (root / "bin").mkdir()
+            (root / "inherited-tmp").mkdir()
             for tool, response in (("uname", "Darwin"), ("rustc", "rustc 1.99.0 (fixture)"), ("cargo", "cargo 1.99.0 (fixture)")):
                 path = root / "bin" / tool
                 path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{response}'\n")
                 path.chmod(0o755)
             directories = []
             for _ in range(2):
-                result = subprocess.run(["bash", str(script), "--lane", "macos", "basal-module"], text=True, capture_output=True, env={**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}", "CARGO_TARGET_DIR": "stale-cache"})
+                result = subprocess.run(["bash", str(script), "--lane", "macos", "basal-module"], text=True, capture_output=True, env={**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}", "CARGO_TARGET_DIR": "stale-cache", "TMPDIR": str(root / "inherited-tmp")})
                 self.assertIn("Missing offline NATS", result.stderr)
                 directory = result.stdout.split("Isolated macOS build directory: ", 1)[1].strip()
-                self.assertEqual(Path(directory).parent, root / "target")
+                self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+                self.assertEqual(Path(directory).resolve().parent, Path("/tmp").resolve())
+                self.assertFalse(Path(directory).is_relative_to(root))
                 self.assertTrue(Path(directory).is_dir())
                 directories.append(directory)
             self.assertNotEqual(*directories)
+
+    def test_runner_unavailable_requires_refusal_before_lane_start(self):
+        for reason in ("unreachable: Windows handshake timed out", "runner_draining: retry after 2000 ms"):
+            output = f"ck motor run: refused before start: {reason}\n"
+            self.assertEqual(gate.unavailable_reason(200, output), reason)
+            for status in (0, 1, 101, 201, 202):
+                self.assertEqual(gate.unavailable_reason(status, output), "")
+            self.assertEqual(gate.unavailable_reason(200, f"BASAL_GATE_LANE_STARTED windows\n{output}"), "")
+        for reason in ("network_unsupported: unsupported", "unreachable_other: error", "bad_arguments: invalid"):
+            self.assertEqual(gate.unavailable_reason(200, f"ck motor run: refused before start: {reason}\n"), "")
+        self.assertEqual(gate.unavailable_reason(200, "error: runner_draining after tests ran\n"), "")
+
+    def test_allow_unavailable_never_allows_a_failed_lane(self):
+        self.assertEqual(gate.gate_result(["pass", "unavailable"], False), 1)
+        self.assertEqual(gate.gate_result(["pass", "unavailable"], True), 0)
+        self.assertEqual(gate.gate_result(["pass", "fail", "unavailable"], True), 1)
+        self.assertEqual(gate.gate_result(["fail"], False), 1)
+        self.assertEqual(gate.gate_result(["pass"], False), 0)
 
 
 if __name__ == "__main__":

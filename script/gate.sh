@@ -7,18 +7,25 @@ cd "$root"
 export CARGO_TERM_COLOR=never PYTHONDONTWRITEBYTECODE=1
 
 usage() {
-    echo 'Usage: script/gate.sh [--workspace] [--base REF] [--all-platforms] [--print-plan]'
+    echo 'Usage: script/gate.sh [--workspace] [--base REF] [--all-platforms] [--print-plan] [--allow-unavailable]'
     echo 'Default: changed packages and their workspace dependents since origin/main.'
     echo '--workspace tests all packages; --all-platforms also forces the macOS lane.'
     echo 'Requires ck motor, rustfmt, shellcheck 0.11.0, gitleaks and Python >=3.11.'
     echo 'Logs: .cortexkit/internal-docs/audits/gate-logs/<run>/. Never pushes.'
     echo 'Workers: --print-plan lists runon commands; --prepare-tools stages offline NATS inputs.'
     echo 'After runon checks, --clean-tools removes only those transient inputs (cache is retained).'
+    echo '--allow-unavailable permits only unreachable/draining runners refused before start, never failed tests.'
 }
 
 run() {
     printf '\n+ '; printf '%q ' "$@"; printf '\n'
     "$@"
+}
+
+system_scratch() {
+    # MOTOR bundles Git dependencies only for top-level checkouts, not nested lockfiles.
+    # Ignore an inherited TMPDIR that might point inside a checkout.
+    mktemp -d "/tmp/$1.XXXXXX"
 }
 
 install_nats() {
@@ -95,6 +102,7 @@ remote_lane() {
     local platform=$1
     shift
     selected="$*"
+    echo "BASAL_GATE_LANE_STARTED $platform"
     case "$platform:$(uname -s)" in
         linux:Linux|scripts:Linux|windows:MINGW*|windows:MSYS*|macos:Darwin) ;;
         *) echo "Lane $platform refuses to build on $(uname -s)" >&2; return 1 ;;
@@ -108,22 +116,11 @@ remote_lane() {
         return
     fi
     check_toolchain
-    if [[ $platform == windows ]]; then
-        local metadata_log="$root/target/gate-windows-metadata.log"
-        mkdir -p "$root/target"
-        if ! cargo metadata --locked --offline --format-version 1 >/dev/null 2>"$metadata_log"; then
-            cat "$metadata_log" >&2
-            if grep -q "can't checkout from" "$metadata_log" && grep -q 'offline mode' "$metadata_log"; then
-                echo 'SKIP windows: MOTOR offline runner lacks locked Git dependency prefetch; Windows tests await runner provisioning'
-                return 0
-            fi
-            return 1
-        fi
-    fi
     if [[ $platform == macos ]]; then
-        mkdir -p "$root/target"
+        # MOTOR's workspace cache can retain fingerprints without their rlibs.
+        # Keep output outside the cached checkout until MOTOR fixes cache seeding.
         export CARGO_TARGET_DIR
-        CARGO_TARGET_DIR=$(mktemp -d "$root/target/gate-macos.XXXXXX")
+        CARGO_TARGET_DIR=$(system_scratch basal-gate-macos)
         echo "Isolated macOS build directory: $CARGO_TARGET_DIR"
     fi
     install_nats
@@ -197,6 +194,7 @@ all_platforms=no
 print_plan=no
 prepare_tools=no
 clean_tools=no
+allow_unavailable=no
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --workspace) mode=workspace ;;
@@ -204,6 +202,7 @@ while [[ $# -gt 0 ]]; do
         --print-plan) print_plan=yes ;;
         --prepare-tools) prepare_tools=yes ;;
         --clean-tools) clean_tools=yes ;;
+        --allow-unavailable) allow_unavailable=yes ;;
         --base) shift; base=${1:?--base requires a Git ref} ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -250,7 +249,7 @@ if [[ $print_plan == yes ]]; then
     echo '# Local cleanup; do not commit transient binary inputs:'
     echo 'script/gate.sh --clean-tools'
     echo '# SKIP native linux-arm64/trace and second Windows image: no MOTOR selector'
-    echo '# Windows explicitly skips if MOTOR cannot prefetch locked Git sources for offline Cargo.'
+    echo '# Windows locked Git dependencies are bundled from the top-level checkout; fetch errors fail normally.'
     echo '# minimum-rust runs on Linux only if Rust 1.89.0 is already provisioned; otherwise an explicit skip is logged.'
     exit
 fi
@@ -259,7 +258,7 @@ for tool in ck rustfmt shellcheck gitleaks; do
 done
 
 mkdir -p target/scratch .cortexkit/internal-docs/audits/gate-logs
-scratch=$(mktemp -d "$root/target/scratch/gate.XXXXXX")
+scratch=$(system_scratch basal-gate)
 export TMPDIR="$scratch"
 mkdir -p "$scratch/no-cargo"
 printf '#!/bin/sh\necho "Cargo is forbidden in local gate checks; use a remote lane" >&2\nexit 99\n' >"$scratch/no-cargo/cargo"
@@ -311,14 +310,22 @@ echo "PASS local fast phase ($((SECONDS - started))s)"
 
 read -r macos selected <<< "$(cd "$scratch/linux"; "$python" script/gate_support.py plan "$base" "$mode")"
 echo "Selected packages: $selected"
+outcomes=()
 # Cargo's resolver is authoritative; keep Cargo off the local Mac entirely.
-if ck motor run --cwd "$scratch/linux" --platform linux --vcpus 2 --timeout 300 --secret-file "$scratch/locked.secret" -- 'cargo metadata --locked --format-version 1 > /dev/null' >"$logs/locked.log" 2>&1; then
+if ck motor run --cwd "$scratch/linux" --platform linux --vcpus 2 --timeout 300 --secret-file "$scratch/locked.secret" -- 'echo BASAL_GATE_LANE_STARTED locked; cargo metadata --locked --format-version 1 > /dev/null' >"$logs/locked.log" 2>&1; then
     echo "PASS locked metadata preflight ($((SECONDS - started))s since start)"
 else
     result=$?
-    cat "$logs/locked.log" >&2
-    echo "FAIL locked metadata preflight ($((SECONDS - started))s)" >&2
-    exit "$result"
+    reason=$("$python" script/gate_support.py unavailable "$result" "$logs/locked.log")
+    if [[ -n $reason ]]; then
+        echo "UNAVAILABLE locked metadata preflight: $reason" | tee -a "$logs/locked.log" >&2
+        [[ $allow_unavailable == yes ]] || exit "$result"
+        outcomes+=(unavailable)
+    else
+        cat "$logs/locked.log" >&2
+        echo "FAIL locked metadata preflight ($((SECONDS - started))s)" >&2
+        exit "$result"
+    fi
 fi
 
 lanes=(linux windows)
@@ -380,25 +387,30 @@ cancel_lanes() {
     exit 130
 }
 trap 'cancel_lanes' INT TERM
-failed=0
 for ((index=0; index<${#lanes[@]}; index++)); do
     if wait "${pids[$index]}"; then
         read -r duration <"$logs/${lanes[$index]}.seconds"
-        if grep -q "^SKIP ${lanes[$index]}:" "$logs/${lanes[$index]}.log"; then
-            echo "SKIP ${lanes[$index]} (${duration}s lane duration; reason below)"
-        else
-            echo "PASS ${lanes[$index]} (${duration}s lane duration)"
-        fi
+        echo "PASS ${lanes[$index]} (${duration}s lane duration)"
+        outcomes+=(pass)
         grep '^SKIP ' "$logs/${lanes[$index]}.log" || true
     else
         result=$?
         duration=unknown
         if [[ -f $logs/${lanes[$index]}.seconds ]]; then read -r duration <"$logs/${lanes[$index]}.seconds"; fi
-        echo "FAIL ${lanes[$index]} (exit $result, ${duration}s lane duration); log: $logs/${lanes[$index]}.log" >&2
-        # Include complete failure context, including transport refusals and compiler diagnostics.
-        cat "$logs/${lanes[$index]}.log" >&2
-        failed=1
+        reason=$("$python" script/gate_support.py unavailable "$result" "$logs/${lanes[$index]}.log")
+        if [[ -n $reason ]]; then
+            echo "UNAVAILABLE ${lanes[$index]}: $reason (${duration}s lane duration)" | tee -a "$logs/${lanes[$index]}.log" >&2
+            outcomes+=(unavailable)
+        else
+            echo "FAIL ${lanes[$index]} (exit $result, ${duration}s lane duration); log: $logs/${lanes[$index]}.log" >&2
+            # Include complete failure context, including transport refusals and compiler diagnostics.
+            cat "$logs/${lanes[$index]}.log" >&2
+            outcomes+=(fail)
+        fi
     fi
 done
 echo "Gate finished in $((SECONDS - started))s; logs: $logs"
-exit "$failed"
+if [[ $allow_unavailable == yes ]]; then
+    echo 'NOTE --allow-unavailable: only runner-unavailable lanes may be deferred to CI on main'
+fi
+exit "$("$python" script/gate_support.py result "$allow_unavailable" "${outcomes[@]}")"
