@@ -6,6 +6,11 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 export CARGO_TERM_COLOR=never PYTHONDONTWRITEBYTECODE=1
 
+# The Linux lane starts basal's sandboxed worker, which requires Landlock.
+# MOTOR sends jobs of 8 vCPUs or fewer to overflow sandboxes whose kernel has
+# no confirmed Landlock; 12 vCPUs stays on MOTOR's own servers, which have it.
+linux_cpus=12
+
 usage() {
     echo 'Usage: script/gate.sh [--workspace] [--base REF] [--all-platforms] [--print-plan] [--allow-unavailable]'
     echo 'Default: changed packages and their workspace dependents since origin/main.'
@@ -254,7 +259,7 @@ if [[ $print_plan == yes ]]; then
             continue
         fi
         target=$lane
-        [[ $lane != linux ]] || target=linux,8c
+        [[ $lane != linux ]] || target=linux,${linux_cpus}c
         echo "# runon: $target (entry point runs the same commands as the head gate)"
         echo "bash script/gate.sh --lane $lane $selected"
     done
@@ -376,7 +381,7 @@ for lane in "${lanes[@]}"; do
 done
 for lane in "${lanes[@]}"; do
     cpus=2
-    [[ $lane != linux ]] || cpus=8
+    [[ $lane != linux ]] || cpus=$linux_cpus
     # Separate checkouts avoid MOTOR's per-workspace single-job lock.
     # Package names come from Cargo manifests and are passed as argv, not shell code.
     read -r -a packages <<< "$selected"

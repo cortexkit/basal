@@ -151,7 +151,7 @@ class GateTests(unittest.TestCase):
         self.assertIn("script/gate.sh --prepare-tools", result.stdout)
         for lane in ("linux", "windows", "macos", "scripts"):
             self.assertIn(f"bash script/gate.sh --lane {lane}", result.stdout)
-        self.assertIn("runon: linux,8c", result.stdout)
+        self.assertIn("runon: linux,12c", result.stdout)
         self.assertIn("script/gate.sh --clean-tools", result.stdout)
         self.assertNotIn("Gate logs:", result.stdout)
 
