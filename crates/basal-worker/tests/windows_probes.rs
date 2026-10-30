@@ -6,6 +6,8 @@
 
 #[path = "windows_common/fixtures.rs"]
 mod fixtures;
+#[path = "../src/probe/windows/planted.rs"]
+mod planted;
 #[path = "windows_common/threads.rs"]
 mod threads;
 mod windows_common;
@@ -309,33 +311,89 @@ fn fatal_exit_before_readiness_is_not_a_denial() {
     assert!(!wrong_status.denial("excluded-handle", &[], Some(0xc0000008)));
 }
 #[test]
-fn excluded_inheritable_handle_is_fatal_only_after_readiness_and_plain_dropped_list_writes() {
+fn excluded_inheritable_handle_is_fatal_only_after_readiness() {
     let _lock = SPAWNS.lock().unwrap_or_else(|error| error.into_inner());
     let fixture = fixtures::Planted::new();
     let number = fixture.file.as_raw_handle() as usize;
     let confined = Probe::start(Deviation::Full, "excluded-handle", "", number).end();
     assert!(
         confined.denial("excluded-handle", &[], Some(0xc0000008)),
-        "{} {}",
+        "stderr:\n{}\nstdout:\n{}",
         confined.stderr,
         confined.stdout
     );
-    assert!(fixture.bytes().is_empty());
-    let excluded_plain = Probe::start(Deviation::Plain, "excluded-handle", "", number).end();
-    assert!(excluded_plain.denial("excluded-handle", &[6], None));
-    assert!(fixture.bytes().is_empty());
+    assert!(
+        fixture.bytes().is_empty(),
+        "stderr:\n{}\nstdout:\n{}",
+        confined.stderr,
+        confined.stdout
+    );
+}
+
+#[test]
+fn excluded_inheritable_handle_plain_excludes_the_file_and_dropped_list_writes() {
+    let _lock = SPAWNS.lock().unwrap_or_else(|error| error.into_inner());
+    let fixture = fixtures::Planted::new();
+    let number = fixture.file.as_raw_handle() as usize;
+    let identity = planted::identity(number as _).unwrap().unwrap();
+    let excluded_plain = Probe::start(Deviation::Plain, "planted-handle", &identity, number).end();
+    assert!(
+        excluded_plain.denial("planted-handle", &[0], None),
+        "handle {number:#x}; expected {identity:?}\nstderr:\n{}\nstdout:\n{}",
+        excluded_plain.stderr,
+        excluded_plain.stdout
+    );
+    assert!(
+        fixture.bytes().is_empty(),
+        "stderr:\n{}\nstdout:\n{}",
+        excluded_plain.stderr,
+        excluded_plain.stdout
+    );
     let included_plain = Probe::start(
         Deviation::PlainWithoutHandleList,
-        "excluded-handle",
-        "",
+        "planted-handle",
+        &identity,
         number,
     )
     .end();
     assert!(
-        included_plain.denial("excluded-handle", &[0], None),
-        "{} {}",
+        included_plain.denial("planted-handle", &[1, 0], None),
+        "handle {number:#x}; expected {identity:?}\nstderr:\n{}\nstdout:\n{}",
         included_plain.stderr,
         included_plain.stdout
+    );
+    assert_eq!(
+        fixture.bytes(),
+        b"escaped",
+        "stderr:\n{}\nstdout:\n{}",
+        included_plain.stderr,
+        included_plain.stdout
+    );
+}
+
+#[test]
+fn planted_handle_probe_does_not_write_to_a_reused_handle_value() {
+    let _lock = SPAWNS.lock().unwrap_or_else(|error| error.into_inner());
+    let fixture = fixtures::Planted::new();
+    let other = fixtures::Planted::new();
+    let expected = planted::identity(fixture.file.as_raw_handle() as _)
+        .unwrap()
+        .unwrap();
+    // A parent handle's value can name a different file in the child. Using
+    // a second writable file also catches accidental writes to reused slots.
+    let actual = other.file.as_raw_handle() as _;
+    assert_ne!(
+        planted::identity(actual).unwrap().as_deref(),
+        Some(expected.as_str())
+    );
+    assert_eq!(planted::attempt(actual, &expected).unwrap(), [0]);
+    assert!(other.bytes().is_empty());
+    assert!(fixture.bytes().is_empty());
+    assert_eq!(planted::identity(0 as _).unwrap(), None);
+    assert_eq!(planted::attempt(0 as _, &expected).unwrap(), [0]);
+    assert_eq!(
+        planted::attempt(fixture.file.as_raw_handle() as _, &expected).unwrap(),
+        [1, 0]
     );
     assert_eq!(fixture.bytes(), b"escaped");
 }

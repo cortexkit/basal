@@ -4,6 +4,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 mod objects;
+mod planted;
 mod pool;
 mod winsock;
 
@@ -92,6 +93,7 @@ pub fn run(args: &[String]) -> u8 {
             | "protect-executable"
             | "thread"
             | "excluded-handle"
+            | "planted-handle"
             | "crash-before-ready"
             | "thread-barrier"
             | "pool"
@@ -300,6 +302,7 @@ unsafe fn attempt(
                 0
             }
         }
+        "planted-handle" => return planted::attempt(number as HANDLE, target),
         "excluded-handle" => {
             let mut written = 0;
             let code = win_result(
