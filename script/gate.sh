@@ -54,6 +54,14 @@ install_nats() {
     # Pins are generated from the CI action and archives are verified again on the runner.
     # shellcheck disable=SC1091
     . "$root/.gate-inputs/nats/manifest.sh"
+    # MOTOR's Linux and Windows images ship nats-server at CI's pin. Use it when
+    # its version matches; otherwise (macOS today) unpack the verified archive.
+    local pinned=${archive#nats-server-v}
+    pinned=${pinned%%-*}
+    if command -v nats-server >/dev/null && nats-server --version | grep -qF "v$pinned"; then
+        run nats-server --version
+        return 0
+    fi
     local directory="$root/target/gate-nats"
     mkdir -p "$directory"
     if [[ $platform == darwin-* ]]; then
