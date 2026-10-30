@@ -7,9 +7,8 @@ cd "$root"
 export CARGO_TERM_COLOR=never PYTHONDONTWRITEBYTECODE=1
 
 # The Linux lane starts basal's sandboxed worker, which requires Landlock.
-# MOTOR sends jobs of 8 vCPUs or fewer to overflow sandboxes whose kernel has
-# no confirmed Landlock; 12 vCPUs stays on MOTOR's own servers, which have it.
-linux_cpus=12
+# Every MOTOR Linux job runs on MOTOR's own servers, whose kernels have it.
+linux_cpus=8
 
 usage() {
     echo 'Usage: script/gate.sh [--workspace] [--base REF] [--all-platforms] [--print-plan] [--allow-unavailable]'
