@@ -400,7 +400,7 @@ impl Custody {
             });
         }
         let pending = position.pending.as_mut().unwrap();
-        let mut seen = BTreeSet::<IntakeKey>::new();
+        let mut seen = BTreeSet::<IntakeIdentity>::new();
         for raw in &pending.page.entries {
             if !matches!(
                 raw.get("kind").and_then(Value::as_str),
@@ -438,13 +438,12 @@ impl Custody {
                     tracing::warn!(provider = module, "skipping late entry from another scope");
                     continue;
                 }
+                let intake = intake_identity(module, raw);
+                if !seen.insert(intake.clone()) {
+                    continue;
+                }
                 let entry = match serde_json::from_value::<LateEntry>(raw.clone()) {
-                    Ok(entry) => {
-                        if !seen.insert(entry.intake_key(module)) {
-                            continue;
-                        }
-                        Ok(entry)
-                    }
+                    Ok(entry) => Ok(entry),
                     Err(error) => {
                         tracing::warn!(provider = module, ?error, "skipping malformed late entry");
                         if raw.get("kind").and_then(Value::as_str) != Some("held") {
@@ -463,6 +462,7 @@ impl Custody {
                     .send(Event::LateAnswer {
                         call: target.call.clone(),
                         entry,
+                        intake,
                         ack,
                     })
                     .is_ok()

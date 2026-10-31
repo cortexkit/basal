@@ -207,6 +207,7 @@ fn early_late(kind: &str) {
     );
     raw["kind"] = json!(kind);
     raw["reason"] = json!("restart_before_dispatch");
+    let intake = held::intake_identity("notes", &raw);
     let entry = serde_json::from_value(raw).unwrap();
     let (ack, done) = mpsc::sync_channel(1);
     f.supervisor.0.active.lock().unwrap()["r"]
@@ -219,6 +220,7 @@ fn early_late(kind: &str) {
                 args: JsonText::null(),
             },
             entry: Ok(entry),
+            intake,
             ack,
         })
         .unwrap();

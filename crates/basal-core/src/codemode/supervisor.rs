@@ -62,6 +62,7 @@ enum Event {
     LateAnswer {
         call: HostCall,
         entry: std::result::Result<cortexkit_role_tool_provider::late_results::LateEntry, String>,
+        intake: held::IntakeIdentity,
         ack: mpsc::SyncSender<()>,
     },
     CustodyChanged,
@@ -624,7 +625,7 @@ struct Driver {
     /// `waits_on_person`.
     hold_reasons: BTreeMap<u64, held_time::Reason>,
     person_time: held_time::PersonTime,
-    late_entries: BTreeSet<cortexkit_role_tool_provider::late_results::IntakeKey>,
+    late_entries: BTreeSet<held::IntakeIdentity>,
     /// Pending sleeps as (due time on the run's clock, position), earliest
     /// first. The driver's event wait ends at the earliest one.
     sleeps: BTreeSet<(i64, u64)>,
@@ -797,8 +798,13 @@ impl Driver {
                 Some(Event::ClockMoved) => self.clock_moved.store(false, Ordering::SeqCst),
                 Some(Event::Cancel(ack)) => self.cancel(ack)?,
                 Some(Event::Answer(answer)) => self.answer(answer)?,
-                Some(Event::LateAnswer { call, entry, ack }) => {
-                    self.late_answer(call, entry)?;
+                Some(Event::LateAnswer {
+                    call,
+                    entry,
+                    intake,
+                    ack,
+                }) => {
+                    self.late_answer(call, entry, intake)?;
                     let _ = ack.send(());
                 }
                 Some(Event::CustodyChanged) => {}
@@ -1179,15 +1185,16 @@ impl Driver {
         &mut self,
         call: HostCall,
         entry: std::result::Result<cortexkit_role_tool_provider::late_results::LateEntry, String>,
+        intake: held::IntakeIdentity,
     ) -> Result<()> {
+        if !self.late_entries.insert(intake) {
+            return Ok(());
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(message) => return self.record_malformed_entry(&message),
         };
-        let Some((provider, _)) = self.tool_calls.get(&call.position) else {
-            return Ok(());
-        };
-        if !self.late_entries.insert(entry.intake_key(provider)) {
+        if !self.tool_calls.contains_key(&call.position) {
             return Ok(());
         }
         let settled_at = i64::try_from(entry.settled_at).unwrap_or(i64::MAX);

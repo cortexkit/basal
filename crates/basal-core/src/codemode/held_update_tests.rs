@@ -231,7 +231,12 @@ fn malformed_held_entries_are_recorded_acked_and_leave_the_reason_unchanged() {
     let f = Fixture::new();
     let (call, mut pull) = f.provider_held();
     for (index, case) in vectors()["invalid"].as_array().unwrap().iter().enumerate() {
-        let entry = routed(case["entry"].clone(), &call.key, 100);
+        let mut entry = routed(case["entry"].clone(), &call.key, 100);
+        // Separate vector cases are distinct events, not replays of their
+        // shared sample id. Keep a missing id absent to exercise raw intake.
+        if let Some(event_id) = entry.get_mut("event_id") {
+            *event_id = json!(format!("malformed-{index}"));
+        }
         pull.reply
             .send(Ok(late_page("malformed", index as u64 + 1, vec![entry])))
             .unwrap();
@@ -260,8 +265,7 @@ fn malformed_held_entries_are_recorded_acked_and_leave_the_reason_unchanged() {
     let result = f.terminal();
     assert_eq!(
         result["warnings"].as_array().unwrap().len(),
-        vectors()["invalid"].as_array().unwrap().len(),
-        "{result}"
+        vectors()["invalid"].as_array().unwrap().len()
     );
     assert_eq!(result["person_wait_ms"], 0);
 }
@@ -321,4 +325,92 @@ fn replayed_older_held_event_does_not_restore_a_person_wait() {
     f.delivery();
     f.finish("null");
     assert_eq!(f.terminal()["person_wait_ms"], 60_000);
+}
+
+#[test]
+fn malformed_held_reread_before_ack_records_one_warning() {
+    for name in ["bad_reason", "missing_event_id"] {
+        let f = Fixture::new();
+        let (call, pull) = f.provider_held();
+        let vectors = vectors();
+        let case = vectors["invalid"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == name)
+            .unwrap();
+        let entry = routed(case["entry"].clone(), &call.key, 100);
+        pull.reply
+            .send(Ok(late_page("before-restart", 1, vec![entry.clone()])))
+            .unwrap();
+        f.custody_attempt("late_results.ack")
+            .reply
+            .send(Err(WireError::Refused {
+                code: cortexkit_role_tool_provider::late_results::CURSOR_INCARNATION_CHANGED.into(),
+                message: "provider restarted before acknowledgement".into(),
+            }))
+            .unwrap();
+        let reread = f.custody_attempt("late_results");
+        assert!(reread.input.get("since").is_none_or(Value::is_null));
+        reread
+            .reply
+            .send(Ok(late_page("after-restart", 1, vec![entry])))
+            .unwrap();
+        let ack = f.custody_attempt("late_results.ack");
+        let warnings: String = f
+            .host
+            .store
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT warnings FROM codemode_runs WHERE run_id='r'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<Value>>(&warnings).unwrap().len(),
+            1,
+            "{name}: {warnings}"
+        );
+        assert_eq!(f.calls()[0].outcome, Outcome::Pending);
+        ack.reply.send(Ok(json!({}))).unwrap();
+        let result = late_entry(&call.key, "final", json!({"content":[]}));
+        f.custody_attempt("late_results")
+            .reply
+            .send(Ok(late_page("after-restart", 2, vec![result])))
+            .unwrap();
+        f.custody_attempt("late_results.ack")
+            .reply
+            .send(Ok(json!({})))
+            .unwrap();
+        f.delivery();
+        f.finish("null");
+        assert_eq!(f.terminal()["warnings"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn malformed_intake_identity_prefers_event_id_and_scopes_raw_digests_by_provider() {
+    let mut raw = vectors()["valid"][0]["entry"].clone();
+    let entry: LateEntry = serde_json::from_value(raw.clone()).unwrap();
+    let identity = held::intake_identity("provider", &raw);
+    assert_eq!(
+        identity,
+        held::IntakeIdentity::Event(entry.intake_key("provider"))
+    );
+    raw["held"] = json!({"reason":42});
+    assert_eq!(identity, held::intake_identity("provider", &raw));
+    raw.as_object_mut().unwrap().remove("event_id");
+    let digest = held::intake_identity("provider", &raw);
+    assert!(matches!(digest, held::IntakeIdentity::Raw { .. }));
+    assert_eq!(digest, held::intake_identity("provider", &raw));
+    assert_ne!(digest, held::intake_identity("another-provider", &raw));
+    raw["held"] = json!({"reason":false});
+    assert_ne!(digest, held::intake_identity("provider", &raw));
+    raw["event_id"] = json!(42);
+    assert!(matches!(
+        held::intake_identity("provider", &raw),
+        held::IntakeIdentity::Raw { .. }
+    ));
 }
