@@ -7,7 +7,7 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows_sys::Win32::Security::Cryptography::{
@@ -54,7 +54,32 @@ static STATION_SWITCH: Mutex<()> = Mutex::new(());
 /// the station's name from the logon session, so it is not a per-worker
 /// isolation boundary. Retain one noninheritable handle for the process's
 /// lifetime; Windows closes it on process termination (Rust statics do not drop).
-static STATION: OnceLock<Result<Station>> = OnceLock::new();
+static STATION: SuccessCache<Station> = SuccessCache::new();
+
+/// Process-lifetime resources are retained only after successful initialization.
+/// An error leaves the slot empty so a later launch can retry.
+struct SuccessCache<T: 'static>(Mutex<Option<&'static T>>);
+
+impl<T: 'static> SuccessCache<T> {
+    const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    fn get_or_try_init(&self, initialize: impl FnOnce() -> Result<T>) -> Result<&'static T> {
+        let mut cached = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(value) = *cached {
+            return Ok(value);
+        }
+        let value: &'static T = Box::leak(Box::new(initialize()?));
+        *cached = Some(value);
+        Ok(value)
+    }
+
+    #[cfg(any(test, feature = "deviations"))]
+    fn get(&self) -> Option<&'static T> {
+        *self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+}
 
 struct Station {
     _user32: Library,
@@ -75,40 +100,41 @@ impl Drop for Station {
 }
 
 fn shared_station(descriptor: &Descriptor) -> Result<&'static Station> {
-    STATION
-        .get_or_init(|| unsafe {
-            let _switch = STATION_SWITCH
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            let user32 = Library::system32("user32.dll")?;
-            let create: CreateStation = user32.symbol(b"CreateWindowStationW\0")?;
-            let current: GetStation = user32.symbol(b"GetProcessWindowStation\0")?;
-            let current_name = object_name(&user32, current())?;
-            let close = user32.symbol(b"CloseWindowStation\0")?;
-            let mut handle = create(null(), 0, STATION_ACCESS, &descriptor.attributes());
-            if handle.is_null() && GetLastError() == ERROR_ACCESS_DENIED {
-                // The logon-session station can already exist. Reopening it
-                // with a smaller requested access mask must not rewrite its security.
-                handle = create(null(), 0, STATION_RETRY_ACCESS, &descriptor.attributes());
-            }
-            if handle.is_null() {
-                return Err(last("CreateWindowStationW"));
-            }
-            let mut station = Station {
-                _user32: user32,
-                handle,
-                close,
-                name: String::new(),
-                mode: "alternate",
-            };
-            station.name = object_name(&station._user32, handle)?;
-            if station.name.eq_ignore_ascii_case(&current_name) {
-                station.mode = "current";
-            }
-            Ok(station)
-        })
-        .as_ref()
-        .map_err(Clone::clone)
+    let _switch = STATION_SWITCH
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    STATION.get_or_try_init(|| unsafe {
+        let user32 = Library::system32("user32.dll")?;
+        let create: CreateStation = user32.symbol(b"CreateWindowStationW\0")?;
+        let current: GetStation = user32.symbol(b"GetProcessWindowStation\0")?;
+        let current_name = object_name(&user32, current())?;
+        let close = user32.symbol(b"CloseWindowStation\0")?;
+        let mut handle = create(null(), 0, STATION_ACCESS, &descriptor.attributes());
+        if handle.is_null() && GetLastError() == ERROR_ACCESS_DENIED {
+            // The logon-session station can already exist. Reopening it
+            // with a smaller requested access mask must not rewrite its security.
+            handle = create(null(), 0, STATION_RETRY_ACCESS, &descriptor.attributes());
+        }
+        if handle.is_null() {
+            return Err(last("CreateWindowStationW"));
+        }
+        let mut station = Station {
+            _user32: user32,
+            handle,
+            close,
+            name: String::new(),
+            mode: "alternate",
+        };
+        station.name = object_name(&station._user32, handle)?;
+        if station.name.eq_ignore_ascii_case(&current_name) {
+            station.mode = "current";
+        }
+        eprintln!(
+            "basal-launch: window station mode={} station={:?}",
+            station.mode, station.name
+        );
+        Ok(station)
+    })
 }
 
 fn object_name(user32: &Library, object: HANDLE) -> Result<String> {
@@ -140,14 +166,12 @@ fn object_name(user32: &Library, object: HANDLE) -> Result<String> {
 /// concurrent desktop creation. On panic the drop guard attempts restoration.
 #[cfg(feature = "deviations")]
 pub(crate) fn with_station<T>(run: impl FnOnce() -> T) -> Result<T> {
-    let station = STATION
-        .get()
-        .ok_or("the worker station has not been initialized")?
-        .as_ref()
-        .map_err(Clone::clone)?;
     let _switch = STATION_SWITCH
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
+    let station = STATION
+        .get()
+        .ok_or("the worker station has not been initialized")?;
     unsafe {
         let get: GetStation = station._user32.symbol(b"GetProcessWindowStation\0")?;
         let set: SetStation = station._user32.symbol(b"SetProcessWindowStation\0")?;
@@ -348,10 +372,6 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
 
         let name = context_name()?;
         let station = shared_station(&station_sd)?;
-        eprintln!(
-            "basal-launch: window station mode={} station={:?} desktop={name:?}",
-            station.mode, station.name
-        );
         let mut context = Context {
             _user32: user32,
             desktop: null_mut(),
@@ -458,6 +478,38 @@ mod tests {
     use std::os::windows::io::AsRawHandle;
 
     #[test]
+    fn initialization_failure_is_retried_and_success_is_cached() {
+        let cache = SuccessCache::<u8>::new();
+        let attempts = std::cell::Cell::new(0);
+        let initialize = || {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                Err("transient initialization failure".into())
+            } else {
+                Ok(7)
+            }
+        };
+        assert_eq!(
+            cache.get_or_try_init(initialize).unwrap_err(),
+            "transient initialization failure"
+        );
+        assert!(cache.get().is_none());
+        assert_eq!(
+            *cache
+                .get_or_try_init(initialize)
+                .expect("a failed first initialization must be retried"),
+            7
+        );
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(
+            *cache
+                .get_or_try_init(|| panic!("successful initialization must not repeat"))
+                .unwrap(),
+            7
+        );
+    }
+
+    #[test]
     fn concurrent_contexts_share_one_station_and_have_distinct_desktops() {
         let barrier = std::sync::Barrier::new(2);
         let contexts: Vec<_> = std::thread::scope(|scope| {
@@ -499,7 +551,7 @@ mod tests {
         assert!(!names[0].0.is_empty());
         assert_eq!(names[0].0, names[1].0, "one station per process");
         assert_ne!(names[0].1, names[1].1, "a private desktop per worker");
-        let station = STATION.get().unwrap().as_ref().unwrap();
+        let station = STATION.get().unwrap();
         assert_eq!(
             object_name(&station._user32, station.handle).unwrap(),
             names[0].0
