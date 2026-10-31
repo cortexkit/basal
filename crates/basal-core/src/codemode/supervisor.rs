@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 
 #[path = "held.rs"]
 mod held;
+#[path = "held_time.rs"]
+mod held_time;
 
 use basal_host::Catalog;
 use basal_host::flow_refusal::RefusalReason;
@@ -59,7 +61,7 @@ enum Event {
     Answer(Answer),
     LateAnswer {
         call: HostCall,
-        entry: cortexkit_role_tool_provider::late_results::LateEntry,
+        entry: std::result::Result<cortexkit_role_tool_provider::late_results::LateEntry, String>,
         ack: mpsc::SyncSender<()>,
     },
     CustodyChanged,
@@ -620,7 +622,9 @@ struct Driver {
     /// The reason each provider gave when it held a call. Only the
     /// tool-provider person-wait reasons mean a person must act; see
     /// `waits_on_person`.
-    hold_reasons: BTreeMap<u64, String>,
+    hold_reasons: BTreeMap<u64, held_time::Reason>,
+    person_time: held_time::PersonTime,
+    late_entries: BTreeSet<cortexkit_role_tool_provider::late_results::IntakeKey>,
     /// Pending sleeps as (due time on the run's clock, position), earliest
     /// first. The driver's event wait ends at the earliest one.
     sleeps: BTreeSet<(i64, u64)>,
@@ -669,6 +673,8 @@ impl Driver {
             tool_calls: BTreeMap::new(),
             rejections: BTreeMap::new(),
             hold_reasons: BTreeMap::new(),
+            person_time: held_time::PersonTime::default(),
+            late_entries: BTreeSet::new(),
             sleeps: BTreeSet::new(),
             tool_numbers: BTreeMap::new(),
             blocked: false,
@@ -792,22 +798,7 @@ impl Driver {
                 Some(Event::Cancel(ack)) => self.cancel(ack)?,
                 Some(Event::Answer(answer)) => self.answer(answer)?,
                 Some(Event::LateAnswer { call, entry, ack }) => {
-                    let format = self.result_format(&call);
-                    let Some(mapped) = held::map_entry(entry, format.as_ref()) else {
-                        let _ = ack.send(());
-                        continue;
-                    };
-                    self.mark_held(call.position, true)?;
-                    self.mark_held(call.position, false)?;
-                    self.settle_answer(
-                        Answer {
-                            call,
-                            result: Ok(Value::Null),
-                            usage: None,
-                            no_effect: mapped.outcome == Outcome::Withdrawn,
-                        },
-                        Some(mapped),
-                    )?;
+                    self.late_answer(call, entry)?;
                     let _ = ack.send(());
                 }
                 Some(Event::CustodyChanged) => {}
@@ -977,12 +968,19 @@ impl Driver {
                 // withdrawn. Only a person wait is also listed for the
                 // person, recorded as one, and able to stop the wall clock.
                 self.held_positions.insert(position);
+                self.hold_reasons
+                    .entry(position)
+                    .or_insert_with(|| held_time::Reason {
+                        reason: None,
+                        since_ms: self.shared.clock.now_ms(),
+                    });
                 let person = self.waits_on_person(position);
                 self.shared.store.write(|tx| {
                     tx.execute("UPDATE codemode_calls SET held=1, waited_on_person=MAX(waited_on_person, ?3) WHERE run_id=?1 AND position=?2 AND outcome='pending'", rusqlite::params![self.run.run_id, position, person])?;
                     Ok(())
                 })?;
                 if !person {
+                    self.forget_hold(position);
                     return Ok(());
                 }
                 if let Some((_, call)) = self.tool_calls.get(&position)
@@ -994,15 +992,21 @@ impl Driver {
                         .unwrap()
                         .entry(self.run.run_id.clone())
                         .or_default()
-                        .entry(position)
-                        .or_insert_with(|| Hold {
-                            index: self.tool_numbers.get(&position).map_or(position, |n| n - 1),
-                            tool: name.clone(),
-                            reason: self.hold_reasons.get(&position).cloned(),
-                        });
+                        .insert(
+                            position,
+                            Hold {
+                                index: self.tool_numbers.get(&position).map_or(position, |n| n - 1),
+                                tool: name.clone(),
+                                reason: self
+                                    .hold_reasons
+                                    .get(&position)
+                                    .and_then(|r| r.reason.clone()),
+                            },
+                        );
                 }
             } else {
                 self.held_positions.remove(&position);
+                self.hold_reasons.remove(&position);
                 self.forget_hold(position);
             }
         }
@@ -1020,7 +1024,8 @@ impl Driver {
     fn waits_on_person(&self, position: u64) -> bool {
         self.hold_reasons
             .get(&position)
-            .is_none_or(|reason| cortexkit_role_tool_provider::result::is_person_wait(reason))
+            .and_then(|record| record.reason.as_deref())
+            .is_none_or(cortexkit_role_tool_provider::result::is_person_wait)
     }
 
     fn forget_hold(&self, position: u64) {
@@ -1149,7 +1154,17 @@ impl Driver {
                     if self.wall()? {
                         return Ok(());
                     }
-                    self.hold_reasons.insert(answer.call.position, reason);
+                    self.account_time();
+                    let record = self
+                        .hold_reasons
+                        .entry(answer.call.position)
+                        .or_insert_with(|| held_time::Reason {
+                            reason: None,
+                            since_ms: self.shared.clock.now_ms(),
+                        });
+                    if record.reason.is_none() {
+                        record.reason = Some(reason);
+                    }
                     self.mark_held(answer.call.position, true)?;
                     self.start_intake(answer.call.position)?;
                     return Ok(());
@@ -1158,6 +1173,90 @@ impl Driver {
             }
         }
         self.settle_answer(answer, None)
+    }
+
+    fn late_answer(
+        &mut self,
+        call: HostCall,
+        entry: std::result::Result<cortexkit_role_tool_provider::late_results::LateEntry, String>,
+    ) -> Result<()> {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(message) => return self.record_malformed_entry(&message),
+        };
+        let Some((provider, _)) = self.tool_calls.get(&call.position) else {
+            return Ok(());
+        };
+        if !self.late_entries.insert(entry.intake_key(provider)) {
+            return Ok(());
+        }
+        let settled_at = i64::try_from(entry.settled_at).unwrap_or(i64::MAX);
+        let format = self.result_format(&call);
+        match held::map_entry(entry, format.as_ref()) {
+            Some(held::Update::Held(held)) => {
+                self.mark_held(call.position, true)?;
+                self.update_hold_reason(call.position, held.reason, settled_at)?;
+            }
+            Some(held::Update::Malformed(message)) => self.record_malformed_entry(&message)?,
+            Some(held::Update::Final(mapped)) => {
+                self.mark_held(call.position, true)?;
+                self.mark_held(call.position, false)?;
+                self.settle_answer(
+                    Answer {
+                        call,
+                        result: Ok(Value::Null),
+                        usage: None,
+                        no_effect: mapped.outcome == Outcome::Withdrawn,
+                    },
+                    Some(mapped),
+                )?;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    fn update_hold_reason(&mut self, position: u64, reason: String, settled_at: i64) -> Result<()> {
+        self.account_time();
+        let now = self.last_tick_ms;
+        let Some(previous) = self.hold_reasons.get(&position) else {
+            return Ok(());
+        };
+        // The provider's late-results cursor orders reason changes. Clamp each
+        // timestamp to the current hold's start and the local clock so
+        // an update cannot refund earlier holds or future time.
+        let since_ms = settled_at.min(now).max(previous.since_ms);
+        let person = cortexkit_role_tool_provider::result::is_person_wait(&reason);
+        self.person_time.revise(position, since_ms, person);
+        self.person_wait_ms = self.person_time.total();
+        self.hold_reasons.get_mut(&position).unwrap().reason = Some(reason);
+        self.mark_held(position, true)?;
+        // Recovery interrupts runs rather than resuming their calls. It only
+        // needs the accrued total and the existing held/waited_on_person bits.
+        self.shared.store.write(|tx| {
+            tx.execute(
+                "UPDATE codemode_runs SET person_wait_ms=?2 WHERE run_id=?1 AND status='running'",
+                rusqlite::params![self.run.run_id, self.person_wait_ms],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn record_malformed_entry(&mut self, message: &str) -> Result<()> {
+        let mut warnings: Vec<Value> = serde_json::from_str(&self.run.warnings)
+            .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        if warnings.len() < 256 && self.run.warnings.len() < 65_536 {
+            warnings.push(json!({"code":"reply_unreadable","message":format!("skipped malformed late entry: {}", diagnostic_text(message, 1024))}));
+            self.run.warnings = serde_json::to_string(&warnings).unwrap();
+            self.shared.store.write(|tx| {
+                tx.execute(
+                    "UPDATE codemode_runs SET warnings=?2 WHERE run_id=?1 AND status='running'",
+                    rusqlite::params![self.run.run_id, self.run.warnings],
+                )?;
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     fn settle_answer(&mut self, answer: Answer, mapped: Option<Mapped>) -> Result<()> {
@@ -1304,10 +1403,20 @@ impl Driver {
 
     fn account_time(&mut self) {
         let now = self.shared.clock.now_ms();
-        if !self.stopping && self.person_only() {
-            self.person_wait_ms = self
-                .person_wait_ms
-                .saturating_add(now.saturating_sub(self.last_tick_ms).max(0));
+        if !self.stopping && self.blocked && self.sleeps.is_empty() && self.in_flight > 0 {
+            let people = self
+                .held_positions
+                .iter()
+                .copied()
+                .filter(|position| self.waits_on_person(*position))
+                .collect();
+            self.person_time.tick(
+                self.last_tick_ms,
+                now,
+                self.flight_positions.clone(),
+                people,
+            );
+            self.person_wait_ms = self.person_time.total();
         }
         self.last_tick_ms = now;
     }
@@ -1330,7 +1439,7 @@ impl Driver {
         Ok(self.stopping)
     }
 
-    /// Whether the program is waiting only on people. A pending sleep is the
+    /// Whether the blocked program is waiting only on people. A pending sleep is the
     /// program's own wait, so it keeps the time on the wall budget.
     fn person_only(&self) -> bool {
         if !self.sleeps.is_empty() {

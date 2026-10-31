@@ -66,11 +66,27 @@ pub(super) fn classify(
 mod custody;
 pub(super) use custody::{Custody, Target};
 
+pub(super) enum Update {
+    Final(Mapped),
+    Held(cortexkit_role_tool_provider::result::HeldReply),
+    Malformed(String),
+}
+
 pub(super) fn map_entry(
     entry: LateEntry,
     format: Option<&cortexkit_role_tool_provider::result::ResultFormat>,
-) -> Option<Mapped> {
-    Some(match entry.kind() {
+) -> Option<Update> {
+    if entry.kind() == EntryKind::Held {
+        return Some(match entry.validate().and_then(|()| entry.held()) {
+            Ok(Some(held)) => Update::Held(held),
+            Ok(None) => unreachable!("held entry has no held kind"),
+            Err(error) => {
+                tracing::warn!(?error, "skipping malformed held update");
+                Update::Malformed(error.to_string())
+            }
+        });
+    }
+    Some(Update::Final(match entry.kind() {
         EntryKind::NotStarted => {
             let mut mapped = Mapped::rejected(
                 Outcome::Withdrawn,
@@ -111,7 +127,7 @@ pub(super) fn map_entry(
             tracing::debug!(kind = entry.kind, "skipping non-terminal late entry");
             return None;
         }
-    })
+    }))
 }
 
 /// Withdrawal is cleanup after a run stops, so it has a short independent

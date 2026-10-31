@@ -1268,6 +1268,8 @@ fn run_tool_route_options(options: CallOptions) -> CallOptions {
         .expect("static capability")
         .with_consumer_capability("held-reply/v1")
         .expect("static capability")
+        .with_consumer_capability(cortexkit_role_tool_provider::HELD_UPDATE_CAPABILITY)
+        .expect("static capability")
 }
 
 /// Sends one codemode tool request, opening (or reusing) its route with `open`
@@ -2061,7 +2063,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 opens.lock().unwrap()[0]["consumer_capabilities"],
-                json!(["held-reply/v1", "tool-result/v1"])
+                json!(["held-reply/v1", "held-update/v1", "tool-result/v1"])
             );
             for name in ["late_results", "late_results.ack", "tool.withdraw"] {
                 transport

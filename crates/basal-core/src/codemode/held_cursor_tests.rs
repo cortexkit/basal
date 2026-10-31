@@ -100,7 +100,7 @@ fn custodian_page_reaches_both_runs_before_ack_and_rechecks_held_eligibility() {
             else {
                 panic!("expected final entry")
             };
-            assert_eq!(entry.result, Some(json!(run)));
+            assert_eq!(entry.unwrap().result, Some(json!(run)));
             settled.fetch_add(1, Ordering::SeqCst);
             ack.send(()).unwrap();
         }));

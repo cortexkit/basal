@@ -26,7 +26,9 @@ fn legacy_content_members_remain_opaque_in_direct_and_late_results() {
         100,
     )
     .with_result(body.clone());
-    let mapped = held::map_entry(entry, None).unwrap();
+    let Some(held::Update::Final(mapped)) = held::map_entry(entry, None) else {
+        panic!("expected final result")
+    };
     assert_eq!(mapped.outcome, Outcome::Ok);
     assert_eq!(
         serde_json::from_str::<Value>(mapped.value.unwrap().as_str()).unwrap(),
@@ -216,7 +218,7 @@ fn early_late(kind: &str) {
                 },
                 args: JsonText::null(),
             },
-            entry,
+            entry: Ok(entry),
             ack,
         })
         .unwrap();

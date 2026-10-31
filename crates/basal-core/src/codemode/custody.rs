@@ -402,47 +402,57 @@ impl Custody {
         let pending = position.pending.as_mut().unwrap();
         let mut seen = BTreeSet::<IntakeKey>::new();
         for raw in &pending.page.entries {
-            let entry: LateEntry = match serde_json::from_value(raw.clone()) {
-                Ok(entry) => entry,
-                Err(error) => {
-                    tracing::warn!(provider = module, ?error, "skipping malformed late entry");
-                    continue;
-                }
-            };
             if !matches!(
-                entry.kind(),
-                EntryKind::Result | EntryKind::NotStarted | EntryKind::Expired
+                raw.get("kind").and_then(Value::as_str),
+                Some("held" | "result" | "not_started" | "expired")
             ) {
                 // Consume progress and future non-result entries without ending the call.
                 tracing::debug!(
                     provider = module,
-                    kind = entry.kind,
+                    kind = ?raw.get("kind"),
                     "skipping non-terminal late entry"
                 );
                 continue;
             }
-            if entry.custodian != "reserved:basal" {
+            if raw.get("custodian").and_then(Value::as_str) != Some("reserved:basal") {
                 tracing::warn!(provider = module, "skipping foreign late-result custodian");
                 continue;
             }
-            if !seen.insert(entry.intake_key(module)) {
+            let Some(call_key) = raw.get("call_key").and_then(Value::as_str) else {
                 continue;
-            }
+            };
             let target = self
                 .state
                 .lock()
                 .unwrap()
                 .calls
-                .get(&(module.into(), entry.call_key.clone()))
+                .get(&(module.into(), call_key.into()))
                 .cloned();
             if let Some(target) = target {
-                if entry.owner != target.scope.owner
-                    || entry.scope_ref != target.scope.scope_ref
-                    || entry.scope_epoch != target.scope.scope_epoch
+                if raw.get("owner").and_then(Value::as_str) != Some(target.scope.owner.as_str())
+                    || raw.get("ref").and_then(Value::as_str)
+                        != Some(target.scope.scope_ref.as_str())
+                    || raw.get("scope_epoch").and_then(Value::as_u64)
+                        != Some(target.scope.scope_epoch)
                 {
                     tracing::warn!(provider = module, "skipping late entry from another scope");
                     continue;
                 }
+                let entry = match serde_json::from_value::<LateEntry>(raw.clone()) {
+                    Ok(entry) => {
+                        if !seen.insert(entry.intake_key(module)) {
+                            continue;
+                        }
+                        Ok(entry)
+                    }
+                    Err(error) => {
+                        tracing::warn!(provider = module, ?error, "skipping malformed late entry");
+                        if raw.get("kind").and_then(Value::as_str) != Some("held") {
+                            continue;
+                        }
+                        Err(error.to_string())
+                    }
+                };
                 self.busy(module, &target);
                 if !pending.routes.iter().any(|route| route.run == target.run) {
                     pending.routes.push(target.clone());

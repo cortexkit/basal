@@ -41,7 +41,7 @@ cortexkit-test-support = "=0.1.10"
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
 cortexkit-store = { version = "=0.2.5", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
-cortexkit-role-tool-provider = "=0.13.0"
+cortexkit-role-tool-provider = "=0.13.3"
 cortexkit-llm-tools = "=0.2.1"
 cortexkit-role-tool-provider-conformance = "=0.13.0"
 # The provider-owned resource-busy refusal is shared across the fleet.

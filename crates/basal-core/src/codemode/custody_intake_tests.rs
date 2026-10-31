@@ -134,11 +134,13 @@ fn skip_entry(bad: Value) -> Vec<(tracing::Level, String)> {
             panic!("expected final")
         };
         assert_eq!(
-            entry.result,
+            entry.as_ref().unwrap().result,
             Some(json!("good")),
             "bad identity entries must not be delivered"
         );
-        let mapped = held::map_entry(entry, None).unwrap();
+        let Some(held::Update::Final(mapped)) = held::map_entry(entry.unwrap(), None) else {
+            panic!("expected final")
+        };
         assert_eq!(mapped.outcome, Outcome::Ok);
         assert_eq!(mapped.value.unwrap().as_str(), "\"good\"");
         taking.remove("provider", "a", 0);
@@ -222,7 +224,7 @@ fn another_ending_driver_cannot_fail_a_live_runs_intake() {
         else {
             panic!("expected a")
         };
-        assert_eq!(entry.result, Some(json!("live")));
+        assert_eq!(entry.unwrap().result, Some(json!("live")));
         live.remove("provider", "a", 0);
         ack.send(()).unwrap();
     });
