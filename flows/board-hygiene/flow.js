@@ -523,14 +523,18 @@ async function run() {
         // never finished, a peer that never answered). Ended or declined waits
         // are covered by wait_ended; an ETA hands the item to eta_passed. A wait
         // on an ask is the user's to answer: the owner can't move it and the ask
-        // already reaches the user, so it is left out.
+        // already reaches the user, so it is left out. A wait on a live flow is
+        // left out too: the flow is the item's date (a reminder for next week,
+        // say), and the board caps ETAs at 6 hours, so no ETA could stand in for
+        // it. If the flow ends without resolving the wait, wait_ended catches it.
         const waitSince = Math.max(
           Number.isFinite(item.wait?.since_ms) ? item.wait.since_ms : -Infinity,
           Number.isFinite(item.changed_at_ms) ? item.changed_at_ms : -Infinity);
         await check('stale_wait', agent, lane, item,
           item.state === 'blocked' && !Number.isFinite(item.eta_ms) &&
             item.wait?.ref_state !== 'terminal' && item.wait?.declined_by == null &&
-            !(typeof item.wait?.ref === 'string' && item.wait.ref.startsWith('ask:')) &&
+            !(typeof item.wait?.ref === 'string' &&
+              (item.wait.ref.startsWith('ask:') || item.wait.ref.startsWith('flow:'))) &&
             Number.isFinite(waitSince),
           waitSince, 24 * HOUR, agent);
         // A planned item with no ETA that nobody has touched for 6 hours
