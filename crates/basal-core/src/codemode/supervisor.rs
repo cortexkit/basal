@@ -61,7 +61,9 @@ enum Event {
     Answer(Answer),
     LateAnswer {
         call: HostCall,
-        entry: std::result::Result<cortexkit_role_tool_provider::late_results::LateEntry, String>,
+        // Boxed: a decoded late entry is large, and every other event is small.
+        entry:
+            std::result::Result<Box<cortexkit_role_tool_provider::late_results::LateEntry>, String>,
         intake: held::IntakeIdentity,
         ack: mpsc::SyncSender<()>,
     },
@@ -1184,7 +1186,10 @@ impl Driver {
     fn late_answer(
         &mut self,
         call: HostCall,
-        entry: std::result::Result<cortexkit_role_tool_provider::late_results::LateEntry, String>,
+        entry: std::result::Result<
+            Box<cortexkit_role_tool_provider::late_results::LateEntry>,
+            String,
+        >,
         intake: held::IntakeIdentity,
     ) -> Result<()> {
         if !self.late_entries.insert(intake) {
@@ -1199,7 +1204,7 @@ impl Driver {
         }
         let settled_at = i64::try_from(entry.settled_at).unwrap_or(i64::MAX);
         let format = self.result_format(&call);
-        match held::map_entry(entry, format.as_ref()) {
+        match held::map_entry(*entry, format.as_ref()) {
             Some(held::Update::Held(held)) => {
                 self.mark_held(call.position, true)?;
                 self.update_hold_reason(call.position, held.reason, settled_at)?;

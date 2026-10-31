@@ -138,7 +138,7 @@ fn skip_entry(bad: Value) -> Vec<(tracing::Level, String)> {
             Some(json!("good")),
             "bad identity entries must not be delivered"
         );
-        let Some(held::Update::Final(mapped)) = held::map_entry(entry.unwrap(), None) else {
+        let Some(held::Update::Final(mapped)) = held::map_entry(*entry.unwrap(), None) else {
             panic!("expected final")
         };
         assert_eq!(mapped.outcome, Outcome::Ok);

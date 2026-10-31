@@ -219,7 +219,7 @@ fn early_late(kind: &str) {
                 },
                 args: JsonText::null(),
             },
-            entry: Ok(entry),
+            entry: Ok(Box::new(entry)),
             intake,
             ack,
         })

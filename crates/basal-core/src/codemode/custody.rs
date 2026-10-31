@@ -443,7 +443,7 @@ impl Custody {
                     continue;
                 }
                 let entry = match serde_json::from_value::<LateEntry>(raw.clone()) {
-                    Ok(entry) => Ok(entry),
+                    Ok(entry) => Ok(Box::new(entry)),
                     Err(error) => {
                         tracing::warn!(provider = module, ?error, "skipping malformed late entry");
                         if raw.get("kind").and_then(Value::as_str) != Some("held") {
