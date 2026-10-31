@@ -149,7 +149,8 @@ impl Drop for OwnedProcess {
 /// the same as for any child) plus what only a confined launch has.
 ///
 /// Dropping it kills the worker and waits for it to end, then closes the job
-/// and removes the worker's window station, desktop and TEMP directory.
+/// and removes the worker's desktop and TEMP directory. The window station
+/// is shared and remains open until the parent process terminates.
 pub struct ConfinedProcess {
     // Fields drop in order: the process (killed and waited for) first, the
     // start-up context last, after the worker has ended.
@@ -195,6 +196,20 @@ impl ConfinedProcess {
     /// The worker's private TEMP directory.
     pub fn temp_dir(&self) -> &Path {
         &self.context.temp
+    }
+
+    /// The `station\desktop` passed at creation, for confinement regression tests.
+    #[cfg(feature = "deviations")]
+    pub fn desktop_name(&self) -> String {
+        let name = &self.context.desktop_name;
+        String::from_utf16_lossy(&name[..name.len() - 1])
+    }
+
+    /// Runs a parent-side isolation probe on the worker's station. The shared
+    /// station-switch lock excludes desktop creation while it is selected.
+    #[cfg(feature = "deviations")]
+    pub fn with_window_station<T>(run: impl FnOnce() -> T) -> Result<T, String> {
+        super::context::with_station(run)
     }
 
     /// Reads the worker's current primary token.

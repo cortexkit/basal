@@ -1,5 +1,5 @@
-//! The start-up context a worker gets: a private window station and desktop,
-//! a private TEMP directory, a minimal environment and a working directory.
+//! The start-up context a worker gets: a private desktop in a shared window
+//! station, a private TEMP directory, a minimal environment and a working directory.
 
 use super::native::{Result, check, groups, last, sid_string, token_buffer, wide};
 use super::profile::{Library, PackageSid};
@@ -7,8 +7,8 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use std::sync::Mutex;
-use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
+use std::sync::{Mutex, OnceLock};
+use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError, HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows_sys::Win32::Security::Cryptography::{
     BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
@@ -22,8 +22,11 @@ use windows_sys::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
 
 use super::native::SE_GROUP_LOGON_ID;
 
-/// `WINSTA_ALL_ACCESS | STANDARD_RIGHTS_REQUIRED`.
-const STATION_ACCESS: u32 = 0x000f_037f;
+/// `GENERIC_READ | WINSTA_CREATEDESKTOP`: read and create private desktops.
+const STATION_ACCESS: u32 = 0x8000_0008;
+/// `WINSTA_READATTRIBUTES | WINSTA_CREATEDESKTOP`: the smaller requested access
+/// that an existing batch-logon station may permit.
+const STATION_RETRY_ACCESS: u32 = 0x0000_000a;
 /// Every desktop right plus the standard rights, requested by the creator.
 const DESKTOP_ACCESS: u32 = 0x000f_01ff;
 
@@ -40,19 +43,157 @@ type CreateDesktop = unsafe extern "system" fn(
 type GetStation = unsafe extern "system" fn() -> HANDLE;
 type SetStation = unsafe extern "system" fn(HANDLE) -> i32;
 type CloseObject = unsafe extern "system" fn(HANDLE) -> i32;
+type GetObjectInformation =
+    unsafe extern "system" fn(HANDLE, i32, *mut c_void, u32, *mut u32) -> i32;
 
 /// Creating a desktop uses the process's current window station, which is
 /// process-wide state; launches that switch it must not interleave.
 static STATION_SWITCH: Mutex<()> = Mutex::new(());
 
-/// A worker's start-up context. Dropping it closes the station and desktop
-/// and removes the TEMP directory, so it must outlive the worker.
+/// NULL-name creation works without administrator rights. Windows chooses
+/// the station's name from the logon session, so it is not a per-worker
+/// isolation boundary. Retain one noninheritable handle for the process's
+/// lifetime; Windows closes it on process termination (Rust statics do not drop).
+static STATION: OnceLock<Result<Station>> = OnceLock::new();
+
+struct Station {
+    _user32: Library,
+    handle: HANDLE,
+    close: CloseObject,
+    name: String,
+    mode: &'static str,
+}
+
+// The cached station is immutable, and its handle is valid on every thread.
+unsafe impl Send for Station {}
+unsafe impl Sync for Station {}
+
+impl Drop for Station {
+    fn drop(&mut self) {
+        unsafe { (self.close)(self.handle) };
+    }
+}
+
+fn shared_station(descriptor: &Descriptor) -> Result<&'static Station> {
+    STATION
+        .get_or_init(|| unsafe {
+            let _switch = STATION_SWITCH
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let user32 = Library::system32("user32.dll")?;
+            let create: CreateStation = user32.symbol(b"CreateWindowStationW\0")?;
+            let current: GetStation = user32.symbol(b"GetProcessWindowStation\0")?;
+            let current_name = object_name(&user32, current())?;
+            let close = user32.symbol(b"CloseWindowStation\0")?;
+            let mut handle = create(null(), 0, STATION_ACCESS, &descriptor.attributes());
+            if handle.is_null() && GetLastError() == ERROR_ACCESS_DENIED {
+                // The logon-session station can already exist. Reopening it
+                // with a smaller requested access mask must not rewrite its security.
+                handle = create(null(), 0, STATION_RETRY_ACCESS, &descriptor.attributes());
+            }
+            if handle.is_null() {
+                return Err(last("CreateWindowStationW"));
+            }
+            let mut station = Station {
+                _user32: user32,
+                handle,
+                close,
+                name: String::new(),
+                mode: "alternate",
+            };
+            station.name = object_name(&station._user32, handle)?;
+            if station.name.eq_ignore_ascii_case(&current_name) {
+                station.mode = "current";
+            }
+            Ok(station)
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn object_name(user32: &Library, object: HANDLE) -> Result<String> {
+    unsafe {
+        let get: GetObjectInformation = user32.symbol(b"GetUserObjectInformationW\0")?;
+        let mut bytes = 0;
+        // UOI_NAME is 2; both buffer sizes are in bytes, not UTF-16 units.
+        get(object, 2, null_mut(), 0, &mut bytes);
+        if bytes == 0 || bytes % 2 != 0 {
+            return Err(last("GetUserObjectInformationW(UOI_NAME size)"));
+        }
+        let mut name = vec![0u16; bytes as usize / 2];
+        check(
+            get(object, 2, name.as_mut_ptr().cast(), bytes, &mut bytes),
+            "GetUserObjectInformationW(UOI_NAME)",
+        )?;
+        let length = name
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(name.len());
+        if length == 0 {
+            return Err("GetUserObjectInformationW(UOI_NAME): empty name".into());
+        }
+        Ok(String::from_utf16_lossy(&name[..length]))
+    }
+}
+
+/// Select the worker station for parent-side isolation probes, excluding
+/// concurrent desktop creation. On panic the drop guard attempts restoration.
+#[cfg(feature = "deviations")]
+pub(crate) fn with_station<T>(run: impl FnOnce() -> T) -> Result<T> {
+    let station = STATION
+        .get()
+        .ok_or("the worker station has not been initialized")?
+        .as_ref()
+        .map_err(Clone::clone)?;
+    let _switch = STATION_SWITCH
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    unsafe {
+        let get: GetStation = station._user32.symbol(b"GetProcessWindowStation\0")?;
+        let set: SetStation = station._user32.symbol(b"SetProcessWindowStation\0")?;
+        struct Restore(HANDLE, SetStation);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe { (self.1)(self.0) };
+            }
+        }
+        let original = get();
+        if object_name(&station._user32, original)?.eq_ignore_ascii_case(&station.name) {
+            return Ok(run());
+        }
+        // The station handle used for desktop creation lacks atom access. The
+        // parent probe needs its own authorized atom-capable handle, otherwise
+        // a denied parent lookup would masquerade as cross-job isolation.
+        type OpenStation = unsafe extern "system" fn(*const u16, i32, u32) -> HANDLE;
+        let open: OpenStation = station._user32.symbol(b"OpenWindowStationW\0")?;
+        // WINSTA_ENUMDESKTOPS | WINSTA_READATTRIBUTES | WINSTA_ACCESSGLOBALATOMS.
+        let handle = open(wide(&station.name).as_ptr(), 0, 0x23);
+        if handle.is_null() {
+            return Err(last("OpenWindowStationW(atom probe)"));
+        }
+        struct OwnedStation(HANDLE, CloseObject);
+        impl Drop for OwnedStation {
+            fn drop(&mut self) {
+                unsafe { (self.1)(self.0) };
+            }
+        }
+        let owned = OwnedStation(handle, station.close);
+        check(set(handle), "SetProcessWindowStation(probe)")?;
+        let restore = Restore(original, set);
+        let result = run();
+        check(set(original), "SetProcessWindowStation(probe restore)")?;
+        drop(restore);
+        drop(owned);
+        Ok(result)
+    }
+}
+
+/// A worker's start-up context. Dropping it closes the desktop and removes
+/// the TEMP directory, so it must outlive the worker. The station is process-wide.
 pub(crate) struct Context {
     /// Keeps User32 loaded until the close functions below have run.
     _user32: Library,
-    station: HANDLE,
     desktop: HANDLE,
-    close_station: CloseObject,
     close_desktop: CloseObject,
     /// `station\desktop`, NUL-terminated, for `STARTUPINFO.lpDesktop`.
     pub(crate) desktop_name: Vec<u16>,
@@ -65,8 +206,7 @@ pub(crate) struct Context {
     pub(crate) temp: PathBuf,
 }
 
-// The station and desktop handles and the module handle are process-wide
-// and may be closed from any thread.
+// The desktop and module handles may be closed from any thread.
 unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
 
@@ -76,7 +216,6 @@ impl Drop for Context {
             if !self.desktop.is_null() {
                 (self.close_desktop)(self.desktop);
             }
-            (self.close_station)(self.station);
         }
         let _ = std::fs::remove_dir_all(&self.temp);
     }
@@ -161,11 +300,13 @@ pub(crate) fn environment_block(system_root: &str, temp: &str) -> Vec<u16> {
 
 /// Creates the context for one worker.
 ///
-/// - **Window station and desktop:** private to this worker. Only SYSTEM,
-///   Administrators and the parent's user have full access; the logon SID,
-///   the NULL SID and the package get read and execute on the station and
-///   read-control, read-objects and write-objects (`0x20081`) on the
-///   desktop. Both carry a Low no-write-up label.
+/// - **Window station:** shared by this process's workers. A newly created
+///   station grants SYSTEM, Administrators and the parent's user full access,
+///   and the logon, NULL and package SIDs read/execute, with a Low no-write-up
+///   label. An existing logon-session station is reused without changing its
+///   security. Every worker gets a private desktop with those full-access
+///   access-control entries, read-control/read-objects/write-objects (`0x20081`) for the
+///   logon/NULL/package SIDs, and a Low no-write-up label.
 /// - **TEMP:** a fresh directory with a protected DACL. The worker's package
 ///   and the NULL SID get only read and execute, so the variables resolve to
 ///   an existing directory in which the worker can create nothing.
@@ -174,11 +315,9 @@ pub(crate) fn environment_block(system_root: &str, temp: &str) -> Vec<u16> {
 pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -> Result<Context> {
     unsafe {
         let user32 = Library::system32("user32.dll")?;
-        let create_station: CreateStation = user32.symbol(b"CreateWindowStationW\0")?;
         let create_desktop: CreateDesktop = user32.symbol(b"CreateDesktopW\0")?;
         let get_station: GetStation = user32.symbol(b"GetProcessWindowStation\0")?;
         let set_station: SetStation = user32.symbol(b"SetProcessWindowStation\0")?;
-        let close_station: CloseObject = user32.symbol(b"CloseWindowStation\0")?;
         let close_desktop: CloseObject = user32.symbol(b"CloseDesktop\0")?;
 
         let user = token_buffer(parent_token, TokenUser)?;
@@ -208,22 +347,16 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
         ))?;
 
         let name = context_name()?;
-        let station = create_station(
-            wide(&name).as_ptr(),
-            0,
-            STATION_ACCESS,
-            &station_sd.attributes(),
+        let station = shared_station(&station_sd)?;
+        eprintln!(
+            "basal-launch: window station mode={} station={:?} desktop={name:?}",
+            station.mode, station.name
         );
-        if station.is_null() {
-            return Err(last("CreateWindowStationW"));
-        }
         let mut context = Context {
             _user32: user32,
-            station,
             desktop: null_mut(),
-            close_station,
             close_desktop,
-            desktop_name: wide(format!("{name}\\worker")),
+            desktop_name: wide(format!("{}\\{name}", station.name)),
             cwd: Vec::new(),
             environment: Vec::new(),
             temp: PathBuf::new(),
@@ -233,9 +366,12 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
             let original = get_station();
-            check(set_station(station), "SetProcessWindowStation(worker)")?;
+            check(
+                set_station(station.handle),
+                "SetProcessWindowStation(worker)",
+            )?;
             context.desktop = create_desktop(
-                wide("worker").as_ptr(),
+                wide(&name).as_ptr(),
                 null(),
                 null(),
                 0,
@@ -282,7 +418,7 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
     }
 }
 
-/// A fresh name for one launch's window station and TEMP directory: 128
+/// A fresh name for one launch's desktop and TEMP directory: 128
 /// bits from the system's random number generator. A name made from the
 /// process id and a counter repeats when a later process gets the same id,
 /// and can be guessed and created by someone else first.
@@ -319,6 +455,62 @@ fn long_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::windows::io::AsRawHandle;
+
+    #[test]
+    fn concurrent_contexts_share_one_station_and_have_distinct_desktops() {
+        let barrier = std::sync::Barrier::new(2);
+        let contexts: Vec<_> = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        let token = super::super::token::own_token().unwrap();
+                        let package = super::super::profile::create_or_open_profile().unwrap();
+                        create(
+                            &std::env::current_exe().unwrap(),
+                            token.as_raw_handle(),
+                            &package,
+                        )
+                        .expect("create a worker context without administrator rights")
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect()
+        });
+        let names: Vec<_> = contexts
+            .iter()
+            .map(|context| {
+                let full = String::from_utf16_lossy(
+                    &context.desktop_name[..context.desktop_name.len() - 1],
+                );
+                let (station, desktop) = full.split_once('\\').expect("station\\desktop");
+                assert_eq!(
+                    object_name(&context._user32, context.desktop).unwrap(),
+                    desktop
+                );
+                (station.to_owned(), desktop.to_owned())
+            })
+            .collect();
+        println!("concurrent worker contexts: {names:?}");
+        assert!(!names[0].0.is_empty());
+        assert_eq!(names[0].0, names[1].0, "one station per process");
+        assert_ne!(names[0].1, names[1].1, "a private desktop per worker");
+        let station = STATION.get().unwrap().as_ref().unwrap();
+        assert_eq!(
+            object_name(&station._user32, station.handle).unwrap(),
+            names[0].0
+        );
+        drop(contexts);
+        assert_eq!(
+            object_name(&station._user32, station.handle).unwrap(),
+            names[0].0,
+            "dropping all workers must not close the process-wide station"
+        );
+    }
 
     #[test]
     fn context_names_are_random_and_never_repeat() {

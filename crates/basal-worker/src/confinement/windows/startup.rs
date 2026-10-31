@@ -18,6 +18,7 @@ use windows_sys::Win32::System::Threading::{
 /// worker that failed any check has already exited.
 pub fn enter(package: &PackageSid, arguments: &Arguments) -> Result<Entered, ConfinementError> {
     run(package, arguments).map_err(ConfinementError::Windows)?;
+    log_startup_desktop();
     Ok(Entered {
         confinement: Confinement::Windows {
             lpac: true,
@@ -28,6 +29,27 @@ pub fn enter(package: &PackageSid, arguments: &Arguments) -> Result<Entered, Con
         },
         descriptors: Vec::new(),
     })
+}
+
+/// Report creation-time metadata without loading User32 or querying GUI objects.
+/// The startup string is not an attestation of current object access or security.
+fn log_startup_desktop() {
+    use windows_sys::Win32::System::Threading::{GetStartupInfoW, STARTUPINFOW};
+
+    let assignment = unsafe {
+        let mut startup: STARTUPINFOW = std::mem::zeroed();
+        GetStartupInfoW(&mut startup);
+        if startup.lpDesktop.is_null() {
+            None
+        } else {
+            (0..32768)
+                .find(|&length| *startup.lpDesktop.add(length) == 0)
+                .map(|length| {
+                    String::from_utf16_lossy(std::slice::from_raw_parts(startup.lpDesktop, length))
+                })
+        }
+    };
+    eprintln!("ck-basal-worker: startup desktop assignment read-back={assignment:?}");
 }
 
 fn run(package: &PackageSid, arguments: &Arguments) -> Result<(), Refusal> {

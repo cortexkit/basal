@@ -23,6 +23,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
+#[path = "windows_common/atoms.rs"]
+mod atom_isolation;
 mod windows_common;
 
 /// The worker cargo built for these tests, under a development name.
@@ -124,7 +126,46 @@ const NOW_MS: &str = "1767225600000";
 /// back and finds it Untrusted, which only the worker's own lowering makes it.
 #[test]
 fn an_activation_completes_under_the_full_confinement() {
-    let mut child = start(Deviation::Full);
+    complete_activation(start(Deviation::Full));
+}
+
+#[test]
+fn concurrent_workers_have_private_desktops_in_one_station_and_both_activate() {
+    let barrier = std::sync::Barrier::new(2);
+    let children: Vec<_> = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    start(Deviation::Full)
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect()
+    });
+    let names: Vec<_> = children.iter().map(ConfinedProcess::desktop_name).collect();
+    println!("concurrent worker desktops: {names:?}");
+    let (station_a, desktop_a) = names[0].split_once('\\').expect("station\\desktop");
+    let (station_b, desktop_b) = names[1].split_once('\\').expect("station\\desktop");
+    assert!(!station_a.is_empty());
+    assert_eq!(station_a, station_b, "workers share the broker's station");
+    assert_ne!(desktop_a, desktop_b, "workers must not share a desktop");
+    std::thread::scope(|scope| {
+        let threads: Vec<_> = children
+            .into_iter()
+            .map(|child| scope.spawn(move || complete_activation(child)))
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    });
+}
+
+fn complete_activation(mut child: ConfinedProcess) {
+    let desktop_name = child.desktop_name();
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
 
@@ -213,6 +254,14 @@ fn an_activation_completes_under_the_full_confinement() {
     let ended = end(child);
     println!("full: shut down with exit {}", ended.code);
     assert_eq!(ended.code, 0, "{}", ended.stderr);
+    assert!(
+        ended.stderr.contains(&format!(
+            "startup desktop assignment read-back={:?}",
+            Some(desktop_name)
+        )),
+        "the worker reads its assigned desktop through Kernel32: {}",
+        ended.stderr
+    );
 }
 
 /// One handle in the worker's table, read by the parent.

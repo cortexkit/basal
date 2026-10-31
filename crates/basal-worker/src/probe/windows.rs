@@ -3,6 +3,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+mod atoms;
 mod objects;
 mod planted;
 mod pool;
@@ -98,6 +99,7 @@ pub fn run(args: &[String]) -> u8 {
             | "thread-barrier"
             | "pool"
             | "checkpoint"
+            | "atoms"
     ) {
         return 64;
     }
@@ -138,6 +140,15 @@ pub fn run(args: &[String]) -> u8 {
     } else if unsafe { windows_sys::Win32::Security::RevertToSelf() } == 0 {
         eprintln!("confinement probe: RevertToSelf: {}", last());
         return 70;
+    }
+    if probe == "atoms" {
+        return match atoms::run() {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("confinement atom probe: {error}");
+                71
+            }
+        };
     }
     if probe == "crash-before-ready" {
         unsafe { TerminateProcess(GetCurrentProcess(), 0xc0000008) };
