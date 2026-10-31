@@ -66,11 +66,56 @@ pub(super) fn classify(
 mod custody;
 pub(super) use custody::{Custody, Target};
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum IntakeIdentity {
+    Event(IntakeKey),
+    Raw { provider: String, digest: [u8; 32] },
+}
+
+pub(super) fn intake_identity(provider: &str, raw: &Value) -> IntakeIdentity {
+    if let (Some(custodian), Some(call_key), Some(event_id)) = (
+        raw.get("custodian").and_then(Value::as_str),
+        raw.get("call_key").and_then(Value::as_str),
+        raw.get("event_id").and_then(Value::as_str),
+    ) {
+        return IntakeIdentity::Event(IntakeKey {
+            provider: provider.into(),
+            custodian: custodian.into(),
+            call_key: call_key.into(),
+            event_id: event_id.into(),
+        });
+    }
+    // The transport already decoded JSON. Hash its stable raw-entry bytes,
+    // not the decoder's error text, so retries retain their identity even when
+    // a missing or malformed event id prevents an ordinary intake key.
+    use sha2::{Digest, Sha256};
+    IntakeIdentity::Raw {
+        provider: provider.into(),
+        digest: Sha256::digest(serde_json::to_vec(raw).expect("JSON value serializes")).into(),
+    }
+}
+
+pub(super) enum Update {
+    Final(Mapped),
+    Held(cortexkit_role_tool_provider::result::HeldReply),
+    Malformed(String),
+}
+
 pub(super) fn map_entry(
     entry: LateEntry,
     format: Option<&cortexkit_role_tool_provider::result::ResultFormat>,
-) -> Option<Mapped> {
-    Some(match entry.kind() {
+) -> Option<Update> {
+    if entry.kind() == EntryKind::Held {
+        return Some(match entry.validate().and_then(|()| entry.held()) {
+            Ok(Some(held)) => Update::Held(held),
+            Ok(None) => unreachable!("held entry has no held kind"),
+            Err(error) => {
+                tracing::warn!(?error, "skipping malformed held update");
+                Update::Malformed(error.to_string())
+            }
+        });
+    }
+    Some(Update::Final(match entry.kind() {
         EntryKind::NotStarted => {
             let mut mapped = Mapped::rejected(
                 Outcome::Withdrawn,
@@ -111,7 +156,7 @@ pub(super) fn map_entry(
             tracing::debug!(kind = entry.kind, "skipping non-terminal late entry");
             return None;
         }
-    })
+    }))
 }
 
 /// Withdrawal is cleanup after a run stops, so it has a short independent

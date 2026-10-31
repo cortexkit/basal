@@ -2970,6 +2970,8 @@ fn wall_deadline_with_a_held_call_withdraws_even_when_worker_is_not_blocked() {
 
 #[path = "custody_review_tests.rs"]
 mod custody_review;
+#[path = "held_update_tests.rs"]
+mod held_updates;
 
 impl Fixture {
     fn sleep(&self, position: u64, args: &str) {
