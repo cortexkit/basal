@@ -196,8 +196,17 @@ remote_lane() {
             fi
             package_args basal-proto basal-host
             if [[ ${#args[@]} -gt 0 ]]; then
-                if ! run cargo test "${args[@]}" --locked; then
-                    run cargo test "${args[@]}" --locked --no-fail-fast
+                # Creating a volume mount point needs an administrator. MOTOR's
+                # job account is a standard user, so that one fixture runs only
+                # on CI's elevated GitHub runners; junction refusal, which shares
+                # the mount-point reparse tag, still runs here.
+                local skip=()
+                if ! net session >/dev/null 2>&1; then
+                    skip=(-- --skip builtins::fs::windows::tests::win_tests::windows_mount_point_refused)
+                    echo 'SKIP windows_mount_point_refused: not an administrator; main CI runs it elevated'
+                fi
+                if ! run cargo test "${args[@]}" --locked "${skip[@]}"; then
+                    run cargo test "${args[@]}" --locked --no-fail-fast "${skip[@]}"
                     return 1
                 fi
             fi
