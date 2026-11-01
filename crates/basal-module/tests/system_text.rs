@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TEXT_DIGEST: &str = "ac2a3af84c4039603f45e90c8ae1b28fd8c9a4b40e9b6cc3cdef316bf82dc5d0";
+const EMPTY_TEXT_DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 fn arguments() -> Value {
     json!({
@@ -52,21 +53,59 @@ fn catalog_tool_bytes_are_unchanged_by_system_text_support() {
 }
 
 #[test]
+fn flow_only_catalog_has_empty_system_text_with_matching_digests() {
+    let mut request = json!({
+        "params":{"capabilities":["basal:flow.manage/v1"]},
+        "system_text":{"params":{}},
+        "composition":{}
+    });
+    let full = tool::catalog(request.clone()).unwrap();
+    assert_eq!(full["system_text"]["text"], "");
+    assert_eq!(full["system_text"]["item_digest"], EMPTY_TEXT_DIGEST);
+    assert_eq!(full["system_text"]["preflight_digest"], EMPTY_TEXT_DIGEST);
+    assert_eq!(full["system_text"]["tool_names"], json!(["flow"]));
+    assert_eq!(
+        full["system_text"]["composition_digest"],
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    );
+    request["digest_only"] = json!(true);
+    assert_eq!(
+        tool::catalog(request).unwrap(),
+        json!({"generation":full["generation"],"catalog_digest":full["catalog_digest"]})
+    );
+}
+
+#[test]
 fn system_text_names_match_every_filtered_tool_set() {
-    for (tags, names) in [
-        (json!([]), json!([])),
-        (json!(["basal:codemode/v1"]), json!(["codemode"])),
-        (json!(["basal:flow.manage/v1"]), json!(["flow"])),
+    let guidance = include_str!("../src/codemode_system_text.md");
+    for (tags, names, expected_text, expected_digest) in [
+        (json!([]), json!([]), "", EMPTY_TEXT_DIGEST),
+        (
+            json!(["basal:codemode/v1"]),
+            json!(["codemode"]),
+            guidance,
+            TEXT_DIGEST,
+        ),
+        (
+            json!(["basal:flow.manage/v1"]),
+            json!(["flow"]),
+            "",
+            EMPTY_TEXT_DIGEST,
+        ),
         (
             json!(["basal:codemode/v1", "basal:flow.manage/v1"]),
             json!(["codemode", "flow"]),
+            guidance,
+            TEXT_DIGEST,
         ),
     ] {
         let mut request = arguments();
         request["params"]["capabilities"] = tags;
         let answer = tool::catalog(request).unwrap();
         assert_eq!(answer["system_text"]["tool_names"], names);
-        assert_eq!(answer["system_text"]["item_digest"], TEXT_DIGEST);
+        assert_eq!(answer["system_text"]["text"], expected_text);
+        assert_eq!(answer["system_text"]["item_digest"], expected_digest);
+        assert_eq!(answer["system_text"]["preflight_digest"], expected_digest);
     }
 }
 

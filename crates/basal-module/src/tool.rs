@@ -145,12 +145,17 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
         );
     }
     if request.system_text.is_some() {
-        // The text is static, so its byte digest also detects changes when a
-        // runner checks its saved preflight digest. Tool names and composition
-        // still describe the exact catalog request.
-        let digest = system_text_digest(SYSTEM_TEXT);
+        // Only sessions offered codemode need its guidance. Keep a requested
+        // item well-formed without it: empty text still has byte digests and
+        // the selected tool names.
+        let resolved_text = if answer.tools.iter().any(|tool| tool.name == "codemode") {
+            SYSTEM_TEXT
+        } else {
+            ""
+        };
+        let digest = system_text_digest(resolved_text);
         let mut text = SystemTextAnswer::new(&digest, &digest)
-            .with_text(SYSTEM_TEXT)
+            .with_text(resolved_text)
             .with_tool_names(answer.tools.iter().map(|tool| tool.name.clone()));
         text.composition_digest = answer.composition_digest.clone();
         answer.system_text = Some(text);
