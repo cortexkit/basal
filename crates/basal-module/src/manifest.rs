@@ -187,6 +187,7 @@ pub fn manifest() -> ModuleManifest {
             provides: vec![
                 cortexkit_role_tool_provider::PROVIDES.into(),
                 cortexkit_role_tool_provider::CALL_MODES_CAPABILITY.into(),
+                cortexkit_role_tool_provider::SYSTEM_TEXT_DEFAULT.into(),
                 "flow-install-policy/v1".into(),
                 // Lets the daemon admit flow-scoped routes to basal, so flows can
                 // read `diagnostics.findings`. The serving loop refuses a flow
