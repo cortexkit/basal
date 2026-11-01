@@ -495,6 +495,10 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 47,
         statements: include_str!("schema_run_history_v47.sql"),
     },
+    Migration {
+        version: 48,
+        statements: "ALTER TABLE journal ADD COLUMN last_dispatch_cause TEXT;",
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,

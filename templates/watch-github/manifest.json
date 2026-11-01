@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "watch-github",
-  "version": 4,
+  "version": 5,
   "purpose": "Wake the creating agent once for a matching GitHub PR, issue, or published release event.",
   "trigger": {
     "events": [

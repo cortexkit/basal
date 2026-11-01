@@ -7,6 +7,8 @@ use basal_host::{CallClass, catalog::MockCatalog};
 use basal_proto::{Confinement, PreludeHash, Welcome};
 use rusqlite::params;
 
+use crate::DispatchState;
+
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Default)]
@@ -211,6 +213,187 @@ impl Drop for Fixture {
         self.rt.quiesce();
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+fn last_dispatch_cause(f: &Fixture, run: &str) -> Option<serde_json::Value> {
+    f.rt.store()
+        .read(|c| {
+            let value: Option<String> = c.query_row(
+                "SELECT last_dispatch_cause FROM journal WHERE run_id=?1 AND position=0",
+                [run],
+                |r| r.get(0),
+            )?;
+            Ok(value.map(|v| serde_json::from_str(&v).unwrap()))
+        })
+        .unwrap()
+}
+
+#[derive(Clone, Default)]
+struct DispatchLogs(Arc<Mutex<Vec<String>>>);
+impl tracing::Subscriber for DispatchLogs {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().target() != "dispatch" {
+            return;
+        }
+        assert_eq!(*event.metadata().level(), tracing::Level::WARN);
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write;
+                write!(self.0, " {field}={value:?}").unwrap();
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        lock(&self.0).push(fields.0);
+    }
+}
+
+#[test]
+fn dispatch_warns_once_per_change_of_cause_not_per_attempt() {
+    let f = Fixture::new(100);
+    let lease = f.call("run", StoredClass::KeyedMutation);
+    let logs = DispatchLogs::default();
+    tracing::subscriber::with_default(logs.clone(), || {
+        for reason in [
+            RefusalReason::SinkStoreFailed,
+            RefusalReason::SinkStoreFailed,
+            RefusalReason::ScopeNotLive,
+            RefusalReason::ScopeNotLive,
+            RefusalReason::SinkStoreFailed,
+        ] {
+            f.rt.defer_dispatch_refusal(
+                &f.request("run"),
+                &FlowRefusal::new(reason, "prefrontal-core", "sink.wait_resolve"),
+            )
+            .unwrap();
+            f.rt.store()
+                .write(|tx| journal::authorize_resend(tx, &lease, 0))
+                .unwrap();
+        }
+        for error in [
+            CoreError::Store("sensitive error text".into()),
+            CoreError::Store("sensitive error text".into()),
+            CoreError::Corrupt("sensitive error text".into()),
+        ] {
+            f.rt.dispatch_failed(&f.request("run"), &error);
+        }
+    });
+    let messages = lock(&logs.0);
+    assert_eq!(messages.len(), 5, "{messages:?}");
+    for message in messages.iter() {
+        assert!(
+            message.contains("flow_id=flow") && message.contains("op=provider.act"),
+            "{message}"
+        );
+        assert!(!message.contains("sensitive error text"));
+    }
+    assert!(messages[0].contains("sink_store_failed"));
+    assert!(messages[1].contains("scope_not_live"));
+    assert!(messages[2].contains("sink_store_failed"));
+    assert!(messages[3].contains("dispatch_store_error"));
+    assert!(messages[4].contains("dispatch_corrupt"));
+}
+
+#[test]
+fn deferred_dispatch_cause_survives_resend_and_terminal_cleanup() {
+    let f = Fixture::new(100);
+    let lease = f.call("run", StoredClass::KeyedMutation);
+    let refusal = FlowRefusal::new(
+        RefusalReason::SinkStoreFailed,
+        "prefrontal-core",
+        "sink.wait_resolve",
+    );
+    f.rt.defer_dispatch_refusal(&f.request("run"), &refusal)
+        .unwrap();
+    assert_eq!(
+        last_dispatch_cause(&f, "run").unwrap()["code"],
+        "sink_store_failed"
+    );
+    f.rt.store()
+        .write(|tx| journal::authorize_resend(tx, &lease, 0))
+        .unwrap();
+    assert_eq!(f.rt.calls("run").unwrap()[0].dispatch, DispatchState::Sent);
+    assert_eq!(
+        last_dispatch_cause(&f, "run").unwrap()["code"],
+        "sink_store_failed"
+    );
+    f.rt.defer_dispatch_refusal(&f.request("run"), &refusal)
+        .unwrap();
+    f.rt.store()
+        .write(|tx| journal::expire_deferred(tx, "run"))
+        .unwrap();
+    assert_eq!(
+        last_dispatch_cause(&f, "run").unwrap()["code"],
+        "sink_store_failed"
+    );
+}
+
+#[test]
+fn failed_dispatch_thread_records_its_error_instead_of_silently_leaving_sent() {
+    let f = Fixture::new(100);
+    f.call("run", StoredClass::KeyedMutation);
+    f.rt.store().write(|tx| { tx.execute_batch("CREATE TRIGGER refuse_mailbox BEFORE INSERT ON mailbox BEGIN SELECT RAISE(FAIL,'injected recording failure'); END;")?; Ok(()) }).unwrap();
+    lock(&f.host.replies).push_back(Ok(Dispatched::Completed(HostOutcome::fulfilled(
+        JsonText::null(),
+    ))));
+    f.rt.spawn_dispatch(f.request("run"), StoredClass::KeyedMutation, true);
+    f.rt.quiesce();
+    let cause = last_dispatch_cause(&f, "run").expect("dispatch error was discarded");
+    assert_eq!(cause["code"], "dispatch_store_error");
+    assert_eq!(f.rt.calls("run").unwrap()[0].dispatch, DispatchState::Sent);
+    assert!(
+        f.rt.calls("run").unwrap()[0].outcome.is_none(),
+        "a recording failure cannot prove whether the write committed remotely"
+    );
+}
+
+#[test]
+fn secret_bearing_transport_and_recording_failures_never_enter_dispatch_diagnostics() {
+    let f = Fixture::new(100);
+    f.call("run", StoredClass::Query);
+    let secret = "synthetic-dispatch-sensitive-value";
+    let mut request = f.request("run");
+    request.kind = CallKind::Primitive(basal_proto::Primitive::NetFetch);
+    request.args = JsonText::new(
+        json!({"url":"https://example.test/", "credential":{"name":"api", "value":secret}})
+            .to_string(),
+    )
+    .unwrap();
+    for _ in 0..=f.rt.config.unavailable_retries {
+        lock(&f.host.replies).push_back(Err(TransportError::unsent(format!(
+            "request with {secret} failed"
+        ))));
+    }
+    f.rt.dispatch(request.clone(), StoredClass::Query, true)
+        .unwrap();
+    assert_eq!(
+        last_dispatch_cause(&f, "run").unwrap()["code"],
+        "never_sent"
+    );
+    assert!(
+        !last_dispatch_cause(&f, "run")
+            .unwrap()
+            .to_string()
+            .contains(secret)
+    );
+    f.rt.dispatch_failed(&request, &CoreError::Store(secret.into()));
+    assert!(
+        !last_dispatch_cause(&f, "run")
+            .unwrap()
+            .to_string()
+            .contains(secret)
+    );
 }
 
 #[test]

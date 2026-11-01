@@ -421,6 +421,296 @@ fn wait_store_refusal_defers_and_reuses_frozen_receipt() {
 }
 
 #[test]
+fn wait_repeated_unsent_refusals_reproduce_fifteen_attempt_deadline_shape_with_a_cause() {
+    for code in [
+        "sink_store_failed",
+        "scope_not_carrier",
+        "scope_ended",
+        "scope_not_live",
+        "scope_epoch_required",
+        "scope_not_synced",
+        "scope_changed",
+        "scope_unsupported",
+        "resource_busy",
+        "consent_unavailable",
+    ] {
+        let fake = Fake::new();
+        set_core_capability(&fake, CAPABILITY.trim(), true);
+        let f = worker_fixture(
+            fake.clone(),
+            Arc::new(CoreConsent::new(fake.clone())),
+            "wait-stuck",
+        );
+        common::install(
+            &f,
+            &Caller::Operator,
+            "return await sink.wait.resolve('met').catch(error => error.data.code);",
+            &wait_manifest(),
+        );
+        approve(&fake, &f.module);
+        let error = if code == "resource_busy" {
+            WireError::Typed(basal_host::flow_refusal::FlowRefusal::new(
+                basal_host::flow_refusal::RefusalReason::ResourceBusy,
+                "prefrontal-core",
+                "sink.wait_resolve",
+            ))
+        } else {
+            WireError::Refused {
+                code: code.into(),
+                message: "provider refused before storing a receipt".into(),
+            }
+        };
+        fake.enqueue("sink.wait_resolve", vec![Err(error); 16]);
+        let run = common::admit(&f, "host-flow", "wait-stuck");
+        let start = f.clock.now_ms();
+        let sends = if code == "consent_unavailable" { 1 } else { 15 };
+        let mut times = Vec::new();
+        for attempt in 1..=sends {
+            times.push(f.clock.now_ms() - start);
+            f.module.engine.run_until_idle(50).unwrap();
+            let row = &f.module.rt.calls(&run).unwrap()[0];
+            assert_eq!(row.attempts, attempt, "{code}");
+            assert_eq!(row.dispatch, basal_core::DispatchState::Deferred, "{code}");
+            let (retry, cause): (i64, String) = f
+                .module
+                .rt
+                .store()
+                .read(|c| {
+                    Ok(c.query_row(
+                        "SELECT retry_not_before,last_dispatch_cause FROM journal WHERE run_id=?1",
+                        [&run],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&cause).unwrap()["code"], code);
+            if attempt < sends {
+                f.clock.set(retry);
+            }
+        }
+        if sends == 15 {
+            assert_eq!(
+                times,
+                [
+                    0, 1000, 3000, 7000, 15000, 31000, 63000, 123000, 183000, 243000, 303000,
+                    363000, 423000, 483000, 543000
+                ]
+            );
+        }
+        f.clock.set(start + 600_000);
+        f.module.engine.run_until_idle(50).unwrap();
+        let stored = f.module.rt.run(&run).unwrap();
+        assert_eq!(stored.state, RunState::Failed, "{code}");
+        assert_eq!(stored.error_kind.as_deref(), Some("deadline"));
+        assert_eq!(stored.ended_at, Some(start + 600_000));
+        let row = &f.module.rt.calls(&run).unwrap()[0];
+        assert_eq!(row.dispatch, basal_core::DispatchState::Sent);
+        assert_eq!(row.attempts, sends);
+        assert!(row.outcome.is_none());
+        assert!(row.handle.is_none());
+        f.module.rt.store().read(|c| {
+            let empty: i64 = c.query_row("SELECT refusal IS NULL AND refusal_detail IS NULL AND retry_not_before IS NULL AND unknown_reason IS NULL AND scope_cut=0 FROM journal WHERE run_id=?1", [&run], |r| r.get(0))?;
+            assert_eq!(empty, 1, "{code}");
+            let mailbox: String = c.query_row("SELECT value FROM mailbox WHERE run_id=?1", [&run], |r| r.get(0))?;
+            assert_eq!(serde_json::from_str::<Value>(&mailbox).unwrap()["code"], code);
+            let cause: String = c.query_row("SELECT last_dispatch_cause FROM journal WHERE run_id=?1", [&run], |r| r.get(0))?;
+            assert_eq!(serde_json::from_str::<Value>(&cause).unwrap()["code"], code);
+            Ok(())
+        }).unwrap();
+        assert_eq!(fake.calls("sink.wait_resolve").len(), sends as usize);
+    }
+}
+
+#[test]
+fn wait_failure_candidates_that_cannot_produce_the_fifteen_attempt_shape() {
+    use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
+    let refused = |code: &str| WireError::Refused {
+        code: code.into(),
+        message: "refused".into(),
+    };
+    let typed = |reason| {
+        WireError::Typed(FlowRefusal::new(
+            reason,
+            "prefrontal-core",
+            "sink.wait_resolve",
+        ))
+    };
+    for (name, reply, result, sends, unknown) in [
+        (
+            "timeout",
+            Err(WireError::TimedOut("no reply".into())),
+            None,
+            4,
+            Some("retries_exhausted"),
+        ),
+        (
+            "unreadable",
+            Err(WireError::Unreadable("bad envelope".into())),
+            None,
+            4,
+            Some("retries_exhausted"),
+        ),
+        (
+            "bad-reply",
+            Ok(json!({"resolved":0,"replayed":false,"extra":true})),
+            None,
+            4,
+            Some("retries_exhausted"),
+        ),
+        (
+            "connection-lost",
+            Err(WireError::Unknown("connection closed".into())),
+            None,
+            4,
+            Some("retries_exhausted"),
+        ),
+        (
+            "never-sent",
+            Err(WireError::NeverSent("route unavailable".into())),
+            Some("unavailable"),
+            4,
+            None,
+        ),
+        (
+            "scope-cut",
+            Err(WireError::ScopeCut("scope closed".into())),
+            None,
+            1,
+            Some("connection_lost"),
+        ),
+        (
+            "route-refusal",
+            Err(refused("carrier_op_not_permitted")),
+            Some("carrier_op_not_permitted"),
+            1,
+            None,
+        ),
+        (
+            "not-installed",
+            Err(refused("sink_flow_not_installed")),
+            Some("sink_flow_not_installed"),
+            1,
+            None,
+        ),
+        (
+            "readiness",
+            Err(typed(RefusalReason::NoFlowScope)),
+            Some("no_flow_scope"),
+            1,
+            None,
+        ),
+        (
+            "unsupported",
+            Err(typed(RefusalReason::TargetFlowUnsupported)),
+            Some("target_flow_unsupported"),
+            1,
+            None,
+        ),
+        (
+            "missing-scope",
+            Err(typed(RefusalReason::FlowScopeRequired)),
+            Some("flow_scope_required"),
+            1,
+            None,
+        ),
+        (
+            "audience",
+            Err(refused("sink_audience_unavailable")),
+            Some("sink_audience_unavailable"),
+            1,
+            None,
+        ),
+    ] {
+        let fake = Fake::new();
+        set_core_capability(&fake, CAPABILITY.trim(), true);
+        let f = worker_fixture(fake.clone(), Arc::new(CoreConsent::new(fake.clone())), name);
+        common::install(
+            &f,
+            &Caller::Operator,
+            "return await sink.wait.resolve('met').catch(error => error.data.code);",
+            &wait_manifest(),
+        );
+        approve(&fake, &f.module);
+        fake.enqueue("sink.wait_resolve", vec![reply; 5]);
+        let run = common::admit(&f, "host-flow", name);
+        f.module.engine.run_until_idle(50).unwrap();
+        let stored = f.module.rt.run(&run).unwrap();
+        let row = &f.module.rt.calls(&run).unwrap()[0];
+        assert_eq!(
+            row.attempts, 1,
+            "{name}: transport retries are inside one authorized attempt"
+        );
+        assert_eq!(fake.calls("sink.wait_resolve").len(), sends, "{name}");
+        if let Some(result) = result {
+            assert_eq!(stored.state, RunState::Succeeded, "{name}");
+            assert_eq!(
+                stored.result.as_deref(),
+                Some(json!(result).to_string().as_str()),
+                "{name}"
+            );
+            assert_eq!(
+                row.outcome.as_ref().unwrap().settlement,
+                Settlement::Rejected
+            );
+        } else {
+            assert_eq!(stored.state, RunState::NeedsReconcile, "{name}");
+            assert_eq!(row.dispatch, basal_core::DispatchState::Unknown, "{name}");
+            assert_eq!(
+                f.module
+                    .rt
+                    .unknown_reason(&run, 0)
+                    .unwrap()
+                    .map(|v| v.as_str()),
+                unknown,
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn wait_not_installed_refusal_preserves_code_and_details_for_the_script_catch() {
+    for detailed in [false, true] {
+        let fake = Fake::new();
+        set_core_capability(&fake, CAPABILITY.trim(), true);
+        let f = worker_fixture(
+            fake.clone(),
+            Arc::new(CoreConsent::new(fake.clone())),
+            "wait-not-installed",
+        );
+        common::install(
+            &f,
+            &Caller::Operator,
+            "try { await sink.wait.resolve('met'); } catch (error) { return error.data; }",
+            &wait_manifest(),
+        );
+        approve(&fake, &f.module);
+        let error = if detailed {
+            WireError::RefusedDetails {
+                code: "sink_flow_not_installed".into(),
+                message: "no approved source".into(),
+                detail: json!({"flow_id":"host-flow"}),
+            }
+        } else {
+            WireError::Refused {
+                code: "sink_flow_not_installed".into(),
+                message: "no approved source".into(),
+            }
+        };
+        fake.enqueue("sink.wait_resolve", vec![Err(error)]);
+        let run = common::admit(&f, "host-flow", "wait-not-installed");
+        f.module.engine.run_until_idle(50).unwrap();
+        let stored = f.module.rt.run(&run).unwrap();
+        assert_eq!(stored.state, RunState::Succeeded);
+        let caught: Value = serde_json::from_str(stored.result.as_deref().unwrap()).unwrap();
+        assert_eq!(caught["code"], "sink_flow_not_installed");
+        assert_eq!(caught["message"], "no approved source");
+        assert_eq!(caught.get("detail").is_some(), detailed);
+        assert_eq!(fake.calls("sink.wait_resolve").len(), 1);
+    }
+}
+
+#[test]
 fn wait_dry_run_would_resolve_but_never_sends() {
     let fake = Fake::new();
     set_core_capability(&fake, CAPABILITY.trim(), true);
@@ -585,5 +875,68 @@ fn wait_journals_before_send_and_replays_identical_intent_after_cut() {
         module.pool.stop();
         drop(module);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn wait_and_board_use_the_same_certainty_rules_but_different_audience_refusals() {
+    use basal_host::{Sent, TransportError};
+    let refused = |code: &str| WireError::Refused {
+        code: code.into(),
+        message: "refused".into(),
+    };
+    for (error, wait_expected, board_expected) in [
+        (refused("sink_store_failed"), "retryable", "retryable"),
+        (refused("sink_audience_unavailable"), "final", "retryable"),
+        (refused("sink_audience_check_required"), "final", "final"),
+        (refused("sink_flow_not_installed"), "final", "final"),
+        (refused("carrier_op_not_permitted"), "final", "final"),
+        (refused("scope_not_carrier"), "retryable", "retryable"),
+        (WireError::TimedOut("timeout".into()), "maybe", "maybe"),
+        (WireError::Unreadable("unreadable".into()), "maybe", "maybe"),
+        (WireError::Unknown("lost".into()), "maybe", "maybe"),
+        (
+            WireError::NeverSent("route missing".into()),
+            "never",
+            "never",
+        ),
+        (WireError::ScopeCut("closed".into()), "cut", "cut"),
+    ] {
+        for (primitive, op, expected) in [
+            (
+                Primitive::SinkWaitResolve,
+                "sink.wait_resolve",
+                wait_expected,
+            ),
+            (Primitive::SinkBoard, "sink.board", board_expected),
+        ] {
+            let fake = Fake::new();
+            set_core_capability(&fake, CAPABILITY.trim(), true);
+            fake.enqueue(op, vec![Err(error.clone())]);
+            let result = CoreHost::new(fake).dispatch(&call(
+                primitive,
+                json!({"operation":{"op":"append","text":"Ready"},"outcome":"met"}),
+            ));
+            let actual = match result {
+                Ok(Dispatched::Completed(outcome)) => {
+                    assert_eq!(outcome.settlement, Settlement::Rejected);
+                    "final"
+                }
+                Err(TransportError::Refused(refusal)) => {
+                    assert!(!refusal.terminal() && !refusal.readiness());
+                    "retryable"
+                }
+                Err(TransportError::Unavailable {
+                    sent: Sent::Maybe(_),
+                    ..
+                }) => "maybe",
+                Err(TransportError::Unavailable {
+                    sent: Sent::Never, ..
+                }) => "never",
+                Err(TransportError::ScopeCut { .. }) => "cut",
+                other => panic!("unexpected {other:?}"),
+            };
+            assert_eq!(actual, expected, "{op} {error:?}");
+        }
     }
 }

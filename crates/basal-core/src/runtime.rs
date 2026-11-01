@@ -41,6 +41,10 @@ use crate::store::Store;
 #[path = "runtime_regressions.rs"]
 mod regressions;
 
+#[path = "dispatch_cause.rs"]
+mod dispatch_cause;
+use dispatch_cause::DispatchCause;
+
 /// Per-run limits, besides the per-activation budgets the worker enforces.
 /// The JS heap limit does not cover the parent's buffers or the store, so
 /// every argument and result is capped in bytes in the parent before
@@ -255,6 +259,7 @@ pub(crate) struct Shared {
     /// be checked again. In memory: a restart checks every run at once.
     pub(crate) gate_backoff: Mutex<HashMap<String, crate::gate::Backoff>>,
     event_scope_warnings: Mutex<EventScopeWarnings>,
+    dispatch_warnings: Mutex<HashMap<(String, u64), String>>,
     pub(crate) signal: Signal,
     threads: Mutex<Vec<JoinHandle<()>>>,
     pub(crate) retention_next: Mutex<Option<i64>>,
@@ -397,6 +402,7 @@ impl Runtime {
             flow_routes: Mutex::new(()),
             gate_backoff: Mutex::new(HashMap::new()),
             event_scope_warnings: Mutex::new(EventScopeWarnings::default()),
+            dispatch_warnings: Mutex::new(HashMap::new()),
             signal: Signal {
                 epoch: Mutex::new(0),
                 cond: Condvar::new(),
@@ -871,7 +877,9 @@ impl Runtime {
             let position = request.position;
             // Errors here mean the store failed or was cut: the outcome is
             // not recorded, and recovery decides what to do with the call.
-            let _ = rt.dispatch(request, class, prior_unsent);
+            if let Err(error) = rt.dispatch(request.clone(), class, prior_unsent) {
+                rt.dispatch_failed(&request, &error);
+            }
             rt.unregister(&run_id, position);
             rt.shared.signal.bump();
         });
@@ -901,7 +909,7 @@ impl Runtime {
         } else {
             now.saturating_add(i64::try_from(delay).unwrap_or(i64::MAX))
         };
-        self.write_execution(|tx| {
+        self.write_dispatch_cause(request, &DispatchCause::refusal(refusal), |tx| {
             let deadline: Option<i64> = tx.query_row(
                 "SELECT deadline_at FROM runs WHERE run_id = ?1",
                 [&request.run_id],
@@ -928,6 +936,7 @@ impl Runtime {
         let position = request.position;
         let mut retries = 0;
         let mut scope_cut = false;
+        let mut retry_cause = None;
         // Why the latest send that may have reached the host ended without
         // an answer; `None` while every failed send provably never left.
         let mut maybe_sent: Option<UnknownReason> =
@@ -936,8 +945,13 @@ impl Runtime {
             // The store serializes attempt authorization with revocation. Do not
             // hold its lock across the host call: an authorized attempt is already
             // in flight, and its eventual outcome remains an obligation.
-            let revoked =
-                self.write_execution(|tx| crate::revocation::dispatch_check(tx, &run_id))?;
+            let revoked = if let Some(cause) = retry_cause.take() {
+                self.write_dispatch_cause(&request, &cause, |tx| {
+                    crate::revocation::dispatch_check(tx, &run_id)
+                })?
+            } else {
+                self.write_execution(|tx| crate::revocation::dispatch_check(tx, &run_id))?
+            };
             if let Some(reason) = revoked {
                 if let Some(last) = maybe_sent.filter(|_| class != StoredClass::Query) {
                     self.write_execution(|tx| {
@@ -979,38 +993,42 @@ impl Runtime {
                             && refusal.reason == RefusalReason::AgentRetired)
                             .then(|| self.retirement_target_id(&request))
                             .flatten();
-                        self.write_execution(|tx| {
-                            journal::record_unknown(tx, &run_id, position, reason)?;
-                            // Refusing a resend proves nothing about the earlier
-                            // send. Keep its outcome unknown while applying the
-                            // grant-loss or retirement disable now.
-                            if refusal.grant_absent() {
-                                crate::grant_loss::record(
-                                    tx,
-                                    &request.flow_id,
-                                    &run_id,
-                                    &refusal,
-                                    self.config.clock.now_ms(),
-                                )?;
-                            } else if refusal.reason == RefusalReason::AgentRetired {
-                                crate::grant_loss::record_retirement(
-                                    tx,
-                                    &request,
-                                    &refusal,
-                                    self.config.clock.now_ms(),
-                                    target_id.as_deref(),
-                                )?;
-                                crate::install::disable(
-                                    tx,
-                                    &request.flow_id,
-                                    &crate::install::Actor::Core,
-                                    "agent_retired",
-                                    self.config.clock.now_ms(),
-                                )
-                                .map_err(|e| CoreError::Invalid(e.to_string()))?;
-                            }
-                            Ok(())
-                        })?;
+                        self.write_dispatch_cause(
+                            &request,
+                            &DispatchCause::refusal(&refusal),
+                            |tx| {
+                                journal::record_unknown(tx, &run_id, position, reason)?;
+                                // Refusing a resend proves nothing about the earlier
+                                // send. Keep its outcome unknown while applying the
+                                // grant-loss or retirement disable now.
+                                if refusal.grant_absent() {
+                                    crate::grant_loss::record(
+                                        tx,
+                                        &request.flow_id,
+                                        &run_id,
+                                        &refusal,
+                                        self.config.clock.now_ms(),
+                                    )?;
+                                } else if refusal.reason == RefusalReason::AgentRetired {
+                                    crate::grant_loss::record_retirement(
+                                        tx,
+                                        &request,
+                                        &refusal,
+                                        self.config.clock.now_ms(),
+                                        target_id.as_deref(),
+                                    )?;
+                                    crate::install::disable(
+                                        tx,
+                                        &request.flow_id,
+                                        &crate::install::Actor::Core,
+                                        "agent_retired",
+                                        self.config.clock.now_ms(),
+                                    )
+                                    .map_err(|e| CoreError::Invalid(e.to_string()))?;
+                                }
+                                Ok(())
+                            },
+                        )?;
                     } else if refusal.terminal() {
                         self.accept(&run_id, position, None, &refusal.outcome(), Source::Host)?;
                         self.shared.host.refusal_committed(&request, &refusal);
@@ -1043,10 +1061,20 @@ impl Runtime {
                         self.shared.host.refusal_committed(&request, &refusal);
                     } else if refusal.grant_absent() {
                         let now = self.config.clock.now_ms();
-                        self.write_execution(|tx| {
-                            journal::defer(tx, &run_id, position, &refusal, i64::MAX)?;
-                            crate::grant_loss::record(tx, &request.flow_id, &run_id, &refusal, now)
-                        })?;
+                        self.write_dispatch_cause(
+                            &request,
+                            &DispatchCause::refusal(&refusal),
+                            |tx| {
+                                journal::defer(tx, &run_id, position, &refusal, i64::MAX)?;
+                                crate::grant_loss::record(
+                                    tx,
+                                    &request.flow_id,
+                                    &run_id,
+                                    &refusal,
+                                    now,
+                                )
+                            },
+                        )?;
                     } else if refusal.reason == RefusalReason::AgentRetired {
                         // A retired agent cannot authorize more calls. Fail the run
                         // and disable its flow together so recovery cannot retry it.
@@ -1100,23 +1128,32 @@ impl Runtime {
                     return Ok(());
                 }
                 Err(TransportError::ScopeCut { detail }) => {
+                    let cause = DispatchCause::transport(&TransportError::ScopeCut {
+                        detail: detail.clone(),
+                    });
                     maybe_sent = Some(UnknownReason::ConnectionLost);
                     if class == StoredClass::Query && retries < self.config.unavailable_retries {
+                        retry_cause = Some(cause);
                         retries += 1;
                         request.attempt = request.attempt.saturating_add(1);
                         continue;
                     }
-                    self.write_execution(|tx| {
+                    self.write_dispatch_cause(&request, &cause, |tx| {
                         tx.execute(
                             "UPDATE journal SET scope_cut=1 WHERE run_id=?1 AND position=?2",
                             rusqlite::params![run_id, position],
                         )?;
                         Ok(())
                     })?;
+                    retry_cause = Some(cause);
                     scope_cut = true;
                     break Err(detail);
                 }
                 Err(TransportError::Unavailable { sent, detail }) => {
+                    let cause = DispatchCause::transport(&TransportError::Unavailable {
+                        sent,
+                        detail: detail.clone(),
+                    });
                     let proven_unsent = sent == Sent::Never;
                     if let Sent::Maybe(reason) = sent {
                         maybe_sent = Some(reason);
@@ -1125,11 +1162,13 @@ impl Runtime {
                     // when a second send cannot cause a second effect.
                     let may_retry = class.safe_to_resend() || proven_unsent;
                     if may_retry && retries < self.config.unavailable_retries {
+                        retry_cause = Some(cause);
                         retries += 1;
                         request.attempt = request.attempt.saturating_add(1);
                         thread::sleep(self.config.retry_backoff);
                         continue;
                     }
+                    retry_cause = Some(cause);
                     break Err(detail);
                 }
             }
@@ -1156,18 +1195,36 @@ impl Runtime {
                 } else {
                     last
                 };
-                self.write_execution(|tx| journal::record_unknown(tx, &run_id, position, reason))?;
+                self.write_dispatch_cause(
+                    &request,
+                    &retry_cause.expect("failed send cause"),
+                    |tx| journal::record_unknown(tx, &run_id, position, reason),
+                )?;
             }
             (Err(detail), _) => {
                 // Nothing can have happened remotely: a query has no effect,
                 // and every failed send of this call provably never left.
-                self.accept(
-                    &run_id,
-                    position,
-                    None,
-                    &unavailable_rejection(&detail),
-                    Source::Host,
+                let outcome = unavailable_rejection(&detail);
+                let capped = self.cap_result(&outcome);
+                let accepted = self.write_dispatch_cause(
+                    &request,
+                    &retry_cause.expect("unavailable cause"),
+                    |tx| {
+                        journal::accept_outcome(
+                            tx,
+                            &run_id,
+                            position,
+                            None,
+                            capped.as_ref().unwrap_or(&outcome),
+                            Source::Host,
+                        )
+                    },
                 )?;
+                self.at(&run_id, Boundary::OutcomeCommitted { position })?;
+                self.shared.signal.bump();
+                if accepted.woke {
+                    self.wake(&run_id);
+                }
             }
         }
         Ok(())

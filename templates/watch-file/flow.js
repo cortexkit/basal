@@ -81,11 +81,19 @@ async function finishWatch(title, observed, links = []) {
 // END boundedDigest
 
 async function finishResolvedWatch(title, observed, links = [], outcome = 'met', note = title) {
-  // A refused wait resolution must not suppress the digest or end.
-  try {
-    await sink.wait.resolve(outcome, note);
-  } catch {}
-  return finishWatch(title, observed, links);
+  // Deliver the observation even if resolving its board wait never settles.
+  const item = boundedDigest(title, observed, links);
+  for (const call of [
+    () => sink.digest(self.agent_id, item, 'wake'),
+    async () => { try { await sink.wait.resolve(outcome, note); } catch {} },
+    () => instance.end(),
+  ]) {
+    try {
+      await call();
+    } catch (error) {
+      if (error.data?.code !== 'captured') throw error;
+    }
+  }
 }
 
 if (params.condition !== 'exists' && params.text === '') {

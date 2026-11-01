@@ -82,6 +82,7 @@ struct TemplateHost {
     replacement_unsupported: AtomicBool,
     wait_resolve_unsupported: AtomicBool,
     wait_resolve_delay_ms: AtomicU64,
+    wait_resolve_deferred: AtomicBool,
 }
 
 impl TemplateHost {
@@ -164,6 +165,17 @@ impl Host for TemplateHost {
         request: &CallRequest,
         class: CallClass,
     ) -> Result<Dispatched, TransportError> {
+        if request.kind == CallKind::Primitive(Primitive::SinkWaitResolve)
+            && self.wait_resolve_deferred.load(Ordering::Relaxed)
+        {
+            return Err(TransportError::Refused(
+                basal_host::flow_refusal::FlowRefusal::new(
+                    basal_host::flow_refusal::RefusalReason::SinkStoreFailed,
+                    "prefrontal-core",
+                    "sink.wait_resolve",
+                ),
+            ));
+        }
         if let Some(outcome) = self.answer(request) {
             return Ok(Dispatched::Completed(outcome));
         }
@@ -301,8 +313,8 @@ impl Test {
 
     fn create(&self, template: &str, params: Value) -> Value {
         let version = match template {
-            "watch-github" => 4,
-            "remind-at" | "watch-file" | "watch-git" => 3,
+            "watch-github" => 5,
+            "remind-at" | "watch-file" | "watch-git" => 4,
             "github-ci-watch" => 2,
             _ => 2,
         };
@@ -499,7 +511,7 @@ impl Test {
         let wait_outcome = wait_call
             .outcome
             .as_ref()
-            .expect("wait resolution settles before the digest is issued");
+            .expect("wait resolution settles before the instance ends");
         assert_eq!(wait_outcome.settlement, basal_proto::Settlement::Fulfilled);
         let reply: Value = serde_json::from_str(wait_outcome.value.as_str()).unwrap();
         assert_eq!(
@@ -515,16 +527,16 @@ impl Test {
             .as_ref()
             .expect("the digest call has settled");
         assert!(
-            wait_outcome.delivery_order < digest_outcome.delivery_order,
-            "wait resolution must settle before the digest"
+            digest_outcome.delivery_order < wait_outcome.delivery_order,
+            "the digest must settle before wait resolution"
         );
         assert_eq!(
-            calls[sink + 1].kind,
+            calls[wait + 1].kind,
             CallKind::Primitive(Primitive::InstanceEnd)
         );
         assert!(
-            wait < sink,
-            "wait resolution must be issued before the digest"
+            sink < wait,
+            "the digest must be issued before wait resolution"
         );
         assert_eq!(
             calls
@@ -594,7 +606,7 @@ fn assert_captured_wait_resolution(reply: &Value, outcome: &str) {
         .unwrap()["position"]
         .as_u64()
         .unwrap();
-    assert!(wait_position < digest_position && digest_position < end_position);
+    assert!(digest_position < wait_position && wait_position < end_position);
 }
 
 fn file_params(path: &Path, condition: &str, text: &str) -> Value {
@@ -666,9 +678,9 @@ fn published_templates_declare_exact_bounds_and_self_only_grants() {
         let m: Value = serde_json::from_str(manifest).unwrap();
         assert_eq!(m["id"], name);
         let expected_version = match name {
-            "watch-github" => 4,
+            "watch-github" => 5,
             "github-ci-watch" => 2,
-            _ => 3,
+            _ => 4,
         };
         assert_eq!(m["version"], expected_version);
         if name == "watch-github" {
@@ -1166,6 +1178,85 @@ fn reminder_waits_until_due_then_catches_up_once_and_ends() {
 }
 
 #[test]
+fn one_shot_helpers_deliver_before_a_deferred_resolution_and_await_it_before_end() {
+    let mut previous = None;
+    for (name, _, template) in TEMPLATES.into_iter().take(4) {
+        let helper = template
+            .split("async function finishResolvedWatch")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        if let Some(previous) = previous {
+            assert_eq!(helper, previous, "{name}");
+        }
+        previous = Some(helper);
+        let t = Test::new();
+        let script = format!(
+            "{}\nasync function finishResolvedWatch{helper}\n}}\nawait finishResolvedWatch('Ready', {{ready:true}});",
+            template.split("// END boundedDigest").next().unwrap()
+        );
+        let manifest = json!({"id":"completion-helper","version":2,"purpose":"Test one-shot completion ordering",
+            "trigger":{"schedule":{"interval":"1h"}},
+            "sinks":[{"agent":"$self","digest_max":"wake"},{"kind":"wait"}],
+            "params":{"note":{"type":"string","max_bytes":4096}},
+            "template":{"max_per_agent":100,"max_lifetime":"365d"}});
+        t.f.module
+            .handle(
+                &Caller::Operator,
+                "package.register",
+                json!({"script":script,"manifest":manifest.to_string()}),
+            )
+            .unwrap();
+        let instance = t.create(
+            "completion-helper",
+            json!({"note":"Do not lose this observation"}),
+        );
+        t.host.wait_resolve_deferred.store(true, Ordering::Relaxed);
+        let run =
+            t.f.module
+                .rt
+                .admit_trigger(
+                    instance["flow_id"].as_str().unwrap(),
+                    "ready",
+                    JsonText::null(),
+                )
+                .unwrap()
+                .run_id()
+                .unwrap()
+                .to_owned();
+        t.f.module.engine.run_until_idle(100).unwrap();
+        assert_eq!(
+            t.items().len(),
+            1,
+            "{name} lost the digest while resolve was deferred"
+        );
+        let calls = t.f.module.rt.calls(&run).unwrap();
+        assert_eq!(calls[0].kind, CallKind::Primitive(Primitive::SinkDigest));
+        assert_eq!(calls[1].dispatch, basal_core::DispatchState::Deferred);
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.kind == CallKind::Primitive(Primitive::InstanceEnd)),
+            "{name} ended before its awaited sink write"
+        );
+        t.live(&instance, true);
+        t.host.wait_resolve_deferred.store(false, Ordering::Relaxed);
+        t.f.clock.advance(1000);
+        t.finish(&run);
+        t.live(&instance, false);
+        let calls = t.f.module.rt.calls(&run).unwrap();
+        assert_eq!(calls[2].kind, CallKind::Primitive(Primitive::InstanceEnd));
+        assert!(
+            calls[1].outcome.as_ref().unwrap().delivery_order
+                < calls[2].outcome.as_ref().unwrap().delivery_order
+        );
+        assert_eq!(t.items().len(), 1, "{name} resent its digest during replay");
+    }
+}
+
+#[test]
 fn wait_resolution_refusal_does_not_block_digest_or_end() {
     for unsupported in [false, true] {
         let t = Test::new();
@@ -1218,12 +1309,12 @@ fn wait_resolution_refusal_does_not_block_digest_or_end() {
             assert_eq!(waits.len(), 1);
         }
         if let Some((position, wait)) = waits.first() {
-            assert!(*position < digest);
+            assert!(digest < *position && *position < end);
             let outcome = wait.outcome.as_ref().unwrap();
             assert_eq!(outcome.settlement, basal_proto::Settlement::Rejected);
             assert!(
-                outcome.delivery_order < calls[digest].outcome.as_ref().unwrap().delivery_order,
-                "a refused resolution must settle before the digest proceeds"
+                outcome.delivery_order < calls[end].outcome.as_ref().unwrap().delivery_order,
+                "a refused resolution must settle before the instance ends"
             );
             let error: Value = serde_json::from_str(outcome.value.as_str()).unwrap();
             assert_eq!(
@@ -1251,7 +1342,7 @@ fn reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation() {
             .to_string(),
     ] {
         let error = t.f.module.handle(&agent(OWNER), "flow.instantiate", json!({
-            "template":"remind-at","version":3,"params":{"at":at,"note":"Never delivered"},"expires_in":"365d",
+            "template":"remind-at","version":4,"params":{"at":at,"note":"Never delivered"},"expires_in":"365d",
         })).unwrap_err();
         assert_eq!(error.code, "param_out_of_bounds");
         assert_eq!(error.detail.unwrap()["param"], "at");
@@ -1358,7 +1449,7 @@ fn exact_file_and_git_template_roots_refuse_values_outside_work() {
                     &agent(OWNER),
                     "flow.instantiate",
                     json!({
-                        "template":template,"version":3,"params":values,"expires_in":"1d",
+                        "template":template,"version":4,"params":values,"expires_in":"1d",
                     }),
                 )
                 .unwrap_err();

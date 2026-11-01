@@ -6,7 +6,8 @@ create watches with `flow.instantiate`. Each instance writes only to the agent
 that created it. The four one-shot watches/reminders use `wake` and best-effort
 resolve waits naming their flow as `met` when the condition is satisfied, or
 `failed` when a terminal condition makes success impossible. Resolution is
-issued before the digest and end, but never delays either. `github-ci-watch` is
+awaited after the digest and before end, so a stuck resolution cannot lose the
+notification. `github-ci-watch` is
 a standing watch, described below. There are no model calls or script-side
 network fetches. Template versions have their own approval card; instances do
 not go through ordinary flow-install approval.
@@ -82,7 +83,7 @@ Example values:
 
 ## `watch-github`
 
-Template version **4** uses Plexus **v1** `github_pr_changed`, `github_issue_changed`, and
+Template version **5** uses Plexus **v1** `github_pr_changed`, `github_issue_changed`, and
 `github_release_published` events, not polling. Basal fetches and verifies the
 body before running the script. V1 bodies are raw GitHub items; repository
 identity comes from the notice's `repo` header, compared case-insensitively.
