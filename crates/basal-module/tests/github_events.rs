@@ -61,8 +61,8 @@ const ROUTING: &[(&str, &str, &str)] = &[
     ("cortexkit-cloud", "agent_fb7fb88282f843b5", "cloud-alfonso"),
     (
         "cortexkit-account",
-        "agent_fb7fb88282f843b5",
-        "cloud-alfonso",
+        "agent_847ef2a2861e98ec",
+        "ckcred-alfonso",
     ),
     ("alfonso-ios", "agent_fcd30f86aefd4fd9", "ckios-alfonso"),
     ("alfonso-tui", "agent_b54b7f85f177ca5d", "cktui-alfonso"),

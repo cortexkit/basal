@@ -25,7 +25,7 @@ const OWNERS = {
   'cortexkit/synapse': 'agent_80d5db38cd991ef1', // SYNAPSE
   'cortexkit/astrocyte': 'agent_5acf4ca3cb0138c4', // ASTRO
   'cortexkit/cortexkit-cloud': 'agent_fb7fb88282f843b5', // CLOUD
-  'cortexkit/cortexkit-account': 'agent_fb7fb88282f843b5', // CLOUD
+  'cortexkit/cortexkit-account': 'agent_847ef2a2861e98ec', // CKCRED
   'cortexkit/alfonso-ios': 'agent_fcd30f86aefd4fd9', // CKIOS
   'cortexkit/alfonso-tui': 'agent_b54b7f85f177ca5d', // CKTUI
   'cortexkit/alfonso-desktop': 'agent_16013c86', // CKDESK
