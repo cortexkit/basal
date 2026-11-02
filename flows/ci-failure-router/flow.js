@@ -36,6 +36,7 @@ const OWNERS = {
   'cortexkit/antigravity-auth': 'agent_87f64a79b52bf905', // AGAUTH
   'cortexkit/openai-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
   'cortexkit/common-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
+  'cortexkit/claustrum-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
 };
 // END OWNERS
 

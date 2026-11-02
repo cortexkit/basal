@@ -54,12 +54,16 @@ const ROUTING: &[(&str, &str, &str)] = &[
     ("callosum", "agent_26399f830c6eb22a", "callo-alfonso"),
     ("thalamus", "agent_62d6b770df582b4a", "thalamus-alfonso"),
     ("fusiform", "agent_ce8142a135f2ba63", "fusi-alfonso"),
-    ("motor", "agent_ef98bc82ef005a63", ""),
-    ("motor-private", "agent_ef98bc82ef005a63", ""),
+    ("motor", "agent_ef98bc82ef005a63", "motor-alfonso"),
+    ("motor-private", "agent_ef98bc82ef005a63", "motor-alfonso"),
     ("synapse", "agent_80d5db38cd991ef1", "synapse-alfonso"),
     ("astrocyte", "agent_5acf4ca3cb0138c4", "astro-alfonso"),
-    ("cortexkit-cloud", "agent_fb7fb88282f843b5", ""),
-    ("cortexkit-account", "agent_fb7fb88282f843b5", ""),
+    ("cortexkit-cloud", "agent_fb7fb88282f843b5", "cloud-alfonso"),
+    (
+        "cortexkit-account",
+        "agent_fb7fb88282f843b5",
+        "cloud-alfonso",
+    ),
     ("alfonso-ios", "agent_fcd30f86aefd4fd9", "ckios-alfonso"),
     ("alfonso-tui", "agent_b54b7f85f177ca5d", "cktui-alfonso"),
     ("alfonso-desktop", "agent_16013c86", "ckdesk-alfonso"),
@@ -78,6 +82,11 @@ const ROUTING: &[(&str, &str, &str)] = &[
     ),
     ("openai-auth", "agent_0f4d7713e64e7cc4", "oaiauth-alfonso"),
     ("common-auth", "agent_0f4d7713e64e7cc4", "oaiauth-alfonso"),
+    (
+        "claustrum-auth",
+        "agent_0f4d7713e64e7cc4",
+        "oaiauth-alfonso",
+    ),
 ];
 
 #[derive(Default)]
@@ -388,7 +397,7 @@ fn pinned_reaction(kind: &str, event: usize) -> String {
 fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
     Manifest::parse(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 7);
+    assert_eq!(manifest["version"], 8);
     // Nothing beyond the trigger, the audience sink and the two ops: no
     // facts, board, status, claims or model grant.
     assert_eq!(

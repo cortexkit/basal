@@ -36,12 +36,13 @@ const OWNERS = {
   'cortexkit/antigravity-auth': 'agent_87f64a79b52bf905', // AGAUTH
   'cortexkit/openai-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
   'cortexkit/common-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
+  'cortexkit/claustrum-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
 };
 // END OWNERS
 
 // GitHub App slugs from Plexus's repository-to-agent bindings query (bindings.read),
-// snapshot repo_binding_generation 32. The motor and cloud owners have no bound bot:
-// a missing slug means no own-bot rule, not an invented bot identity.
+// snapshot repo_binding_generation 36. A missing slug means the owner has no bound
+// bot, so no own-bot rule applies, not an invented bot identity.
 const BOT_SLUGS = {
   agent_ab64ea0873bbee0c: 'aft-alfonso',
   agent_16013c86: 'ckdesk-alfonso',
@@ -69,6 +70,8 @@ const BOT_SLUGS = {
   agent_80d5db38cd991ef1: 'synapse-alfonso',
   agent_62d6b770df582b4a: 'thalamus-alfonso',
   agent_20dabecd80549388: 'werni-alfonso',
+  agent_ef98bc82ef005a63: 'motor-alfonso',
+  agent_fb7fb88282f843b5: 'cloud-alfonso',
 };
 
 // Operator-suppressed GitHub logins: mirrors prefrontal-core's module_config

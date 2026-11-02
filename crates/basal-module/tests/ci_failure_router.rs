@@ -367,7 +367,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 16);
+    assert_eq!(value["version"], 17);
     println!(
         "ci-failure-router v15 code hash: {}",
         basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &value.to_string()))
