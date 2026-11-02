@@ -1,6 +1,8 @@
 //! Execute the shipped CI failure router with real workers and stored deduplication state.
 //! Synthetic Plexus notices resolve to digest-verified bodies before owner routing.
 mod common;
+#[path = "common/github_bindings.rs"]
+mod github_bindings;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -34,6 +36,7 @@ struct CiHost {
     supersession: Mutex<Option<HostOutcome>>,
     job_log_reads: Mutex<Vec<String>>,
     job_log: Mutex<Option<HostOutcome>>,
+    bindings: github_bindings::MockBindings,
 }
 
 fn text(value: Value) -> JsonText {
@@ -76,6 +79,9 @@ impl CiHost {
                 op: "github_read".into(),
             })
         {
+            if args["action"] == "github.bindings.list" {
+                return Some(self.bindings.answer(request.args.as_str()));
+            }
             assert_eq!(args.as_object().unwrap().len(), 3);
             let repository = args["repository"].as_str().unwrap().to_owned();
             assert!(repository.starts_with("cortexkit/"));
@@ -208,6 +214,9 @@ impl Test {
                 shell_capable: false,
             },
         );
+        for (_, owner, _) in github_bindings::routing() {
+            catalog.add_agent(&owner);
+        }
         for name in ["github_ci_job_failed", "github_ci_run_completed"] {
             catalog.set_event(
                 "plexus",
@@ -251,7 +260,20 @@ impl Test {
         ));
         Self { f, host }
     }
-    fn notice(&self, mut body: Value, repo: &str, branch: &str, admitted: bool) -> Option<String> {
+    fn notice(&self, body: Value, repo: &str, branch: &str, admitted: bool) -> Option<String> {
+        let run = self.run_notice(body, repo, branch, admitted)?;
+        let done = self.f.module.rt.run(&run).unwrap();
+        assert_eq!(done.state, RunState::Succeeded, "{done:#?}");
+        Some(run)
+    }
+
+    fn run_notice(
+        &self,
+        mut body: Value,
+        repo: &str,
+        branch: &str,
+        admitted: bool,
+    ) -> Option<String> {
         let name = if body["kind"] == "ci_job" {
             "github_ci_job_failed"
         } else {
@@ -292,8 +314,6 @@ impl Test {
         assert_eq!(startable.len(), 1);
         let run = startable[0].0.clone();
         self.f.module.engine.run_until_idle(1000).unwrap();
-        let done = self.f.module.rt.run(&run).unwrap();
-        assert_eq!(done.state, RunState::Succeeded, "{done:#?}");
         Some(run)
     }
     fn ci(&self, body: Value) -> String {
@@ -367,9 +387,9 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 17);
+    assert_eq!(value["version"], 18);
     println!(
-        "ci-failure-router v15 code hash: {}",
+        "ci-failure-router v18 code hash: {}",
         basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &value.to_string()))
     );
     assert!(
@@ -416,6 +436,131 @@ fn two_repos_route_to_distinct_stable_owners() {
     assert_eq!(writes[0]["replace_key"], "ci:cortexkit/basal:42:1");
     assert_eq!(writes[1]["replace_key"], "ci:cortexkit/plexus:42:1");
     assert_eq!(t.memory()["runs"].as_object().unwrap().len(), 2);
+}
+
+#[test]
+fn newly_bound_repo_routes_without_flow_changes() {
+    let t = Test::new();
+    let mut snapshot = github_bindings::snapshot();
+    snapshot["bindings"].as_array_mut().unwrap().push(json!({
+        "repository":"cortexkit/brand-new", "agent_id":PLEX, "app_handle_id":"brand-new-app"
+    }));
+    snapshot["bindings"]
+        .as_array_mut()
+        .unwrap()
+        .sort_by_key(|b| b["repository"].as_str().unwrap().to_owned());
+    t.host.bindings.set(github_bindings::reply(snapshot));
+    t.ci(job("cortexkit/brand-new", 101));
+    assert_eq!(t.writes().len(), 1);
+    assert_eq!(t.writes()[0]["agent"], PLEX);
+}
+
+#[test]
+fn bindings_cache_reuses_then_refreshes_at_ten_minutes() {
+    let t = Test::new();
+    t.host.mock.set_clock(common::T0 as f64);
+    t.ci(job("cortexkit/basal", 101));
+    let original = github_bindings::snapshot();
+    let checked_at = common::T0;
+    let cached = github_bindings::cache(&t.f, "ci-failure-router");
+    assert_eq!(
+        cached,
+        json!({"generation":38, "checked_at":checked_at, "bindings":original["bindings"]})
+    );
+    let mut refreshed = original.clone();
+    refreshed["generation"] = json!(39);
+    let basal = refreshed["bindings"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|b| b["repository"] == "cortexkit/basal")
+        .unwrap();
+    basal["agent_id"] = json!(PLEX);
+    basal["app_handle_id"] = json!("replacement-app");
+    t.host
+        .bindings
+        .set(github_bindings::reply(refreshed.clone()));
+
+    t.host.mock.set_clock((common::T0 + 599_999) as f64);
+    t.ci(job("cortexkit/basal", 102));
+    assert_eq!(t.writes().last().unwrap()["agent"], BASAL);
+    assert_eq!(t.host.bindings.reads.lock().unwrap().len(), 1);
+    assert_eq!(github_bindings::cache(&t.f, "ci-failure-router"), cached);
+
+    t.host.mock.set_clock((common::T0 + 600_000) as f64);
+    t.ci(job("cortexkit/basal", 103));
+    assert_eq!(t.writes().last().unwrap()["agent"], PLEX);
+    assert_eq!(t.host.bindings.reads.lock().unwrap().len(), 2);
+    assert_eq!(
+        github_bindings::cache(&t.f, "ci-failure-router"),
+        json!({
+            "generation":39, "checked_at":checked_at + 600_000, "bindings":refreshed["bindings"]
+        })
+    );
+}
+
+#[test]
+fn bindings_read_errors_keep_warm_routes_and_throttle_retries() {
+    for outcome in [
+        github_bindings::unavailable(),
+        HostOutcome::rejected(text(json!({"code":"store_failure"}))),
+    ] {
+        let t = Test::new();
+        t.host.mock.set_clock(common::T0 as f64);
+        t.ci(job("cortexkit/basal", 101));
+        t.host.bindings.set(outcome);
+        for (id, elapsed) in [(102, 600_000), (103, 600_001)] {
+            t.host.mock.set_clock((common::T0 + elapsed) as f64);
+            t.ci(job("cortexkit/basal", id));
+        }
+        assert_eq!(t.host.bindings.reads.lock().unwrap().len(), 2);
+        assert_eq!(t.writes().len(), 3);
+        assert!(t.writes().iter().all(|w| w["agent"] == BASAL));
+        assert_eq!(
+            github_bindings::cache(&t.f, "ci-failure-router"),
+            json!({
+                "generation":38, "checked_at":common::T0 + 600_000,
+                "bindings":github_bindings::snapshot()["bindings"]
+            })
+        );
+    }
+}
+
+#[test]
+fn bindings_read_errors_without_cache_fail_the_run_visibly() {
+    for outcome in [
+        github_bindings::unavailable(),
+        HostOutcome::rejected(text(json!({"code":"store_failure"}))),
+    ] {
+        let t = Test::new();
+        t.host.bindings.set(outcome);
+        let run = t
+            .run_notice(job("cortexkit/basal", 101), "cortexkit/basal", "main", true)
+            .unwrap();
+        let done = t.f.module.rt.run(&run).unwrap();
+        assert_eq!(done.state, RunState::Failed, "{done:#?}");
+        assert!(done.error_detail.unwrap().contains(
+            "repository owners unknown: Plexus bindings could not be read (store_failure)"
+        ));
+        assert!(t.writes().is_empty());
+    }
+}
+
+#[test]
+fn live_binding_overrides_an_unbound_repo_fallback() {
+    let t = Test::new();
+    let mut snapshot = github_bindings::snapshot();
+    snapshot["bindings"].as_array_mut().unwrap().push(json!({
+        "repository":"cortexkit/motor-private", "agent_id":PLEX, "app_handle_id":"private-app"
+    }));
+    snapshot["bindings"]
+        .as_array_mut()
+        .unwrap()
+        .sort_by_key(|b| b["repository"].as_str().unwrap().to_owned());
+    t.host.bindings.set(github_bindings::reply(snapshot));
+    t.ci(job("cortexkit/motor-private", 101));
+    assert_eq!(t.writes().len(), 1);
+    assert_eq!(t.writes()[0]["agent"], PLEX);
 }
 
 #[test]
@@ -1944,7 +2089,7 @@ fn fleet_memory_is_byte_bounded_and_age_pruned_across_many_repos() {
 }
 
 #[test]
-fn synthetic_trigger_dry_run_succeeds_without_dispatch() {
+fn capture_dry_run_fails_visibly_without_bindings_and_dispatches_nothing() {
     let t = Test::new();
     let sends = t.host.mock.total_sends();
     let reply = t
@@ -1966,15 +2111,66 @@ fn synthetic_trigger_dry_run_succeeds_without_dispatch() {
     assert_eq!(reply["summary"]["mode"], "capture");
     let runs = reply["summary"]["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["state"], "failed", "{reply:#}");
+    assert!(
+        runs[0]["error"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("repository owners unknown: Plexus bindings could not be read (captured)")
+    );
+    assert_eq!(t.host.mock.total_sends(), sends);
+    assert_eq!(t.host.resolved.load(Ordering::Relaxed), 0);
+    assert!(t.writes().is_empty());
+    assert!(t.host.bindings.reads.lock().unwrap().is_empty());
+    let captured = runs[0]["calls"].as_array().unwrap();
+    assert!(
+        captured.iter().any(|call| call["op"] == "github_read"
+            && call["args"] == json!({"action":"github.bindings.list"})
+            && call["action"] == "captured"),
+        "{reply:#}"
+    );
+}
+
+#[test]
+fn live_dry_run_reads_bindings_and_captures_sink_writes() {
+    let t = Test::new();
+    let sends = t.host.mock.total_sends();
+    let reply = t
+        .f
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.dry_run",
+            json!({
+                "flow_id":"ci-failure-router", "mode":"live",
+                "trigger":{"event":{
+                    "module":"plexus", "name":"github_ci_job_failed", "version":2,
+                    "event_key":"synthetic", "headers":{"repo":"cortexkit/basal", "branch":"main"},
+                    "body":job("cortexkit/basal", 101)
+                }}
+            }),
+        )
+        .unwrap();
+    assert_eq!(reply["summary"]["mode"], "live");
+    let runs = reply["summary"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["state"], "succeeded", "{reply:#}");
     assert_eq!(t.host.mock.total_sends(), sends);
     assert_eq!(t.host.resolved.load(Ordering::Relaxed), 0);
     assert!(t.writes().is_empty());
+    assert_eq!(t.host.bindings.reads.lock().unwrap().len(), 1);
     let captured = runs[0]["calls"].as_array().unwrap();
+    assert!(
+        captured.iter().any(|call| call["kind"] == "sink.digest"
+            && call["args"]["agent"] == BASAL
+            && call["action"] == "captured"),
+        "{reply:#}"
+    );
     assert!(
         captured
             .iter()
-            .any(|call| call["kind"] == "sink.digest" && call["args"]["agent"] == BASAL),
+            .filter(|call| call["action"] == "live")
+            .all(|call| call["op"] == "github_read"),
         "{reply:#}"
     );
 }

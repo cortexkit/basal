@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "github-events",
-  "version": 8,
+  "version": 9,
   "purpose": "Deliver GitHub issue, PR and release events to each repository's owning agent, waking it for newly opened issues and PRs, and add an eyes reaction as that owner on each newly opened one; no other GitHub writes.",
   "trigger": {
     "events": [
@@ -14,6 +14,7 @@
   "sinks": [{"agent": "$audience", "digest_max": "wake"}],
   "ops": [
     {"module": "plexus", "op": "events_get"},
+    {"module": "plexus", "op": "github_read"},
     {"module": "plexus", "op": "github_react", "for_target": "delegate"}
   ],
   "deadline": "2m"

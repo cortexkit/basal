@@ -1,44 +1,46 @@
-// BEGIN OWNERS: lowercase owner/repo -> stable agent_id; comments name the agents.
-// Changing this map changes delivery recipients, so publish it as a new flow version.
-const OWNERS = {
-  'cortexkit/aft': 'agent_ab64ea0873bbee0c', // AFT
-  'cortexkit/prefrontal': 'agent_fff43bb5f4bea20b', // ALF
-  'cortexkit/magic-context': 'agent_b613e5cf2ee55b8c', // MC
-  'cortexkit/subconscious': 'agent_2bfd6927602f7977', // SUBC
+// BEGIN BINDINGS: kept identical in both flows because scripts cannot import helpers.
+// Only repositories without a bot binding use these CI-owner fallbacks.
+const UNBOUND_OWNERS = {
   'cortexkit/subconscious-design': 'agent_2bfd6927602f7977', // SUBC
-  'cortexkit/commons': 'agent_2bfd6927602f7977', // SUBC
   'cortexkit/cingulate': 'agent_2bfd6927602f7977', // SUBC
-  'cortexkit/plexus': 'agent_309edd5e94fbb2fe', // PLEX
-  'cortexkit/cerebellum': 'agent_b1a9c546c33b84c9', // CEREB
-  'cortexkit/basal': 'agent_12eb4c0c42cecdb5', // BASAL
-  'cortexkit/broca': 'agent_65e9fe998e14b47d', // BROCA
   'cortexkit/broca-private': 'agent_65e9fe998e14b47d', // BROCA
-  'cortexkit/entorhinal': 'agent_fef99bdc81d3110f', // ENTO
-  'cortexkit/engram': 'agent_ad4b5a2aa78261f4', // ENGRAM
-  'cortexkit/insula': 'agent_2fd02cfeb9c0484f', // QTA
-  'cortexkit/claustrum': 'agent_847ef2a2861e98ec', // CKCRED
-  'cortexkit/callosum': 'agent_26399f830c6eb22a', // CALLO
-  'cortexkit/thalamus': 'agent_62d6b770df582b4a', // THALAMUS
-  'cortexkit/fusiform': 'agent_ce8142a135f2ba63', // FUSI
-  'cortexkit/motor': 'agent_ef98bc82ef005a63', // MOTOR
   'cortexkit/motor-private': 'agent_ef98bc82ef005a63', // MOTOR
-  'cortexkit/synapse': 'agent_80d5db38cd991ef1', // SYNAPSE
-  'cortexkit/astrocyte': 'agent_5acf4ca3cb0138c4', // ASTRO
-  'cortexkit/cortexkit-cloud': 'agent_fb7fb88282f843b5', // CLOUD
-  'cortexkit/cortexkit-account': 'agent_847ef2a2861e98ec', // CKCRED
-  'cortexkit/alfonso-ios': 'agent_fcd30f86aefd4fd9', // CKIOS
-  'cortexkit/alfonso-tui': 'agent_b54b7f85f177ca5d', // CKTUI
-  'cortexkit/alfonso-desktop': 'agent_16013c86', // CKDESK
-  'cortexkit/avatar': 'agent_6f5aa47e4c5ad277', // AVA
-  'cortexkit/wernicke': 'agent_20dabecd80549388', // WERNI
-  'cortexkit/cortexkit-e2e': 'agent_d444250e2d503c07', // CKE2E
-  'cortexkit/anthropic-auth': 'agent_74a1517f3695e9b1', // ANTAUTH
-  'cortexkit/antigravity-auth': 'agent_87f64a79b52bf905', // AGAUTH
-  'cortexkit/openai-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
-  'cortexkit/common-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
-  'cortexkit/claustrum-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
 };
-// END OWNERS
+const BINDINGS_TTL_MS = 10 * 60 * 1000;
+
+async function routing(now) {
+  let cached = await kv.get('github-bindings');
+  if (!cached || now - cached.checked_at >= BINDINGS_TTL_MS) {
+    let snapshot;
+    try {
+      const answer = await ops.call('plexus', 'github_read', { action: 'github.bindings.list' });
+      if (answer?.error) throw { data: answer.error };
+      snapshot = answer?.result;
+      if (!Number.isSafeInteger(snapshot?.generation) || !Array.isArray(snapshot?.bindings)) {
+        throw new Error('github_bindings_unreadable');
+      }
+    } catch (error) {
+      if (!cached) throw new Error(`repository owners unknown: Plexus bindings could not be read (${error.data?.code ?? String(error)})`);
+      snapshot = cached;
+    }
+    // checked_at records the last attempt, not the last successful read.
+    cached = { generation: snapshot.generation, checked_at: now, bindings: snapshot.bindings };
+    await kv.set('github-bindings', cached);
+  }
+  const owners = { ...UNBOUND_OWNERS };
+  const bots = {};
+  const ownerBots = {};
+  for (const binding of cached.bindings) {
+    owners[binding.repository] = binding.agent_id;
+    bots[binding.repository] = `${binding.app_handle_id}[bot]`.toLowerCase();
+    ownerBots[binding.agent_id] = bots[binding.repository];
+  }
+  for (const [repo, owner] of Object.entries(UNBOUND_OWNERS)) {
+    bots[repo] ??= ownerBots[owner] ?? null;
+  }
+  return { owners, bots };
+}
+// END BINDINGS
 
 // Ignore workflows and jobs that generate routine failures without actionable
 // owner work. An entry is a name (ignored on every branch) or
@@ -168,12 +170,12 @@ function boundedDigest(title, observed, links = []) {
 // manifest's max_age separately limits how long a published event may wait.
 // Bodies stored before Plexus added observed_at fall back to the item's age
 // at run time. An unknown or unparseable activity time is never stale.
-function staleActivity(activityText, observedText, maxAgeMs) {
+function staleActivity(activityText, observedText, maxAgeMs, now) {
   const activity = Date.parse(activityText);
   if (!Number.isFinite(activity)) return false;
   const observed = typeof observedText === 'string' ? Date.parse(observedText) : NaN;
   if (Number.isFinite(observed)) return observed - activity > maxAgeMs;
-  return Date.now() - activity > maxAgeMs;
+  return now - activity > maxAgeMs;
 }
 
 function bytes(text) {
@@ -269,10 +271,13 @@ const body = event.body;
 if (!body || body.kind !== (jobEvent ? 'ci_job' : 'ci_run') ||
     !matches('cortexkit/*', body.repo, true) || !matches('*', body.head_branch)) return;
 
+// Reuse one clock sample so cache age and event age share an instant.
+const now = Date.now();
 const completed = Date.parse(body.completed_at);
-const stale = staleActivity(body.completed_at, body.observed_at, MAX_COMPLETION_AGE_MS);
+const stale = staleActivity(body.completed_at, body.observed_at, MAX_COMPLETION_AGE_MS, now);
 const repo = body.repo.replace(/[A-Z]/g, ch => ch.toLowerCase());
-const owner = OWNERS[repo];
+const { owners } = await routing(now);
+const owner = owners[repo];
 // A single aggregate caps retained attempts across the entire fleet. Run keys
 // include the repo so identical job/run ids in different repos cannot collide.
 const memory = await kv.get('ci-router') ?? { newest: 0, runs: {}, unmapped: 0 };

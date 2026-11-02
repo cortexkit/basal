@@ -1,78 +1,46 @@
-// BEGIN OWNERS: repository -> owning agent, copied from the CI failure router
-// (flows/ci-failure-router/flow.js); flow scripts cannot import shared constants.
-const OWNERS = {
-  'cortexkit/aft': 'agent_ab64ea0873bbee0c', // AFT
-  'cortexkit/prefrontal': 'agent_fff43bb5f4bea20b', // ALF
-  'cortexkit/magic-context': 'agent_b613e5cf2ee55b8c', // MC
-  'cortexkit/subconscious': 'agent_2bfd6927602f7977', // SUBC
+// BEGIN BINDINGS: kept identical in both flows because scripts cannot import helpers.
+// Only repositories without a bot binding use these CI-owner fallbacks.
+const UNBOUND_OWNERS = {
   'cortexkit/subconscious-design': 'agent_2bfd6927602f7977', // SUBC
-  'cortexkit/commons': 'agent_2bfd6927602f7977', // SUBC
   'cortexkit/cingulate': 'agent_2bfd6927602f7977', // SUBC
-  'cortexkit/plexus': 'agent_309edd5e94fbb2fe', // PLEX
-  'cortexkit/cerebellum': 'agent_b1a9c546c33b84c9', // CEREB
-  'cortexkit/basal': 'agent_12eb4c0c42cecdb5', // BASAL
-  'cortexkit/broca': 'agent_65e9fe998e14b47d', // BROCA
   'cortexkit/broca-private': 'agent_65e9fe998e14b47d', // BROCA
-  'cortexkit/entorhinal': 'agent_fef99bdc81d3110f', // ENTO
-  'cortexkit/engram': 'agent_ad4b5a2aa78261f4', // ENGRAM
-  'cortexkit/insula': 'agent_2fd02cfeb9c0484f', // QTA
-  'cortexkit/claustrum': 'agent_847ef2a2861e98ec', // CKCRED
-  'cortexkit/callosum': 'agent_26399f830c6eb22a', // CALLO
-  'cortexkit/thalamus': 'agent_62d6b770df582b4a', // THALAMUS
-  'cortexkit/fusiform': 'agent_ce8142a135f2ba63', // FUSI
-  'cortexkit/motor': 'agent_ef98bc82ef005a63', // MOTOR
   'cortexkit/motor-private': 'agent_ef98bc82ef005a63', // MOTOR
-  'cortexkit/synapse': 'agent_80d5db38cd991ef1', // SYNAPSE
-  'cortexkit/astrocyte': 'agent_5acf4ca3cb0138c4', // ASTRO
-  'cortexkit/cortexkit-cloud': 'agent_fb7fb88282f843b5', // CLOUD
-  'cortexkit/cortexkit-account': 'agent_847ef2a2861e98ec', // CKCRED
-  'cortexkit/alfonso-ios': 'agent_fcd30f86aefd4fd9', // CKIOS
-  'cortexkit/alfonso-tui': 'agent_b54b7f85f177ca5d', // CKTUI
-  'cortexkit/alfonso-desktop': 'agent_16013c86', // CKDESK
-  'cortexkit/avatar': 'agent_6f5aa47e4c5ad277', // AVA
-  'cortexkit/wernicke': 'agent_20dabecd80549388', // WERNI
-  'cortexkit/cortexkit-e2e': 'agent_d444250e2d503c07', // CKE2E
-  'cortexkit/anthropic-auth': 'agent_74a1517f3695e9b1', // ANTAUTH
-  'cortexkit/antigravity-auth': 'agent_87f64a79b52bf905', // AGAUTH
-  'cortexkit/openai-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
-  'cortexkit/common-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
-  'cortexkit/claustrum-auth': 'agent_0f4d7713e64e7cc4', // OAIAUTH
 };
-// END OWNERS
+const BINDINGS_TTL_MS = 10 * 60 * 1000;
 
-// GitHub App slugs from Plexus's repository-to-agent bindings query (bindings.read),
-// snapshot repo_binding_generation 36. A missing slug means the owner has no bound
-// bot, so no own-bot rule applies, not an invented bot identity.
-const BOT_SLUGS = {
-  agent_ab64ea0873bbee0c: 'aft-alfonso',
-  agent_16013c86: 'ckdesk-alfonso',
-  agent_fcd30f86aefd4fd9: 'ckios-alfonso',
-  agent_b54b7f85f177ca5d: 'cktui-alfonso',
-  agent_74a1517f3695e9b1: 'antauth-alfonso',
-  agent_87f64a79b52bf905: 'agauth-alfonso',
-  agent_5acf4ca3cb0138c4: 'astro-alfonso',
-  agent_6f5aa47e4c5ad277: 'ava-alfonso',
-  agent_12eb4c0c42cecdb5: 'basal-alfonso',
-  agent_65e9fe998e14b47d: 'broca-alfonso',
-  agent_26399f830c6eb22a: 'callo-alfonso',
-  agent_b1a9c546c33b84c9: 'cereb-alfonso',
-  agent_847ef2a2861e98ec: 'ckcred-alfonso',
-  agent_2bfd6927602f7977: 'subc-alfonso',
-  agent_d444250e2d503c07: 'cke2e-alfonso',
-  agent_ad4b5a2aa78261f4: 'engram-alfonso',
-  agent_fef99bdc81d3110f: 'ento-alfonso',
-  agent_ce8142a135f2ba63: 'fusi-alfonso',
-  agent_2fd02cfeb9c0484f: 'qta-alfonso',
-  agent_b613e5cf2ee55b8c: 'magic-alfonso',
-  agent_0f4d7713e64e7cc4: 'oaiauth-alfonso',
-  agent_309edd5e94fbb2fe: 'plex-alfonso',
-  agent_fff43bb5f4bea20b: 'alf-alfonso',
-  agent_80d5db38cd991ef1: 'synapse-alfonso',
-  agent_62d6b770df582b4a: 'thalamus-alfonso',
-  agent_20dabecd80549388: 'werni-alfonso',
-  agent_ef98bc82ef005a63: 'motor-alfonso',
-  agent_fb7fb88282f843b5: 'cloud-alfonso',
-};
+async function routing(now) {
+  let cached = await kv.get('github-bindings');
+  if (!cached || now - cached.checked_at >= BINDINGS_TTL_MS) {
+    let snapshot;
+    try {
+      const answer = await ops.call('plexus', 'github_read', { action: 'github.bindings.list' });
+      if (answer?.error) throw { data: answer.error };
+      snapshot = answer?.result;
+      if (!Number.isSafeInteger(snapshot?.generation) || !Array.isArray(snapshot?.bindings)) {
+        throw new Error('github_bindings_unreadable');
+      }
+    } catch (error) {
+      if (!cached) throw new Error(`repository owners unknown: Plexus bindings could not be read (${error.data?.code ?? String(error)})`);
+      snapshot = cached;
+    }
+    // checked_at records the last attempt, not the last successful read.
+    cached = { generation: snapshot.generation, checked_at: now, bindings: snapshot.bindings };
+    await kv.set('github-bindings', cached);
+  }
+  const owners = { ...UNBOUND_OWNERS };
+  const bots = {};
+  const ownerBots = {};
+  for (const binding of cached.bindings) {
+    owners[binding.repository] = binding.agent_id;
+    bots[binding.repository] = `${binding.app_handle_id}[bot]`.toLowerCase();
+    ownerBots[binding.agent_id] = bots[binding.repository];
+  }
+  for (const [repo, owner] of Object.entries(UNBOUND_OWNERS)) {
+    bots[repo] ??= ownerBots[owner] ?? null;
+  }
+  return { owners, bots };
+}
+// END BINDINGS
 
 // Operator-suppressed GitHub logins: mirrors prefrontal-core's module_config
 // setting events_suppress_actors as of 2026-10-16.
@@ -157,12 +125,12 @@ function boundedDigest(title, body, fields, observed, links = []) {
 // manifest's max_age separately limits how long a published event may wait.
 // Bodies stored before Plexus added observed_at fall back to the item's age
 // at run time. An unknown or unparseable activity time is never stale.
-function staleActivity(activityText, observedText, maxAgeMs) {
+function staleActivity(activityText, observedText, maxAgeMs, now) {
   const activity = Date.parse(activityText);
   if (!Number.isFinite(activity)) return false;
   const observed = typeof observedText === 'string' ? Date.parse(observedText) : NaN;
   if (Number.isFinite(observed)) return observed - activity > maxAgeMs;
-  return Date.now() - activity > maxAgeMs;
+  return now - activity > maxAgeMs;
 }
 
 function bytes(text) {
@@ -251,7 +219,10 @@ const repo = body.repo.toLowerCase();
 const release = event.name === 'github_release_published';
 const kind = release ? 'release' : body.kind;
 const number = release ? body.tag_name ?? body.tag : body.number;
-const owner = OWNERS[repo] ?? null;
+// Reuse one clock sample so cache age, event age and observation history share an instant.
+const now = Date.now();
+const { owners, bots } = await routing(now);
+const owner = owners[repo] ?? null;
 const isNew = (kind === 'issue' || kind === 'pull_request') && body.action === 'opened';
 const comparison = { repo, kind: kind ?? null, number: number ?? null,
   event_key: body.event_key ?? event.event_key, would_owner: owner,
@@ -274,7 +245,7 @@ if (bytes(key) > 200 || /[\u0000-\u001f\u007f]/.test(key)) return drop('invalid_
 // Deliberate difference from core: drop rescan events older than six hours, as
 // the CI router does, and expose each drop in the comparison result. Core has
 // no corresponding deliverable-event cutoff (runtime.rs:904-915).
-if (staleActivity(body.completed_at ?? body.updated_at, body.observed_at, MAX_AGE_MS)) return drop('stale');
+if (staleActivity(body.completed_at ?? body.updated_at, body.observed_at, MAX_AGE_MS, now)) return drop('stale');
 const memory = await kv.get('github-events') ?? { items: {}, unmapped: 0 };
 if (!owner) {
   memory.unmapped = Math.min(Number.MAX_SAFE_INTEGER, memory.unmapped + 1);
@@ -292,8 +263,7 @@ const actors = body.actor_logins;
 if (kind === 'pull_request' && state === 'closed' &&
     Array.isArray(actors) && actors.length === 0) return drop('closed_pr_empty_actors');
 if (body.action === 'suppressed_own_echo') return drop('own_echo');
-const slug = BOT_SLUGS[owner];
-const bot = slug ? `${slug}[bot]`.toLowerCase() : null;
+const bot = bots[repo] ?? null;
 const ownAuthored = bot != null && String(body.author ?? '').toLowerCase() === bot;
 // consumers.rs:1282-1327,1673-1701: authorship is not comment authorship.
 // Plexus has no user type or separate reviews; comment_author is its evidence.
@@ -334,7 +304,6 @@ const echo = starter != null ?
 // (consumers.rs:1397-1411,1696-1701).
 if (!(ownAuthored && humanComment) && echo) return drop('suppressed_actor_set');
 
-const now = Date.now();
 const prior = memory.items[key];
 if (prior?.event_keys.includes(comparison.event_key)) return drop('duplicate_event');
 // Opened issues/PRs bypass update debounce. Updates would become due 30 minutes
