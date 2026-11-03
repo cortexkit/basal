@@ -79,6 +79,10 @@ impl crate::module::Module {
     }
 }
 
+/// How long a reader disconnect without an error is tolerated before it is a
+/// finding; see `reply`.
+const READER_DOWN_GRACE_MS: i64 = 30_000;
+
 fn reply(
     store: &Store,
     now: i64,
@@ -88,11 +92,20 @@ fn reply(
 ) -> OpResult {
     let mut findings = store_findings(store, now, window)
         .map_err(|_| OpError::new("storage_unavailable", "cannot read basal diagnostics"))?;
-    if let Some(health) = events.filter(|h| !h.connected || h.error.is_some()) {
+    // The reader reconnects on purpose shortly before each bus credential
+    // expires (about every 14 minutes) and is back within a second. A
+    // disconnect counts only once it outlasts this grace, or carries an error.
+    let down = |h: &&events::Health| {
+        h.error.is_some()
+            || (!h.connected
+                && h.disconnected_since_ms
+                    .is_none_or(|since| now.saturating_sub(since) >= READER_DOWN_GRACE_MS))
+    };
+    if let Some(health) = events.filter(down) {
         findings.push(Finding {
             check: "event_reader", key: "bus".into(), severity: "error", count: 1,
-            first_seen_ms: now, last_seen_ms: now,
-            summary: "The bus event reader is not connected or is restarting; outage duration is not recorded.",
+            first_seen_ms: health.disconnected_since_ms.unwrap_or(now), last_seen_ms: now,
+            summary: "The bus event reader is not connected or is restarting.",
             samples: vec![json!({"code": if health.error.is_some() { "reader_failed" } else { "reader_connecting" },
                 "retry_in_ms": health.retry_in_ms, "connected": health.connected})],
             hint: "Inspect basal event-reader health and bus connectivity; provider error text is deliberately omitted.",
@@ -390,6 +403,34 @@ mod tests {
             assert_eq!(
                 reply(store, NOW, 1, Some(&health), &[]).unwrap()["findings"][0]["samples"][0]["code"],
                 "reader_connecting"
+            );
+        });
+    }
+
+    #[test]
+    fn a_brief_planned_reconnect_is_not_a_finding_but_a_long_outage_is() {
+        with_store("reader-grace", |store| {
+            // The reconnect before a credential expires: down for under a second.
+            let mut health = events::Health {
+                connected: false,
+                disconnected_since_ms: Some(NOW - 300),
+                ..Default::default()
+            };
+            assert_eq!(
+                reply(store, NOW, 1, Some(&health), &[]).unwrap()["findings"],
+                json!([])
+            );
+            // Down past the grace: a finding that dates the outage's start.
+            health.disconnected_since_ms = Some(NOW - 45_000);
+            let findings = reply(store, NOW, 1, Some(&health), &[]).unwrap()["findings"].clone();
+            assert_eq!(findings[0]["check"], "event_reader");
+            assert_eq!(findings[0]["first_seen_ms"], NOW - 45_000);
+            // An error is a finding at once, however recent the disconnect.
+            health.disconnected_since_ms = Some(NOW - 300);
+            health.error = Some("bus refused".into());
+            assert_eq!(
+                reply(store, NOW, 1, Some(&health), &[]).unwrap()["findings"][0]["check"],
+                "event_reader"
             );
         });
     }

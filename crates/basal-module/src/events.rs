@@ -37,6 +37,11 @@ pub struct Health {
     pub filtered_out: u64,
     pub stale_dropped: u64,
     pub connected: bool,
+    /// When the reader last went from connected to not connected, in Unix
+    /// milliseconds; `None` while connected. The planned reconnect before each
+    /// bus credential expires is down for well under a second, so diagnostics
+    /// use this to tell that apart from an outage.
+    pub disconnected_since_ms: Option<i64>,
     pub error: Option<String>,
     pub retry_in_ms: u64,
     /// Pending plus delivered-but-unacknowledged notices at the last consumer poll.
@@ -59,6 +64,15 @@ pub struct Health {
     pub outbox_error: Option<String>,
 }
 
+impl Health {
+    /// Record the reader as not connected, keeping the start of an outage that
+    /// is already under way.
+    fn mark_down(&mut self) {
+        self.connected = false;
+        self.disconnected_since_ms.get_or_insert_with(now_ms);
+    }
+}
+
 pub struct Reader {
     health: Arc<Mutex<Health>>,
     stop: Arc<AtomicBool>,
@@ -73,7 +87,7 @@ struct ReaderStopped(Arc<Mutex<Health>>);
 impl Drop for ReaderStopped {
     fn drop(&mut self) {
         let mut h = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        h.connected = false;
+        h.mark_down();
         h.error = Some("reader stopped".into());
     }
 }
@@ -98,7 +112,7 @@ fn supervise(health: Arc<Mutex<Health>>, stop: Arc<AtomicBool>, mut run: impl Fn
         };
         {
             let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
-            h.connected = false;
+            h.mark_down();
             h.error = Some(reason);
             h.retry_in_ms = delay;
         }
@@ -550,7 +564,7 @@ async fn reader_loop(
             let mut consumer = bind(&connection, &names.streams().event).await?;
             {
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
-                h.connected = true; h.error = None; h.retry_in_ms = 0;
+                h.connected = true; h.disconnected_since_ms = None; h.error = None; h.retry_in_ms = 0;
             }
             delay = 250;
             while !stop.load(Ordering::Acquire) {
@@ -604,7 +618,7 @@ async fn reader_loop(
         }.await;
         {
             let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
-            h.connected = false;
+            h.mark_down();
             h.error = session.err();
             h.retry_in_ms = delay;
             if let Some(error) = &h.error {
