@@ -1,3 +1,0 @@
-## Codemode
-codemode runs a short JavaScript program that calls your own tools and returns one result; its tool description gives the call shape and limits. Use it for multi-step browser or computer work (snapshot, act, check) and for loops over many items, so the intermediate output stays out of your context, and return a compact summary rather than raw tool output. For a single action, call the tool directly.
-A call rejected with `error.code` `not_started` and `error.detail.consent` `approved` never ran: the consent was granted while it waited, and its snapshot is stale, so take a fresh snapshot and act again. A denial is final. An interrupted turn ends the program.

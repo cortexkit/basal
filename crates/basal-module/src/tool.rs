@@ -4,16 +4,13 @@
 use cortexkit_role_tool_provider::{
     CATALOG_CAPABILITY_FILTER, CallMode,
     catalog::{
-        CatalogAnswer, CatalogRequest, CatalogTool, SystemTextAnswer, check_modes,
-        composition_digest, schema_digest, select_by_capabilities, serves_call_mode,
-        system_text_digest,
+        CatalogAnswer, CatalogRequest, CatalogTool, check_modes, composition_digest, schema_digest,
+        select_by_capabilities, serves_call_mode,
     },
     describe::{Major, RoleDescribe},
 };
 use serde_json::{Value, json};
 use subc_protocol::{ErrorBody, Principal, scope::ScopeStamp};
-
-const SYSTEM_TEXT: &str = include_str!("codemode_system_text.md");
 
 pub const DESCRIPTION: &str = "Run a short JavaScript program that calls your own tools and returns one result.\n\nUse a program whenever several calls would each pass through your context or repeat the same input:\n- Near-identical calls: when calls share most of their input (one brief to two workers, the same brief per file, one message to several peers), write the shared text once in the program and change only what differs. Writing it out in each call pays for every word again, and your output tokens cost the most.\n- Lists: reads, checks or launches over a list run in one program, so their arguments and outputs never reach your context.\n- Dependent steps: launch, read the returned id, then use it in the same program, so you never write an id that doesn't exist yet.\nReturn only what you need next (ids, counts, failures), never raw tool output. Check each call's result, so a failure inside a loop is reported, not skipped. For a single call, or one whose full output you must read, call the tool directly.\n\n- Call a tool with `await tools.<name>(input)`, using the same name as a direct call. Inside a program, tools take field names from their catalog schema, which can differ from your direct tool's; a refused call names the fields it expects. A program gets the tools whose providers serve codemode, and `Object.keys(tools)` lists them. Not every tool is available yet; calling a missing one throws an error that names it and lists the available ones. The tool decides allow, ask and deny exactly as for a direct call, and an ask waits for its answer.\n- `tools.model({prompt, system?, max_output?})` asks a model for one completion; a run may make 20 such calls, using up to 200,000 tokens. `tools.llm_classify({model, questions, item, max_cost_usd})` classifies an item; its calls share a $0.50 budget per run, which `limits.model_cost_usd` can lower.\n- `console.log(...)` output is captured, up to 64 KiB.\n- `await sleep(ms)` pauses for 0 to 10,000 ms; it uses wall time only, not CPU time or tool calls.\n- `await waitFor(condition, {timeout, interval})` calls `condition` every `interval` ms (default 500, at least 250) until it returns something truthy, and returns that; after `timeout` ms (default and maximum 30,000) it throws with `error.code` `wait_timeout`.\n- The program's last `return value` is the result, as JSON, up to 16 KiB.\n- There is no file, network, shell or other global access except through your tools.\n- Limits: 10 s of JavaScript CPU, 30 min wall time (time spent waiting on a person doesn't count, up to 10 min), 200 tool calls.\n\nA call that waited for consent may come back not run: it rejects with `error.code` `not_started`, and `error.detail.consent` `approved` means consent was granted but the page may have changed. Catch that, take a fresh snapshot, and act again:\n```js\ntry {\n  await tools.browser_use({action: \"type\", ref, text, snapshot_id});\n} catch (e) {\n  if (e.code !== \"not_started\" || e.detail?.consent !== \"approved\") throw e;\n  const fresh = await tools.browser_use({action: \"snapshot\"});\n  // find the element again in `fresh`, then repeat the call with its ref and snapshot_id\n}\n```\n\nThe result lists each call with its outcome. A call whose outcome is unknown was never retried, so check before repeating it.\n\nTo run many steps as one program instead of one call at a time, see knowhow(id=\"codemode-automation\").";
 
@@ -111,24 +108,14 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     if request.preset.is_some() {
         return Err(invalid("preset", "basal has no named presets"));
     }
-    if let Some(item) = &request.system_text {
-        if item.preset.is_some() {
-            return Err(invalid("system_text.preset", "basal has no named presets"));
-        }
-        if let Some(field) = item.params.keys().next() {
-            return Err(invalid(
-                &format!("system_text.params.{field}"),
-                "unknown system text parameter",
-            ));
-        }
+    if request.system_text.is_some() {
+        return Err(invalid("system_text", "basal supplies no system text"));
     }
     let full_tools = catalog_tools();
-    let generation = blake3::hash(
-        &serde_json::to_vec(&(&full_tools, SYSTEM_TEXT))
-            .expect("catalog definitions are serializable"),
-    )
-    .to_hex()
-    .to_string();
+    let generation =
+        blake3::hash(&serde_json::to_vec(&full_tools).expect("catalog tools are serializable"))
+            .to_hex()
+            .to_string();
     let tools = select_by_capabilities(&request.params, &full_tools)?
         .into_iter()
         .cloned()
@@ -143,22 +130,6 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
             composition_digest(&Value::Object(composition.clone()))
                 .map_err(|e| invalid("composition", e.to_string()))?,
         );
-    }
-    if request.system_text.is_some() {
-        // Only sessions offered codemode need its guidance. Keep a requested
-        // item well-formed without it: empty text still has byte digests and
-        // the selected tool names.
-        let resolved_text = if answer.tools.iter().any(|tool| tool.name == "codemode") {
-            SYSTEM_TEXT
-        } else {
-            ""
-        };
-        let digest = system_text_digest(resolved_text);
-        let mut text = SystemTextAnswer::new(&digest, &digest)
-            .with_text(resolved_text)
-            .with_tool_names(answer.tools.iter().map(|tool| tool.name.clone()));
-        text.composition_digest = answer.composition_digest.clone();
-        answer.system_text = Some(text);
     }
     answer.catalog_digest = catalog_content_digest(&answer);
 
