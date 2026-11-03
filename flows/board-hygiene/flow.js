@@ -527,6 +527,9 @@ async function run() {
         // left out too: the flow is the item's date (a reminder for next week,
         // say), and the board caps ETAs at 6 hours, so no ETA could stand in for
         // it. If the flow ends without resolving the wait, wait_ended catches it.
+        // A wait on another board item follows that item, which these rules check
+        // on its own; only the end of such a chain can be stale. When the item it
+        // waits on is done or its lane retired, wait_ended catches it.
         const waitSince = Math.max(
           Number.isFinite(item.wait?.since_ms) ? item.wait.since_ms : -Infinity,
           Number.isFinite(item.changed_at_ms) ? item.changed_at_ms : -Infinity);
@@ -534,7 +537,8 @@ async function run() {
           item.state === 'blocked' && !Number.isFinite(item.eta_ms) &&
             item.wait?.ref_state !== 'terminal' && item.wait?.declined_by == null &&
             !(typeof item.wait?.ref === 'string' &&
-              (item.wait.ref.startsWith('ask:') || item.wait.ref.startsWith('flow:'))) &&
+              (item.wait.ref.startsWith('ask:') || item.wait.ref.startsWith('flow:') ||
+                item.wait.ref.startsWith('item:'))) &&
             Number.isFinite(waitSince),
           waitSince, 24 * HOUR, agent);
         // A planned item with no ETA that nobody has touched for 6 hours

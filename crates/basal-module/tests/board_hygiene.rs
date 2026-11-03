@@ -325,7 +325,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 17);
+    assert_eq!(value["version"], 18);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -1195,12 +1195,18 @@ fn a_wait_unchanged_for_a_day_without_an_eta_nudges_the_owner() {
     // A live flow dates the item itself, for example a reminder days away.
     let mut on_flow = blocked();
     on_flow["wait"] = json!({"on":"remind-at","ref":"flow:remind-at_e2a944ca57aada4d","ref_state":"open","since_ms":BASE});
+    // A wait on another live board item follows that item; only a chain's end
+    // can be stale, and that item is checked on its own.
+    let mut on_item = blocked();
+    on_item["wait"] =
+        json!({"on":"ag_b","ref":"item:ag_b/it_next","ref_state":"open","since_ms":BASE});
     for (name, i) in [
         ("eta", with_eta),
         ("ended", ended),
         ("declined", declined),
         ("ask", on_user),
         ("flow", on_flow),
+        ("item", on_item),
     ] {
         let mut t = Test::new(vec![board("ag_a", vec![i])]);
         assert!(
