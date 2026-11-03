@@ -649,7 +649,13 @@ impl Engine {
                 return;
             }
             if let Err(why) = engine.pass() {
-                tracing::error!(target: "engine", "the engine stopped: {why}");
+                // Shutdown stops the runtime under a running pass, which then
+                // fails; that is the planned stop, not a fault.
+                if engine.inner.wake.snapshot().1 {
+                    tracing::info!(target: "engine", "the engine stopped for shutdown: {why}");
+                } else {
+                    tracing::error!(target: "engine", "the engine stopped: {why}");
+                }
                 return;
             }
             match engine.next_wait() {
