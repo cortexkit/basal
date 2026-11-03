@@ -1,5 +1,11 @@
 Run a short JavaScript program that calls your own tools and returns one result.
 
+Use a program whenever several calls would each pass through your context or repeat the same input:
+- Near-identical calls: when calls share most of their input (one brief to two workers, the same brief per file, one message to several peers), write the shared text once in the program and change only what differs. Writing it out in each call pays for every word again, and your output tokens cost the most.
+- Lists: reads, checks or launches over a list run in one program, so their arguments and outputs never reach your context.
+- Dependent steps: launch, read the returned id, then use it in the same program, so you never write an id that doesn't exist yet.
+Return only what you need next (ids, counts, failures), never raw tool output. Check each call's result, so a failure inside a loop is reported, not skipped. For a single call, or one whose full output you must read, call the tool directly.
+
 - Call a tool with `await tools.<name>(input)`, using the same name as a direct call. Inside a program, tools take field names from their catalog schema, which can differ from your direct tool's; a refused call names the fields it expects. A program gets the tools whose providers serve codemode, and `Object.keys(tools)` lists them. Not every tool is available yet; calling a missing one throws an error that names it and lists the available ones. The tool decides allow, ask and deny exactly as for a direct call, and an ask waits for its answer.
 - `tools.model({prompt, system?, max_output?})` asks a model for one completion; a run may make 20 such calls, using up to 200,000 tokens. `tools.llm_classify({model, questions, item, max_cost_usd})` classifies an item; its calls share a $0.50 budget per run, which `limits.model_cost_usd` can lower.
 - `console.log(...)` output is captured, up to 64 KiB.

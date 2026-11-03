@@ -41,14 +41,14 @@ fn catalog_tool_bytes_are_unchanged_by_system_text_support() {
     let without_text = tool::catalog(json!({"params":arguments()["params"]})).unwrap();
     assert!(without_text.get("system_text").is_none());
     assert_eq!(with_text["tools"], without_text["tools"]);
-    // SHA-256 of the serialized tools array before default system text was
-    // added: descriptions, schemas and every other tool field are pinned.
+    // SHA-256 of the serialized tools array, so any change to a description,
+    // schema or other tool field is deliberate. Heads register these bytes.
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&with_text["tools"]).unwrap())
         ),
-        "e0ba997bbd48b5e8ddbbf8fec252e31239ae8c09649bab24ac01ac442c2ed93e"
+        "442bbfe4cec15ec0f3bf37a87e91ad6729e8dbd741580c05daa5cd77087605f9"
     );
 }
 
