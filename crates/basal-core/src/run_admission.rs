@@ -1,7 +1,8 @@
 //! Staged admission into the run-log control plane.
 //!
-//! No production constructor selects this path yet. See
-//! `../run-admission.md` for the durable field mapping and integration seams.
+//! No production constructor selects this path yet. Every field the old
+//! admission wrote has a home in `live_runs` or `run_identities`; the
+//! `AdmissionLog` and `EventWakes` traits are the seams later stages bind.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
