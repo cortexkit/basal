@@ -35,6 +35,7 @@ pub(super) fn prepare(
     if key.len() > limits.max_key_bytes {
         return Ok(refused("kv_limit", "kv key is too large"));
     }
+    // The flow's single-run slot excludes other runs while the owner reads its own kv.
     let mut values = store.read(|conn| {
         let mut stmt = conn.prepare("SELECT key,value FROM kv WHERE flow_id=?1")?;
         Ok(stmt

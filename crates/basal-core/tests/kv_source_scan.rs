@@ -197,6 +197,8 @@ struct Scan {
     violations: Vec<String>,
     sql_reads: usize,
     run_calls: usize,
+    run_local_reads: usize,
+    terminal_overlay_writes: usize,
 }
 
 impl Scan {
@@ -401,6 +403,16 @@ impl Scan {
             self.sql_reads += 1;
             return;
         }
+        // The flow's single-run slot excludes other runs while the owner reads its own kv.
+        if path.ends_with("basal-core/src/run_driver/local.rs") && function == "prepare" {
+            self.run_local_reads += 1;
+            return;
+        }
+        // The run's overlay commits in the same transaction as its summary.
+        if path.ends_with("basal-core/src/run_driver/terminal.rs") && function == "apply" {
+            self.terminal_overlay_writes += 1;
+            return;
+        }
         // These exact write-only statements are not readers. Do not exempt their
         // files: a SELECT added to an epoch reset or migration still needs review.
         if (path.ends_with("basal-core/src/state_epoch.rs")
@@ -416,7 +428,7 @@ impl Scan {
             path,
             source,
             token,
-            "kv SQL outside the audited run-local apply function",
+            "kv SQL outside the audited run-local or terminal-overlay functions",
         );
     }
 }
@@ -498,6 +510,14 @@ fn production_kv_reads_are_run_local() {
     );
     assert_eq!(scan.sql_reads, 4, "the audited kv apply SQL changed");
     assert_eq!(
+        scan.run_local_reads, 1,
+        "the audited run-local kv read changed"
+    );
+    assert_eq!(
+        scan.terminal_overlay_writes, 3,
+        "the audited terminal-overlay kv writes changed"
+    );
+    assert_eq!(
         scan.run_calls, 2,
         "the audited run-driver reader calls changed"
     );
@@ -561,6 +581,63 @@ fn scan_catches_planted_out_of_run_kv_reads_in_all_three_crates() {
                     .contains(&format!("{name}/src/lib.rs:1:"))
             );
         }
+    }
+}
+
+#[test]
+fn scan_allows_the_named_run_driver_kv_sites_with_exact_counts() {
+    let fixture = Fixture::new(&[
+        (
+            "basal-core/src/run_driver/local.rs",
+            r#"fn prepare() { query("SELECT key,value FROM kv WHERE flow_id=?1"); }"#,
+        ),
+        (
+            "basal-core/src/run_driver/terminal.rs",
+            r#"
+            impl Projection {
+                fn apply() {
+                    execute("DELETE FROM kv WHERE flow_id=?1 AND key=?2");
+                    execute("INSERT INTO kv(flow_id,key,value) VALUES(?1,?2,?3)");
+                    execute("DELETE FROM kv WHERE flow_id=?1 AND key=?2");
+                }
+            }
+            "#,
+        ),
+    ]);
+    let scan = scan(&fixture.0);
+    assert!(scan.violations.is_empty(), "{scan:?}");
+    assert_eq!(scan.sql_reads, 0);
+    assert_eq!(scan.run_calls, 0);
+    assert_eq!(scan.run_local_reads, 1);
+    assert_eq!(scan.terminal_overlay_writes, 3);
+}
+
+#[test]
+fn scan_catches_planted_kv_reads_elsewhere_in_run_driver() {
+    for (path, source) in [
+        (
+            "basal-core/src/run_driver/preview.rs",
+            r#"fn prepare() { query("SELECT value FROM kv"); }"#,
+        ),
+        (
+            "basal-core/src/run_driver/local.rs",
+            r#"fn preview() { query("SELECT value FROM kv"); }"#,
+        ),
+        (
+            "basal-core/src/run_driver/terminal.rs",
+            r#"fn preview() { query("SELECT value FROM kv"); }"#,
+        ),
+        (
+            "basal-core/src/run_driver/local.rs",
+            r#"fn prepare() { fn preview() { query("SELECT value FROM kv"); } }"#,
+        ),
+    ] {
+        let fixture = Fixture::new(&[(path, source)]);
+        let scan = scan(&fixture.0);
+        assert_eq!(scan.violations.len(), 1, "missed {path}: {scan:?}");
+        assert!(scan.violations[0].replace('\\', "/").contains(path));
+        assert_eq!(scan.run_local_reads, 0);
+        assert_eq!(scan.terminal_overlay_writes, 0);
     }
 }
 

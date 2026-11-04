@@ -214,6 +214,7 @@ impl TerminalWrite for Projection {
                 None => {}
             }
         }
+        // This run's overlay commits with its summary in the same transaction.
         for (key, value) in &self.state.overlay {
             match value {
                 Some(value) => {
