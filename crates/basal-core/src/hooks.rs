@@ -9,6 +9,16 @@
 /// A point between two records.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Boundary {
+    /// A run-log batch is appended but no sync watermark has been released.
+    RunLogAppended,
+    /// The next segment's reserved row is committed, before file creation.
+    RunLogReserved,
+    /// The spare's header and directory entry are durable.
+    RunLogCreated,
+    /// The new segment's Link is durable, before registry promotion.
+    RunLogLinked,
+    /// The new segment is registered active, before publishing its watermark.
+    RunLogPromoted,
     /// The activation claimed the run (its generation is committed).
     Claimed { generation: u64 },
     /// The runtime fingerprint was recorded at the run's first activation.
@@ -53,6 +63,17 @@ pub enum Boundary {
     EndingReceived,
     /// The run left `running`.
     Exited,
+}
+
+impl Boundary {
+    /// File-writer crash points, exercised before the runtime switches paths.
+    pub const RUN_LOG: [Self; 5] = [
+        Self::RunLogAppended,
+        Self::RunLogReserved,
+        Self::RunLogCreated,
+        Self::RunLogLinked,
+        Self::RunLogPromoted,
+    ];
 }
 
 /// What the runtime does at a boundary.

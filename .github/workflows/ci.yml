@@ -135,7 +135,7 @@ jobs:
       - name: Test confined worker packages
         env:
           BASAL_REQUIRE_VISIBLE_PROC: ${{ runner.os == 'Linux' && '1' || '' }}
-        run: cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-rig
+        run: cargo test --locked -p basal-core -p basal-worker -p basal-module -p basal-testkit -p basal-rig
       - name: Test confined worker packages with the rig kill hook
         if: matrix.platform != 'linux-arm64'
         env:
