@@ -4,6 +4,10 @@ use std::collections::BTreeSet;
 
 pub(super) struct Reason {
     pub reason: Option<String>,
+    /// The provider's held detail, an opaque JSON object (for a consent hold,
+    /// the card's `ask_id` and kind). Basal passes it unread to the
+    /// agent that called codemode.
+    pub detail: Option<serde_json::Value>,
     /// The start of the uninterrupted hold, retained across reason changes.
     pub since_ms: i64,
 }

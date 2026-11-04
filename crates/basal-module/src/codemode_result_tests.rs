@@ -297,6 +297,7 @@ fn running_reply_names_each_held_call_and_what_the_person_must_do() {
         index,
         tool: tool.into(),
         reason: reason.map(str::to_owned),
+        detail: None,
     };
     let result = running(
         "codemode:example",
@@ -332,16 +333,19 @@ fn held_running_reply_preserves_open_person_wait_reasons() {
                     index: 0,
                     tool: "quiet".into(),
                     reason: None,
+                    detail: None,
                 },
                 Hold {
                     index: 1,
                     tool: "browser".into(),
                     reason: Some(reason.into()),
+                    detail: None,
                 },
                 Hold {
                     index: 2,
                     tool: "other".into(),
                     reason: Some("later_person_action".into()),
+                    detail: None,
                 },
             ],
             Some(&caps),
@@ -350,6 +354,29 @@ fn held_running_reply_preserves_open_person_wait_reasons() {
         let decoded: ToolResult = serde_json::from_value(result).unwrap();
         validate(&decoded).unwrap();
     }
+}
+
+#[test]
+fn held_running_reply_carries_the_providers_detail_for_the_named_reason() {
+    // The calling agent needs the consent card's ask id to tell the person
+    // which card to answer, so the provider's held detail passes through
+    // unchanged.
+    let caps = vec!["tool-result/v1".into(), "held-reply/v1".into()];
+    let detail =
+        json!({"action":"read_state","ask_id":"el_1062","kind":"app_control","app":"Finder"});
+    let result = running(
+        "codemode:example",
+        &[Hold {
+            index: 0,
+            tool: "computer_use".into(),
+            reason: Some("consent".into()),
+            detail: Some(detail.clone()),
+        }],
+        Some(&caps),
+    );
+    assert_eq!(result["held"], json!({"reason":"consent","detail":detail}));
+    let decoded: ToolResult = serde_json::from_value(result).unwrap();
+    validate(&decoded).unwrap();
 }
 
 #[test]

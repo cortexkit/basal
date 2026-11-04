@@ -201,6 +201,10 @@ pub struct Hold {
     /// The provider's snake_case reason, such as `consent`, when its held
     /// reply named one.
     pub reason: Option<String>,
+    /// The provider's held detail, passed through unread so the agent that
+    /// called codemode can see what the person is asked, such as a consent
+    /// card's `ask_id`.
+    pub detail: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -980,6 +984,7 @@ impl Driver {
                     .entry(position)
                     .or_insert_with(|| held_time::Reason {
                         reason: None,
+                        detail: None,
                         since_ms: self.shared.clock.now_ms(),
                     });
                 let person = self.waits_on_person(position);
@@ -1009,6 +1014,10 @@ impl Driver {
                                     .hold_reasons
                                     .get(&position)
                                     .and_then(|r| r.reason.clone()),
+                                detail: self
+                                    .hold_reasons
+                                    .get(&position)
+                                    .and_then(|r| r.detail.clone()),
                             },
                         );
                 }
@@ -1158,7 +1167,6 @@ impl Driver {
             let format = self.result_format(&answer.call);
             match held::classify(value, format.as_ref()) {
                 held::Reply::Held { reason, detail } => {
-                    let _ = detail;
                     if self.wall()? {
                         return Ok(());
                     }
@@ -1168,10 +1176,12 @@ impl Driver {
                         .entry(answer.call.position)
                         .or_insert_with(|| held_time::Reason {
                             reason: None,
+                            detail: None,
                             since_ms: self.shared.clock.now_ms(),
                         });
                     if record.reason.is_none() {
                         record.reason = Some(reason);
+                        record.detail = detail;
                     }
                     self.mark_held(answer.call.position, true)?;
                     self.start_intake(answer.call.position)?;
@@ -1207,7 +1217,7 @@ impl Driver {
         match held::map_entry(*entry, format.as_ref()) {
             Some(held::Update::Held(held)) => {
                 self.mark_held(call.position, true)?;
-                self.update_hold_reason(call.position, held.reason, settled_at)?;
+                self.update_hold_reason(call.position, held.reason, held.detail, settled_at)?;
             }
             Some(held::Update::Malformed(message)) => self.record_malformed_entry(&message)?,
             Some(held::Update::Final(mapped)) => {
@@ -1228,7 +1238,13 @@ impl Driver {
         Ok(())
     }
 
-    fn update_hold_reason(&mut self, position: u64, reason: String, settled_at: i64) -> Result<()> {
+    fn update_hold_reason(
+        &mut self,
+        position: u64,
+        reason: String,
+        detail: Option<Value>,
+        settled_at: i64,
+    ) -> Result<()> {
         self.account_time();
         let now = self.last_tick_ms;
         let Some(previous) = self.hold_reasons.get(&position) else {
@@ -1241,7 +1257,9 @@ impl Driver {
         let person = cortexkit_role_tool_provider::result::is_person_wait(&reason);
         self.person_time.revise(position, since_ms, person);
         self.person_wait_ms = self.person_time.total();
-        self.hold_reasons.get_mut(&position).unwrap().reason = Some(reason);
+        let record = self.hold_reasons.get_mut(&position).unwrap();
+        record.reason = Some(reason);
+        record.detail = detail;
         self.mark_held(position, true)?;
         // Recovery interrupts runs rather than resuming their calls. It only
         // needs the accrued total and the existing held/waited_on_person bits.

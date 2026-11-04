@@ -2574,6 +2574,8 @@ fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
             index: 0,
             tool: "read".into(),
             reason: Some("consent".into()),
+            // The provider's detail passes through unread to the calling agent's reply.
+            detail: Some(json!({"site":"example.test"})),
         }]
     );
     assert_eq!(f.calls()[0].outcome, Outcome::Pending);

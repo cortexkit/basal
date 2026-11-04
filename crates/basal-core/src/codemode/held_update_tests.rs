@@ -66,7 +66,9 @@ fn published_held_update_vectors_map_and_account_in_cursor_order() {
                     cortexkit_role_tool_provider::result::is_person_wait(&held.reason),
                     vectors["sequence"]["person_wait"][index]
                 );
-                driver.update_hold_reason(0, held.reason, at).unwrap();
+                driver
+                    .update_hold_reason(0, held.reason, held.detail, at)
+                    .unwrap();
                 assert_eq!(driver.in_flight, 1);
                 assert!(driver.held_positions.contains(&0));
             }
@@ -110,7 +112,7 @@ fn late_running_update_refunds_time_and_recovery_preserves_the_total() {
     driver.account_time();
     assert_eq!(driver.person_wait_ms, 180_000);
     driver
-        .update_hold_reason(0, "running".into(), 60_100)
+        .update_hold_reason(0, "running".into(), None, 60_100)
         .unwrap();
     assert_eq!(driver.person_wait_ms, 60_000);
     assert!(f.supervisor.holds("r").is_empty());
@@ -127,21 +129,23 @@ fn held_updates_clamp_to_the_hold_start_and_local_clock() {
     let f = Fixture::new();
     let mut driver = accounting_driver(&f);
     f.clock.set(1_100);
-    driver.update_hold_reason(0, "running".into(), 0).unwrap();
+    driver
+        .update_hold_reason(0, "running".into(), None, 0)
+        .unwrap();
     assert_eq!(driver.person_wait_ms, 0);
     driver
-        .update_hold_reason(0, "consent".into(), i64::MAX)
+        .update_hold_reason(0, "consent".into(), None, i64::MAX)
         .unwrap();
     assert_eq!(driver.person_wait_ms, 0);
     f.clock.set(2_100);
     driver.account_time();
     assert_eq!(driver.person_wait_ms, 1_000);
     driver
-        .update_hold_reason(0, "running".into(), 1_600)
+        .update_hold_reason(0, "running".into(), None, 1_600)
         .unwrap();
     assert_eq!(driver.person_wait_ms, 500);
     driver
-        .update_hold_reason(0, "running".into(), 1_500)
+        .update_hold_reason(0, "running".into(), None, 1_500)
         .unwrap();
     assert_eq!(driver.person_wait_ms, 400);
 }
@@ -150,7 +154,9 @@ fn held_updates_clamp_to_the_hold_start_and_local_clock() {
 fn consent_hold_with_an_unheld_flight_spends_five_minutes_of_wall_time() {
     let f = Fixture::new();
     let mut driver = accounting_driver(&f);
-    driver.update_hold_reason(0, "consent".into(), 100).unwrap();
+    driver
+        .update_hold_reason(0, "consent".into(), None, 100)
+        .unwrap();
     f.host
         .store
         .write(|tx| {

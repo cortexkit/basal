@@ -632,11 +632,19 @@ pub(crate) fn running(id: &str, holds: &[Hold], consumer_capabilities: Option<&[
             .clone(),
     );
     if cortexkit_role_tool_provider::consumer_reads_held_reply_v1(consumer_capabilities) {
-        let reason = holds
-            .iter()
-            .find_map(|hold| hold.reason.as_deref())
+        // The first hold that names a reason speaks for the run, and its
+        // detail travels with it: for a consent hold that is the card's ask
+        // id, which the calling agent needs to point the person at the right
+        // card.
+        let named = holds.iter().find(|hold| hold.reason.is_some());
+        let reason = named
+            .and_then(|hold| hold.reason.as_deref())
             .unwrap_or(cortexkit_role_tool_provider::result::held_reasons::RUNNING);
-        reply = reply.with_held(cortexkit_role_tool_provider::result::HeldReply::new(reason));
+        let mut held = cortexkit_role_tool_provider::result::HeldReply::new(reason);
+        if let Some(Value::Object(detail)) = named.and_then(|hold| hold.detail.clone()) {
+            held = held.with_detail(detail);
+        }
+        reply = reply.with_held(held);
     }
     bounded_result(reply)
 }
