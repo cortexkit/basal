@@ -8,11 +8,17 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const GROUP_WAIT: Duration = Duration::from_millis(25);
+/// A savepoint that keeps failing is a deterministic fault in that run's
+/// projection, not contention. Retrying it forever would spin the committer
+/// while its closer holds the run's actor and its flow's accounting lock, so
+/// after this many attempts the error goes back to the closer instead.
+const MAX_ATTEMPTS: u32 = 3;
 
 struct Pending {
     run_id: String,
     write: Box<dyn TerminalWrite>,
     reply: mpsc::SyncSender<Result<()>>,
+    attempts: u32,
 }
 
 pub(super) struct Committer {
@@ -38,6 +44,7 @@ impl Committer {
                 run_id,
                 write,
                 reply,
+                attempts: 0,
             })
             .map_err(|_| CoreError::Unavailable("terminal committer stopped".into()))?;
         result
@@ -89,12 +96,12 @@ fn run(store: Arc<Store>, hooks: Arc<dyn Hooks>, receiver: mpsc::Receiver<Pendin
                 for pending in &group {
                     tx.execute_batch("SAVEPOINT terminal_run")?;
                     match pending.write.apply(tx) {
-                        Ok(()) => { tx.execute_batch("RELEASE terminal_run")?; passed.push(true); }
+                        Ok(()) => { tx.execute_batch("RELEASE terminal_run")?; passed.push(Ok(())); }
                         Err(CoreError::Cut) => return Err(CoreError::Cut),
                         Err(error) => {
                             tx.execute_batch("ROLLBACK TO terminal_run; RELEASE terminal_run")?;
-                            tracing::warn!(run_id = pending.run_id, %error, "terminal savepoint rolled back; retrying");
-                            passed.push(false);
+                            tracing::warn!(run_id = pending.run_id, attempt = pending.attempts + 1, %error, "terminal savepoint rolled back");
+                            passed.push(Err(error));
                         }
                     }
                 }
@@ -103,7 +110,7 @@ fn run(store: Arc<Store>, hooks: Arc<dyn Hooks>, receiver: mpsc::Receiver<Pendin
         }).and_then(|passed| {
             lock_order::assert_lock_free();
             for (pending, passed) in group.iter().zip(&passed) {
-                if *passed && hooks.at(&pending.run_id, &Boundary::RunStoreCommitted) == Step::Crash {
+                if passed.is_ok() && hooks.at(&pending.run_id, &Boundary::RunStoreCommitted) == Step::Crash {
                     store.cut();
                     return Err(CoreError::Cut);
                 }
@@ -112,11 +119,18 @@ fn run(store: Arc<Store>, hooks: Arc<dyn Hooks>, receiver: mpsc::Receiver<Pendin
         });
         match committed {
             Ok(passed) => {
-                for (pending, passed) in group.into_iter().zip(passed) {
-                    if passed {
-                        let _ = pending.reply.send(Ok(()));
-                    } else {
-                        retry.push(pending);
+                for (mut pending, passed) in group.into_iter().zip(passed) {
+                    match passed {
+                        Ok(()) => {
+                            let _ = pending.reply.send(Ok(()));
+                        }
+                        Err(error) if pending.attempts + 1 >= MAX_ATTEMPTS => {
+                            let _ = pending.reply.send(Err(error));
+                        }
+                        Err(_) => {
+                            pending.attempts += 1;
+                            retry.push(pending);
+                        }
                     }
                 }
             }
@@ -181,6 +195,7 @@ mod tests {
                 run_id: "a".into(),
                 write: Box::new(Write("a", AtomicBool::new(true))),
                 reply: a,
+                attempts: 0,
             })
             .unwrap();
         sender
@@ -188,6 +203,7 @@ mod tests {
                 run_id: "b".into(),
                 write: Box::new(Write("b", AtomicBool::new(false))),
                 reply: b,
+                attempts: 0,
             })
             .unwrap();
         drop(sender);
@@ -216,6 +232,43 @@ mod tests {
             })
             .unwrap();
         assert_eq!(GROUP_WAIT, Duration::from_millis(25));
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_savepoint_that_always_fails_returns_its_error_after_bounded_attempts() {
+        let dir = crate::test_support::timestamp_scratch("run-store", "always-fails");
+        let store =
+            Arc::new(Store::open(dir.join("core.db"), crate::Durability::throwaway()).unwrap());
+        struct Fails(Arc<Mutex<u32>>);
+        impl TerminalWrite for Fails {
+            fn apply(&self, _tx: &rusqlite::Transaction<'_>) -> Result<()> {
+                *self.0.lock().unwrap() += 1;
+                Err(CoreError::Invalid("projection rejected".into()))
+            }
+        }
+        let calls = Arc::new(Mutex::new(0));
+        let (sender, receiver) = mpsc::channel();
+        let (reply, result) = mpsc::sync_channel(1);
+        sender
+            .send(Pending {
+                run_id: "a".into(),
+                write: Box::new(Fails(calls.clone())),
+                reply,
+                attempts: 0,
+            })
+            .unwrap();
+        drop(sender);
+        let s = store.clone();
+        let worker = std::thread::spawn(move || run(s, Arc::new(crate::NoHooks), receiver));
+        let outcome = result.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            outcome,
+            Err(CoreError::Invalid("projection rejected".into()))
+        );
+        assert_eq!(*calls.lock().unwrap(), MAX_ATTEMPTS);
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }

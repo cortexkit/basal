@@ -1,4 +1,9 @@
 //! Debug checks for the new run path. Connection checks also cover legacy callers.
+//!
+//! The only allowed order is Broca per-send gate, then run actor, then flow
+//! accounting lock, then the SQLite connection (reads included, since the store
+//! has one connection). No thread waits for a log sync while holding SQLite,
+//! and no host or sink call is made while holding any of these locks.
 
 use std::cell::RefCell;
 
