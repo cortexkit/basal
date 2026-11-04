@@ -17,6 +17,7 @@ Standing rules for workers. Follow them without asking. Ask only about what the 
 - A bug fix comes with a test that fails without the fix. Show it once (revert the fix, run that test by name, restore) and quote the failure in your report.
 - Run a sidekick comment review on your diff and fix what it flags.
 - Commit as `ualtinok <94532+ualtinok@users.noreply.github.com>`.
+- Design notes, field mappings, evidence and investigation write-ups go in the git-ignored `.cortexkit/internal-docs/` (they reach the main checkout when your work is settled). Never commit them under `crates/` or `docs/`; `docs/` is public user documentation. Anything a later engineer needs to read the code goes in a code comment.
 
 ## Pre-approved; don't ask
 
