@@ -121,13 +121,20 @@ impl RunAdmission {
                 .map(|a| a.manifest.clone())
                 .unwrap_or_default(),
         };
-        let grant = match admission::gate_with_slots(tx, &spec, ctx, approved.as_ref(), || {
-            Ok(tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM live_runs WHERE flow_id=?1)",
-                [flow],
-                |r| r.get(0),
-            )?)
-        })? {
+        let grant = match admission::gate_with_slots(
+            tx,
+            &spec,
+            ctx,
+            approved.as_ref(),
+            || {
+                Ok(tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM live_runs WHERE flow_id=?1)",
+                    [flow],
+                    |r| r.get(0),
+                )?)
+            },
+            || crate::rate::take_staged(tx, flow, crate::rate::Kind::Run, ctx.now_ms, &ctx.rate),
+        )? {
             Ok(grant) => grant,
             Err(refused) => return Ok(refused),
         };

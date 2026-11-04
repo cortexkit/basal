@@ -240,6 +240,8 @@ impl<R: LogRecord> RunLog<R> {
     }
 
     pub fn append(&self, records: Vec<R>) -> Result<Lsn> {
+        // Rotation during append may wait for sync and registry transactions.
+        crate::run_store::lock_order::assert_sync_allowed();
         let (tx, rx) = mpsc::channel();
         self.tx
             .send(Command::Append(records, tx))
@@ -248,6 +250,7 @@ impl<R: LogRecord> RunLog<R> {
     }
 
     pub fn sync_through(&self, lsn: Lsn) -> Result<Lsn> {
+        crate::run_store::lock_order::assert_sync_allowed();
         let (tx, rx) = mpsc::channel();
         self.tx
             .send(Command::Sync(lsn, tx))

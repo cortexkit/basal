@@ -72,6 +72,7 @@ pub mod retention;
 mod revocation;
 pub mod run_admission;
 pub mod run_log;
+pub mod run_store;
 pub mod run_store_sql;
 pub mod runs;
 pub mod runtime;

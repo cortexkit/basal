@@ -441,7 +441,7 @@ fn auto_disabled_without_an_admitted_run_is_not_enqueued() {
     let logs = CapturedLogs::default();
     let _guard = tracing::subscriber::set_default(logs.clone());
     f.rt.store()
-        .write(|tx| crate::owner_notice::auto_disabled(tx, "flow", 1000))
+        .write(|tx| crate::owner_notice::auto_disabled_legacy(tx, "flow", 1000))
         .unwrap();
     assert!(f.rt.outbox().unwrap().is_empty());
     assert!(

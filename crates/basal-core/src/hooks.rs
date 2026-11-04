@@ -13,6 +13,10 @@ pub enum Boundary {
     AdmissionWritten,
     /// The admission batch committed, before receipts may be acknowledged.
     AdmissionCommitted,
+    /// A terminal projection is built, before the group transaction begins.
+    RunStoreBuilt,
+    /// The terminal transaction committed, before routing becomes Closed.
+    RunStoreCommitted,
     /// A run-log batch is appended but no sync watermark has been released.
     RunLogAppended,
     /// The next segment's reserved row is committed, before file creation.

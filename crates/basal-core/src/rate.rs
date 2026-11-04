@@ -88,6 +88,28 @@ pub fn take(
     Ok(take)
 }
 
+/// Admission on the staged tables stays pure SQLite, including its notice.
+pub(crate) fn take_staged(
+    tx: &Transaction,
+    flow_id: &str,
+    kind: Kind,
+    now_ms: i64,
+    limits: &RateLimits,
+) -> Result<Take> {
+    let take = check_with_notice(
+        tx,
+        flow_id,
+        kind,
+        now_ms,
+        limits,
+        crate::owner_notice::auto_disabled,
+    )?;
+    if take == Take::Allowed {
+        increment(tx, flow_id, kind, now_ms, limits)?;
+    }
+    Ok(take)
+}
+
 fn column(kind: Kind, limits: &RateLimits) -> (&'static str, u32) {
     match kind {
         Kind::Run => ("runs", limits.max_runs),
@@ -160,6 +182,24 @@ pub fn check(
     now_ms: i64,
     limits: &RateLimits,
 ) -> Result<Take> {
+    check_with_notice(
+        tx,
+        flow_id,
+        kind,
+        now_ms,
+        limits,
+        crate::owner_notice::auto_disabled_legacy,
+    )
+}
+
+fn check_with_notice(
+    tx: &Transaction,
+    flow_id: &str,
+    kind: Kind,
+    now_ms: i64,
+    limits: &RateLimits,
+    notice: fn(&Transaction, &str, i64) -> Result<()>,
+) -> Result<Take> {
     let window_ms = limits.window_ms()?;
     let start = window_start(now_ms, window_ms);
     tx.execute(
@@ -178,6 +218,42 @@ pub fn check(
     if used < i64::from(max) {
         return Ok(Take::Allowed);
     }
+    saturate(tx, flow_id, kind, now_ms, limits, notice)
+}
+
+/// Commit the new-path saturation decision after its identity prefix is synced.
+/// The caller checked committed plus live accounting under the accounting lock.
+pub(crate) fn saturate_dispatch(
+    tx: &Transaction,
+    flow_id: &str,
+    now_ms: i64,
+    limits: &RateLimits,
+) -> Result<Take> {
+    saturate(
+        tx,
+        flow_id,
+        Kind::Dispatch,
+        now_ms,
+        limits,
+        crate::owner_notice::auto_disabled,
+    )
+}
+
+fn saturate(
+    tx: &Transaction,
+    flow_id: &str,
+    kind: Kind,
+    now_ms: i64,
+    limits: &RateLimits,
+    notice: fn(&Transaction, &str, i64) -> Result<()>,
+) -> Result<Take> {
+    let window_ms = limits.window_ms()?;
+    let start = window_start(now_ms, window_ms);
+    let (_, max) = column(kind, limits);
+    tx.execute(
+        "INSERT OR IGNORE INTO rate_windows(flow_id,window_ms,window_start) VALUES (?1,?2,?3)",
+        params![flow_id, window_ms, start],
+    )?;
     tx.execute(
         "UPDATE rate_windows SET saturated = 1 WHERE flow_id = ?1 AND window_ms = ?2 \
          AND window_start = ?3",
@@ -204,7 +280,7 @@ pub fn check(
             other => CoreError::Invalid(other.to_string()),
         })?;
     if disabled {
-        crate::owner_notice::auto_disabled(tx, flow_id, now_ms)?;
+        notice(tx, flow_id, now_ms)?;
         // The operator decides whether the flow runs again, on a re-enable
         // card. The card's row, holding the limit that tripped, the window
         // and the saturated-window count as they are now, is written in

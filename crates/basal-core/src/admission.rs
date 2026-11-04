@@ -156,25 +156,34 @@ fn gate(
     ctx: &AdmitContext,
     supplied: Option<&install::Approved>,
 ) -> Result<std::result::Result<Grant, Admission>> {
-    gate_with_slots(tx, spec, ctx, supplied, || {
-        Ok(tx.query_row(
-            &format!(
-                "SELECT EXISTS(SELECT 1 FROM runs WHERE flow_id=?1 AND state IN {})",
-                runs::HOLDS_SLOT
-            ),
-            [&spec.flow_id],
-            |r| r.get::<_, bool>(0),
-        )?)
-    })
+    gate_with_slots(
+        tx,
+        spec,
+        ctx,
+        supplied,
+        || {
+            Ok(tx.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE flow_id=?1 AND state IN {})",
+                    runs::HOLDS_SLOT
+                ),
+                [&spec.flow_id],
+                |r| r.get::<_, bool>(0),
+            )?)
+        },
+        || rate::take(tx, &spec.flow_id, rate::Kind::Run, ctx.now_ms, &ctx.rate),
+    )
 }
 
-/// Both storage models share approval and rate policy, but not slot storage.
+/// Both storage models share approval and rate policy; adapters select the
+/// slot lookup and the admission counter's owner-notice storage.
 pub(crate) fn gate_with_slots(
     tx: &Transaction,
     spec: &TriggerSpec,
     ctx: &AdmitContext,
     supplied: Option<&install::Approved>,
     holds_slot: impl FnOnce() -> Result<bool>,
+    count_admission: impl FnOnce() -> Result<Take>,
 ) -> Result<std::result::Result<Grant, Admission>> {
     if draining(tx)? {
         return Ok(Err(Admission::Draining));
@@ -210,9 +219,7 @@ pub(crate) fn gate_with_slots(
     if crate::state_epoch::recorded(tx, &spec.flow_id)? != epoch && holds_slot()? {
         return Ok(Err(Admission::StateBusy));
     }
-    if let Take::Refused { .. } =
-        rate::take(tx, &spec.flow_id, rate::Kind::Run, ctx.now_ms, &ctx.rate)?
-    {
+    if let Take::Refused { .. } = count_admission()? {
         return Ok(Err(Admission::RateLimited));
     }
     Ok(Ok(Grant {

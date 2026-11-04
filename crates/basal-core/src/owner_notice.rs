@@ -179,7 +179,7 @@ pub(crate) fn finish_run(tx: &Transaction, run_id: &str, now: i64) -> Result<()>
     Ok(())
 }
 
-pub(crate) fn auto_disabled(tx: &Transaction, flow: &str, now: i64) -> Result<()> {
+pub(crate) fn auto_disabled_legacy(tx: &Transaction, flow: &str, now: i64) -> Result<()> {
     // Rate limits count admissions, including runs outside the terminal failure streak.
     let latest = tx.query_row(
         "SELECT run_id,COALESCE(flow_version,0),error_kind,script_started FROM runs WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC LIMIT 1",
@@ -198,6 +198,51 @@ pub(crate) fn auto_disabled(tx: &Transaction, flow: &str, now: i64) -> Result<()
         payload(flow, episode, "auto_disabled", &streak, &latest, now),
         now,
     )
+}
+
+/// Query SQLite for the latest run without accessing a run actor.
+pub(crate) fn auto_disabled(tx: &Transaction, flow: &str, now: i64) -> Result<()> {
+    let latest = tx.query_row(
+        "SELECT l.run_id,i.flow_version,NULL FROM live_runs l JOIN run_identities i USING(run_id)
+         WHERE l.flow_id=?1 ORDER BY l.admit_seq DESC,l.run_id DESC LIMIT 1",
+        [flow],
+        |r| Ok(Failure { run_id: r.get(0)?, version: r.get(1)?, kind: r.get(2)?, started: false }),
+    ).optional()?;
+    let latest = match latest {
+        Some(latest) => Some(latest),
+        None => tx
+            .query_row(
+                "SELECT run_id,flow_version,error_kind FROM run_history WHERE flow_id=?1
+             ORDER BY admit_seq DESC,run_id DESC LIMIT 1",
+                [flow],
+                |r| {
+                    Ok(Failure {
+                        run_id: r.get(0)?,
+                        version: r.get(1)?,
+                        kind: r.get(2)?,
+                        started: false,
+                    })
+                },
+            )
+            .optional()?,
+    };
+    if let Some(latest) = latest {
+        let episode = next_episode(tx, flow)?;
+        enqueue(
+            tx,
+            flow,
+            payload(
+                flow,
+                episode,
+                "auto_disabled",
+                &Streak::default(),
+                &latest,
+                now,
+            ),
+            now,
+        )?;
+    }
+    Ok(())
 }
 
 impl Runtime {

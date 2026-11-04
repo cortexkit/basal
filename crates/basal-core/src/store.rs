@@ -209,6 +209,8 @@ impl Store {
 
     /// Runs `f` against the connection.
     pub fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let _order =
+            crate::run_store::lock_order::enter(crate::run_store::lock_order::Lock::Sqlite);
         self.check_cut()?;
         let mut failure = None;
         let out = self.inner.with_conn(|c| match f(c) {
@@ -229,6 +231,8 @@ impl Store {
     /// Runs `f` in one immediate write transaction, fenced by the store
     /// lease's epoch. Any error from `f` rolls the whole transaction back.
     pub fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
+        let _order =
+            crate::run_store::lock_order::enter(crate::run_store::lock_order::Lock::Sqlite);
         self.check_cut()?;
         let mut failure = None;
         let out = self.inner.with_conn_fenced(|tx| {
