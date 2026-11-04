@@ -296,7 +296,24 @@ mkdir -p target/scratch .cortexkit/internal-docs/audits/gate-logs
 scratch=$(lane_scratch basal-gate)
 # Lane snapshots are full checkout copies outside this repository; remove them
 # however the gate ends. Logs live under .cortexkit/internal-docs, not here.
-trap 'rm -rf "$scratch"' EXIT
+#
+# The gate must fail closed. macOS ships bash 3.2, which exits with status 0
+# when an unbound variable aborts a script that has an EXIT trap, and `$?`
+# already reads 0 inside the trap. So the trap cannot rely on the status alone:
+# unless the gate reached its final verdict, an exit that looks successful is
+# turned into a failure. Explicit failure exits keep their own status.
+gate_finished=0
+# Invoked by the EXIT trap below rather than a direct command.
+# shellcheck disable=SC2329
+on_exit() {
+    local status=$?
+    rm -rf "$scratch"
+    if [[ $gate_finished != 1 && $status == 0 ]]; then
+        echo 'FAIL gate stopped before reaching a verdict' >&2
+        exit 1
+    fi
+}
+trap on_exit EXIT
 export TMPDIR="$scratch"
 mkdir -p "$scratch/no-cargo"
 printf '#!/bin/sh\necho "Cargo is forbidden in local gate checks; use a remote lane" >&2\nexit 99\n' >"$scratch/no-cargo/cargo"
@@ -385,17 +402,19 @@ for lane in "${lanes[@]}"; do
         kept+=("$lane")
     fi
 done
-lanes=("${kept[@]}")
+# Every lane may be skipped. Bash 3.2 treats an empty array expansion as an
+# unbound variable under `set -u`, so empty-safe expansions are used here.
+lanes=(${kept[@]+"${kept[@]}"})
 pids=()
-for lane in "${lanes[@]}"; do
+for lane in ${lanes[@]+"${lanes[@]}"}; do
     if [[ $lane != linux ]]; then
         (cd "$scratch/linux"; "$python" script/gate_support.py snapshot "$scratch/$lane")
     fi
 done
-for lane in "${lanes[@]}"; do
+for lane in ${lanes[@]+"${lanes[@]}"}; do
     "$python" script/gate_support.py tools "$scratch/$lane" "$lane"
 done
-for lane in "${lanes[@]}"; do
+for lane in ${lanes[@]+"${lanes[@]}"}; do
     cpus=2
     [[ $lane != linux ]] || cpus=$linux_cpus
     # Separate checkouts avoid MOTOR's per-workspace single-job lock.
@@ -404,7 +423,7 @@ for lane in "${lanes[@]}"; do
     (
         lane_started=$SECONDS
         set +e
-        ck motor run --cwd "$scratch/$lane" --platform "$lane" --vcpus "$cpus" --timeout 7200 --secret-file "$scratch/$lane.secret" -- bash script/gate.sh --lane "$lane" "${packages[@]}" &
+        ck motor run --cwd "$scratch/$lane" --platform "$lane" --vcpus "$cpus" --timeout 7200 --secret-file "$scratch/$lane.secret" -- bash script/gate.sh --lane "$lane" ${packages[@]+"${packages[@]}"} &
         motor_pid=$!
         trap 'kill "$motor_pid" 2>/dev/null || true; wait "$motor_pid" || true; exit 130' INT TERM
         wait "$motor_pid"
@@ -463,4 +482,5 @@ echo "Gate finished in $((SECONDS - started))s; logs: $logs"
 if [[ $allow_unavailable == yes ]]; then
     echo 'NOTE --allow-unavailable: only runner-unavailable lanes may be deferred to CI on main'
 fi
+gate_finished=1
 exit "$("$python" script/gate_support.py result "$allow_unavailable" "${outcomes[@]}")"

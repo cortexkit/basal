@@ -240,6 +240,43 @@ exit 101
         self.assertEqual(gate.gate_result(["fail"], False), 1)
         self.assertEqual(gate.gate_result(["pass"], False), 0)
 
+    def _exit_block(self):
+        # The gate's own EXIT-trap block, so this test fails if it regresses.
+        text = (Path(__file__).resolve().parents[1] / "gate.sh").read_text()
+        start = text.index("gate_finished=0\n")
+        end = text.index("trap on_exit EXIT\n") + len("trap on_exit EXIT\n")
+        return text[start:end]
+
+    def _run(self, body):
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp) / "scratch"
+            scratch.mkdir()
+            script = f'set -euo pipefail\nscratch={scratch}\n{self._exit_block()}{body}\n'
+            # /bin/bash on macOS is 3.2, where an unbound variable under an
+            # EXIT trap used to end the script with status 0.
+            return subprocess.run(["/bin/bash", "-c", script], text=True, capture_output=True), scratch
+
+    def test_an_unbound_variable_fails_the_gate_instead_of_passing(self):
+        result, scratch = self._run('echo "${undefined_gate_variable}"\ngate_finished=1\nexit 0')
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("stopped before reaching a verdict", result.stderr)
+        self.assertFalse(scratch.exists())
+
+    def test_explicit_failures_keep_their_status_and_a_verdict_passes(self):
+        failed, _ = self._run("exit 7")
+        self.assertEqual(failed.returncode, 7)
+        passed, scratch = self._run("gate_finished=1\nexit 0")
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        self.assertFalse(scratch.exists())
+
+    def test_every_lane_skipped_expands_empty_arrays_safely(self):
+        result, _ = self._run(
+            'kept=()\nlanes=(${kept[@]+"${kept[@]}"})\n'
+            'for lane in ${lanes[@]+"${lanes[@]}"}; do echo "$lane"; done\n'
+            'gate_finished=1\nexit 0'
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
