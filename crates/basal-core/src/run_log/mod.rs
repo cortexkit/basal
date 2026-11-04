@@ -4,8 +4,11 @@
 //! files and never holds a registry lock across a sync wait.
 
 mod format;
+mod gc;
 mod platform;
 mod recovery;
+mod registry;
+pub use registry::SqliteRegistry;
 #[cfg(test)]
 mod tests;
 
@@ -98,6 +101,17 @@ pub trait SegmentRegistry: Send + Sync + 'static {
     fn snapshot(&self) -> Result<RegistrySnapshot>;
     fn reserve(&self, expected: u64, sequence: u64) -> Result<()>;
     fn promote(&self, expected: u64, sequence: u64, synced: Lsn) -> Result<()>;
+    /// Commit the longest reclaimable prefix and return its deleted predecessor.
+    /// The writer supplies sealed ends; the adapter rechecks live/history rows.
+    fn reclaim(
+        &self,
+        _expected: u64,
+        _segments: &[ReclaimSegment],
+        _synced: Lsn,
+        _live_starts: &BTreeMap<String, Lsn>,
+    ) -> Result<Option<SegmentEnd>> {
+        Err(Error::Registry("reclamation is not bound".into()))
+    }
 }
 
 /// The records/replay layer supplies its closed set of record types. Types 1
@@ -107,6 +121,32 @@ pub trait SegmentRegistry: Send + Sync + 'static {
 pub trait LogRecord: Serialize + DeserializeOwned + Send + 'static {
     fn record_type(&self) -> u8;
     fn decode(record_type: u8, payload: &[u8]) -> Result<Self>;
+    /// Anonymous record formats cannot be reclaimed: SQLite cannot prove that
+    /// their effects were committed. Run records return their full run ID.
+    fn run_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReclaimSegment {
+    pub end: SegmentEnd,
+    pub runs: std::collections::BTreeSet<String>,
+}
+
+/// A nonblocking view of the published, epoch-qualified sync watermark.
+#[derive(Clone)]
+pub struct Watermark {
+    epoch: u64,
+    synced: Arc<Mutex<Lsn>>,
+}
+impl crate::run_admission::AdmissionLog for Watermark {
+    fn synced_lsn(&self) -> crate::run_store_sql::EpochLsn {
+        crate::run_store_sql::EpochLsn {
+            log_epoch: self.epoch,
+            lsn: *self.synced.lock().unwrap(),
+        }
+    }
 }
 
 pub struct Config {
@@ -122,6 +162,7 @@ impl Config {
 }
 
 enum Command<R> {
+    Reclaim(BTreeMap<String, Lsn>, mpsc::Sender<Result<usize>>),
     Append(Vec<R>, mpsc::Sender<Result<Lsn>>),
     Sync(Lsn, mpsc::Sender<Result<Lsn>>),
     Rotate(mpsc::Sender<Result<Lsn>>),
@@ -132,6 +173,7 @@ pub struct RunLog<R: LogRecord> {
     tx: mpsc::Sender<Command<R>>,
     worker: Option<thread::JoinHandle<()>>,
     synced: Arc<Mutex<Lsn>>,
+    epoch: u64,
     #[cfg(test)]
     sync_count: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -162,6 +204,7 @@ impl<R: LogRecord> RunLog<R> {
     }
 
     fn spawn(mut engine: Engine) -> Self {
+        let epoch = engine.config.identity.log_epoch;
         let (tx, rx) = mpsc::channel();
         let synced = Arc::new(Mutex::new(engine.synced));
         let published = synced.clone();
@@ -177,6 +220,16 @@ impl<R: LogRecord> RunLog<R> {
                 let mut stop = false;
                 for command in commands {
                     match command {
+                        Command::Reclaim(starts, reply) => {
+                            let result = match &fatal {
+                                Some(e) => Err(e.clone()),
+                                None => engine.reclaim(&starts),
+                            };
+                            if let Err(e) = &result {
+                                fatal = Some(e.clone());
+                            }
+                            let _ = reply.send(result);
+                        }
                         Command::Stop => {
                             stop = true;
                             break;
@@ -234,6 +287,7 @@ impl<R: LogRecord> RunLog<R> {
             tx,
             worker: Some(worker),
             synced,
+            epoch,
             #[cfg(test)]
             sync_count,
         }
@@ -259,6 +313,7 @@ impl<R: LogRecord> RunLog<R> {
     }
 
     pub fn rotate(&self) -> Result<Lsn> {
+        crate::run_store::lock_order::assert_sync_allowed();
         let (tx, rx) = mpsc::channel();
         self.tx
             .send(Command::Rotate(tx))
@@ -268,6 +323,24 @@ impl<R: LogRecord> RunLog<R> {
 
     pub fn synced_lsn(&self) -> Lsn {
         *self.synced.lock().unwrap()
+    }
+
+    pub fn watermark(&self) -> Watermark {
+        Watermark {
+            epoch: self.epoch,
+            synced: self.synced.clone(),
+        }
+    }
+
+    /// Snapshot required starts under actors first, then release them before
+    /// calling this method. Starts may advance, but must never move backwards.
+    pub fn reclaim(&self, live_starts: BTreeMap<String, Lsn>) -> Result<usize> {
+        crate::run_store::lock_order::assert_lock_free();
+        let (tx, rx) = mpsc::channel();
+        self.tx
+            .send(Command::Reclaim(live_starts, tx))
+            .map_err(|_| Error::Stopped)?;
+        rx.recv().map_err(|_| Error::Stopped)?
     }
 }
 
@@ -281,6 +354,7 @@ impl<R: LogRecord> Drop for RunLog<R> {
 }
 
 struct Engine {
+    contents: BTreeMap<u64, gc::Contents>,
     config: Config,
     registry: Arc<dyn SegmentRegistry>,
     directory: PathBuf,
@@ -358,6 +432,7 @@ impl Engine {
             },
             crc: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
         };
+        self.contents.get_mut(&self.header.seq).unwrap().end = self.end;
         Ok(self.end.lsn)
     }
     fn append<R: LogRecord>(&mut self, records: &[R]) -> Result<Lsn> {
@@ -375,6 +450,10 @@ impl Engine {
             }
             self.check()?;
             self.write_frame(&bytes)?;
+            self.contents
+                .get_mut(&self.header.seq)
+                .unwrap()
+                .note(record.run_id());
         }
         self.at(Boundary::RunLogAppended)?;
         Ok(self.end.lsn)
@@ -424,6 +503,7 @@ impl Engine {
             crc: header.crc,
         };
         self.sealed = false;
+        self.contents.insert(sequence, gc::Contents::new(self.end));
         self.check()?;
         self.write_frame(&format::frame(LINK, &previous)?)?;
         self.sync_file()?;

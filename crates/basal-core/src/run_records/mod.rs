@@ -19,6 +19,9 @@ use crate::{
 };
 
 impl LogRecord for Record {
+    fn run_id(&self) -> Option<&str> {
+        Some(&self.run_id)
+    }
     fn record_type(&self) -> u8 {
         match self.body {
             Body::Claimed { .. } => 3,

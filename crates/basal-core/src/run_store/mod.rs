@@ -414,9 +414,26 @@ pub struct RunStore<R> {
     registry: Mutex<BTreeMap<String, Arc<Run<R>>>>,
     flows: Mutex<BTreeMap<String, Arc<Ordered<Accounting>>>>,
     committer: committer::Committer,
+    log: Option<Arc<dyn crate::run_admission::AdmissionLog>>,
 }
 
 impl RunStore<crate::run_records::Records> {
+    /// Copy replay anchors without holding an actor while the writer enters
+    /// SQLite. A concurrent snapshot can only advance an anchor, so the earlier
+    /// start copied here remains safe.
+    pub fn reclaim_starts(&self) -> BTreeMap<String, Lsn> {
+        self.snapshot()
+            .into_iter()
+            .filter_map(|run| {
+                let actor = run.actor.lock();
+                actor
+                    .records
+                    .required_start()
+                    .map(|lsn| (run.id.clone(), lsn))
+            })
+            .collect()
+    }
+
     /// Registry maintenance never holds the registry mutex while taking actors
     /// or waiting for the writer's group sync.
     pub fn snapshot_due_runs(
@@ -439,11 +456,27 @@ impl RunStore<crate::run_records::Records> {
 }
 
 impl<R: RunRecords> RunStore<R> {
+    /// Creates the staged registry with log watermark maintenance for terminal
+    /// commits and late-completion settlement transactions.
+    pub fn new_bound(
+        store: Arc<Store>,
+        hooks: Arc<dyn Hooks>,
+        log: Arc<dyn crate::run_admission::AdmissionLog>,
+    ) -> Self {
+        Self {
+            registry: Mutex::new(BTreeMap::new()),
+            flows: Mutex::new(BTreeMap::new()),
+            committer: committer::Committer::with_log(store, hooks, Some(log.clone())),
+            log: Some(log),
+        }
+    }
+
     pub fn new_staged(store: Arc<Store>, hooks: Arc<dyn Hooks>) -> Self {
         Self {
             registry: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
             committer: committer::Committer::new(store, hooks),
+            log: None,
         }
     }
     /// Admission/recovery publishes a complete run before any host can attach.
@@ -519,7 +552,10 @@ impl<R: RunRecords> RunStore<R> {
             .or_insert_with(|| Arc::new(Ordered::new(Accounting::default(), Lock::Accounting)))
             .clone();
         let _accounting = accounting.lock();
-        store.write(f)
+        match &self.log {
+            Some(log) => crate::run_store_sql::write_synced(store, log.as_ref(), f),
+            None => store.write(f),
+        }
     }
     pub fn close(
         &self,

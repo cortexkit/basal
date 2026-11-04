@@ -1,4 +1,6 @@
 use super::*;
+#[path = "sqlite_tests.rs"]
+mod sqlite;
 use crate::NoHooks;
 use std::{
     fs::{self, OpenOptions},
@@ -262,6 +264,14 @@ fn closed_boundary_set_has_crash_cases() {
         Boundary::RunLogPromoted,
     ];
     assert_eq!(Boundary::RUN_LOG, cases);
+    assert_eq!(
+        Boundary::RUN_LOG_GC,
+        [
+            Boundary::RunLogGcCommitted,
+            Boundary::RunLogGcUnlinked,
+            Boundary::RunLogGcSynced,
+        ]
+    );
     let declared: std::collections::BTreeSet<_> = include_str!("../hooks.rs")
         .split("pub enum Boundary {")
         .nth(1)
@@ -277,6 +287,7 @@ fn closed_boundary_set_has_crash_cases() {
         .collect();
     let covered = Boundary::RUN_LOG
         .iter()
+        .chain(Boundary::RUN_LOG_GC.iter())
         .map(|boundary| format!("{boundary:?}"))
         .collect();
     assert_eq!(

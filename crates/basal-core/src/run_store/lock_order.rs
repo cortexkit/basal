@@ -83,3 +83,14 @@ pub fn assert_lock_free() {
         });
     }
 }
+
+pub(crate) fn assert_registry_allowed() {
+    if cfg!(debug_assertions) {
+        HELD.with(|held| {
+            assert!(
+                held.borrow().is_empty(),
+                "segment registry transaction under another lock"
+            )
+        });
+    }
+}

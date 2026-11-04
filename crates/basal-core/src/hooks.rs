@@ -27,6 +27,12 @@ pub enum Boundary {
     RunLogLinked,
     /// The new segment is registered active, before publishing its watermark.
     RunLogPromoted,
+    /// The GC floor and registry deletions committed, before any unlink.
+    RunLogGcCommitted,
+    /// One reclaimed file was unlinked; other files may still be present.
+    RunLogGcUnlinked,
+    /// Reclaimed directory entries are durable where directory sync is supported.
+    RunLogGcSynced,
     /// A snapshot is copied and appended atomically, before its sync wait.
     MidSnapshot,
     /// The activation claimed the run (its generation is committed).
@@ -76,6 +82,12 @@ pub enum Boundary {
 }
 
 impl Boundary {
+    pub const RUN_LOG_GC: [Self; 3] = [
+        Self::RunLogGcCommitted,
+        Self::RunLogGcUnlinked,
+        Self::RunLogGcSynced,
+    ];
+
     /// File-writer crash points, exercised before the runtime switches paths.
     pub const RUN_LOG: [Self; 5] = [
         Self::RunLogAppended,

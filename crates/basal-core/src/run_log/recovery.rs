@@ -123,6 +123,7 @@ impl Engine {
         let mut last = None;
         let mut spare = None;
         let mut records = Vec::new();
+        let mut contents = BTreeMap::new();
         let count = snapshot.segments.len();
         for (index, (&seq, &state)) in snapshot.segments.iter().enumerate() {
             if seq < snapshot.first_retained
@@ -197,6 +198,7 @@ impl Engine {
                 crc: header.crc,
             };
             let mut sealed = false;
+            let mut runs = gc::Contents::new(end);
             if let Some(expected) = previous {
                 let first = format::read_frame(&mut file);
                 let link = match first {
@@ -309,6 +311,7 @@ impl Engine {
                     crc: frame.crc,
                 };
                 if let Some(record) = record {
+                    runs.note(record.run_id());
                     records.push(RecoveredRecord {
                         lsn: end.lsn,
                         record,
@@ -327,6 +330,8 @@ impl Engine {
                 at(&config, Boundary::RunLogPromoted)?;
             }
             file.seek(SeekFrom::Start(end.lsn.offset))?;
+            runs.end = end;
+            contents.insert(seq, runs);
             previous = Some(end);
             last = Some((file, header, end, sealed));
         }
@@ -343,6 +348,7 @@ impl Engine {
         };
         Ok((
             Self {
+                contents,
                 config,
                 registry,
                 directory,

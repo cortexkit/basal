@@ -168,6 +168,11 @@ impl Store {
         &self.store_id
     }
 
+    /// The held SQLite writer lease, also carried by run-log segment headers.
+    pub fn lease_epoch(&self) -> u64 {
+        self.inner.epoch()
+    }
+
     pub(crate) fn set_clock(&self, clock: crate::clock::Clock) {
         *self.clock.lock().unwrap_or_else(|p| p.into_inner()) = clock;
     }

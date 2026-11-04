@@ -747,6 +747,34 @@ pub fn advance_log_hwm(tx: &Transaction<'_>, synced: EpochLsn) -> Result<()> {
     Ok(())
 }
 
+/// Transactions that finish runs or settle late completions use this wrapper
+/// to include the published log watermark without waiting for log I/O.
+pub fn write_synced<T>(
+    store: &crate::Store,
+    log: &dyn crate::run_admission::AdmissionLog,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<T> {
+    store.write(|tx| {
+        advance_log_hwm(tx, log.synced_lsn())?;
+        let value = f(tx)?;
+        advance_log_hwm(tx, log.synced_lsn())?;
+        Ok(value)
+    })
+}
+
+pub(crate) fn write_gc_floor(tx: &Transaction<'_>, floor: &GcFloor) -> Result<()> {
+    advance_log_hwm(
+        tx,
+        EpochLsn {
+            log_epoch: floor.log_epoch,
+            lsn: floor.synced_lsn,
+        },
+    )?;
+    set_meta_value(tx, "gc_floor", &encode(floor)?)?;
+    remove_segments_before(tx, floor.log_epoch, floor.first_retained)?;
+    Ok(())
+}
+
 pub fn next_commit_seq(tx: &Transaction<'_>) -> Result<u64> {
     let old: u64 = decode(meta_value(tx, "commit_seq")?)?;
     let next = old

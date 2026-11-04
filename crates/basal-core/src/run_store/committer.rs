@@ -28,8 +28,15 @@ pub(super) struct Committer {
 
 impl Committer {
     pub(super) fn new(store: Arc<Store>, hooks: Arc<dyn Hooks>) -> Self {
+        Self::with_log(store, hooks, None)
+    }
+    pub(super) fn with_log(
+        store: Arc<Store>,
+        hooks: Arc<dyn Hooks>,
+        log: Option<Arc<dyn crate::run_admission::AdmissionLog>>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
-        let thread = std::thread::spawn(move || run(store, hooks, receiver));
+        let thread = std::thread::spawn(move || run(store, hooks, receiver, log));
         Self {
             sender: Some(sender),
             thread: Some(thread),
@@ -73,7 +80,12 @@ fn at(store: &Store, hooks: &dyn Hooks, group: &[Pending], boundary: Boundary) -
     Ok(())
 }
 
-fn run(store: Arc<Store>, hooks: Arc<dyn Hooks>, receiver: mpsc::Receiver<Pending>) {
+fn run(
+    store: Arc<Store>,
+    hooks: Arc<dyn Hooks>,
+    receiver: mpsc::Receiver<Pending>,
+    log: Option<Arc<dyn crate::run_admission::AdmissionLog>>,
+) {
     let mut retry = Vec::new();
     loop {
         let mut group = std::mem::take(&mut retry);
@@ -92,6 +104,7 @@ fn run(store: Arc<Store>, hooks: Arc<dyn Hooks>, receiver: mpsc::Receiver<Pendin
         }
         let committed = at(&store, hooks.as_ref(), &group, Boundary::RunStoreBuilt).and_then(|()| {
             store.write(|tx| {
+                if let Some(log) = &log { crate::run_store_sql::advance_log_hwm(tx, log.synced_lsn())?; }
                 let mut passed = Vec::with_capacity(group.len());
                 for pending in &group {
                     tx.execute_batch("SAVEPOINT terminal_run")?;
@@ -105,6 +118,7 @@ fn run(store: Arc<Store>, hooks: Arc<dyn Hooks>, receiver: mpsc::Receiver<Pendin
                         }
                     }
                 }
+                if let Some(log) = &log { crate::run_store_sql::advance_log_hwm(tx, log.synced_lsn())?; }
                 Ok(passed)
             })
         }).and_then(|passed| {
@@ -208,7 +222,7 @@ mod tests {
             .unwrap();
         drop(sender);
         let (s, h) = (store.clone(), hooks.clone());
-        let worker = std::thread::spawn(move || run(s, h, receiver));
+        let worker = std::thread::spawn(move || run(s, h, receiver, None));
         br.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         ar.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         worker.join().unwrap();
@@ -261,7 +275,7 @@ mod tests {
             .unwrap();
         drop(sender);
         let s = store.clone();
-        let worker = std::thread::spawn(move || run(s, Arc::new(crate::NoHooks), receiver));
+        let worker = std::thread::spawn(move || run(s, Arc::new(crate::NoHooks), receiver, None));
         let outcome = result.recv_timeout(Duration::from_secs(5)).unwrap();
         worker.join().unwrap();
         assert_eq!(
