@@ -6,7 +6,11 @@ pub mod lock_order;
 #[cfg(test)]
 mod tests;
 
-use crate::{CoreError, Result, Store, hooks::Hooks, run_log::Lsn};
+use crate::{
+    CoreError, Result, Store,
+    hooks::{Boundary, Hooks, Step},
+    run_log::Lsn,
+};
 use lock_order::{Held, Lock};
 
 const REGISTERING: u8 = 0;
@@ -203,6 +207,41 @@ impl<R: RunRecords> Run<R> {
     }
 }
 
+impl Run<crate::run_records::Records> {
+    /// Maintenance takes the same actor as activations and callbacks. Copying
+    /// state and appending its checkpoint are one indivisible critical section.
+    pub fn snapshot_if_due(
+        &self,
+        now_ms: i64,
+        active_segments: &[u64],
+        hooks: &dyn Hooks,
+    ) -> Result<Option<Lsn>> {
+        let (log, cut) = {
+            let mut actor = self.actor.lock();
+            if self.routing() != Routing::Open
+                || !actor.records.snapshot_due(now_ms, active_segments)
+            {
+                return Ok(None);
+            }
+            let generation = actor.generation;
+            actor.records.append_snapshot(generation)?
+        };
+        lock_order::assert_lock_free();
+        if hooks.at(&self.id, &Boundary::MidSnapshot) == Step::Crash {
+            self.actor.lock().records.poison();
+            return Err(CoreError::Cut);
+        }
+        // Appends after the checkpoint are safe: recovery applies them after
+        // its cutoff. The old start stays pinned until the sync succeeds.
+        if let Err(error) = log.sync_through(cut) {
+            self.actor.lock().records.poison();
+            return Err(error);
+        }
+        self.actor.lock().records.snapshot_synced(cut);
+        Ok(Some(cut))
+    }
+}
+
 pub struct Entrant<R: RunRecords> {
     run: Arc<Run<R>>,
     ticket: Option<Arc<AtomicU8>>,
@@ -375,6 +414,28 @@ pub struct RunStore<R> {
     registry: Mutex<BTreeMap<String, Arc<Run<R>>>>,
     flows: Mutex<BTreeMap<String, Arc<Ordered<Accounting>>>>,
     committer: committer::Committer,
+}
+
+impl RunStore<crate::run_records::Records> {
+    /// Registry maintenance never holds the registry mutex while taking actors
+    /// or waiting for the writer's group sync.
+    pub fn snapshot_due_runs(
+        &self,
+        now_ms: i64,
+        active_segments: &[u64],
+        hooks: &dyn Hooks,
+    ) -> Result<Vec<Lsn>> {
+        self.snapshot()
+            .into_iter()
+            .filter_map(
+                |run| match run.snapshot_if_due(now_ms, active_segments, hooks) {
+                    Ok(Some(lsn)) => Some(Ok(lsn)),
+                    Ok(None) => None,
+                    Err(error) => Some(Err(error)),
+                },
+            )
+            .collect()
+    }
 }
 
 impl<R: RunRecords> RunStore<R> {
