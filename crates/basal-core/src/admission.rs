@@ -114,10 +114,10 @@ fn next_run_id(tx: &Transaction, store_id: &str) -> Result<(String, i64)> {
 }
 
 /// What the gate found the trigger may be admitted under.
-struct Grant {
-    version: u32,
-    deadline_ms: i64,
-    code_hash: [u8; 32],
+pub(crate) struct Grant {
+    pub(crate) version: u32,
+    pub(crate) deadline_ms: i64,
+    pub(crate) code_hash: [u8; 32],
 }
 
 fn approved_deadline(text: &str, default_ms: i64) -> Result<i64> {
@@ -156,6 +156,26 @@ fn gate(
     ctx: &AdmitContext,
     supplied: Option<&install::Approved>,
 ) -> Result<std::result::Result<Grant, Admission>> {
+    gate_with_slots(tx, spec, ctx, supplied, || {
+        Ok(tx.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE flow_id=?1 AND state IN {})",
+                runs::HOLDS_SLOT
+            ),
+            [&spec.flow_id],
+            |r| r.get::<_, bool>(0),
+        )?)
+    })
+}
+
+/// Both storage models share approval and rate policy, but not slot storage.
+pub(crate) fn gate_with_slots(
+    tx: &Transaction,
+    spec: &TriggerSpec,
+    ctx: &AdmitContext,
+    supplied: Option<&install::Approved>,
+    holds_slot: impl FnOnce() -> Result<bool>,
+) -> Result<std::result::Result<Grant, Admission>> {
     if draining(tx)? {
         return Ok(Err(Admission::Draining));
     }
@@ -187,16 +207,7 @@ fn gate(
     let epoch = Manifest::parse_stored(&spec.manifest)
         .map_err(|e| CoreError::Corrupt(e.to_string()))?
         .state_epoch;
-    if crate::state_epoch::recorded(tx, &spec.flow_id)? != epoch
-        && tx.query_row(
-            &format!(
-                "SELECT EXISTS(SELECT 1 FROM runs WHERE flow_id=?1 AND state IN {})",
-                runs::HOLDS_SLOT
-            ),
-            [&spec.flow_id],
-            |r| r.get::<_, bool>(0),
-        )?
-    {
+    if crate::state_epoch::recorded(tx, &spec.flow_id)? != epoch && holds_slot()? {
         return Ok(Err(Admission::StateBusy));
     }
     if let Take::Refused { .. } =

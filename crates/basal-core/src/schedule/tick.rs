@@ -261,6 +261,24 @@ pub(crate) fn admit_next_unblocked(
     ctx: &AdmitContext,
     blocked: &std::collections::BTreeSet<String>,
 ) -> Result<Option<AdmittedFire>> {
+    admit_next_with(
+        tx,
+        ctx,
+        blocked,
+        |e| matches!(e, CoreError::Corrupt(_)),
+        |flow, trigger_id, trigger| {
+            admission::admit_current(tx, store_id, flow, trigger_id, trigger, ctx)
+        },
+    )
+}
+
+pub(crate) fn admit_next_with(
+    tx: &Transaction,
+    ctx: &AdmitContext,
+    blocked: &std::collections::BTreeSet<String>,
+    fire_error: impl Fn(&CoreError) -> bool,
+    admit: impl Fn(&str, &str, JsonText) -> Result<Admission>,
+) -> Result<Option<AdmittedFire>> {
     let blocked = serde_json::json!(blocked).to_string();
     loop {
         // Admitting a fire can fail on stored data this build cannot use (a
@@ -272,15 +290,19 @@ pub(crate) fn admit_next_unblocked(
         // the planned fires, and go on to the next one, so one bad fire
         // cannot block every fire behind it.
         tx.execute_batch("SAVEPOINT schedule_admission")?;
-        match admit_oldest(tx, store_id, ctx, &blocked) {
+        match admit_oldest(tx, ctx, &blocked, &admit) {
             Ok(fire) => {
                 tx.execute_batch("RELEASE schedule_admission")?;
                 return Ok(fire);
             }
             Err(error) => {
                 tx.execute_batch("ROLLBACK TO schedule_admission; RELEASE schedule_admission")?;
-                let CoreError::Corrupt(detail) = error else {
+                if !fire_error(&error) {
                     return Err(error);
+                }
+                let detail = match error {
+                    CoreError::Corrupt(detail) | CoreError::Invalid(detail) => detail,
+                    other => other.to_string(),
                 };
                 tx.execute("INSERT INTO schedule_dropped(flow_id,trigger_id,due_ms,payload,reason,at) SELECT flow_id,trigger_id,due_ms,payload,'not_approved',?1 FROM schedule_fires WHERE flow_id NOT IN (SELECT value FROM json_each(?2)) ORDER BY seq ASC LIMIT 1", params![ctx.now_ms, blocked])?;
                 tx.execute("INSERT INTO audit(at,actor,action,detail) VALUES (?1,'runtime','schedule.corrupt',?2)", params![ctx.now_ms, serde_json::json!({"error":detail}).to_string()])?;
@@ -295,9 +317,9 @@ pub(crate) fn admit_next_unblocked(
 
 fn admit_oldest(
     tx: &Transaction,
-    store_id: &str,
     ctx: &AdmitContext,
     blocked: &str,
+    admit: &impl Fn(&str, &str, JsonText) -> Result<Admission>,
 ) -> Result<Option<AdmittedFire>> {
     let row = tx
         .query_row(
@@ -320,7 +342,7 @@ fn admit_oldest(
     };
     let trigger = JsonText::new(payload.clone())
         .map_err(|e| CoreError::Corrupt(format!("planned fire {trigger_id}: {e:?}")))?;
-    let admission = admission::admit_current(tx, store_id, &flow_id, &trigger_id, trigger, ctx)?;
+    let admission = admit(&flow_id, &trigger_id, trigger)?;
     if !matches!(admission, Admission::Draining | Admission::StateBusy) {
         if let Some(reason) = dropped_reason(&admission) {
             tx.execute(

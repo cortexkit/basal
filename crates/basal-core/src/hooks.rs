@@ -9,6 +9,10 @@
 /// A point between two records.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Boundary {
+    /// One admission's rows are written inside the batch, before commit.
+    AdmissionWritten,
+    /// The admission batch committed, before receipts may be acknowledged.
+    AdmissionCommitted,
     /// A run-log batch is appended but no sync watermark has been released.
     RunLogAppended,
     /// The next segment's reserved row is committed, before file creation.

@@ -145,7 +145,7 @@ pub struct Report {
 }
 
 #[derive(PartialEq, Eq)]
-enum HeaderMatch {
+pub(crate) enum HeaderMatch {
     Unrelated,
     Filtered,
     Accepted,
@@ -185,7 +185,11 @@ fn header_matches(key: &str, pattern: &str, value: &str) -> bool {
     p == pattern.len()
 }
 
-fn effective_manifest(conn: &rusqlite::Connection, text: &str, flow: &str) -> Result<Manifest> {
+pub(crate) fn effective_manifest(
+    conn: &rusqlite::Connection,
+    text: &str,
+    flow: &str,
+) -> Result<Manifest> {
     let mut manifest =
         Manifest::parse_stored(text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
     if manifest.params.is_some() {
@@ -200,7 +204,7 @@ fn effective_manifest(conn: &rusqlite::Connection, text: &str, flow: &str) -> Re
     Ok(manifest)
 }
 
-fn matches(manifest: &Manifest, notice: &Notice, flow_id: &str) -> Result<HeaderMatch> {
+pub(crate) fn matches(manifest: &Manifest, notice: &Notice, flow_id: &str) -> Result<HeaderMatch> {
     if notice
         .target_flow()?
         .is_some_and(|target| target != flow_id)
@@ -231,7 +235,7 @@ fn matches(manifest: &Manifest, notice: &Notice, flow_id: &str) -> Result<Header
     )
 }
 
-fn stale(manifest: &Manifest, notice: &Notice, now: i64) -> Result<bool> {
+pub(crate) fn stale(manifest: &Manifest, notice: &Notice, now: i64) -> Result<bool> {
     // Zero means unknown, not ancient. The separate first-approval cutoff
     // still rejects such notices; an age limit cannot prove they are stale.
     if notice.published_at_ms == 0 {
@@ -250,7 +254,7 @@ fn stale(manifest: &Manifest, notice: &Notice, now: i64) -> Result<bool> {
     }))
 }
 
-fn count_stale_drop(tx: &Transaction, flow: &str) -> Result<()> {
+pub(crate) fn count_stale_drop(tx: &Transaction, flow: &str) -> Result<()> {
     tx.execute("INSERT INTO event_flow_health(flow_id,stale_dropped) VALUES (?1,1) ON CONFLICT(flow_id) DO UPDATE SET stale_dropped=stale_dropped+1", [flow])?;
     Ok(())
 }
@@ -261,7 +265,7 @@ fn receipt(tx: &Transaction, flow: &str, notice: &Notice, state: &str, now: i64)
     Ok(())
 }
 
-fn after_first_approval(
+pub(crate) fn after_first_approval(
     tx: &Transaction,
     flow: &str,
     notice: &Notice,
@@ -282,6 +286,19 @@ fn offer(
     ctx: &admission::AdmitContext,
     report: &mut Report,
 ) -> Result<()> {
+    offer_with(tx, flow, notice, ctx, report, |trigger| {
+        admission::admit_current(tx, store_id, flow, &notice.trigger_id(), trigger, ctx)
+    })
+}
+
+pub(crate) fn offer_with(
+    tx: &Transaction,
+    flow: &str,
+    notice: &Notice,
+    ctx: &admission::AdmitContext,
+    report: &mut Report,
+    admit: impl FnOnce(JsonText) -> Result<Admission>,
+) -> Result<()> {
     if install::is_disabled(tx, flow)? {
         return Ok(());
     }
@@ -299,14 +316,7 @@ fn offer(
         |r| r.get(0),
     )?;
     let outcome = if queued == 0 {
-        admission::admit_current(
-            tx,
-            store_id,
-            flow,
-            &notice.trigger_id(),
-            notice.trigger()?,
-            ctx,
-        )?
+        admit(notice.trigger()?)?
     } else {
         // Still check saturation when a queue is full: a sustained flood must
         // trip the same auto-disable policy as any other admission source.
