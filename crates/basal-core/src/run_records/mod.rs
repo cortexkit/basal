@@ -114,6 +114,12 @@ impl Records {
         self.last_lsn
     }
 
+    pub(crate) fn preview(&self, generation: u64, body: &Body) -> Result<State> {
+        let mut next = self.state.clone();
+        next.apply(generation, body)?;
+        Ok(next)
+    }
+
     /// The activation releases only awaited arrivals, in mailbox arrival order.
     /// The returned delivery is safe to send after the actor has been released.
     pub fn release_next(
@@ -178,6 +184,17 @@ impl Records {
     }
 
     pub fn append(&mut self, generation: u64, body: Body) -> Result<Lsn> {
+        let (lsn, sync) = self.append_pending(generation, body)?;
+        if sync {
+            self.sync_through(lsn)?;
+        }
+        Ok(lsn)
+    }
+
+    /// The driver registers its dispatch entrant before releasing the actor,
+    /// then syncs this cut before handing anything to the host. Separating the
+    /// append from the wait also permits a lock-free crash hook between them.
+    pub(crate) fn append_pending(&mut self, generation: u64, body: Body) -> Result<(Lsn, bool)> {
         if self.poisoned {
             return Err(CoreError::Cut);
         }
@@ -193,10 +210,16 @@ impl Records {
         self.state = next;
         self.last_lsn = lsn;
         self.required_start.get_or_insert(lsn);
-        if sync {
-            self.sync_through(lsn)?;
+        Ok((lsn, sync))
+    }
+
+    /// A terminal transaction exports the entire state, including lazy values.
+    /// The closer holds the actor and accounting lock, but not SQLite.
+    pub(crate) fn sync_terminal(&self) -> Result<()> {
+        if self.poisoned {
+            return Err(CoreError::Cut);
         }
-        Ok(lsn)
+        self.log.sync_through(self.last_lsn)
     }
 
     /// `active_segments` is the retained sequence list, oldest first, without the spare.

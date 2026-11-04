@@ -35,6 +35,14 @@ pub enum Boundary {
     RunLogGcSynced,
     /// A snapshot is copied and appended atomically, before its sync wait.
     MidSnapshot,
+    /// A driver's identity record is appended, before its required sync.
+    DriverAppended,
+    /// A remote Intent is durable, before the host is called.
+    DriverSynced,
+    /// The host returned, before Accepted or Arrived is appended.
+    DriverDispatched,
+    /// Released is appended, before Deliver or terminal projection.
+    DriverReleased,
     /// The activation claimed the run (its generation is committed).
     Claimed { generation: u64 },
     /// The runtime fingerprint was recorded at the run's first activation.
@@ -82,6 +90,12 @@ pub enum Boundary {
 }
 
 impl Boundary {
+    pub const RUN_DRIVER: [Self; 4] = [
+        Self::DriverAppended,
+        Self::DriverSynced,
+        Self::DriverDispatched,
+        Self::DriverReleased,
+    ];
     pub const RUN_LOG_GC: [Self; 3] = [
         Self::RunLogGcCommitted,
         Self::RunLogGcUnlinked,

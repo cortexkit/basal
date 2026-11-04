@@ -261,6 +261,11 @@ impl State {
                     }
                     old.prior_intents.push(previous.clone());
                     old.intent = Some(intent.clone());
+                    // Proof that the previous attempt was unsent cannot
+                    // authorize another retry after this attempt may be sent.
+                    if let Some(deferred) = old.deferred.take() {
+                        old.prior_deferrals.push(deferred);
+                    }
                 } else {
                     self.insert(&intent.call)?.intent = Some(intent.clone());
                 }

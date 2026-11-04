@@ -145,6 +145,7 @@ struct Actor<R> {
     generation: u64,
     entrants: usize,
     records: R,
+    dispatches: std::collections::BTreeSet<u64>,
 }
 pub struct Run<R> {
     id: String,
@@ -157,6 +158,30 @@ pub struct Run<R> {
 }
 
 impl<R: RunRecords> Run<R> {
+    /// Gate checks happen lock-free. Only their winning generation may publish
+    /// an activation; a racing claim invalidates the older gate answer.
+    pub fn claim<T>(
+        self: &Arc<Self>,
+        expected_generation: u64,
+        f: impl FnOnce(u64, &mut Activation<'_, R>) -> Result<T>,
+    ) -> Result<T> {
+        let mut actor = self.actor.lock();
+        if actor.generation != expected_generation || self.routing() != Routing::Open {
+            return Err(self.owner_lost(expected_generation));
+        }
+        let generation = expected_generation
+            .checked_add(1)
+            .ok_or_else(|| CoreError::Corrupt("generation exhausted".into()))?;
+        actor.generation = generation;
+        f(
+            generation,
+            &mut Activation {
+                run: self,
+                actor: &mut actor,
+                tickets: Vec::new(),
+            },
+        )
+    }
     pub fn routing(&self) -> Routing {
         match self.routing.load(Ordering::Acquire) {
             0 => Routing::Open,
@@ -203,11 +228,23 @@ impl<R: RunRecords> Run<R> {
         Ok(Entrant {
             run: self.clone(),
             ticket: None,
+            position: None,
         })
     }
 }
 
 impl Run<crate::run_records::Records> {
+    pub(crate) fn closed_hint(&self, commit_seq: u64) {
+        let mut actor = self.actor.lock();
+        let generation = actor.generation;
+        // SQLite already committed; a failed hint cannot undo terminal success.
+        if let Err(error) = actor
+            .records
+            .append(generation, crate::run_records::Body::Closed { commit_seq })
+        {
+            tracing::warn!(run_id = self.id, %error, "could not append Closed hint");
+        }
+    }
     /// Maintenance takes the same actor as activations and callbacks. Copying
     /// state and appending its checkpoint are one indivisible critical section.
     pub fn snapshot_if_due(
@@ -245,8 +282,19 @@ impl Run<crate::run_records::Records> {
 pub struct Entrant<R: RunRecords> {
     run: Arc<Run<R>>,
     ticket: Option<Arc<AtomicU8>>,
+    position: Option<u64>,
 }
 impl<R: RunRecords> Entrant<R> {
+    pub(crate) fn account<T>(
+        &self,
+        f: impl FnOnce(&mut R) -> Result<(T, Vec<Reservation>)>,
+    ) -> Result<T> {
+        let mut actor = self.run.actor.lock();
+        let mut accounting = self.run.accounting.lock();
+        let (result, rows) = f(&mut actor.records)?;
+        accounting.runs.insert(self.run.id.clone(), rows);
+        Ok(result)
+    }
     /// A previously registered entrant can finish while Closing. It does not
     /// acquire new activation ownership or authorize a new dispatch.
     pub fn finish<T>(&self, f: impl FnOnce(&mut R) -> Result<T>) -> Result<T> {
@@ -289,6 +337,9 @@ impl<R: RunRecords> Drop for Entrant<R> {
             return;
         }
         let mut actor = self.run.actor.lock();
+        if let Some(position) = self.position {
+            actor.dispatches.remove(&position);
+        }
         actor.entrants -= 1;
         if actor.entrants == 0 {
             self.run.drained.notify_all();
@@ -299,13 +350,16 @@ impl<R: RunRecords> Drop for Entrant<R> {
 pub struct Activation<'a, R> {
     run: &'a Arc<Run<R>>,
     actor: &'a mut Actor<R>,
-    tickets: Vec<Arc<AtomicU8>>,
+    tickets: Vec<(Arc<AtomicU8>, Option<u64>)>,
 }
 impl<R> Drop for Activation<'_, R> {
     fn drop(&mut self) {
-        for ticket in &self.tickets {
+        for (ticket, position) in &self.tickets {
             if ticket.swap(HANDED_OFF, Ordering::AcqRel) == ABANDONED {
                 self.actor.entrants -= 1;
+                if let Some(position) = position {
+                    self.actor.dispatches.remove(position);
+                }
             }
         }
         if self.actor.entrants == 0 {
@@ -314,6 +368,24 @@ impl<R> Drop for Activation<'_, R> {
     }
 }
 impl<R: RunRecords> Activation<'_, R> {
+    /// Rebuild this run's contribution atomically with its journal mutation.
+    /// The callback may read SQLite under the accounting lock, but cannot call
+    /// a host. Returning an error leaves the accounting contribution unchanged.
+    pub(crate) fn account<T>(
+        &mut self,
+        f: impl FnOnce(&mut R, &[Reservation]) -> Result<(T, Vec<Reservation>)>,
+    ) -> Result<T> {
+        let mut accounting = self.run.accounting.lock();
+        let others: Vec<_> = accounting
+            .runs
+            .iter()
+            .filter(|(id, _)| *id != &self.run.id)
+            .flat_map(|(_, rows)| rows.iter().cloned())
+            .collect();
+        let (result, rows) = f(&mut self.actor.records, &others)?;
+        accounting.runs.insert(self.run.id.clone(), rows);
+        Ok(result)
+    }
     pub fn records(&mut self) -> &mut R {
         &mut self.actor.records
     }
@@ -322,11 +394,22 @@ impl<R: RunRecords> Activation<'_, R> {
     pub fn dispatch_entrant(&mut self) -> Entrant<R> {
         self.actor.entrants += 1;
         let ticket = Arc::new(AtomicU8::new(REGISTERING));
-        self.tickets.push(ticket.clone());
+        self.tickets.push((ticket.clone(), None));
         Entrant {
             run: self.run.clone(),
             ticket: Some(ticket),
+            position: None,
         }
+    }
+    pub(crate) fn is_dispatching(&self, position: u64) -> bool {
+        self.actor.dispatches.contains(&position)
+    }
+    pub(crate) fn dispatch_entrant_for(&mut self, position: u64) -> Entrant<R> {
+        self.actor.dispatches.insert(position);
+        let mut entrant = self.dispatch_entrant();
+        entrant.position = Some(position);
+        self.tickets.last_mut().unwrap().1 = Some(position);
+        entrant
     }
     pub fn reserve(
         &mut self,
@@ -487,10 +570,16 @@ impl<R: RunRecords> RunStore<R> {
         generation: u64,
         records: R,
     ) -> Result<Arc<Run<R>>> {
-        let mut registry = self.registry.lock().unwrap();
-        if registry.contains_key(&id) {
-            return Err(CoreError::Invalid("run already registered".into()));
-        }
+        self.insert_accounted(id, flow, generation, records, Vec::new())
+    }
+    pub(crate) fn insert_accounted(
+        &self,
+        id: String,
+        flow: String,
+        generation: u64,
+        records: R,
+        reservations: Vec<Reservation>,
+    ) -> Result<Arc<Run<R>>> {
         let accounting = self
             .flows
             .lock()
@@ -498,6 +587,11 @@ impl<R: RunRecords> RunStore<R> {
             .entry(flow.clone())
             .or_insert_with(|| Arc::new(Ordered::new(Accounting::default(), Lock::Accounting)))
             .clone();
+        let mut contribution = accounting.lock();
+        let mut registry = self.registry.lock().unwrap();
+        if registry.contains_key(&id) {
+            return Err(CoreError::Invalid("run already registered".into()));
+        }
         let run = Arc::new(Run {
             id: id.clone(),
             flow,
@@ -507,13 +601,15 @@ impl<R: RunRecords> RunStore<R> {
                     generation,
                     entrants: 0,
                     records,
+                    dispatches: std::collections::BTreeSet::new(),
                 },
                 Lock::Actor,
             ),
             drained: Condvar::new(),
             closer: Mutex::new(()),
-            accounting,
+            accounting: accounting.clone(),
         });
+        contribution.runs.insert(id.clone(), reservations);
         registry.insert(id, run.clone());
         Ok(run)
     }
@@ -563,12 +659,40 @@ impl<R: RunRecords> RunStore<R> {
         builder: &dyn TerminalBuilder<R>,
         driver: &dyn CloseDriver,
     ) -> Result<()> {
+        self.close_impl(run, builder, driver, None)
+    }
+    pub(crate) fn close_owned(
+        &self,
+        run: &Arc<Run<R>>,
+        generation: u64,
+        builder: &dyn TerminalBuilder<R>,
+        driver: &dyn CloseDriver,
+    ) -> Result<()> {
+        self.close_impl(run, builder, driver, Some(generation))
+    }
+    fn close_impl(
+        &self,
+        run: &Arc<Run<R>>,
+        builder: &dyn TerminalBuilder<R>,
+        driver: &dyn CloseDriver,
+        generation: Option<u64>,
+    ) -> Result<()> {
         let _closer = run
             .closer
             .try_lock()
             .map_err(|_| CoreError::Unavailable("another closer is active".into()))?;
         {
             let mut actor = run.actor.lock();
+            if let Some(generation) = generation {
+                let expected = if run.routing() == Routing::Closing {
+                    generation.checked_add(1)
+                } else {
+                    Some(generation)
+                };
+                if expected != Some(actor.generation) {
+                    return Err(run.owner_lost(generation));
+                }
+            }
             if run.routing() == Routing::Closed {
                 return Ok(());
             }
