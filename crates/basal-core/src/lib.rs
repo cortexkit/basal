@@ -71,6 +71,7 @@ pub mod reconcile;
 pub mod retention;
 mod revocation;
 pub mod run_log;
+pub mod run_store_sql;
 pub mod runs;
 pub mod runtime;
 pub mod schedule;
