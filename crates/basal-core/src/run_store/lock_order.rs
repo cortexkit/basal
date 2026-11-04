@@ -62,6 +62,17 @@ pub fn assert_sync_allowed() {
     }
 }
 
+pub(crate) fn assert_actor_held() {
+    if cfg!(debug_assertions) {
+        HELD.with(|held| {
+            assert!(
+                held.borrow().contains(&Lock::Actor),
+                "snapshot outside actor"
+            )
+        });
+    }
+}
+
 pub fn assert_lock_free() {
     if cfg!(debug_assertions) {
         HELD.with(|held| {

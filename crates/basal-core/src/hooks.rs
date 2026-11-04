@@ -27,6 +27,8 @@ pub enum Boundary {
     RunLogLinked,
     /// The new segment is registered active, before publishing its watermark.
     RunLogPromoted,
+    /// A snapshot is copied and appended atomically, before its sync wait.
+    MidSnapshot,
     /// The activation claimed the run (its generation is committed).
     Claimed { generation: u64 },
     /// The runtime fingerprint was recorded at the run's first activation.
