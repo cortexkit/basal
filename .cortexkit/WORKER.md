@@ -8,7 +8,7 @@ Standing rules for workers. Follow them without asking. Ask only about what the 
 - Run only filtered tests: the tests for the files and behaviour you changed, by name or module filter (`cargo test -p <pkg> --test <file> <filter>`). Never run a whole package suite, the workspace, or `script/gate.sh`; the supervising agent runs the full suites once in its push gate. A filtered run longer than about 15 minutes means the filter is too broad.
 - A failure that looks unrelated to your change: rerun that one test by name on the base commit, never the suite.
 - macOS-only tests (Seatbelt, process attribution) can't run inside a worker shell, because macOS refuses a nested sandbox. When the change touches macOS code, run the affected tests by name on a fresh macOS machine with `runon: "macos"`. Otherwise leave them to CI and say so.
-- Format with `cargo fmt --all` on Linux, then apply the formatter's changes before committing.
+- Format on Linux with `cargo fmt --all -- --emit stdout`, then apply its output to the files you changed with your edit tool, and confirm with `cargo fmt --all --check`. Plain `cargo fmt --all` under `runon` is refused before it starts, because the write guard treats it as rewriting the whole checkout, so naming files in `return_paths` doesn't help. Don't wrap it in `sh -c` to get around the guard.
 - `Cargo.lock` may be updated on the Mac with `cargo update -p <crate>` for the crates your change needs. That command records versions and compiles nothing. Never use `--workspace`.
 
 ## Before you deliver
