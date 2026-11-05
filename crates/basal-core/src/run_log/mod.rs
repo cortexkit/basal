@@ -198,6 +198,41 @@ pub struct RunLog<R: LogRecord> {
 }
 
 impl<R: LogRecord> RunLog<R> {
+    /// Only cutover, before any live admission is published. The caller's
+    /// lease-fenced reset verifies migration_phase and the absence of live rows.
+    /// A partial migration log has no external users; rebuilding it ensures all
+    /// converted snapshots occupy the first segment even across lease changes.
+    pub(crate) fn create_migration(
+        config: Config,
+        registry: Arc<dyn SegmentRegistry>,
+        reset: impl FnOnce() -> Result<()>,
+    ) -> Result<Self> {
+        platform::mkdir(&config.directory)?;
+        if let Some(parent) = config.directory.parent() {
+            platform::sync_dir(parent)?;
+        }
+        let lock = Arc::new(platform::DirectoryLock::acquire(
+            &config.directory.join(".lock"),
+        )?);
+        let epoch_name = format!("e{}", config.identity.log_epoch);
+        for entry in std::fs::read_dir(&config.directory)? {
+            let entry = entry?;
+            if entry.file_name() != ".lock" && entry.file_name() != epoch_name.as_str() {
+                return Err(Error::Corrupt("unexpected file in migration log directory"));
+            }
+        }
+        reset()?;
+        let epoch = config.directory.join(epoch_name);
+        if epoch.exists() {
+            std::fs::remove_dir_all(epoch)?;
+            platform::sync_dir(&config.directory)?;
+        }
+        let (mut engine, recovered) = Engine::open_locked::<R>(config, registry, true, Some(lock))?;
+        debug_assert!(recovered.records.is_empty());
+        engine.ensure_spare()?;
+        Ok(Self::spawn(engine))
+    }
+
     /// Fresh disposable logs only; counts file I/O separately from registry SQL.
     #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
     pub fn create_measured(

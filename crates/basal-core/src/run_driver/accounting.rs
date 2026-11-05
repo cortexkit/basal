@@ -42,6 +42,9 @@ pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>>
     let mut rows = Vec::new();
     for call in state.calls.values() {
         for intent in call.prior_intents.iter().chain(call.intent.iter()) {
+            if intent.attempts <= call.pre_accounted_attempts {
+                continue;
+            }
             if let Some(count) = &intent.dispatch_count_window {
                 if call
                     .intent
@@ -60,6 +63,7 @@ pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>>
             }
         }
         if let Some(intent) = &call.intent
+            && !call.pre_accounted_reservation
             && let Some(reservation) = &intent.reservation
         {
             let usage = call.arrival.as_ref().and_then(|a| a.usage.as_ref());
@@ -182,7 +186,7 @@ pub(super) fn check(
     Ok(())
 }
 
-pub(super) fn fold(
+pub(crate) fn fold(
     tx: &Transaction<'_>,
     flow: &str,
     id: &str,
@@ -192,6 +196,9 @@ pub(super) fn fold(
 ) -> Result<()> {
     for call in state.calls.values() {
         for intent in call.prior_intents.iter().chain(call.intent.iter()) {
+            if intent.attempts <= call.pre_accounted_attempts {
+                continue;
+            }
             if let Some(count) = &intent.dispatch_count_window {
                 if call
                     .intent
@@ -208,6 +215,49 @@ pub(super) fn fold(
         let Some(intent) = &call.intent else {
             continue;
         };
+        if call.pre_accounted_reservation {
+            if let Some(arrival) = &call.arrival {
+                let outcome = basal_host::HostOutcome {
+                    settlement: arrival.settlement,
+                    value: arrival.value.clone(),
+                    usage: arrival.usage.as_ref().map(|u| basal_host::TokenUsage {
+                        input_tokens: Some(u.input_tokens),
+                        output_tokens: Some(u.output_tokens),
+                        ..Default::default()
+                    }),
+                };
+                crate::tokens::settle_outcome(tx, id, call.identity.position, &outcome, now)?;
+                let value = serde_json::from_str::<serde_json::Value>(arrival.value.as_str())
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                crate::classify_cost::settle(
+                    tx,
+                    "flow",
+                    id,
+                    call.identity.position,
+                    Some(&value),
+                    None,
+                )?;
+            } else if call.deferred.as_ref().is_some_and(|d| d.proven_unsent) {
+                crate::tokens::settle(
+                    tx,
+                    crate::tokens::Key::Call {
+                        run_id: id,
+                        position: call.identity.position,
+                    },
+                    crate::tokens::Report::NoEffect,
+                    now,
+                )?;
+                crate::classify_cost::settle(
+                    tx,
+                    "flow",
+                    id,
+                    call.identity.position,
+                    None,
+                    Some("not_dispatched"),
+                )?;
+            }
+            continue;
+        }
         let Some(reservation) = &intent.reservation else {
             continue;
         };

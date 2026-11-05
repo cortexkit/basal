@@ -73,6 +73,7 @@ mod revocation;
 #[cfg(any(test, feature = "test-support"))]
 mod rig_projection;
 pub mod run_admission;
+pub mod run_cutover;
 pub mod run_decisions;
 pub mod run_driver;
 pub mod run_host;

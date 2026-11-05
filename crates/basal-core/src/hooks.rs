@@ -75,6 +75,42 @@ pub enum Boundary {
     RestoreStarted,
     /// Restore completion committed; the next boot must recover normally.
     RestoreFinished,
+    /// Legacy temporary-file sweep and audit capture, before the phase commit.
+    MigrationSweepReady,
+    /// Sweep and pre-migration evidence are durable.
+    MigrationSweepCommitted,
+    /// New control-plane schema is created, before the phase commit.
+    MigrationCreateReady,
+    /// Schema and run-log metadata are durable.
+    MigrationCreateCommitted,
+    /// Finished-run conversion is built, before the phase commit.
+    MigrationFinishedReady,
+    /// Finished histories, call detail and receipts are durable.
+    MigrationFinishedCommitted,
+    /// First-segment snapshots are synced, before live admissions commit.
+    MigrationLiveReady,
+    /// Converted live admissions and their snapshot watermark are durable.
+    MigrationLiveCommitted,
+    /// Broca table replacement is built with its forget trigger disabled.
+    MigrationBrocaReady,
+    /// Broca calls have their new ownership and waits/wakes are preserved.
+    MigrationBrocaCommitted,
+    /// Legacy schema removal is audited, before the drop transaction commits.
+    MigrationDropReady,
+    /// Legacy tables and dependent views are gone.
+    MigrationDropCommitted,
+    /// Both schema post-checks and the page-size rewrite passed, before commit.
+    MigrationPagesReady,
+    /// The page-size phase and its post-checks committed.
+    MigrationPagesCommitted,
+    /// DELETE mode and the target page size are selected, before VACUUM.
+    MigrationBeforeVacuum,
+    /// VACUUM completed, before WAL mode is restored.
+    MigrationAfterVacuum,
+    /// Persisted post-checks passed, before migration completion commits.
+    MigrationFinishReady,
+    /// Migration completion committed; normal startup may proceed.
+    MigrationFinishCommitted,
     /// The activation claimed the run (its generation is committed).
     Claimed { generation: u64 },
     /// The runtime fingerprint was recorded at the run's first activation.
@@ -123,6 +159,26 @@ pub enum Boundary {
 }
 
 impl Boundary {
+    pub const MIGRATION: [Self; 18] = [
+        Self::MigrationSweepReady,
+        Self::MigrationSweepCommitted,
+        Self::MigrationCreateReady,
+        Self::MigrationCreateCommitted,
+        Self::MigrationFinishedReady,
+        Self::MigrationFinishedCommitted,
+        Self::MigrationLiveReady,
+        Self::MigrationLiveCommitted,
+        Self::MigrationBrocaReady,
+        Self::MigrationBrocaCommitted,
+        Self::MigrationDropReady,
+        Self::MigrationDropCommitted,
+        Self::MigrationPagesReady,
+        Self::MigrationPagesCommitted,
+        Self::MigrationBeforeVacuum,
+        Self::MigrationAfterVacuum,
+        Self::MigrationFinishReady,
+        Self::MigrationFinishCommitted,
+    ];
     pub const RESTORE: [Self; 4] = [
         Self::RestoreMarked,
         Self::RestoreQuarantined,

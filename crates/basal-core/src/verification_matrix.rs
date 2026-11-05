@@ -49,6 +49,26 @@ fn every_post_port_boundary_has_a_crash_case() {
                 crate::run_log::tests::sqlite::restore::crash_case(boundary.clone());
                 crate::staged_runtime::tests::verification_matrix::crash_case(boundary.clone());
             }
+            Boundary::MigrationSweepReady
+            | Boundary::MigrationSweepCommitted
+            | Boundary::MigrationCreateReady
+            | Boundary::MigrationCreateCommitted
+            | Boundary::MigrationFinishedReady
+            | Boundary::MigrationFinishedCommitted
+            | Boundary::MigrationLiveReady
+            | Boundary::MigrationLiveCommitted
+            | Boundary::MigrationBrocaReady
+            | Boundary::MigrationBrocaCommitted
+            | Boundary::MigrationDropReady
+            | Boundary::MigrationDropCommitted
+            | Boundary::MigrationPagesReady
+            | Boundary::MigrationPagesCommitted
+            | Boundary::MigrationBeforeVacuum
+            | Boundary::MigrationAfterVacuum
+            | Boundary::MigrationFinishReady
+            | Boundary::MigrationFinishCommitted => {
+                crate::run_cutover::tests::migration_case(boundary.clone());
+            }
             Boundary::Claimed { .. }
             | Boundary::FingerprintRecorded
             | Boundary::ResendAuthorized { .. }
@@ -72,7 +92,7 @@ fn every_post_port_boundary_has_a_crash_case() {
         }
         assert!(covered.insert(boundary.clone()), "duplicate {boundary:?}");
     }
-    assert_eq!(covered.len(), 22);
+    assert_eq!(covered.len(), 40);
 }
 
 #[test]

@@ -19,6 +19,15 @@ pub struct Claim {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallState {
     pub identity: CallIdentity,
+    /// Dispatch attempts at or below this cut were already charged in SQLite
+    /// before migration. New retries use normal accounting; attempts charged
+    /// before migration are not added to the counters a second time.
+    #[serde(default)]
+    pub pre_accounted_attempts: u64,
+    /// A migrated reservation remains owned by its existing ledger row even
+    /// when the call retries. Settlement updates that row instead of inserting.
+    #[serde(default)]
+    pub pre_accounted_reservation: bool,
     pub intent: Option<Intent>,
     /// Older dispatch attempts still contribute accounting and audit facts.
     pub prior_intents: Vec<Intent>,
@@ -94,6 +103,8 @@ impl State {
             .entry(identity.position)
             .or_insert_with(|| CallState {
                 identity: identity.clone(),
+                pre_accounted_attempts: 0,
+                pre_accounted_reservation: false,
                 intent: None,
                 prior_intents: Vec::new(),
                 sync: None,

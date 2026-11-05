@@ -3,6 +3,12 @@
 use basal_testkit::cutover::*;
 use std::{collections::BTreeMap, convert::Infallible};
 
+fn source_rows(count: u64, detail: &str) -> ObligationRows {
+    (0..count)
+        .map(|position| (("failed".into(), position), detail.as_bytes().to_vec()))
+        .collect()
+}
+
 fn fixture() -> Before {
     Before {
         finished: ["success", "failed", "mismatch", "cancelled"]
@@ -42,12 +48,12 @@ fn fixture() -> Before {
             classify_costs: vec![b"reserved:0.3".to_vec()],
         },
         obligation_sources: ObligationSources {
-            unsettled_positions: 1,
-            unacknowledged_broca_calls: 2,
-            reserved_token_rows: 3,
-            reserved_dollar_rows: 4,
-            refusal_outbox_rows: 5,
-            run_cancelled_quarantine_receipts: 6,
+            unsettled_positions: source_rows(1, "outcome:pending"),
+            unacknowledged_broca_calls: source_rows(2, "handle:model"),
+            reserved_token_rows: source_rows(3, "reservation:11"),
+            reserved_dollar_rows: source_rows(4, "reservation:0.3"),
+            refusal_outbox_rows: source_rows(5, "refusal:pending"),
+            run_cancelled_quarantine_receipts: source_rows(6, "quarantine:cancelled"),
         },
         broca_waits: 7,
         broca_wakes: 8,
@@ -103,15 +109,17 @@ impl CutoverMigration for Stub {
         assert!(!self.stopped, "must reopen after a crash");
         let phase = self.durable_phase;
         match phase {
-            MigrationPhase::Sweep | MigrationPhase::Create => (),
+            MigrationPhase::Sweep | MigrationPhase::Create | MigrationPhase::PageSize => (),
             MigrationPhase::FinishedRuns => {
                 self.durable.history = self.before.finished.iter().cloned().collect();
                 self.durable.finished_identities = self.durable.history.clone();
                 self.durable.retained_call_rows = self.before.retained_journal_rows.clone();
                 self.durable.trigger_tombstones = self.before.trigger_keys.clone();
                 self.durable.write_tombstones = self.before.write_keys.clone();
-                // Independent fixture sum, not the checker implementation.
-                self.durable.open_obligations = 21;
+                // All six sources overlap; there are six distinct positions.
+                self.durable.open_obligations = 6;
+                self.durable.obligation_positions = (0..6).map(|p| ("failed".into(), p)).collect();
+                self.durable.obligation_sources = self.before.obligation_sources.clone();
                 for id in &self.before.finished {
                     self.durable
                         .counters
@@ -222,8 +230,8 @@ impl MigrationCopies for Copies {
 fn every_migration_phase_resumes_on_both_sides_of_its_commit_with_hold_checks() {
     let mut copies = Copies::default();
     let covered = rehearse(&mut copies).unwrap();
-    assert_eq!(copies.made, 14);
-    assert_eq!(covered.len(), 14);
+    assert_eq!(copies.made, 16);
+    assert_eq!(covered.len(), 16);
     for phase in MigrationPhase::STEPS {
         for side in [CutSide::BeforePhaseCommit, CutSide::AfterPhaseCommit] {
             assert_eq!(
@@ -336,28 +344,47 @@ fn hold_point_defends_every_acceptance_comparison() {
 }
 
 #[test]
-fn hold_point_counts_each_obligation_source_and_detects_sum_overflow() {
-    let (mut before, after) = completed();
-    for source in 0..6 {
-        let mut b = before.clone();
-        let fields = [
-            &mut b.obligation_sources.unsettled_positions,
-            &mut b.obligation_sources.unacknowledged_broca_calls,
-            &mut b.obligation_sources.reserved_token_rows,
-            &mut b.obligation_sources.reserved_dollar_rows,
-            &mut b.obligation_sources.refusal_outbox_rows,
-            &mut b.obligation_sources.run_cancelled_quarantine_receipts,
-        ];
-        *fields.into_iter().nth(source).unwrap() -= 1;
-        assert_eq!(
-            hold_point(&b, &after),
-            ["open obligations: source sum differs or overflows"]
-        );
-    }
-    before.obligation_sources.unsettled_positions = u64::MAX;
+fn hold_point_checks_each_overlapping_obligation_source_and_its_detail() {
+    let (before, after) = completed();
+    assert_eq!(before.obligation_sources.positions().len(), 6);
     assert_eq!(
-        hold_point(&before, &after),
-        ["open obligations: source sum differs or overflows"]
+        before.obligation_sources.counts().values().sum::<usize>(),
+        21
+    );
+    for source in 0..6 {
+        let mut changed = after.clone();
+        let fields = [
+            &mut changed.obligation_sources.unsettled_positions,
+            &mut changed.obligation_sources.unacknowledged_broca_calls,
+            &mut changed.obligation_sources.reserved_token_rows,
+            &mut changed.obligation_sources.reserved_dollar_rows,
+            &mut changed.obligation_sources.refusal_outbox_rows,
+            &mut changed.obligation_sources.run_cancelled_quarantine_receipts,
+        ];
+        let rows = fields.into_iter().nth(source).unwrap();
+        rows.first_entry().unwrap().get_mut().push(b'!');
+        let failures = hold_point(&before, &changed);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains(before.obligation_sources.rows()[source].0));
+        assert!(failures[0].ends_with("detail differs"));
+    }
+    let mut changed = after.clone();
+    changed
+        .obligation_sources
+        .unacknowledged_broca_calls
+        .clear();
+    // Other sources still cover both positions, and the row count is unchanged.
+    assert_eq!(changed.open_obligations, 6);
+    assert_eq!(
+        hold_point(&before, &changed),
+        ["open obligations: unacknowledged broca_calls detail differs"]
+    );
+    let mut changed = after;
+    changed.obligation_positions.remove(&("failed".into(), 0));
+    changed.obligation_positions.insert(("other".into(), 0));
+    assert_eq!(
+        hold_point(&before, &changed),
+        ["open obligations: source union differs"]
     );
 }
 

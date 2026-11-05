@@ -7,40 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MigrationPhase {
-    Sweep,
-    Create,
-    FinishedRuns,
-    LiveRuns,
-    BrocaCalls,
-    Drop,
-    Finish,
-    Done,
-}
-
-impl MigrationPhase {
-    pub const STEPS: [Self; 7] = [
-        Self::Sweep,
-        Self::Create,
-        Self::FinishedRuns,
-        Self::LiveRuns,
-        Self::BrocaCalls,
-        Self::Drop,
-        Self::Finish,
-    ];
-    fn next(self) -> Self {
-        match self {
-            Self::Sweep => Self::Create,
-            Self::Create => Self::FinishedRuns,
-            Self::FinishedRuns => Self::LiveRuns,
-            Self::LiveRuns => Self::BrocaCalls,
-            Self::BrocaCalls => Self::Drop,
-            Self::Drop => Self::Finish,
-            Self::Finish | Self::Done => Self::Done,
-        }
-    }
-}
+pub use basal_core::run_cutover::Phase as MigrationPhase;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CutSide {
@@ -116,28 +83,50 @@ pub struct Accounting {
     pub classify_costs: TableImage,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Source rows keyed by run and position, with canonical full source detail.
+pub type ObligationRows = BTreeMap<(String, u64), Vec<u8>>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ObligationSources {
-    pub unsettled_positions: u64,
-    pub unacknowledged_broca_calls: u64,
-    pub reserved_token_rows: u64,
-    pub reserved_dollar_rows: u64,
-    pub refusal_outbox_rows: u64,
-    pub run_cancelled_quarantine_receipts: u64,
+    pub unsettled_positions: ObligationRows,
+    pub unacknowledged_broca_calls: ObligationRows,
+    pub reserved_token_rows: ObligationRows,
+    pub reserved_dollar_rows: ObligationRows,
+    pub refusal_outbox_rows: ObligationRows,
+    pub run_cancelled_quarantine_receipts: ObligationRows,
 }
 
 impl ObligationSources {
-    fn total(self) -> Option<u64> {
+    pub fn rows(&self) -> [(&str, &ObligationRows); 6] {
         [
-            self.unsettled_positions,
-            self.unacknowledged_broca_calls,
-            self.reserved_token_rows,
-            self.reserved_dollar_rows,
-            self.refusal_outbox_rows,
-            self.run_cancelled_quarantine_receipts,
+            ("unsettled positions", &self.unsettled_positions),
+            (
+                "unacknowledged broca_calls",
+                &self.unacknowledged_broca_calls,
+            ),
+            ("reserved token rows", &self.reserved_token_rows),
+            ("reserved dollar rows", &self.reserved_dollar_rows),
+            ("refusal outbox rows", &self.refusal_outbox_rows),
+            (
+                "run_cancelled quarantine receipts",
+                &self.run_cancelled_quarantine_receipts,
+            ),
         ]
-        .into_iter()
-        .try_fold(0u64, u64::checked_add)
+    }
+
+    /// Report each source separately so overlapping reservations remain visible.
+    pub fn counts(&self) -> BTreeMap<&str, usize> {
+        self.rows()
+            .into_iter()
+            .map(|(name, rows)| (name, rows.len()))
+            .collect()
+    }
+
+    pub fn positions(&self) -> BTreeSet<(String, u64)> {
+        self.rows()
+            .into_iter()
+            .flat_map(|(_, rows)| rows.keys().cloned())
+            .collect()
     }
 }
 
@@ -171,6 +160,9 @@ pub struct After {
     pub counters: BTreeMap<String, RunCounters>,
     pub accounting: Accounting,
     pub open_obligations: u64,
+    pub obligation_positions: BTreeSet<(String, u64)>,
+    /// Independently extracted source details from the migrated obligations.
+    pub obligation_sources: ObligationSources,
     pub broca_waits: u64,
     pub broca_wakes: u64,
     pub trigger_tombstones: BTreeSet<String>,
@@ -241,8 +233,22 @@ pub fn hold_point(before: &Before, after: &After) -> Vec<String> {
             failures.push(format!("{name}: rows changed"));
         }
     }
-    if before.obligation_sources.total() != Some(after.open_obligations) {
-        failures.push("open obligations: source sum differs or overflows".into());
+    // One position can owe journal, Broca and reservation work simultaneously.
+    // Count their union, not their sum, then compare every source independently:
+    // equal totals alone could hide a dropped handle, reservation or outcome.
+    let positions = before.obligation_sources.positions();
+    if after.open_obligations != positions.len() as u64 || after.obligation_positions != positions {
+        failures.push("open obligations: source union differs".into());
+    }
+    for ((name, expected), (_, actual)) in before
+        .obligation_sources
+        .rows()
+        .into_iter()
+        .zip(after.obligation_sources.rows())
+    {
+        if expected != actual {
+            failures.push(format!("open obligations: {name} detail differs"));
+        }
     }
     if before.broca_waits != after.broca_waits {
         failures.push("broca_waits: count changed".into());

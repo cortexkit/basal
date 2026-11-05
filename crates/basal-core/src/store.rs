@@ -123,19 +123,32 @@ impl Store {
                 c.pragma_update(None, "checkpoint_fullfsync", durability.fullfsync)
             })
             .map_err(backend)?;
-        let outcome = inner.migrate(NAMESPACE, MIGRATIONS).map_err(backend)?;
-        if outcome.store_ahead() {
-            return Err(CoreError::Store(format!(
-                "the store's schema is at version {} but this build knows only up to {}",
-                outcome.recorded, outcome.chain_max
-            )));
-        }
         let mut store = Self {
             inner,
             cut: AtomicBool::new(false),
             store_id: String::new(),
             clock: Mutex::new(crate::clock::Clock::system()),
         };
+        let fresh = store.read(|c| {
+            Ok(c.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='meta')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })?;
+        if fresh {
+            crate::run_cutover::initialize_pages(&store)?;
+        }
+        let outcome = store
+            .inner
+            .migrate(NAMESPACE, MIGRATIONS)
+            .map_err(backend)?;
+        if outcome.store_ahead() {
+            return Err(CoreError::Store(format!(
+                "the store's schema is at version {} but this build knows only up to {}",
+                outcome.recorded, outcome.chain_max
+            )));
+        }
         store.store_id = store.write(|tx| {
             let existing: Option<String> = tx
                 .query_row("SELECT value FROM meta WHERE key = 'store_id'", [], |r| {
