@@ -50,4 +50,5 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+basal-core = { workspace = true, features = ["test-support"] }
 basal-host.workspace = true

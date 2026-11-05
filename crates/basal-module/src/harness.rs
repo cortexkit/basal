@@ -266,6 +266,20 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
 }
 
 fn runs(module: &Module) -> Result<Value, String> {
+    if module.rt.uses_run_log() {
+        let flows = module.rt.flow_health().map_err(|e| e.to_string())?;
+        let mut runs = Vec::new();
+        for flow in flows {
+            runs.extend(
+                module
+                    .rt
+                    .runs_for_flow(&flow.flow_id)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        runs.sort_by(|a, b| (a.admit_seq, &a.run_id).cmp(&(b.admit_seq, &b.run_id)));
+        return Ok(Value::Array(runs.into_iter().map(|r|json!({"run_id":r.run_id,"flow_id":r.flow_id,"trigger_id":r.trigger_id,"state":r.state.as_str(),"broken":r.broken,"result":r.result,"error_kind":r.error_kind})).collect()));
+    }
     module
         .rt
         .store()

@@ -180,6 +180,8 @@ fn failed(e: impl std::fmt::Display) -> DryRunError {
 
 /// Runs dry runs.
 pub struct DryRunner {
+    #[cfg(any(test, feature = "test-support"))]
+    staged: bool,
     catalog: Arc<dyn Catalog>,
     live_host: Arc<dyn Host>,
     pool: Pool,
@@ -199,6 +201,8 @@ impl DryRunner {
         metrics: Arc<Metrics>,
     ) -> Self {
         Self {
+            #[cfg(any(test, feature = "test-support"))]
+            staged: false,
             catalog,
             live_host,
             pool,
@@ -218,6 +222,14 @@ impl DryRunner {
             loop_override: request.loop_override,
         };
         self.run_install(&install, request.mode, &request.trigger, request.now_ms)
+    }
+
+    /// Exercise a dry run with its own scratch run log and retained call detail.
+    /// Ordinary production dry runs keep using Runtime::new.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn staged_for_test(mut self) -> Self {
+        self.staged = true;
+        self
     }
 
     /// Replays immutable installed bytes without applying new intake policy.
@@ -465,14 +477,39 @@ impl DryRunner {
             install_gate: basal_core::InstallGate::Off,
             ..self.base.clone()
         };
-        let rt = Runtime::new(
-            Arc::new(store),
-            host.clone(),
-            self.catalog.clone(),
-            Arc::new(NoHooks),
-            None,
-            config,
-        );
+        let store = Arc::new(store);
+        #[cfg(any(test, feature = "test-support"))]
+        let staged = self.staged;
+        #[cfg(not(any(test, feature = "test-support")))]
+        let staged = false;
+        let rt = if staged {
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                Runtime::new_staged_scratch(
+                    store,
+                    host.clone(),
+                    self.catalog.clone(),
+                    Arc::new(NoHooks),
+                    None,
+                    config,
+                    true,
+                )
+                .map_err(failed)?
+            }
+            #[cfg(not(any(test, feature = "test-support")))]
+            {
+                unreachable!("production dry runs use the ordinary runtime")
+            }
+        } else {
+            Runtime::new(
+                store,
+                host.clone(),
+                self.catalog.clone(),
+                Arc::new(NoHooks),
+                None,
+                config,
+            )
+        };
         let install_result = if request.template.is_some() {
             let validation = basal_core::install::Validation {
                 warnings: Vec::new(),
@@ -611,7 +648,7 @@ impl DryRunner {
                 // limits, including protection against later symlink changes.
                 rt.store().write(|tx| {
                     tx.execute(
-                        "UPDATE runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1",
+                        if rt.uses_run_log() { "UPDATE live_runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1" } else { "UPDATE runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1" },
                         rusqlite::params![run_id,
                             json!({"agent_id":template.agent_id}).to_string(),
                             template.params.to_string(), serde_json::to_string(&template.guards).map_err(|e|basal_core::CoreError::Corrupt(e.to_string()))?],

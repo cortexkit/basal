@@ -1622,8 +1622,9 @@ impl Runtime {
         })
     }
 
-    /// Current token windows for approved flows, read in one store query.
-    /// Unknown flows and flows without token grants are omitted.
+    /// Current token windows for approved flows. The log-backed path reads each
+    /// flow under its accounting lock. Unknown flows and flows without token
+    /// grants are omitted.
     pub fn token_usage_many(
         &self,
         flow_ids: &[&str],

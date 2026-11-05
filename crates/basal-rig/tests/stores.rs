@@ -131,6 +131,137 @@ fn journal_evidence_rejects_negative_positions() {
 }
 
 #[test]
+fn rig_readers_observe_a_real_retained_staged_run() {
+    use basal_core::{
+        ActivationEnd, Admission, Clock, Durability, InstallGate, InstallRequest, NoHooks, Runtime,
+        Store,
+    };
+    use basal_host::{CallClass, CallRequest, CompletionSink, Dispatched, Host, TransportError};
+    use basal_proto::{ActivationResult, CallKind, HostCall, JsonText, Primitive, WorkerMessage};
+    use std::sync::Arc;
+    struct LocalHost;
+    impl Host for LocalHost {
+        fn classify(&self, _: &CallKind) -> CallClass {
+            CallClass::Query
+        }
+        fn dispatch(&self, _: &CallRequest) -> Result<Dispatched, TransportError> {
+            panic!("local-only flow must not dispatch")
+        }
+        fn attach(&self, _: Arc<dyn CompletionSink>) {}
+        fn now_ms(&self) -> f64 {
+            100.0
+        }
+        fn random(&self) -> f64 {
+            0.5
+        }
+    }
+    let scratch = Scratch::new();
+    let rt = Runtime::new_staged_scratch(
+        Arc::new(Store::open(&scratch.0, Durability::throwaway()).unwrap()),
+        Arc::new(LocalHost),
+        Arc::new(basal_host::catalog::MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        basal_core::runtime::Config {
+            clock: Clock::manual(100),
+            install_gate: InstallGate::Off,
+            ..Default::default()
+        },
+        true,
+    )
+    .unwrap();
+    let manifest = json!({"id":"rig-reader","version":1,"purpose":"Read staged run evidence","trigger":{"schedule":{"interval":"1h"}}});
+    let installed = rt
+        .install(&InstallRequest {
+            script: "return 9;".into(),
+            manifest: manifest.to_string(),
+            author: "operator".into(),
+            loop_override: false,
+        })
+        .unwrap();
+    rt.approve("rig-reader", 1, &installed.code_hash, "rig test")
+        .unwrap();
+    let Admission::Admitted { run_id } = rt
+        .admit_trigger("rig-reader", "first", JsonText::null())
+        .unwrap()
+    else {
+        panic!("run not admitted")
+    };
+    let call = |position, primitive, args: &str| {
+        WorkerMessage::HostCall(HostCall {
+            position,
+            kind: CallKind::Primitive(primitive),
+            args: JsonText::new(args).unwrap(),
+        })
+    };
+    let mut worker = basal_core::test_support::ScriptedWorker::new(vec![
+        call(0, Primitive::Now, "null"),
+        call(1, Primitive::KvGet, "{\"key\":\"missing\"}"),
+        WorkerMessage::Blocked { awaiting: vec![1] },
+        WorkerMessage::Finished {
+            activation_id: 0,
+            result: ActivationResult::Completed {
+                value: JsonText::new("9").unwrap(),
+            },
+        },
+    ]);
+    assert_eq!(
+        rt.activate(&run_id, &mut worker).unwrap(),
+        ActivationEnd::Succeeded { value: "9".into() }
+    );
+    let evidence = BasalStore {
+        path: scratch.0.clone(),
+    };
+    let calls = evidence.calls("rig-reader").unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].settlement.as_deref(), Some("fulfilled"));
+    assert_eq!(calls[0].value, Some(json!(100)));
+    assert_eq!(evidence.activations(&run_id).unwrap(), 1);
+    let runs = evidence.runs("rig-reader").unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].state, "succeeded");
+    assert_eq!(runs[0].result, Some(json!(9)));
+    rt.store()
+        .read(|c| {
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get::<_, u64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn log_backed_rig_readers_refuse_missing_detail_instead_of_returning_empty_evidence() {
+    let scratch = Scratch::new();
+    let c = throwaway_connection(&scratch.0);
+    c.execute_batch("CREATE TABLE run_history(run_id TEXT);")
+        .unwrap();
+    let evidence = BasalStore {
+        path: scratch.0.clone(),
+    };
+    assert!(
+        evidence
+            .calls("flow")
+            .unwrap_err()
+            .contains("requires retain_detail")
+    );
+    assert!(
+        evidence
+            .runs("flow")
+            .unwrap_err()
+            .contains("requires retain_detail")
+    );
+    assert!(
+        evidence
+            .activations("run")
+            .unwrap_err()
+            .contains("requires retain_detail")
+    );
+}
+
+#[test]
 fn transcript_evidence_rejects_ambiguous_session_keys() {
     let scratch = Scratch::new();
     throwaway_connection(&scratch.0)

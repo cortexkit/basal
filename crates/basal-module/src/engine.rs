@@ -674,14 +674,7 @@ impl Engine {
 
 /// How many calls the run has journaled: what its next activation replays.
 fn journal_rows(rt: &Runtime, run_id: &str) -> Result<u64, CoreError> {
-    rt.store().read(|c| {
-        let n: i64 = c.query_row(
-            "SELECT COUNT(*) FROM journal WHERE run_id = ?1",
-            [run_id],
-            |r| r.get(0),
-        )?;
-        u64::try_from(n).map_err(|_| CoreError::Corrupt("negative journal count".into()))
-    })
+    rt.replay_size(run_id)
 }
 
 #[cfg(test)]
