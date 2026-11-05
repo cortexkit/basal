@@ -215,8 +215,17 @@ fn delete_history_batch(
     } else {
         String::new()
     };
+    let (key, order) = if table == "rate_windows" {
+        (
+            "(flow_id,window_ms,window_start)",
+            "flow_id,window_ms,window_start",
+        )
+    } else {
+        ("rowid", "+rowid")
+    };
+    let columns = if table == "rate_windows" { order } else { key };
     let query = format!(
-        "DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {predicate} {live} ORDER BY +rowid LIMIT {BATCH})"
+        "DELETE FROM {table} WHERE {key} IN (SELECT {columns} FROM {table} WHERE {predicate} {live} ORDER BY {order} LIMIT {BATCH})"
     );
     store.write(|tx| {
         Ok(if let Some(json) = live_json {

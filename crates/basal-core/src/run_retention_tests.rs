@@ -33,11 +33,7 @@ impl Drop for Fixture {
 }
 
 fn add_run(tx: &Transaction<'_>, id: &str, ended: i64) -> Result<()> {
-    tx.execute(
-        "INSERT INTO run_identities VALUES(?1,'flow',1,zeroblob(32),1)",
-        [id],
-    )?;
-    tx.execute("INSERT INTO run_history(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,admitted_at,admit_seq,ended_at,state,result_size,call_counts,writes_sent,tokens_charged,cost_microusd,broken,activation_count,script_started,phase,deadline_exempt,history_lost,commit_seq) VALUES(?1,'flow',1,?1,'schedule','{}',0,1,?2,'failed',0,'{}',0,0,0,0,1,1,'script',0,0,1)", params![id, ended])?;
+    tx.execute("INSERT INTO run_history(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,admitted_at,admit_seq,ended_at,state,result_size,call_counts,writes_sent,tokens_charged,cost_microusd,broken,activation_count,script_started,phase,deadline_exempt,history_lost,commit_seq,snapshot_id) VALUES(?1,'flow',1,?1,'schedule','{}',0,1,?2,'failed',0,'{}',0,0,0,0,1,1,'script',0,0,1,1)", params![id, ended])?;
     Ok(())
 }
 
@@ -123,10 +119,10 @@ fn broca_acknowledgement_is_rechecked_and_wait_cleanup_precedes_identity_deletio
     f.add("broca", 100);
     let ids = f.store.read(|c| candidates(c, 100, false)).unwrap();
     f.store.write(|tx| {
-        // Point broca_calls.run_id at run_identities(run_id) for this test;
+        // Point finished Broca calls at run_history(run_id) for this test;
         // the production migration chain remains unchanged.
         tx.execute_batch("DROP TABLE broca_calls;
-            CREATE TABLE broca_calls(send_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES run_identities(run_id),position INTEGER NOT NULL,snapshot TEXT NOT NULL);
+            CREATE TABLE broca_calls(send_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES run_history(run_id),position INTEGER NOT NULL,snapshot TEXT NOT NULL);
             CREATE TRIGGER broca_calls_forget_wait AFTER DELETE ON broca_calls BEGIN
                 DELETE FROM broca_waits WHERE send_id=old.send_id;
                 DELETE FROM broca_wakes WHERE send_id=old.send_id;
@@ -211,8 +207,7 @@ fn live_identity_keeps_the_last_shared_code_snapshot() {
     let f = Fixture::new();
     f.add("closed", 100);
     f.store.write(|tx| {
-        tx.execute("INSERT INTO run_identities VALUES('live','flow',1,zeroblob(32),1)", [])?;
-        tx.execute("INSERT INTO live_runs(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,attempt,admitted_at,admit_seq,admit_epoch,admit_segment,admit_offset,deadline_ms,self_input,params_input,grant_guards,end_instance) VALUES('live','flow',1,'live','manual','{}',1,0,2,1,0,0,100,'{}','{}','[]',0)", [])?;
+        tx.execute("INSERT INTO live_runs(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,attempt,admitted_at,admit_seq,admit_epoch,admit_segment,admit_offset,deadline_ms,self_input,params_input,grant_guards,end_instance,snapshot_id) VALUES('live','flow',1,'live','manual','{}',1,0,2,1,0,0,100,'{}','{}','[]',0,1)", [])?;
         Ok(())
     }).unwrap();
     assert_eq!(prune(&f.store, 200, 100).unwrap().pruned, ["closed"]);

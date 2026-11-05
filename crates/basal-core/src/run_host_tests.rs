@@ -159,8 +159,7 @@ impl Fixture {
                 migration_phase: "test".into(),
             })?;
             tx.execute("INSERT INTO run_snapshots(snapshot_id,flow_id,flow_version,code_hash,script,manifest) VALUES(1,'flow',1,?1,'return 1','{}')", [crate::ids::code_hash("return 1", "{}").as_slice()])?;
-            sql::insert_identity(tx, &sql::RunIdentity { run_id: live.run_id.clone(), flow_id: live.flow_id.clone(), flow_version: 1, code_hash: crate::ids::code_hash("return 1", "{}"), snapshot_id: 1 })?;
-            sql::insert_live(tx, &live)
+            sql::insert_live(tx, &live, &sql::RunIdentity { run_id: live.run_id.clone(), flow_id: live.flow_id.clone(), flow_version: 1, code_hash: crate::ids::code_hash("return 1", "{}"), snapshot_id: 1 })
         }).unwrap();
         let clock = Clock::manual(100);
         store.set_clock(clock.clone());
@@ -667,7 +666,7 @@ fn broca_reads_live_registry_then_finished_history_and_leaves_the_live_fk_alone(
     f.store
         .write(|tx| {
             tx.execute(
-                "UPDATE run_identities SET code_hash=?1 WHERE run_id=?2",
+                "UPDATE run_snapshots SET code_hash=?1 WHERE snapshot_id=(SELECT snapshot_id FROM live_runs WHERE run_id=?2)",
                 params![[9u8; 32].as_slice(), f.live.run_id],
             )?;
             Ok(())

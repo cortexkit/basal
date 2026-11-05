@@ -290,8 +290,7 @@ fn recovered_unactivated_run_counts_against_other_runs_budget() {
         .write(|tx| {
             let mut identity = sql::identity(tx, &f.live.run_id)?.unwrap();
             identity.run_id = other.run_id.clone();
-            sql::insert_identity(tx, &identity)?;
-            sql::insert_live(tx, &other)
+            sql::insert_live(tx, &other, &identity)
         })
         .unwrap();
     driver
@@ -509,8 +508,7 @@ impl Fixture {
             sql::create_test_schema(tx, &Meta { store_id: store.store_id().into(), log_epoch: 1, log_hwm: epoch, commit_seq: 0, gc_floor: GcFloor { log_epoch: 1, first_retained: 0, predecessor: None, synced_lsn: Lsn::default(), live_starts: Default::default() }, migration_phase: "test".into() })?;
             tx.execute("INSERT INTO run_snapshots(snapshot_id,flow_id,flow_version,code_hash,script,manifest) VALUES(1,'flow',1,?1,'return 1','{}')", [crate::ids::code_hash("return 1","{}").as_slice()])?;
             tx.execute_batch("CREATE TABLE terminal_effects(value INTEGER)")?;
-            sql::insert_identity(tx, &sql::RunIdentity { run_id: live.run_id.clone(), flow_id: live.flow_id.clone(), flow_version: 1, code_hash: crate::ids::code_hash("return 1","{}"), snapshot_id: 1 })?;
-            sql::insert_live(tx,&live)
+            sql::insert_live(tx,&live, &sql::RunIdentity { run_id: live.run_id.clone(), flow_id: live.flow_id.clone(), flow_version: 1, code_hash: crate::ids::code_hash("return 1","{}"), snapshot_id: 1 })
         }).unwrap();
         let log = Arc::new(MemoryLog::default());
         let service = Arc::new(Service {
