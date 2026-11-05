@@ -129,6 +129,7 @@ impl Runtime {
             let mut busy = false;
             if body["retirement"] == true {
                 busy = self.store().read(|connection| {
+                    if self.uses_run_log() { return crate::run_readers::retirement_busy(connection, &flow, version); }
                     Ok(connection.query_row(&format!("SELECT EXISTS(SELECT 1 FROM runs r WHERE r.flow_id=?1 AND r.flow_version=?2 AND (r.state IN ('pending','running','suspended','needs_reconcile') OR ({})))", crate::retention::OBLIGATIONS), params![flow, version], |row| row.get::<_, bool>(0))?)
                 })?;
                 busy |= self

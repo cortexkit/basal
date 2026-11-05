@@ -136,6 +136,48 @@ pub(crate) fn counted_failure(
 }
 
 pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
+    flow_health_with(conn, now_ms, None)
+}
+
+pub(crate) fn flow_health_staged(
+    conn: &Connection,
+    now_ms: i64,
+    runs: &[crate::Run],
+    states: &BTreeMap<String, crate::run_records::State>,
+) -> Result<Vec<FlowHealth>> {
+    flow_health_with(conn, now_ms, Some((runs, states)))
+}
+
+pub(crate) fn counted_failure_staged(
+    conn: &Connection,
+    id: &str,
+    state: &str,
+    kind: Option<&str>,
+) -> Result<bool> {
+    if state == "engine_mismatch" {
+        return Ok(true);
+    }
+    if state != "failed"
+        || matches!(
+            kind,
+            Some("readiness_rejection" | "agent_retired" | "version_revoked")
+        )
+    {
+        return Ok(false);
+    }
+    Ok(kind != Some("deadline")
+        || !conn.query_row(
+            "SELECT deadline_exempt FROM run_history WHERE run_id=?1",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )?)
+}
+
+fn flow_health_with(
+    conn: &Connection,
+    now_ms: i64,
+    staged: Option<(&[crate::Run], &BTreeMap<String, crate::run_records::State>)>,
+) -> Result<Vec<FlowHealth>> {
     let mut flows = Vec::new();
     let ids: Vec<String> = conn
         .prepare("SELECT flow_id FROM flows ORDER BY flow_id")?
@@ -150,10 +192,10 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
         let mut failure_first_seen_ms: Option<i64> = None;
         let mut counting = true;
         let mut stmt = conn.prepare_cached(
-            "SELECT run_id, state, error_kind, COALESCE(ended_at, admitted_at) FROM runs \
+            if staged.is_some() { "SELECT run_id,state,error_kind,ended_at FROM run_history WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC" } else { "SELECT run_id, state, error_kind, COALESCE(ended_at, admitted_at) FROM runs \
              WHERE flow_id = ?1 \
              AND state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') \
-             ORDER BY admit_seq DESC, run_id DESC",
+             ORDER BY admit_seq DESC, run_id DESC" },
         )?;
         let finished = stmt.query_map([&flow_id], |r| {
             Ok(LastRun {
@@ -166,7 +208,16 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
         for run in finished {
             let run = run?;
             if counting {
-                if counted_failure(conn, &run.run_id, &run.state, run.error_kind.as_deref())? {
+                if if staged.is_some() {
+                    counted_failure_staged(
+                        conn,
+                        &run.run_id,
+                        &run.state,
+                        run.error_kind.as_deref(),
+                    )?
+                } else {
+                    counted_failure(conn, &run.run_id, &run.state, run.error_kind.as_deref())?
+                } {
                     consecutive_failures += 1;
                     failure_first_seen_ms =
                         Some(failure_first_seen_ms.map_or(run.ended_at, |at| at.min(run.ended_at)));
@@ -181,13 +232,19 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
                 break;
             }
         }
-        let needs_reconcile: Vec<String> = conn
-            .prepare_cached(
+        let needs_reconcile: Vec<String> = if let Some((runs, _)) = staged {
+            runs.iter()
+                .filter(|r| r.flow_id == flow_id && r.state == crate::RunState::NeedsReconcile)
+                .map(|r| r.run_id.clone())
+                .collect()
+        } else {
+            conn.prepare_cached(
                 "SELECT run_id FROM runs WHERE flow_id = ?1 AND state = 'needs_reconcile' \
                  ORDER BY admit_seq",
             )?
             .query_map([&flow_id], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
+            .collect::<rusqlite::Result<_>>()?
+        };
         let next_due: Option<i64> = conn
             .query_row(
                 "SELECT next_due_ms FROM schedules WHERE flow_id = ?1 AND state = 'active'",
@@ -201,18 +258,38 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             [&flow_id],
             |r| r.get(0),
         )?;
-        let pending: Option<i64> = conn.query_row(
-            "SELECT MIN(admitted_at) FROM runs WHERE flow_id = ?1 AND state = 'pending'",
-            [&flow_id],
-            |r| r.get(0),
-        )?;
+        let pending: Option<i64> = if let Some((runs, _)) = staged {
+            runs.iter()
+                .filter(|r| r.flow_id == flow_id && r.state == crate::RunState::Pending)
+                .map(|r| r.admitted_at)
+                .min()
+        } else {
+            conn.query_row(
+                "SELECT MIN(admitted_at) FROM runs WHERE flow_id = ?1 AND state = 'pending'",
+                [&flow_id],
+                |r| r.get(0),
+            )?
+        };
         let oldest_overdue_ms = [next_due, planned, pending]
             .into_iter()
             .flatten()
             .filter(|since| *since <= now_ms)
             .map(|since| now_ms - since)
             .max();
-        let waiting_reason = conn.query_row("SELECT refusal_detail FROM journal JOIN runs USING (run_id) WHERE runs.flow_id = ?1 AND journal.dispatch = 'deferred' AND runs.state IN ('running','pending','suspended') ORDER BY admit_seq, position LIMIT 1", [&flow_id], |r| r.get::<_, String>(0)).optional()?;
+        let waiting_reason = if let Some((runs, states)) = staged {
+            runs.iter()
+                .filter(|r| r.flow_id == flow_id && !r.state.is_terminal())
+                .find_map(|r| {
+                    states.get(&r.run_id).and_then(|s| {
+                        s.calls
+                            .values()
+                            .find(|c| c.arrival.is_none() && c.deferred.is_some())
+                            .and_then(|c| c.deferred.as_ref().map(|d| d.cause.clone()))
+                    })
+                })
+        } else {
+            conn.query_row("SELECT refusal_detail FROM journal JOIN runs USING (run_id) WHERE runs.flow_id = ?1 AND journal.dispatch = 'deferred' AND runs.state IN ('running','pending','suspended') ORDER BY admit_seq, position LIMIT 1", [&flow_id], |r| r.get::<_, String>(0)).optional()?
+        };
         let waiting_reason = match waiting_reason {
             Some(reason) => Some(reason),
             None => conn.query_row(

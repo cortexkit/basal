@@ -33,6 +33,18 @@ use crate::store::now_ms;
 
 use crate::model::position_i64 as pos;
 
+pub(crate) fn replay_size(conn: &Connection, id: &str) -> Result<u64> {
+    Ok(
+        conn.query_row("SELECT COUNT(*) FROM journal WHERE run_id=?1", [id], |r| {
+            r.get(0)
+        })?,
+    )
+}
+
+pub(crate) fn deferred_calls(conn: &Connection) -> Result<Vec<(String, String, u64, i64)>> {
+    Ok(conn.prepare("SELECT r.run_id,r.flow_id,j.position,j.retry_not_before FROM journal j JOIN runs r USING(run_id) WHERE j.dispatch='deferred' AND r.ended_at IS NULL ORDER BY j.retry_not_before,r.run_id,j.position")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Every call row of a run, in position order.
 pub fn rows(conn: &Connection, run_id: &str) -> Result<Vec<CallRow>> {
     let mut stmt = conn.prepare(&format!(
@@ -527,6 +539,26 @@ pub(crate) struct SavedRefusal {
 }
 
 impl SavedRefusal {
+    pub(crate) fn new(
+        request: &basal_host::CallRequest,
+        refusal: &basal_host::flow_refusal::FlowRefusal,
+    ) -> Result<Self> {
+        let (kind_code, module, op) = crate::model::kind_columns(&request.kind)?;
+        Ok(Self {
+            flow_id: request.flow_id.clone(),
+            run_id: request.run_id.clone(),
+            position: pos(request.position)?,
+            kind_code,
+            module: module.map(str::to_owned),
+            op: op.map(str::to_owned),
+            args: request.args.as_str().into(),
+            key: request.idempotency_key.clone(),
+            attempt: request.attempt,
+            detail: serde_json::to_string(refusal)
+                .map_err(|e| CoreError::Invalid(e.to_string()))?,
+            targeted: matches!(request.kind, CallKind::OpFor { .. }),
+        })
+    }
     pub(crate) fn request(&self) -> Result<basal_host::CallRequest> {
         Ok(basal_host::CallRequest {
             flow_version: None,

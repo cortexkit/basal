@@ -15,6 +15,110 @@ pub fn timestamp_scratch(prefix: &str, name: &str) -> std::path::PathBuf {
     create_scratch_dir(prefix, name, nanos, &SCRATCH_COUNTER)
 }
 
+/// A protocol peer for deterministic runtime tests. Completed frames wait for
+/// every issued call's Deliver; suspended frames intentionally do not.
+pub struct ScriptedWorker {
+    welcome: basal_proto::Welcome,
+    messages: std::collections::VecDeque<basal_proto::WorkerMessage>,
+    pending: std::collections::BTreeSet<u64>,
+    long_running: std::collections::BTreeSet<u64>,
+    activation: u64,
+    pub sent: Vec<basal_proto::ParentMessage>,
+    pub killed: bool,
+}
+
+impl ScriptedWorker {
+    pub fn new(messages: Vec<basal_proto::WorkerMessage>) -> Self {
+        Self {
+            welcome: basal_proto::Welcome {
+                protocol_version: basal_proto::PROTOCOL_VERSION,
+                engine: "runtime-test".into(),
+                prelude_hash: basal_proto::PreludeHash([0; 32]),
+                codemode_prelude_hash: basal_proto::PreludeHash([0; 32]),
+                confinement: basal_proto::Confinement::None,
+            },
+            messages: messages.into(),
+            pending: Default::default(),
+            long_running: Default::default(),
+            activation: 0,
+            sent: Vec::new(),
+            killed: false,
+        }
+    }
+}
+
+impl crate::channel::WorkerChannel for ScriptedWorker {
+    fn welcome(&self) -> &basal_proto::Welcome {
+        &self.welcome
+    }
+    fn send(
+        &mut self,
+        message: &basal_proto::ParentMessage,
+    ) -> std::result::Result<(), crate::ChannelError> {
+        match message {
+            basal_proto::ParentMessage::Activate(request) => {
+                self.activation = request.activation_id
+            }
+            basal_proto::ParentMessage::Deliver(outcome) => {
+                self.pending.remove(&outcome.position);
+            }
+            basal_proto::ParentMessage::LongRunning { positions } => {
+                self.long_running.extend(positions.iter().copied())
+            }
+            _ => {}
+        }
+        self.sent.push(message.clone());
+        Ok(())
+    }
+    fn recv(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::result::Result<basal_proto::WorkerMessage, crate::ChannelError> {
+        if matches!(self.messages.front(), Some(basal_proto::WorkerMessage::Finished { result:basal_proto::ActivationResult::Suspended { awaited }, .. }) if awaited.iter().any(|p| !self.long_running.contains(p)))
+        {
+            std::thread::sleep(timeout.min(std::time::Duration::from_millis(1)));
+            return Err(crate::ChannelError::Timeout);
+        }
+        if !self.pending.is_empty()
+            && matches!(
+                self.messages.front(),
+                Some(basal_proto::WorkerMessage::Finished {
+                    result: basal_proto::ActivationResult::Completed { .. },
+                    ..
+                })
+            )
+        {
+            std::thread::sleep(timeout.min(std::time::Duration::from_millis(1)));
+            return Ok(basal_proto::WorkerMessage::Blocked {
+                awaiting: self.pending.iter().copied().collect(),
+            });
+        }
+        let mut message = self
+            .messages
+            .pop_front()
+            .ok_or(crate::ChannelError::Closed)?;
+        match &mut message {
+            basal_proto::WorkerMessage::HostCall(call) => {
+                self.pending.insert(call.position);
+            }
+            basal_proto::WorkerMessage::Blocked { awaiting } => {
+                self.pending.extend(awaiting.iter().copied())
+            }
+            basal_proto::WorkerMessage::Finished { activation_id, .. } if *activation_id == 0 => {
+                *activation_id = self.activation
+            }
+            _ => {}
+        }
+        Ok(message)
+    }
+    fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
+        panic!("scripted peer uses timed receives")
+    }
+    fn kill(&mut self) {
+        self.killed = true;
+    }
+}
+
 fn scratch_path(prefix: &str, name: &str, nanos: u128, sequence: u64) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "basal-{prefix}-{name}-{}-{nanos}-{sequence}",

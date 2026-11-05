@@ -17,6 +17,7 @@ pub struct Budgets {
     pub dispatches: u64,
     pub tokens: u64,
     pub cost_micros: u64,
+    pub cost_window: Option<(i64, u64)>,
 }
 
 pub(super) fn integer(n: u64) -> Result<i64> {
@@ -42,6 +43,14 @@ pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>>
     for call in state.calls.values() {
         for intent in call.prior_intents.iter().chain(call.intent.iter()) {
             if let Some(count) = &intent.dispatch_count_window {
+                if call
+                    .intent
+                    .as_ref()
+                    .is_some_and(|current| std::ptr::eq(current, intent))
+                    && call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                {
+                    continue;
+                }
                 rows.push(Reservation {
                     position: call.identity.position,
                     window: window("dispatch", budgets.dispatch_window_ms, count.window_start),
@@ -54,19 +63,28 @@ pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>>
             && let Some(reservation) = &intent.reservation
         {
             let usage = call.arrival.as_ref().and_then(|a| a.usage.as_ref());
-            rows.push(Reservation {
-                position: call.identity.position,
-                window: window("token", budgets.token_window_ms, reservation.window_start),
-                audit_at: intent.audit_at,
-                amount: match usage {
-                    Some(u) => add(u.input_tokens, u.output_tokens)?,
-                    None => add(reservation.input_tokens, reservation.output_tokens)?,
-                },
-            });
+            if reservation
+                .input_tokens
+                .saturating_add(reservation.output_tokens)
+                > 0
+            {
+                rows.push(Reservation {
+                    position: call.identity.position,
+                    window: window("token", budgets.token_window_ms, reservation.window_start),
+                    audit_at: intent.audit_at,
+                    amount: match usage {
+                        Some(u) => add(u.input_tokens, u.output_tokens)?,
+                        None => add(reservation.input_tokens, reservation.output_tokens)?,
+                    },
+                });
+            }
             rows.push(Reservation {
                 position: call.identity.position,
                 window: window("cost", budgets.token_window_ms, reservation.window_start),
-                audit_at: intent.audit_at,
+                audit_at: call
+                    .prior_intents
+                    .first()
+                    .map_or(intent.audit_at, |i| i.audit_at),
                 amount: call
                     .arrival
                     .as_ref()
@@ -81,12 +99,49 @@ pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>>
 pub(super) fn check(
     conn: &Connection,
     flow: &str,
+    run_id: &str,
     budgets: &Budgets,
     others: &[Reservation],
     proposed: &[Reservation],
 ) -> Result<()> {
+    let dollars = |run: &str| -> Result<u64> {
+        let n: f64 = conn.query_row("SELECT COALESCE(SUM(COALESCE(charged,reserved)),0) FROM classify_costs WHERE kind='flow' AND run_id=?1", [run], |r| r.get(0))?;
+        if !n.is_finite() || n < 0.0 || n * 1_000_000.0 > u64::MAX as f64 {
+            return Err(CoreError::Corrupt("invalid dollar accounting".into()));
+        }
+        Ok((n * 1_000_000.0).ceil() as u64)
+    };
+    let cost = proposed
+        .iter()
+        .filter(|r| r.window.0.starts_with("cost:"))
+        .try_fold(0, |n, r| add(n, r.amount))?;
+    if add(dollars(run_id)?, cost)? > budgets.cost_micros {
+        return Err(CoreError::Invalid("cost budget exhausted".into()));
+    }
+    if let Some((ms, cap)) = budgets.cost_window {
+        let now = proposed.iter().map(|r| r.audit_at).max().unwrap_or(0);
+        let floor = now.saturating_sub(ms);
+        let committed: f64 = conn.query_row("SELECT COALESCE(SUM(COALESCE(charged,reserved)),0) FROM classify_costs WHERE kind='flow' AND flow_id=?1 AND created_at>?2", params![flow,floor], |r| r.get(0))?;
+        let pending = others
+            .iter()
+            .chain(proposed)
+            .filter(|r| r.window.0.starts_with("cost:") && r.audit_at > floor)
+            .try_fold(0, |n, r| add(n, r.amount))?;
+        if !committed.is_finite() || committed < 0.0 || committed * 1_000_000.0 > u64::MAX as f64 {
+            return Err(CoreError::Corrupt("invalid dollar accounting".into()));
+        }
+        if add((committed * 1_000_000.0).ceil() as u64, pending)? > cap {
+            return Err(CoreError::Invalid("cost window budget exhausted".into()));
+        }
+    }
     let mut totals = BTreeMap::<Window, u64>::new();
-    for row in others.iter().chain(proposed) {
+    // Dollar ceilings are per run; other live runs of the flow contribute only
+    // dispatch and token windows. The proposed rows contain this run's entirety.
+    for row in others
+        .iter()
+        .chain(proposed)
+        .filter(|r| !r.window.0.starts_with("cost:"))
+    {
         let n = totals.entry(row.window.clone()).or_default();
         *n = add(*n, row.amount)?;
     }
@@ -112,21 +167,6 @@ pub(super) fn check(
                 "SELECT reserved+input_tokens+cache_write_tokens+output_tokens+unreported_tokens FROM token_windows WHERE flow_id=?1 AND window_ms=?2 AND window_start=?3",
                 budgets.tokens,
             ),
-            "cost" => {
-                let dollars: f64 = conn.query_row("SELECT COALESCE(SUM(COALESCE(charged,reserved)),0) FROM classify_costs WHERE kind='flow' AND flow_id=?1 AND created_at>=?2 AND created_at<?3", params![flow, start, start.saturating_add(ms)], |r| r.get(0))?;
-                if !dollars.is_finite()
-                    || dollars < 0.0
-                    || (dollars * 1_000_000.0).ceil() > u64::MAX as f64
-                {
-                    return Err(CoreError::Corrupt(
-                        "invalid committed dollar accounting".into(),
-                    ));
-                }
-                if add((dollars * 1_000_000.0).ceil() as u64, live)? > budgets.cost_micros {
-                    return Err(CoreError::Invalid("cost budget exhausted".into()));
-                }
-                continue;
-            }
             _ => return Err(CoreError::Invalid("invalid accounting resource".into())),
         };
         let committed: i64 = conn
@@ -153,6 +193,14 @@ pub(super) fn fold(
     for call in state.calls.values() {
         for intent in call.prior_intents.iter().chain(call.intent.iter()) {
             if let Some(count) = &intent.dispatch_count_window {
+                if call
+                    .intent
+                    .as_ref()
+                    .is_some_and(|current| std::ptr::eq(current, intent))
+                    && call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                {
+                    continue;
+                }
                 tx.execute("INSERT INTO rate_windows(flow_id,window_ms,window_start,dispatches) VALUES(?1,?2,?3,?4) ON CONFLICT(flow_id,window_ms,window_start) DO UPDATE SET dispatches=dispatches+excluded.dispatches",
                     params![flow, budgets.dispatch_window_ms, count.window_start, integer(count.count)?])?;
             }
@@ -164,6 +212,10 @@ pub(super) fn fold(
             continue;
         };
         let reserved = add(reservation.input_tokens, reservation.output_tokens)?;
+        let reserved_at = call
+            .prior_intents
+            .first()
+            .map_or(intent.audit_at, |i| i.audit_at);
         let settled = call.arrival.is_some();
         let usage = call.arrival.as_ref().and_then(|a| a.usage.as_ref());
         let input = usage.map_or(0, |u| u.input_tokens);
@@ -175,16 +227,18 @@ pub(super) fn fold(
         };
         let pending = if settled { 0 } else { reserved };
         let key = crate::ids::idempotency_key(flow, id, call.identity.position);
-        tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,input_tokens,output_tokens,unreported_tokens,reserved_at,settled_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-            params![key, flow, id, integer(call.identity.position)?, budgets.token_window_ms, reservation.window_start, integer(reserved)?, if settled {"settled"} else {"reserved"}, integer(input)?, integer(output)?, integer(unreported)?, intent.audit_at, settled.then_some(now)])?;
-        tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved,input_tokens,output_tokens,unreported_tokens) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(flow_id,window_ms,window_start) DO UPDATE SET reserved=reserved+excluded.reserved,input_tokens=input_tokens+excluded.input_tokens,output_tokens=output_tokens+excluded.output_tokens,unreported_tokens=unreported_tokens+excluded.unreported_tokens",
+        if reserved > 0 {
+            tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,input_tokens,output_tokens,unreported_tokens,reserved_at,settled_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                params![key, flow, id, integer(call.identity.position)?, budgets.token_window_ms, reservation.window_start, integer(reserved)?, if settled {"settled"} else {"reserved"}, integer(input)?, integer(output)?, integer(unreported)?, reserved_at, settled.then_some(now)])?;
+            tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved,input_tokens,output_tokens,unreported_tokens) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(flow_id,window_ms,window_start) DO UPDATE SET reserved=reserved+excluded.reserved,input_tokens=input_tokens+excluded.input_tokens,output_tokens=output_tokens+excluded.output_tokens,unreported_tokens=unreported_tokens+excluded.unreported_tokens",
             params![flow, budgets.token_window_ms, reservation.window_start, integer(pending)?, integer(input)?, integer(output)?, integer(unreported)?])?;
+        }
         fold_cost(
             tx,
             flow,
             id,
             intent,
-            budgets,
+            reserved_at,
             call.arrival.as_ref().and_then(|a| a.cost_micros),
             settled,
         )?;
@@ -197,18 +251,23 @@ fn fold_cost(
     flow: &str,
     id: &str,
     intent: &Intent,
-    budgets: &Budgets,
+    created_at: i64,
     cost: Option<u64>,
     settled: bool,
 ) -> Result<()> {
     let Some(reservation) = &intent.reservation else {
         return Ok(());
     };
-    if reservation.cost_micros == 0 && cost.is_none() {
+    if reservation.cost_micros == 0
+        && cost.is_none()
+        && reservation
+            .input_tokens
+            .saturating_add(reservation.output_tokens)
+            > 0
+    {
         return Ok(());
     }
-    let _ = budgets;
     tx.execute("INSERT INTO classify_costs(kind,flow_id,run_id,position,created_at,reserved,charged,args) VALUES('flow',?1,?2,?3,?4,?5,?6,?7)",
-        params![flow, id, integer(intent.call.position)?, intent.audit_at, reservation.cost_micros as f64 / 1_000_000.0, if settled { Some(cost.unwrap_or(reservation.cost_micros) as f64 / 1_000_000.0) } else { None }, intent.frozen_request.as_str()])?;
+        params![flow, id, integer(intent.call.position)?, created_at, reservation.cost_micros as f64 / 1_000_000.0, if settled { Some(cost.unwrap_or(reservation.cost_micros) as f64 / 1_000_000.0) } else { None }, intent.frozen_request.as_str()])?;
     Ok(())
 }

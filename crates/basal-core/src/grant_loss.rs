@@ -26,9 +26,10 @@ pub struct Retirement {
 fn retirement_owner(
     conn: &Connection,
     request: &basal_host::CallRequest,
+    staged: bool,
 ) -> Result<Option<String>> {
     let run_author: Option<String> = conn.query_row(
-        "SELECT i.author FROM installs i JOIN runs r ON r.flow_id=i.flow_id AND r.flow_version=i.version WHERE r.run_id=?1",
+        if staged { "SELECT i.author FROM installs i JOIN run_identities r ON r.flow_id=i.flow_id AND r.flow_version=i.version WHERE r.run_id=?1" } else { "SELECT i.author FROM installs i JOIN runs r ON r.flow_id=i.flow_id AND r.flow_version=i.version WHERE r.run_id=?1" },
         [&request.run_id], |r| r.get(0),
     ).optional()?;
     let flow = install::flow(conn, &request.flow_id)?;
@@ -45,7 +46,15 @@ pub(crate) fn retirement_lookup(
     conn: &Connection,
     request: &basal_host::CallRequest,
 ) -> Result<Option<String>> {
-    if retirement_owner(conn, request)?.is_some() {
+    retirement_lookup_for(conn, request, false)
+}
+
+fn retirement_lookup_for(
+    conn: &Connection,
+    request: &basal_host::CallRequest,
+    staged: bool,
+) -> Result<Option<String>> {
+    if retirement_owner(conn, request, staged)?.is_some() {
         return Ok(None);
     }
     // Unparseable arguments are reported by `record_retirement` itself.
@@ -78,7 +87,28 @@ pub(crate) fn record_retirement(
     now: i64,
     target_id: Option<&str>,
 ) -> Result<()> {
-    let owner = retirement_owner(tx, request)?;
+    record_retirement_for(tx, request, refusal, now, target_id, false)
+}
+
+pub(crate) fn record_retirement_staged(
+    tx: &Transaction,
+    request: &basal_host::CallRequest,
+    refusal: &FlowRefusal,
+    now: i64,
+    target_id: Option<&str>,
+) -> Result<()> {
+    record_retirement_for(tx, request, refusal, now, target_id, true)
+}
+
+fn record_retirement_for(
+    tx: &Transaction,
+    request: &basal_host::CallRequest,
+    refusal: &FlowRefusal,
+    now: i64,
+    target_id: Option<&str>,
+    staged: bool,
+) -> Result<()> {
+    let owner = retirement_owner(tx, request, staged)?;
     let args: Value = serde_json::from_str(request.args.as_str())
         .map_err(|e| CoreError::Corrupt(e.to_string()))?;
     let target = args["agent"].as_str().map(str::to_owned);
@@ -285,13 +315,39 @@ pub(crate) fn record(
     refusal: &FlowRefusal,
     now: i64,
 ) -> Result<()> {
-    let (grant, label) = refusal.lost_grant().map_err(CoreError::Invalid)?;
-    let (key, echoable) = grant_key(grant)?;
     let version: u32 = tx.query_row(
         "SELECT flow_version FROM runs WHERE run_id=?1",
         [run_id],
         |r| r.get(0),
     )?;
+    record_version(tx, flow_id, run_id, refusal, now, version)
+}
+
+pub(crate) fn record_staged(
+    tx: &Transaction,
+    flow_id: &str,
+    run_id: &str,
+    refusal: &FlowRefusal,
+    now: i64,
+) -> Result<()> {
+    let version = tx.query_row(
+        "SELECT flow_version FROM run_identities WHERE run_id=?1",
+        [run_id],
+        |r| r.get(0),
+    )?;
+    record_version(tx, flow_id, run_id, refusal, now, version)
+}
+
+fn record_version(
+    tx: &Transaction,
+    flow_id: &str,
+    run_id: &str,
+    refusal: &FlowRefusal,
+    now: i64,
+    version: u32,
+) -> Result<()> {
+    let (grant, label) = refusal.lost_grant().map_err(CoreError::Invalid)?;
+    let (key, echoable) = grant_key(grant)?;
     tx.execute(
         "INSERT INTO flow_grant_losses(flow_id,provider,grant_key,grant_label,echoable,run_id,version,state,next_poll_at,lost_at) \
          VALUES (?1,?2,?3,?4,?5,?6,?7,'polling',?8,?8) \
@@ -393,7 +449,13 @@ impl Runtime {
     pub(crate) fn retirement_target_id(&self, request: &basal_host::CallRequest) -> Option<String> {
         let target = self
             .store()
-            .read(|c| retirement_lookup(c, request))
+            .read(|c| {
+                if self.uses_run_log() {
+                    retirement_lookup_for(c, request, true)
+                } else {
+                    retirement_lookup(c, request)
+                }
+            })
             .ok()
             .flatten();
         retirement_label(self.shared.catalog.as_ref(), target.as_deref())

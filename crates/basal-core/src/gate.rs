@@ -129,10 +129,10 @@ impl Runtime {
     /// Records one more unanswered check and returns how long the run now
     /// waits: `install_gate_retry`, doubled for each earlier unanswered
     /// check in a row, at most `install_gate_retry_max`.
-    fn back_off(&self, run_id: &str) -> Result<Duration> {
+    pub(crate) fn back_off(&self, run_id: &str) -> Result<Duration> {
         let now = self.config.clock.now_ms();
         let live = self.store().read(|conn| {
-            let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE state IN ('pending','running','suspended','needs_reconcile')")?;
+            let mut stmt = conn.prepare(if self.uses_run_log() { "SELECT run_id FROM live_runs" } else { "SELECT run_id FROM runs WHERE state IN ('pending','running','suspended','needs_reconcile')" })?;
             let ids = stmt.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
             Ok(ids)
         })?;
@@ -163,7 +163,7 @@ impl Runtime {
         Ok(wait)
     }
 
-    fn clear_backoff(&self, run_id: &str) {
+    pub(crate) fn clear_backoff(&self, run_id: &str) {
         self.shared
             .gate_backoff
             .lock()

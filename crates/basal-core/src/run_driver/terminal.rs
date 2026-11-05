@@ -63,7 +63,7 @@ impl Terminal {
             receipt: Arc::new(AtomicU64::new(0)),
         }
     }
-    pub(super) fn commit_seq(&self) -> u64 {
+    pub(crate) fn commit_seq(&self) -> u64 {
         self.receipt.load(Ordering::Acquire)
     }
 }
@@ -96,6 +96,53 @@ fn outcome(call: &crate::run_records::CallState) -> sql::CallOutcome {
 }
 
 impl TerminalBuilder<Records> for Terminal {
+    fn prepare(&self, records: &mut Records) -> Result<()> {
+        let deferred: Vec<_> = records
+            .state()
+            .calls
+            .values()
+            .filter(|c| c.arrival.is_none() && c.deferred.as_ref().is_some_and(|d| d.proven_unsent))
+            .cloned()
+            .collect();
+        for call in deferred {
+            let deferred = call.deferred.expect("filtered deferral");
+            let outcome =
+                serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&deferred.cause)
+                    .map(|r| r.outcome())
+                    .unwrap_or_else(|_| crate::kv::rejection("route_unavailable", &deferred.cause));
+            records.append(
+                records.state().generation,
+                crate::run_records::Body::Arrived(crate::run_records::Arrival {
+                    position: call.identity.position,
+                    arrival_seq: records.state().next_arrival_seq,
+                    outcome: "rejected".into(),
+                    settlement: basal_proto::Settlement::Rejected,
+                    value_hash: crate::ids::payload_hash(outcome.settlement, &outcome.value),
+                    value: outcome.value,
+                    handle: None,
+                    usage: Some(crate::run_records::Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    }),
+                    cost_micros: Some(0),
+                    kv_effect: None,
+                    durability: crate::run_records::ArrivalDurability {
+                        refusal_committed: true,
+                        ..Default::default()
+                    },
+                }),
+            )?;
+        }
+        Ok(())
+    }
+    fn can_close(&self, records: &Records) -> bool {
+        self.error_kind.as_deref() != Some("deadline")
+            || !records
+                .state()
+                .calls
+                .values()
+                .any(|c| c.unknown.is_some() && c.arrival.is_none())
+    }
     fn is_success(&self) -> bool {
         self.state == RunState::Succeeded
     }

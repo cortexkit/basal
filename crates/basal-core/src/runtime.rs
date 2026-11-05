@@ -245,6 +245,9 @@ impl Signal {
 /// State shared by every runtime handle over one store in one process.
 pub(crate) struct Shared {
     pub(crate) staged_hosts: Option<Arc<crate::run_host::RecoveredHosts>>,
+    pub(crate) staged_owners: Mutex<HashMap<String, (u64, String)>>,
+    pub(crate) staged_workers: Mutex<HashMap<(String, u64), std::thread::ThreadId>>,
+    pub(crate) staged_stopped: Condvar,
     stopping: AtomicBool,
     pub(crate) store: Arc<Store>,
     pub(crate) host: Arc<dyn Host>,
@@ -369,7 +372,7 @@ use basal_proto::util::lock;
 
 /// The rejection recorded for a call the host could not be reached for,
 /// when the call provably had no effect.
-fn unavailable_rejection(detail: &str) -> HostOutcome {
+pub(crate) fn unavailable_rejection(detail: &str) -> HostOutcome {
     HostOutcome::rejected(
         JsonText::new(
             json!({"message": "host unavailable", "code": "unavailable", "detail": detail})
@@ -400,8 +403,8 @@ impl Runtime {
         hooks: Arc<dyn Hooks>,
         source: Option<Arc<dyn WorkerSource>>,
         config: Config,
-    ) -> Self {
-        Self::new_inner(
+    ) -> Result<Self> {
+        let rt = Self::new_inner(
             hosts.store.clone(),
             host,
             catalog,
@@ -409,7 +412,12 @@ impl Runtime {
             source,
             config,
             Some(hosts),
-        )
+        );
+        rt.configure_staged_decisions()?;
+        rt.attach_host();
+        rt.flush_staged_live_refusals()?;
+        rt.flush_refusals()?;
+        Ok(rt)
     }
 
     fn new_inner(
@@ -424,6 +432,9 @@ impl Runtime {
         store.set_clock(config.clock.clone());
         let shared = Arc::new(Shared {
             staged_hosts,
+            staged_owners: Mutex::new(HashMap::new()),
+            staged_workers: Mutex::new(HashMap::new()),
+            staged_stopped: Condvar::new(),
             stopping: AtomicBool::new(false),
             store,
             host,
@@ -456,14 +467,21 @@ impl Runtime {
         shared
             .host
             .scope_checks(config.install_gate == crate::gate::InstallGate::Core);
-        shared.host.attach(Arc::new(Sink {
-            shared: Arc::downgrade(&shared),
-            config: config.clone(),
+        let rt = Self { shared, config };
+        if rt.shared.staged_hosts.is_none() {
+            rt.attach_host();
+        }
+        rt
+    }
+
+    fn attach_host(&self) {
+        self.shared.host.attach(Arc::new(Sink {
+            shared: Arc::downgrade(&self.shared),
+            config: self.config.clone(),
         }));
-        shared
+        self.shared
             .host
-            .bind_fs_temps(crate::retention::fs_temp_ledger(&shared));
-        Self { shared, config }
+            .bind_fs_temps(crate::retention::fs_temp_ledger(&self.shared));
     }
 
     /// Another handle on the same store and process state with a different
@@ -480,6 +498,12 @@ impl Runtime {
 
     pub fn store(&self) -> &Store {
         &self.shared.store
+    }
+
+    /// Readers use the runtime's construction, never a schema probe, to choose
+    /// their execution-state source during the pre-cutover staging period.
+    pub fn uses_run_log(&self) -> bool {
+        self.shared.staged_hosts.is_some()
     }
 
     /// Stop this runtime's execution writes before closing hosts or workers.
@@ -545,6 +569,9 @@ impl Runtime {
     /// Admits a trigger whose spec carries the flow's approved script and
     /// manifest. Anything else is refused as [`Admission::NotApproved`].
     pub fn admit(&self, spec: &TriggerSpec) -> Result<Admission> {
+        if self.shared.staged_hosts.is_some() {
+            return self.staged_admit(spec);
+        }
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
         let admitted = self.write_execution(|tx| admission::admit(tx, &store_id, spec, &ctx))?;
@@ -559,6 +586,9 @@ impl Runtime {
         trigger_id: &str,
         trigger: JsonText,
     ) -> Result<Admission> {
+        if self.shared.staged_hosts.is_some() {
+            return self.staged_admit_trigger(flow_id, trigger_id, trigger);
+        }
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
         let admitted = self.write_execution(|tx| {
@@ -572,7 +602,7 @@ impl Runtime {
     /// clock and admits fires under its admission limits.
     pub fn scheduler(&self) -> Result<crate::schedule::Scheduler> {
         let ctx = self.admit_context()?;
-        Ok(crate::schedule::Scheduler::new(
+        let scheduler = crate::schedule::Scheduler::new(
             self.shared.store.clone(),
             Arc::new(self.config.clock.clone()),
             self.config.schedule.clone(),
@@ -580,10 +610,18 @@ impl Runtime {
         .with_limits(crate::schedule::AdmitLimits {
             rate: ctx.rate,
             default_deadline_ms: ctx.default_deadline_ms,
-        }))
+        });
+        Ok(if self.uses_run_log() {
+            scheduler.with_staged_runtime(self.clone())
+        } else {
+            scheduler
+        })
     }
 
     pub fn retrigger(&self, run_id: &str) -> Result<Admission> {
+        if self.shared.staged_hosts.is_some() {
+            return self.staged_retrigger(run_id);
+        }
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
         let admitted =
@@ -595,21 +633,50 @@ impl Runtime {
     // ---- Reading -----------------------------------------------------------
 
     pub fn run(&self, run_id: &str) -> Result<Run> {
+        if self.shared.staged_hosts.is_some() {
+            return self.staged_run(run_id);
+        }
         self.shared.store.read(|c| runs::load(c, run_id))
     }
 
     pub fn calls(&self, run_id: &str) -> Result<Vec<CallRow>> {
+        if self.shared.staged_hosts.is_some() {
+            return self.staged_calls(run_id);
+        }
         self.shared.store.read(|c| journal::rows(c, run_id))
     }
 
     /// Why a call was last recorded unknown, if it ever was.
     pub fn unknown_reason(&self, run_id: &str, position: u64) -> Result<Option<UnknownReason>> {
+        if self.uses_run_log() {
+            if let Some(s) = self.staged_snapshot(run_id) {
+                return Ok(s
+                    .calls
+                    .get(&position)
+                    .and_then(|c| c.unknown.as_deref())
+                    .and_then(UnknownReason::parse));
+            }
+            return self.store().read(|c| {
+                let call = crate::run_store_sql::call(c, run_id, position)?;
+                Ok(call.and_then(|c| c.detail["unknown"].as_str().and_then(UnknownReason::parse)))
+            });
+        }
         self.shared
             .store
             .read(|c| journal::unknown_reason(c, run_id, position))
     }
 
     pub fn activation_count(&self, run_id: &str) -> Result<u64> {
+        if self.uses_run_log() {
+            if let Some(s) = self.staged_snapshot(run_id) {
+                return Ok(s.activation_count);
+            }
+            return self.store().read(|c| {
+                crate::run_store_sql::history(c, run_id)?
+                    .map(|h| h.activation_count)
+                    .ok_or_else(|| CoreError::NoSuchRun(run_id.into()))
+            });
+        }
         self.shared
             .store
             .read(|c| runs::activation_count(c, run_id))
@@ -620,6 +687,9 @@ impl Runtime {
     /// Moves every `running` run back to `pending`. Called once when the
     /// process starts: the store's lease proves their owners are gone.
     pub fn recover(&self) -> Result<Vec<String>> {
+        if self.uses_run_log() {
+            return self.staged_recover();
+        }
         let ids = self.write_execution(runs::requeue_orphans)?;
         self.flush_refusals()?;
         self.release_unused_flow_routes()?;
@@ -629,6 +699,9 @@ impl Runtime {
 
     /// Takes a running run from the activation holding `generation`.
     pub fn take_over(&self, run_id: &str, generation: u64) -> Result<Lease> {
+        if self.uses_run_log() {
+            return self.staged_take_over(run_id, generation);
+        }
         let owner = self.config.owner.clone();
         let lease = self.write_execution(|tx| runs::take_over(tx, run_id, &owner, generation))?;
         self.shared.signal.bump();
@@ -636,6 +709,9 @@ impl Runtime {
     }
 
     pub fn cancel(&self, run_id: &str, actor: &str) -> Result<()> {
+        if self.uses_run_log() {
+            return self.staged_cancel(run_id, actor);
+        }
         self.write_execution(|tx| {
             runs::cancel(tx, run_id, &format!("cancelled by {actor}"))?;
             crate::reconcile::audit(tx, actor, "cancel", Some(run_id), None, "")
@@ -662,7 +738,11 @@ impl Runtime {
         let deadline = Instant::now() + timeout;
         loop {
             let seen = self.shared.signal.current();
-            let state = self.shared.store.read(|c| runs::state(c, run_id))?;
+            let state = if self.uses_run_log() {
+                self.run(run_id)?.state
+            } else {
+                self.shared.store.read(|c| runs::state(c, run_id))?
+            };
             let now = Instant::now();
             if done(state) {
                 return Ok(state);
@@ -1343,6 +1423,9 @@ impl Runtime {
     }
 
     pub fn health(&self) -> Result<crate::ops::Health> {
+        if self.uses_run_log() {
+            return self.log_health();
+        }
         self.shared.store.read(crate::ops::health)
     }
 
@@ -1350,18 +1433,42 @@ impl Runtime {
     /// on the runtime's clock.
     pub fn run_ages(&self) -> Result<crate::ops::RunAges> {
         let now = self.config.clock.now_ms();
+        if self.uses_run_log() {
+            let runs = self.log_runs(None)?;
+            let oldest = |state| {
+                runs.iter()
+                    .filter(|r| r.state == state)
+                    .map(|r| now.saturating_sub(r.admitted_at).max(0))
+                    .max()
+            };
+            return Ok(crate::ops::RunAges {
+                oldest_pending_ms: oldest(RunState::Pending),
+                oldest_suspended_ms: oldest(RunState::Suspended),
+                oldest_needs_reconcile_ms: oldest(RunState::NeedsReconcile),
+            });
+        }
         self.shared.store.read(|c| crate::ops::run_ages(c, now))
     }
 
     /// Every flow's health, on the runtime's clock.
     pub fn flow_health(&self) -> Result<Vec<crate::ops::FlowHealth>> {
         let now = self.config.clock.now_ms();
+        if self.uses_run_log() {
+            let runs = self.log_runs(None)?;
+            let states = self.log_states();
+            return self
+                .store()
+                .read(|c| crate::ops::flow_health_staged(c, now, &runs, &states));
+        }
         self.shared.store.read(|c| crate::ops::flow_health(c, now))
     }
 
     /// Pending runs no earlier run of their flow holds back, as (run,
     /// flow), in admission order: what can start now.
     pub fn startable(&self) -> Result<Vec<(String, String)>> {
+        if self.uses_run_log() {
+            return self.staged_startable();
+        }
         self.write_execution(|tx| journal::wake_deferred(tx, self.config.clock.now_ms(), None))?;
         let mut runs = self.shared.store.read(runs::startable)?;
         // A run waiting to ask core again is not offered, so a pass loop
@@ -1388,6 +1495,42 @@ impl Runtime {
     /// Fails runs past their deadline, then services durable provider
     /// acknowledgements and retention on the runtime's own cadence.
     pub fn enforce_deadlines(&self) -> Result<Vec<String>> {
+        if self.uses_run_log() {
+            let now = self.config.clock.now_ms();
+            let mut expired = Vec::new();
+            for run in self.log_runs(None)? {
+                if matches!(
+                    run.state,
+                    RunState::Pending | RunState::Running | RunState::Suspended
+                ) && run.deadline_at.is_some_and(|at| at <= now)
+                {
+                    let (kind, detail) = self
+                        .event_body_deadline_failure(&run.run_id)?
+                        .unwrap_or_else(|| {
+                            (
+                                "deadline".into(),
+                                "the run passed its wall-clock deadline".into(),
+                            )
+                        });
+                    match self.staged_finish(
+                        &run.run_id,
+                        RunState::Failed,
+                        Some(&kind),
+                        Some(&detail),
+                    ) {
+                        Ok(()) => {
+                            expired.push(run.run_id);
+                            self.wake_flow(&run.flow_id);
+                        }
+                        Err(CoreError::Unavailable(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+            self.flush_refusals()?;
+            self.reap_threads();
+            return Ok(expired);
+        }
         let now = self.config.clock.now_ms();
         let expired = self.write_execution(|tx| runs::expire(tx, now, None))?;
         for (run_id, _) in &expired {
@@ -1411,6 +1554,14 @@ impl Runtime {
     /// Wakes the next pending run of a flow, if configured to resume runs.
     pub(crate) fn wake_flow(&self, flow_id: &str) {
         if !self.config.auto_resume || self.shared.source.is_none() {
+            return;
+        }
+        if self.uses_run_log() {
+            if let Ok(runs) = self.staged_startable()
+                && let Some((id, _)) = runs.into_iter().find(|(_, flow)| flow == flow_id)
+            {
+                self.wake(&id);
+            }
             return;
         }
         let next: Result<Option<String>> = self.shared.store.read(|c| {
@@ -1454,6 +1605,9 @@ impl Runtime {
         flow_id: &str,
         at_ms: i64,
     ) -> Result<Option<crate::tokens::WindowUsage>> {
+        if self.uses_run_log() {
+            return self.log_token_usage(flow_id, at_ms);
+        }
         self.shared.store.read(|c| {
             let Some(approved) = crate::install::approved(c, flow_id)? else {
                 return Ok(None);
@@ -1475,6 +1629,15 @@ impl Runtime {
         flow_ids: &[&str],
         at_ms: i64,
     ) -> Result<std::collections::BTreeMap<String, crate::tokens::WindowUsage>> {
+        if self.uses_run_log() {
+            let mut windows = std::collections::BTreeMap::new();
+            for flow in flow_ids {
+                if let Some(usage) = self.log_token_usage(flow, at_ms)? {
+                    windows.insert((*flow).into(), usage);
+                }
+            }
+            return Ok(windows);
+        }
         self.shared
             .store
             .read(|c| crate::tokens::window_usage_many(c, flow_ids, at_ms))

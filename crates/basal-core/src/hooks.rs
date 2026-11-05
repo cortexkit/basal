@@ -140,6 +140,19 @@ pub enum Step {
 
 pub trait Hooks: Send + Sync {
     fn at(&self, run_id: &str, boundary: &Boundary) -> Step;
+    /// Observe records while the run's actor mutex is held and its activation
+    /// generation has been checked. Implementations must not call hosts or take
+    /// another actor; production's NoHooks does nothing.
+    fn at_run(
+        &self,
+        _: &str,
+        _: &str,
+        _: &Boundary,
+        _: Option<u64>,
+        _: &crate::run_records::State,
+    ) -> Step {
+        Step::Continue
+    }
 }
 
 /// No interference.

@@ -247,10 +247,25 @@ impl State {
                     return Err(corrupt("local or sync call cannot be possibly sent"));
                 }
                 if let Some(old) = self.calls.get_mut(&intent.call.position) {
-                    let previous = old
-                        .intent
-                        .as_ref()
-                        .ok_or_else(|| corrupt("second identity record"))?;
+                    let Some(previous) = old.intent.as_ref() else {
+                        // A registry lookup can defer before a request exists.
+                        // The first prepared request promotes that unsent identity.
+                        if old.identity != intent.call
+                            || intent.attempts != 1
+                            || !old.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                            || old.arrival.is_some()
+                            || old.sync.is_some()
+                            || old.accepted.is_some()
+                            || old.unknown.is_some()
+                        {
+                            return Err(corrupt("invalid first intent after Issued"));
+                        }
+                        old.intent = Some(intent.clone());
+                        if let Some(deferred) = old.deferred.take() {
+                            old.prior_deferrals.push(deferred);
+                        }
+                        return Ok(());
+                    };
                     if old.identity != intent.call
                         || intent.idempotency_key != previous.idempotency_key
                         || intent.attempts <= previous.attempts
@@ -259,7 +274,13 @@ impl State {
                             "retry changed identity/key or did not increase attempts",
                         ));
                     }
-                    old.prior_intents.push(previous.clone());
+                    let mut previous = previous.clone();
+                    if old.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                        && let Some(count) = &mut previous.dispatch_count_window
+                    {
+                        count.count = 0;
+                    }
+                    old.prior_intents.push(previous);
                     old.intent = Some(intent.clone());
                     // Proof that the previous attempt was unsent cannot
                     // authorize another retry after this attempt may be sent.

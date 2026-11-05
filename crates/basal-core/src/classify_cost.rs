@@ -322,9 +322,16 @@ pub fn settle(
     let Some(reserved) = reserved else {
         return Ok(());
     };
+    let charged = charge(reserved, value, code);
+    tx.execute("UPDATE classify_costs SET charged=?4 WHERE kind=?1 AND run_id=?2 AND position=?3 AND charged IS NULL",
+        params![kind,run,position,charged])?;
+    Ok(())
+}
+
+pub(crate) fn charge(reserved: f64, value: Option<&Value>, code: Option<&str>) -> f64 {
     let code = code.or_else(|| value.and_then(|v| v["errorCode"].as_str()));
     let value = value.map(|v| v.get("structuredContent").unwrap_or(v));
-    let charged = match code {
+    match code {
         // A reply that names a code is a refusal: its producer says what the
         // call spent.
         Some(code) => refused_charge(code, value.and_then(|v| v.get("detail")), reserved),
@@ -333,10 +340,7 @@ pub fn settle(
             .and_then(|v| v["cost_usd"].as_f64())
             .filter(|v| v.is_finite() && *v >= 0.0)
             .unwrap_or(reserved),
-    };
-    tx.execute("UPDATE classify_costs SET charged=?4 WHERE kind=?1 AND run_id=?2 AND position=?3 AND charged IS NULL",
-        params![kind,run,position,charged])?;
-    Ok(())
+    }
 }
 
 #[cfg(test)]

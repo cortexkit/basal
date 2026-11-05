@@ -112,6 +112,7 @@ fn budgets() -> Budgets {
         dispatches: 100,
         tokens: 100,
         cost_micros: 100,
+        cost_window: None,
     }
 }
 struct Fixture {
@@ -762,7 +763,8 @@ fn recovery_precedes_runtime_attach_time_delivery() {
             clock: f.clock.clone(),
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     assert_eq!(*host.ack.lock().unwrap(), Some(CompletionAck::Accepted));
     assert_eq!(
         runtime.complete(&f.completion()).unwrap(),

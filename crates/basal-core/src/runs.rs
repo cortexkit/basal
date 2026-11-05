@@ -97,6 +97,27 @@ pub(crate) fn load(conn: &Connection, run_id: &str) -> Result<Run> {
     .ok_or_else(|| CoreError::NoSuchRun(run_id.to_owned()))?
 }
 
+pub(crate) fn for_flow(conn: &Connection, flow: &str) -> Result<Vec<Run>> {
+    let ids = conn
+        .prepare("SELECT run_id FROM runs WHERE flow_id=?1 ORDER BY admit_seq,run_id")?
+        .query_map([flow], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.iter().map(|id| load(conn, id)).collect()
+}
+
+/// Log-backed replacement for the `runs_with_snapshots` reader. The caller
+/// copies the actor before opening this connection; finished summaries take
+/// precedence if closing committed after that copy.
+pub(crate) fn load_staged(
+    conn: &Connection,
+    run_id: &str,
+    state: Option<&crate::run_records::State>,
+    active: bool,
+    owner: &str,
+) -> Result<Run> {
+    crate::run_readers::load(conn, run_id, state, active, owner)
+}
+
 pub(crate) fn state(conn: &Connection, run_id: &str) -> Result<RunState> {
     let s: Option<String> = conn
         .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id], |r| {
