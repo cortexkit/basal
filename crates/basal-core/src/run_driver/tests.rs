@@ -283,6 +283,14 @@ fn recovered_unactivated_run_counts_against_other_runs_budget() {
     let mut other = f.live.clone();
     other.run_id = "another-run".into();
     other.trigger_id = "another-trigger".into();
+    f.store
+        .write(|tx| {
+            let mut identity = sql::identity(tx, &f.live.run_id)?.unwrap();
+            identity.run_id = other.run_id.clone();
+            sql::insert_identity(tx, &identity)?;
+            sql::insert_live(tx, &other)
+        })
+        .unwrap();
     driver
         .register(
             &other,

@@ -32,7 +32,7 @@ fn add(a: u64, b: u64) -> Result<u64> {
         .ok_or_else(|| CoreError::Invalid("accounting overflow".into()))
 }
 
-pub(super) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>> {
+pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>> {
     if budgets.dispatch_window_ms <= 0 || budgets.token_window_ms <= 0 {
         return Err(CoreError::Invalid(
             "accounting windows must be positive".into(),

@@ -63,6 +63,10 @@ impl LogRecord for Record {
 pub trait RecordLog: Send + std::marker::Sync + 'static {
     fn append(&self, record: Record) -> Result<Lsn>;
     fn sync_through(&self, lsn: Lsn) -> Result<()>;
+    /// Includes group syncs requested by other runs sharing this log.
+    fn synced_lsn(&self) -> Lsn {
+        Lsn::default()
+    }
 }
 
 fn log_error(error: run_log::Error) -> CoreError {
@@ -73,6 +77,9 @@ fn log_error(error: run_log::Error) -> CoreError {
 }
 
 impl RecordLog for RunLog<Record> {
+    fn synced_lsn(&self) -> Lsn {
+        RunLog::synced_lsn(self)
+    }
     fn append(&self, record: Record) -> Result<Lsn> {
         RunLog::append(self, vec![record]).map_err(log_error)
     }
@@ -90,6 +97,9 @@ pub struct Records {
     last_lsn: Lsn,
     required_start: Option<Lsn>,
     poisoned: bool,
+    identity: Option<crate::run_store_sql::RunIdentity>,
+    intent_cuts: std::collections::BTreeMap<u64, Lsn>,
+    confirmed_sync: Lsn,
 }
 
 impl Records {
@@ -101,10 +111,31 @@ impl Records {
             last_lsn: Lsn::default(),
             required_start: None,
             poisoned: false,
+            identity: None,
+            intent_cuts: Default::default(),
+            confirmed_sync: Lsn::default(),
         }
     }
     pub fn state(&self) -> &State {
         &self.state
+    }
+    pub(crate) fn bind_identity(&mut self, identity: crate::run_store_sql::RunIdentity) {
+        self.identity = Some(identity);
+    }
+    pub(crate) fn identity(&self) -> Option<&crate::run_store_sql::RunIdentity> {
+        self.identity.as_ref()
+    }
+    pub(crate) fn check_healthy(&self) -> Result<()> {
+        if self.poisoned {
+            Err(CoreError::Cut)
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn durable_intent(&self, position: u64) -> bool {
+        self.intent_cuts
+            .get(&position)
+            .is_some_and(|cut| *cut <= self.confirmed_sync.max(self.log.synced_lsn()))
     }
     /// Reclamation must retain this start point until a newer snapshot is synced.
     pub fn required_start(&self) -> Option<Lsn> {
@@ -202,12 +233,19 @@ impl Records {
         // Validate before writing; failed appends must not change the overlay.
         let mut next = self.state.clone();
         next.apply(generation, &body)?;
+        let intent_position = match &body {
+            Body::Intent(intent) => Some(intent.call.position),
+            _ => None,
+        };
         let lsn = self.log.append(Record {
             run_id: self.run_id.clone(),
             generation,
             body,
         })?;
         self.state = next;
+        if let Some(position) = intent_position {
+            self.intent_cuts.entry(position).or_insert(lsn);
+        }
         self.last_lsn = lsn;
         self.required_start.get_or_insert(lsn);
         Ok((lsn, sync))
@@ -322,6 +360,17 @@ impl Records {
             result.last_lsn = result.last_lsn.max(record.lsn);
             result.required_start.get_or_insert(record.lsn);
         }
+        // Log recovery validates frames and syncs the retained prefix before
+        // returning it. Snapshot identities remain durable even when their
+        // original segments have been reclaimed.
+        result.intent_cuts = result
+            .state
+            .calls
+            .iter()
+            .filter(|(_, call)| call.intent.is_some())
+            .map(|(position, _)| (*position, Lsn::default()))
+            .collect();
+        result.confirmed_sync = result.last_lsn;
         Ok(result)
     }
 }
@@ -350,6 +399,7 @@ impl RunRecords for Records {
             self.poisoned = true;
             return Err(error);
         }
+        self.confirmed_sync = self.confirmed_sync.max(cut);
         Ok(())
     }
     fn append_refusal(&mut self, mut refusal: Record) -> Result<()> {

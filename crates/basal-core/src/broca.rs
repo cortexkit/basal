@@ -19,11 +19,46 @@ pub const PENDING_IDS_SQL: &str = "SELECT send_id FROM broca_calls WHERE json_ex
 #[derive(Default)]
 pub struct BrocaStore {
     store: Mutex<Option<Arc<Store>>>,
+    registry: Option<Arc<crate::run_store::RunStore<crate::run_records::Records>>>,
 }
 impl BrocaStore {
     pub fn new(store: Arc<Store>) -> Self {
         Self {
             store: Mutex::new(Some(store)),
+            registry: None,
+        }
+    }
+    /// Use only after log recovery; attaching Broca may deliver immediately.
+    pub fn new_staged(hosts: &crate::run_host::RecoveredHosts) -> Self {
+        Self {
+            store: Mutex::new(Some(hosts.store.clone())),
+            registry: Some(hosts.registry().clone()),
+        }
+    }
+    fn live_identity(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<(crate::run_store_sql::RunIdentity, Option<i64>)>, BrocaError> {
+        let Some(run) = self.registry.as_ref().and_then(|r| r.get(run_id)) else {
+            return Ok(None);
+        };
+        match run.enter() {
+            Ok(entrant) => entrant
+                .finish(|records| {
+                    let identity = records
+                        .identity()
+                        .cloned()
+                        .ok_or_else(|| CoreError::Corrupt("registry run has no identity".into()))?;
+                    Ok(Some((
+                        identity,
+                        records.state().claim.as_ref().map(|c| c.deadline_at),
+                    )))
+                })
+                .map_err(|e| BrocaError::Store(e.to_string())),
+            Err(crate::run_store::Routing::Closed) => Ok(None),
+            Err(_) => Err(BrocaError::Store(
+                "run is closing; retry the state read".into(),
+            )),
         }
     }
     pub fn bind(&self, store: Arc<Store>) -> Result<(), BrocaError> {
@@ -93,6 +128,26 @@ impl StateStore for BrocaStore {
         &self,
         run_id: &str,
     ) -> Result<Option<basal_host::broca::FlowIdentity>, BrocaError> {
+        if self.registry.is_some() {
+            let identity = if let Some((identity, _)) = self.live_identity(run_id)? {
+                Some(identity)
+            } else {
+                self.store()?
+                    .read(|c| {
+                        if crate::run_store_sql::history(c, run_id)?.is_some() {
+                            crate::run_store_sql::identity(c, run_id)
+                        } else {
+                            Ok(None)
+                        }
+                    })
+                    .map_err(|e| BrocaError::Store(e.to_string()))?
+            };
+            return Ok(identity.map(|i| basal_host::broca::FlowIdentity {
+                flow_id: i.flow_id,
+                version: i.flow_version,
+                code_hash: crate::ids::hex(&i.code_hash),
+            }));
+        }
         self.store()?
             .read(|c| {
                 let run = crate::runs::load(c, run_id)?;
@@ -108,6 +163,18 @@ impl StateStore for BrocaStore {
             .map_err(|e| BrocaError::Store(e.to_string()))
     }
     fn deadline(&self, run_id: &str) -> Result<Option<i64>, BrocaError> {
+        if self.registry.is_some() {
+            if let Some((_, deadline)) = self.live_identity(run_id)? {
+                return Ok(deadline);
+            }
+            // Finished flow runs have no remaining execution deadline. Broca
+            // polls them on its ended-run schedule; codemode keeps its own clock.
+            return self.store()?.read(|c| Ok(c.query_row(
+                "SELECT NULL FROM run_history h JOIN run_identities i USING(run_id) WHERE h.run_id=?1
+                 UNION ALL SELECT MIN(deadline_ms, admitted_at + COALESCE(json_extract(limits, '$.wall_ms'), deadline_ms)) + person_wait_ms FROM codemode_runs WHERE run_id=?1",
+                [run_id], |r| r.get::<_, Option<i64>>(0)).optional()?.flatten()))
+                .map_err(|e| BrocaError::Store(e.to_string()));
+        }
         // A codemode run's deadline is its wall deadline (the scope deadline,
         // or admission plus its wall limit if sooner) extended by the time
         // it spent waiting on a person, as the supervisor computes it.
@@ -126,6 +193,14 @@ impl StateStore for BrocaStore {
             .map_err(|e| BrocaError::Store(e.to_string()))
     }
     fn run_ended(&self, run_id: &str) -> Result<bool, BrocaError> {
+        if self.registry.is_some() {
+            if self.live_identity(run_id)?.is_some() {
+                return Ok(false);
+            }
+            return self.store()?.read(|c| Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM run_history h JOIN run_identities i USING(run_id) WHERE h.run_id=?1)",
+                [run_id], |r| r.get(0))?)).map_err(|e| BrocaError::Store(e.to_string()));
+        }
         self.store()?
             .read(|c| {
                 Ok(c.query_row(

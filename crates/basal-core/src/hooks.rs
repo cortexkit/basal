@@ -43,6 +43,8 @@ pub enum Boundary {
     DriverDispatched,
     /// Released is appended, before Deliver or terminal projection.
     DriverReleased,
+    /// A host outcome is durable, before its acknowledgement leaves the runtime.
+    HostArrived,
     /// The activation claimed the run (its generation is committed).
     Claimed { generation: u64 },
     /// The runtime fingerprint was recorded at the run's first activation.
@@ -90,6 +92,7 @@ pub enum Boundary {
 }
 
 impl Boundary {
+    pub const HOST: [Self; 1] = [Self::HostArrived];
     pub const RUN_DRIVER: [Self; 4] = [
         Self::DriverAppended,
         Self::DriverSynced,

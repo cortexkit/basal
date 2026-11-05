@@ -706,6 +706,18 @@ fn a_flow_call_of_an_ended_run_is_checked_only_rarely() {
     assert_eq!(f.stored(0).check_at, Some(f.now() + ENDED_RUN_CHECK_MS));
 }
 
+#[test]
+fn a_failed_read_of_an_ended_run_without_a_deadline_waits_for_the_ended_interval() {
+    let f = Fixture::new();
+    f.accept(0);
+    f.store.end_run("r");
+    f.fake.set_failing("key:0", true).unwrap();
+    f.advance(FIRST_CHECK_MS);
+    assert!(f.host.wake().is_err());
+    assert_eq!(f.stored(0).failures, 1);
+    assert_eq!(f.stored(0).check_at, Some(f.now() + ENDED_RUN_CHECK_MS));
+}
+
 fn codemode_request(position: u64) -> CallRequest {
     let key = format!("codemode-key:{position}");
     let selection = FakeSelector::default()

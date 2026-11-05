@@ -244,6 +244,7 @@ impl Signal {
 
 /// State shared by every runtime handle over one store in one process.
 pub(crate) struct Shared {
+    staged_hosts: Option<Arc<crate::run_host::RecoveredHosts>>,
     stopping: AtomicBool,
     pub(crate) store: Arc<Store>,
     pub(crate) host: Arc<dyn Host>,
@@ -322,6 +323,10 @@ struct Sink {
 impl CompletionSink for Sink {
     fn route_released(&self, run_id: &str) {
         if let Some(shared) = self.shared.upgrade() {
+            if shared.staged_hosts.is_some() {
+                shared.signal.bump();
+                return;
+            }
             let rt = Runtime {
                 shared,
                 config: self.config.clone(),
@@ -342,14 +347,7 @@ impl CompletionSink for Sink {
             shared,
             config: self.config.clone(),
         };
-        rt.accept(
-            &c.run_id,
-            c.position,
-            Some(&c.handle),
-            &c.outcome,
-            Source::Completion,
-        )
-        .map_err(|e| SinkError(e.to_string()))
+        rt.complete(c).map_err(|e| SinkError(e.to_string()))
     }
 
     fn unknown(&self, u: &UnknownOutcome) -> std::result::Result<CompletionAck, SinkError> {
@@ -390,8 +388,42 @@ impl Runtime {
         source: Option<Arc<dyn WorkerSource>>,
         config: Config,
     ) -> Self {
+        Self::new_inner(store, host, catalog, hooks, source, config, None)
+    }
+
+    /// Staged construction requires completed registry recovery before attach
+    /// can poll saved host work. Production keeps using `new` until cutover.
+    pub fn new_staged(
+        hosts: Arc<crate::run_host::RecoveredHosts>,
+        host: Arc<dyn Host>,
+        catalog: Arc<dyn Catalog>,
+        hooks: Arc<dyn Hooks>,
+        source: Option<Arc<dyn WorkerSource>>,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(
+            hosts.store.clone(),
+            host,
+            catalog,
+            hooks,
+            source,
+            config,
+            Some(hosts),
+        )
+    }
+
+    fn new_inner(
+        store: Arc<Store>,
+        host: Arc<dyn Host>,
+        catalog: Arc<dyn Catalog>,
+        hooks: Arc<dyn Hooks>,
+        source: Option<Arc<dyn WorkerSource>>,
+        config: Config,
+        staged_hosts: Option<Arc<crate::run_host::RecoveredHosts>>,
+    ) -> Self {
         store.set_clock(config.clock.clone());
         let shared = Arc::new(Shared {
+            staged_hosts,
             stopping: AtomicBool::new(false),
             store,
             host,
@@ -717,6 +749,19 @@ impl Runtime {
     /// another way (a subscription replayed after a restart) use it
     /// directly.
     pub fn complete(&self, completion: &Completion) -> Result<CompletionAck> {
+        if let Some(hosts) = &self.shared.staged_hosts {
+            let capped = self
+                .cap_result(&completion.outcome)
+                .map(|outcome| Completion {
+                    outcome,
+                    ..completion.clone()
+                });
+            let ack = hosts
+                .complete(capped.as_ref().unwrap_or(completion))
+                .map_err(|e| CoreError::Unavailable(e.to_string()))?;
+            self.shared.signal.bump();
+            return Ok(ack);
+        }
         self.accept(
             &completion.run_id,
             completion.position,
@@ -731,6 +776,13 @@ impl Runtime {
     /// `None` means the run's activation is still running and the report
     /// was not recorded: the host must make it again later.
     pub fn unknown(&self, u: &UnknownOutcome) -> Result<Option<CompletionAck>> {
+        if let Some(hosts) = &self.shared.staged_hosts {
+            let ack = hosts
+                .unknown(u)
+                .map_err(|e| CoreError::Unavailable(e.to_string()))?;
+            self.shared.signal.bump();
+            return Ok(Some(ack));
+        }
         let ack = self.write_execution(|tx| {
             journal::record_host_unknown(tx, &u.run_id, u.position, &u.handle, u.reason, &u.detail)
         })?;

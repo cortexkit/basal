@@ -16,7 +16,7 @@
 //! | terminal build | actor, accounting | before committer opens SQLite |
 //! | terminal commit | SQLite, on committer thread | none |
 
-mod accounting;
+pub(crate) mod accounting;
 mod local;
 mod terminal;
 #[cfg(test)]
@@ -182,7 +182,12 @@ impl Driver {
     }
     /// Admission and recovery register the complete accounting contribution
     /// before exposing a run, including runs that have not been activated yet.
-    pub fn register(&self, live: &LiveRun, records: Records) -> Result<Arc<Run<Records>>> {
+    pub fn register(&self, live: &LiveRun, mut records: Records) -> Result<Arc<Run<Records>>> {
+        let identity = self.store.read(|conn| {
+            crate::run_store_sql::identity(conn, &live.run_id)?
+                .ok_or_else(|| CoreError::Corrupt("live run has no identity".into()))
+        })?;
+        records.bind_identity(identity);
         let rows = accounting::rows(records.state(), &self.budgets)?;
         self.registry.insert_accounted(
             live.run_id.clone(),
@@ -688,6 +693,7 @@ impl Dispatch {
         let position = self.intent.call.position;
         let mut handle = None;
         let mut committed = false;
+        let mut arrived = false;
         self.entrant.account(|records| {
             match reply {
                 Reply::Accepted(h) => {
@@ -707,6 +713,7 @@ impl Dispatch {
                     arrival.durability.immediate_completion = true;
                     records.append(self.generation, Body::Arrived(arrival))?;
                     committed = true;
+                    arrived = true;
                 }
                 Reply::Deferred(mut deferred) => {
                     deferred.position = position;
@@ -722,6 +729,9 @@ impl Dispatch {
             Ok(((), accounting::rows(records.state(), &self.driver.budgets)?))
         })?;
         if committed {
+            if arrived {
+                self.driver.at(&self.live.run_id, Boundary::HostArrived)?;
+            }
             self.driver
                 .services
                 .dispatch_committed(&self.live, position, handle.as_deref());

@@ -1200,8 +1200,8 @@ impl BrocaHost {
 
     /// Reads one pending call and delivers what is known, then schedules
     /// its next check: `next_check_at` while its run is going, rarely once a
-    /// flow call's basal run has ended, and `retry_at` after a failed read,
-    /// so the failure backs off this call alone. A send id with no pending
+    /// flow call's basal run has ended (even after a failed read), and
+    /// `retry_at` after a live run's failed read. A send id with no pending
     /// call left has its wait dropped.
     fn visit(&self, send_id: &str) -> Result<(), BrocaError> {
         let gate = self.call_gate(send_id);
@@ -1242,17 +1242,17 @@ impl BrocaHost {
             tracing::warn!(%error, run_id = %call.basal_run_id, "cannot read the run's deadline; checking its model call on the usual schedule");
             None
         });
+        let ended = !codemode
+            && self.store.run_ended(&call.basal_run_id).unwrap_or_else(|error| {
+                tracing::warn!(%error, run_id = %call.basal_run_id, "cannot read whether the run has ended");
+                false
+            });
         match read {
             Ok(read) => {
                 if read {
                     call.read_at = Some(now);
                     call.failures = 0;
                 }
-                let ended = !codemode
-                    && self.store.run_ended(&call.basal_run_id).unwrap_or_else(|error| {
-                        tracing::warn!(%error, run_id = %call.basal_run_id, "cannot read whether the run has ended");
-                        false
-                    });
                 call.check_at = Some(if ended {
                     now.saturating_add(ENDED_RUN_CHECK_MS)
                 } else {
@@ -1263,7 +1263,11 @@ impl BrocaHost {
             }
             Err(error) => {
                 call.failures = call.failures.saturating_add(1);
-                call.check_at = Some(retry_at(now, call.failures, deadline));
+                call.check_at = Some(if ended {
+                    now.saturating_add(ENDED_RUN_CHECK_MS)
+                } else {
+                    retry_at(now, call.failures, deadline)
+                });
                 if let Err(save) = self.store.save(&call) {
                     tracing::warn!(error = %save, send_id = %call.send_id, "cannot save a failed Broca call's next check");
                 }
