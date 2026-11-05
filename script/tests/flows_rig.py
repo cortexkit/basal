@@ -503,6 +503,37 @@ cmd_test
             self.assertEqual(args[args.index("--project-root") + 1],
                              str(rig / "home/projects/basal-rig-20260101t000000z"))
 
+    def test_passing_contract_stops_its_temporary_daemon_and_reports_success(self):
+        scratch_root = SCRIPT.parents[1] / "target/scratch"
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch_root) as home:
+            result = self.run_shell('''
+guard_all_paths
+date() { printf '%s\\n' 20260101T000000Z; }
+daemon_pid() { :; }
+cmd_start() { touch "$HOME/running"; }
+cmd_stop() { rm -f "$HOME/running"; }
+ensure_project() { printf '%s\\n' pj_fixture; }
+write_manifest() { mkdir -p "$RESULTS/$1"; }
+basal_mode() { printf '%s\\n' rig-build; }
+mkdir -p "$RIG" "$RUNTIME_DIR"
+touch "$KILL_FILE" "$UNSCOPED_FILE"
+CONTRACT="$RIG/ckdev-contract"
+printf '#!/bin/sh\\nexit 0\\n' > "$CONTRACT"
+chmod 755 "$CONTRACT"
+rig_env() {
+  [ -f "$HOME/running" ] || return 9
+  printf '%s\\n' '{"passed":true,"cases":[{"case":"fixture","checks":[{"passed":true}]}]}' > "$dir/contract.json"
+}
+cmd_test
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("the contract suite passed", result.stdout)
+            self.assertFalse((Path(home) / "running").exists())
+            runtime = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/runtime"
+            self.assertFalse((runtime / "basal-kill-at").exists())
+            self.assertFalse((runtime / "basal-unscoped-send").exists())
+
     def test_package_selector_reaches_the_live_contract_without_model_credentials(self):
         with tempfile.TemporaryDirectory() as home:
             result = self.run_shell('''

@@ -8,6 +8,7 @@ def load_tests(loader, tests, pattern):
         "script.tests.check_path_deps",
         "script.tests.check_ckdev_names",
         "script.tests.check_local_paths",
+        "script.tests.exit_traps",
         "script.tests.codemode_manifest",
         "script.tests.flows_rig",
         "script.tests.sign_worker",

@@ -16,6 +16,7 @@
 # there, restoring any previous file if verification fails. It never
 # restarts anything.
 set -eu
+worker_finished=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE="$ROOT/crates/basal-worker/sandbox/worker.sb"
 # The signing itself, and the signature half of the gate, are the policy every
@@ -282,7 +283,19 @@ case "$operation" in
       fi
       rm -rf "$scratch"
     }
-    trap rollback EXIT
+    # macOS /bin/sh can lose an abort's status when an EXIT trap is installed.
+    # Keep rollback unchanged, but do not mistake an unfinished placement for success.
+    # shellcheck disable=SC2329
+    on_worker_exit() {
+      worker_exit_status=$?
+      rollback
+      if [ "$worker_finished" != 1 ] && [ "$worker_exit_status" = 0 ]; then
+        echo 'FAIL sign-worker stopped before finishing' >&2
+        exit 1
+      fi
+      exit "$worker_exit_status"
+    }
+    trap on_worker_exit EXIT
     trap 'exit 1' INT TERM
     cp "$binary" "$scratch/new"
     if [ -e "$dest" ]; then cp -p "$dest" "$scratch/old"; existed=1; fi
@@ -297,3 +310,4 @@ case "$operation" in
     usage
     ;;
 esac
+worker_finished=1

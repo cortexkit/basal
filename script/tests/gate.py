@@ -10,6 +10,9 @@ import unittest
 from unittest.mock import patch
 
 from script import gate_support as gate
+# script/gate.sh names this suite explicitly; import the shared EXIT-trap
+# checks so its fast lane runs them as well as unittest discovery.
+from script.tests.exit_traps import ScriptExitTrapTests
 
 
 @contextmanager

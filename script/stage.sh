@@ -25,6 +25,7 @@
 #                 and macOS code signatures) and print its revision; changes nothing.
 #                 script/flows-rig.sh place --from-stage uses it.
 set -eu
+stage_finished=0
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 # shellcheck source=script/signing.sh
@@ -104,6 +105,7 @@ verify_stage() {
 
 if [ -n "$VERIFY" ]; then
   verify_stage "$VERIFY"
+  stage_finished=1
   exit 0
 fi
 
@@ -162,7 +164,19 @@ cleanup() {
   done
   rm -rf "$SCRATCH" "$CONTROL_DIR"
 }
-trap cleanup EXIT
+# macOS /bin/sh can report a nounset abort as status 0 under an EXIT trap.
+# Only reaching the successful end makes a zero status trustworthy.
+# shellcheck disable=SC2329
+on_stage_exit() {
+  stage_exit_status=$?
+  cleanup
+  if [ "$stage_finished" != 1 ] && [ "$stage_exit_status" = 0 ]; then
+    echo 'FAIL stage stopped before finishing' >&2
+    exit 1
+  fi
+  exit "$stage_exit_status"
+}
+trap on_stage_exit EXIT
 trap 'exit 1' INT TERM
 
 # ---------------------------------------------------------------- build
@@ -709,3 +723,4 @@ say "=== card (saved to $CARD; not posted)"
 cat "$CARD"
 say ""
 say "staged $STAGE_DIR"
+stage_finished=1

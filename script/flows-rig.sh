@@ -158,6 +158,7 @@
 # revision overrides let a rehearsal test the same bytes a deployment places.
 #   script/flows-rig.sh build --prefrontal-rev defe4a72a3ee4bac8ce81645df801c6907a8ce4c --cingulate-rev c650e9db6e87dbb28fe20dd5fc2815db5deb41e9 --sibling-lock claustrum
 set -eu
+rig_finished=0
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 # The signing policy stage.sh signs production binaries with.
@@ -221,6 +222,25 @@ DRY=0
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'flows-rig: %s\n' "$*" >&2; exit 1; }
+
+# macOS /bin/sh can report a nounset abort as status 0 under an EXIT trap.
+# Cleanup must still run, but only a finished command may report success.
+# shellcheck disable=SC2329
+on_rig_exit() {
+  rig_exit_status=$?
+  "$@"
+  if [ "$rig_finished" != 1 ] && [ "$rig_exit_status" = 0 ]; then
+    echo 'FAIL flows-rig stopped before finishing' >&2
+    exit 1
+  fi
+  exit "$rig_exit_status"
+}
+
+# shellcheck disable=SC2329
+cleanup_rig_test() {
+  rm -f "$KILL_FILE" "$UNSCOPED_FILE"
+  cmd_stop
+}
 
 usage() {
   awk '/^# Usage:/ { on = 1 } /^set -eu/ { exit } on' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -1001,7 +1021,7 @@ EOF
   if [ "$DRY" = 1 ]; then
     say "+ start the temporary rig for authenticated vault grants and its served catalog"
   else
-    trap 'cmd_stop' EXIT
+    trap 'on_rig_exit cmd_stop' EXIT
     trap 'exit 1' INT TERM
     cmd_start
   fi
@@ -1017,6 +1037,8 @@ EOF
   fi
   [ "$config_status" = 0 ] || die "cannot configure the rig's vault grants and served Luna pin"
   say "configured; next: $0 start"
+  # The EXIT trap runs in this subshell, before the main dispatch returns.
+  rig_finished=1
 )
 
 configure_live() {
@@ -1571,7 +1593,7 @@ cmd_test() (
   started=0
   pid=$(daemon_pid)
   if [ -z "$pid" ]; then
-    trap 'rm -f "$KILL_FILE" "$UNSCOPED_FILE"; cmd_stop' EXIT
+    trap 'on_rig_exit cleanup_rig_test' EXIT
     trap 'exit 1' INT TERM
     cmd_start
     started=1
@@ -1619,6 +1641,7 @@ cmd_test() (
   fi
   [ "$status" = 0 ] || die "the contract suite failed (exit $status); results in $dir"
   say "the contract suite passed; results in $dir"
+  rig_finished=1
 )
 
 # Check the report itself, not just the runner's exit status: an empty case
@@ -1725,3 +1748,4 @@ case "$command" in
   test) cmd_test "$@" ;;
   *) usage ;;
 esac
+rig_finished=1
