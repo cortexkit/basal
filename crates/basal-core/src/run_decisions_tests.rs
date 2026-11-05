@@ -392,9 +392,9 @@ fn history_lost_is_not_recovered_and_close_keeps_saved_broca_obligations_without
             )?))
             .unwrap()
     );
-    // Production still references journal here; the log-backed schema will
-    // instead reference run_identities. This test table accepts a saved
-    // snapshot without manufacturing an unrelated legacy journal row.
+    // Production's broca_calls table still has a foreign key to the legacy
+    // journal table. The test table accepts a saved snapshot without creating
+    // an unrelated journal row; staged identity comes from live/history snapshots.
     f.store.write(|tx| { tx.execute("DROP TABLE broca_calls", [])?; tx.execute_batch("CREATE TABLE broca_calls(send_id TEXT PRIMARY KEY,run_id TEXT,position INTEGER,snapshot TEXT)")?;
         tx.execute("INSERT INTO broca_calls VALUES('send','run-host',7,?1)", [json!({"params":"{\"frozen\":true}","handle":"late-handle","acknowledged":false}).to_string()])?; Ok(()) }).unwrap();
     recovered

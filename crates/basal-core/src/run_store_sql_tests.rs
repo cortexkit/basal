@@ -170,8 +170,7 @@ fn detail(run_id: &str) -> RunCall {
 
 fn finished(conn: &mut Connection, run_id: &str) {
     let tx = conn.transaction().unwrap();
-    insert_identity(&tx, &id(run_id)).unwrap();
-    insert_history(&tx, &summary(run_id)).unwrap();
+    insert_history(&tx, &summary(run_id), &id(run_id)).unwrap();
     tx.commit().unwrap();
 }
 
@@ -239,8 +238,7 @@ fn identity_and_admission_roundtrip_use_the_full_id() {
     let mut conn = fixture();
     let run_id = "run-store-7-random";
     let tx = conn.transaction().unwrap();
-    insert_identity(&tx, &id(run_id)).unwrap();
-    insert_live(&tx, &admission(run_id)).unwrap();
+    insert_live(&tx, &admission(run_id), &id(run_id)).unwrap();
     tx.commit().unwrap();
     assert_eq!(identity(&conn, run_id).unwrap(), Some(id(run_id)));
     assert_eq!(live(&conn, run_id).unwrap(), Some(admission(run_id)));
@@ -250,23 +248,24 @@ fn identity_and_admission_roundtrip_use_the_full_id() {
     let mut mismatch = id("different");
     mismatch.code_hash = [8; 32];
     assert!(matches!(
-        insert_identity(&tx, &mismatch),
+        insert_live(&tx, &admission("different"), &mismatch),
         Err(CoreError::Invalid(_))
     ));
-    assert!(insert_identity(&tx, &id(run_id)).is_err());
+    assert!(insert_live(&tx, &admission(run_id), &id(run_id)).is_err());
     let mut orphan = admission("missing");
-    assert!(insert_live(&tx, &orphan).is_err());
+    let mut missing = id("missing");
+    missing.snapshot_id = 999;
+    assert!(insert_live(&tx, &orphan, &missing).is_err());
     orphan.run_id = run_id.into();
     orphan.flow_version = 3;
-    assert!(insert_live(&tx, &orphan).is_err());
+    assert!(insert_live(&tx, &orphan, &id(run_id)).is_err());
 }
 
 #[test]
 fn terminal_summary_replaces_admission_and_retains_identity() {
     let mut conn = fixture();
     let tx = conn.transaction().unwrap();
-    insert_identity(&tx, &id("run")).unwrap();
-    insert_live(&tx, &admission("run")).unwrap();
+    insert_live(&tx, &admission("run"), &id("run")).unwrap();
     assert_eq!(next_commit_seq(&tx).unwrap(), 21);
     finish_live(&tx, &summary("run")).unwrap();
     tx.commit().unwrap();
@@ -282,6 +281,102 @@ fn terminal_summary_replaces_admission_and_retains_identity() {
 }
 
 #[test]
+fn staged_schema_preserves_control_rows_and_uses_payload_appropriate_btrees() {
+    let mut conn = legacy();
+    conn.execute_batch(
+        "INSERT INTO trigger_inbox VALUES('flow','trigger',1,'run',10);
+        INSERT INTO tombstones VALUES('trigger','key','run',20);
+        INSERT INTO rate_windows VALUES('flow',100,0,3,4,1);
+        INSERT INTO schedules VALUES('flow',1,'{}','active',0,100,NULL,0);
+        INSERT INTO schedule_fires VALUES(17,'flow','fire',1,100,'{}',0);
+        INSERT INTO schedule_fires VALUES(21,'flow','consumed',1,200,'{}',0);
+        DELETE FROM schedule_fires WHERE seq=21;",
+    )
+    .unwrap();
+    let tx = conn.transaction().unwrap();
+    create_test_schema(&tx, &initial_meta()).unwrap();
+    tx.commit().unwrap();
+    for (table, columns, expected) in [
+        (
+            "trigger_inbox",
+            "json_array(flow_id,trigger_id,attempt,run_id,admitted_at)",
+            "[\"flow\",\"trigger\",1,\"run\",10]",
+        ),
+        (
+            "tombstones",
+            "json_array(kind,key,run_id,pruned_at)",
+            "[\"trigger\",\"key\",\"run\",20]",
+        ),
+        (
+            "rate_windows",
+            "json_array(flow_id,window_ms,window_start,runs,dispatches,saturated)",
+            "[\"flow\",100,0,3,4,1]",
+        ),
+        (
+            "schedules",
+            "json_array(flow_id,version,spec,state,anchor_ms,next_due_ms,last_fired_ms,updated_at)",
+            "[\"flow\",1,\"{}\",\"active\",0,100,null,0]",
+        ),
+        (
+            "schedule_fires",
+            "json_array(seq,flow_id,trigger_id,version,due_ms,payload,planned_at)",
+            "[17,\"flow\",\"fire\",1,100,\"{}\",0]",
+        ),
+    ] {
+        assert_eq!(
+            conn.query_row(&format!("SELECT {columns} FROM {table}"), [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            expected,
+            "{table}"
+        );
+    }
+    assert_eq!(meta_value(&conn, "next_run").unwrap(), "22");
+    assert_eq!(
+        conn.query_row(
+            "SELECT type FROM sqlite_schema WHERE name='run_identities'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "view"
+    );
+    for (table, without_rowid) in [
+        ("live_runs", true),
+        ("trigger_inbox", true),
+        ("tombstones", true),
+        ("rate_windows", true),
+        ("schedules", true),
+        ("run_log_segments", true),
+        ("run_history", false),
+        ("run_calls", false),
+        ("obligations", false),
+        ("schedule_fires", false),
+        ("run_snapshots", false),
+    ] {
+        assert_eq!(
+            conn.query_row(
+                "SELECT wr FROM pragma_table_list WHERE name=?1",
+                [table],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap(),
+            without_rowid,
+            "{table}"
+        );
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_sequence WHERE name='schedule_fires'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn call_detail_roundtrips_only_for_non_successful_available_history() {
     let mut conn = fixture();
     for (i, state) in [
@@ -294,10 +389,9 @@ fn call_detail_roundtrips_only_for_non_successful_available_history() {
     {
         let run_id = format!("failed-{i}");
         let tx = conn.transaction().unwrap();
-        insert_identity(&tx, &id(&run_id)).unwrap();
         let mut history = summary(&run_id);
         history.state = state;
-        insert_history(&tx, &history).unwrap();
+        insert_history(&tx, &history, &id(&run_id)).unwrap();
         insert_call(&tx, &detail(&run_id)).unwrap();
         tx.commit().unwrap();
         assert_eq!(call(&conn, &run_id, 4).unwrap(), Some(detail(&run_id)));
@@ -322,12 +416,11 @@ fn call_detail_roundtrips_only_for_non_successful_available_history() {
         ("success", RunState::Succeeded, false),
         ("lost", RunState::Cancelled, true),
     ] {
-        insert_identity(&tx, &id(run_id)).unwrap();
         let mut row = summary(run_id);
         row.state = state;
         row.history_lost = lost;
         row.result = None;
-        insert_history(&tx, &row).unwrap();
+        insert_history(&tx, &row, &id(run_id)).unwrap();
         assert!(matches!(
             insert_call(&tx, &detail(run_id)),
             Err(CoreError::Invalid(_))
@@ -588,8 +681,7 @@ fn segments_reserve_promote_and_reclaim_in_epoch_order() {
 fn a_rolled_back_terminal_bundle_keeps_admission_and_watermark() {
     let mut conn = fixture();
     let tx = conn.transaction().unwrap();
-    insert_identity(&tx, &id("run")).unwrap();
-    insert_live(&tx, &admission("run")).unwrap();
+    insert_live(&tx, &admission("run"), &id("run")).unwrap();
     tx.commit().unwrap();
     {
         let tx = conn.transaction().unwrap();
@@ -632,29 +724,30 @@ fn schema_rejects_incomplete_receipts_invalid_history_and_overflow() {
     insert_obligation(&tx, &receipt).unwrap();
     assert!(
         tx.execute(
-            "UPDATE obligations SET receipt_unknown=1 WHERE run_id='run'",
+            "INSERT INTO obligations(run_id,position,state,audit_at,detail,value_hash,receipt_unknown,settled_at) VALUES('run',99,'settled',100,'{}',zeroblob(32),1,200)",
             []
         )
         .is_err()
     );
     assert!(
-        tx.execute("DELETE FROM run_identities WHERE run_id='run'", [])
+        tx.execute("DELETE FROM run_snapshots WHERE snapshot_id=1", [])
             .is_err()
     );
-    assert!(tx.execute("INSERT INTO run_identities(run_id,flow_id,flow_version,code_hash,snapshot_id)
-        SELECT NULL,flow_id,flow_version,code_hash,snapshot_id FROM run_identities WHERE run_id='run'", []).is_err());
+    assert!(
+        tx.execute("UPDATE run_history SET run_id=NULL WHERE run_id='run'", [])
+            .is_err()
+    );
     assert!(insert_obligation(&tx, &late("missing", 1)).is_err());
     assert!(reserve_segment(&tx, 7, u64::MAX).is_err());
-    insert_identity(&tx, &id("invalid")).unwrap();
     let mut row = summary("invalid");
     row.state = RunState::Running;
-    assert!(insert_history(&tx, &row).is_err());
+    assert!(insert_history(&tx, &row, &id("invalid")).is_err());
     row.state = RunState::Failed;
     row.error_detail = Some("é".repeat(4097));
-    assert!(insert_history(&tx, &row).is_err());
+    assert!(insert_history(&tx, &row, &id("invalid")).is_err());
     row.error_detail = Some("é".repeat(4096));
     row.result = Some(Value::Null);
-    insert_history(&tx, &row).unwrap();
+    insert_history(&tx, &row, &id("invalid")).unwrap();
     assert_eq!(history(&tx, "invalid").unwrap(), Some(row));
     assert!(
         tx.prepare("PRAGMA foreign_key_check")
@@ -665,4 +758,84 @@ fn schema_rejects_incomplete_receipts_invalid_history_and_overflow() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn settled_receipts_share_history_and_late_settlement_moves_atomically() {
+    let mut conn = fixture();
+    finished(&mut conn, "run");
+    let open = late("run", 7);
+    let tx = conn.transaction().unwrap();
+    insert_obligation(&tx, &open).unwrap();
+    tx.commit().unwrap();
+
+    let tx = conn.transaction().unwrap();
+    assert_eq!(
+        settle_obligation(
+            &tx,
+            "run",
+            7,
+            open.handle.as_deref(),
+            Receipt::Value([7; 32]),
+            300
+        )
+        .unwrap(),
+        SettleResult::Settled
+    );
+    assert_eq!(
+        tx.query_row(
+            "SELECT count(*) FROM obligations WHERE run_id='run'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        tx.query_row(
+            "SELECT count(*) FROM run_history, json_each(receipts) WHERE run_id='run'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    tx.rollback().unwrap();
+    assert_eq!(obligation(&conn, "run", 7).unwrap(), Some(open.clone()));
+    assert_eq!(
+        conn.query_row(
+            "SELECT receipts FROM run_history WHERE run_id='run'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "{}"
+    );
+
+    let tx = conn.transaction().unwrap();
+    settle_obligation(
+        &tx,
+        "run",
+        7,
+        open.handle.as_deref(),
+        Receipt::Value([7; 32]),
+        300,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let mut expected = open;
+    expected.state = ObligationState::Settled;
+    expected.receipt = Some(Receipt::Value([7; 32]));
+    expected.settled_at = Some(300);
+    assert_eq!(obligation(&conn, "run", 7).unwrap(), Some(expected));
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM obligations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let tx = conn.transaction().unwrap();
+    assert!(prune_history(&tx, "run").unwrap());
+    tx.commit().unwrap();
+    assert_eq!(obligation(&conn, "run", 7).unwrap(), None);
 }

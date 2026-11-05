@@ -81,16 +81,13 @@ impl Fixture {
     fn admit(&self, id: &str, lsn: Lsn) {
         self.store
             .write(|tx| {
-                sql::insert_identity(
-                    tx,
-                    &sql::RunIdentity {
-                        run_id: id.into(),
-                        flow_id: "flow".into(),
-                        flow_version: 1,
-                        code_hash: [42; 32],
-                        snapshot_id: 1,
-                    },
-                )?;
+                let identity = sql::RunIdentity {
+                    run_id: id.into(),
+                    flow_id: "flow".into(),
+                    flow_version: 1,
+                    code_hash: [42; 32],
+                    snapshot_id: 1,
+                };
                 sql::insert_live(
                     tx,
                     &sql::LiveRun {
@@ -111,6 +108,7 @@ impl Fixture {
                         template_incarnation: None,
                         end_instance: false,
                     },
+                    &identity,
                 )
             })
             .unwrap();

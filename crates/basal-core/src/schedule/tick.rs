@@ -151,6 +151,25 @@ pub fn plan_flow(
     now: Timestamp,
     config: &SchedulerConfig,
 ) -> Result<Option<Planned>> {
+    plan_flow_in(tx, flow_id, now, config, false)
+}
+
+pub(crate) fn plan_flow_staged(
+    tx: &Transaction,
+    flow_id: &str,
+    now: Timestamp,
+    config: &SchedulerConfig,
+) -> Result<Option<Planned>> {
+    plan_flow_in(tx, flow_id, now, config, true)
+}
+
+fn plan_flow_in(
+    tx: &Transaction,
+    flow_id: &str,
+    now: Timestamp,
+    config: &SchedulerConfig,
+    staged: bool,
+) -> Result<Option<Planned>> {
     let Some(row) = table::load(tx, flow_id)? else {
         return Ok(None);
     };
@@ -176,9 +195,14 @@ pub fn plan_flow(
     let fires = plan_fires(&scan, compiled.missed, now, config)?;
     let at = to_ms(now);
     for fire in &fires {
+        let seq = if staged {
+            Some(crate::run_admission::next_sequence(tx)?)
+        } else {
+            None
+        };
         tx.execute(
             "INSERT INTO schedule_fires (flow_id, trigger_id, version, due_ms, payload, \
-             planned_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             planned_at, seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
              ON CONFLICT (flow_id, trigger_id) DO NOTHING",
             params![
                 flow_id,
@@ -187,7 +211,8 @@ pub fn plan_flow(
                     .map_err(|_| CoreError::Corrupt(format!("schedule version {}", row.version)))?,
                 to_ms(fire.due),
                 fire.payload.to_string(),
-                at
+                at,
+                seq
             ],
         )?;
     }

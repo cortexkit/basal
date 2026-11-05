@@ -142,6 +142,59 @@ pub enum Receipt {
     Unknown,
 }
 
+// Settled calls share their history row's storage, but retain the handle,
+// timestamps and full call detail needed by readers and redelivery checks.
+#[derive(Serialize, Deserialize)]
+struct SavedReceipt {
+    handle: Option<String>,
+    audit_at: i64,
+    detail: Value,
+    value_hash: Option<[u8; 32]>,
+    settled_at: i64,
+}
+
+fn saved_receipts(conn: &Connection, run_id: &str) -> Result<Option<BTreeMap<u64, SavedReceipt>>> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT receipts FROM run_history WHERE run_id=?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    text.map(decode).transpose()
+}
+
+fn save_receipt(tx: &Transaction<'_>, row: &Obligation) -> Result<()> {
+    let settled_at = row
+        .settled_at
+        .ok_or_else(|| CoreError::Invalid("incomplete receipt".into()))?;
+    let value_hash = match row.receipt {
+        Some(Receipt::Value(hash)) => Some(hash),
+        Some(Receipt::Unknown) => None,
+        None => return Err(CoreError::Invalid("incomplete receipt".into())),
+    };
+    let mut saved =
+        saved_receipts(tx, &row.run_id)?.ok_or_else(|| CoreError::NoSuchRun(row.run_id.clone()))?;
+    if saved.contains_key(&row.position) {
+        return Err(CoreError::Invalid("duplicate receipt".into()));
+    }
+    saved.insert(
+        row.position,
+        SavedReceipt {
+            handle: row.handle.clone(),
+            audit_at: row.audit_at,
+            detail: row.detail.clone(),
+            value_hash,
+            settled_at,
+        },
+    );
+    tx.execute(
+        "UPDATE run_history SET receipts=?2 WHERE run_id=?1",
+        params![row.run_id, encode(&saved)?],
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Obligation {
     pub run_id: String,
@@ -252,7 +305,7 @@ fn blob32(row: &Row<'_>, column: &str) -> Result<[u8; 32]> {
         .map_err(|_| CoreError::Corrupt(format!("invalid {column} length")))
 }
 
-pub fn insert_identity(tx: &Transaction<'_>, identity: &RunIdentity) -> Result<()> {
+fn validate_identity(tx: &Transaction<'_>, identity: &RunIdentity) -> Result<()> {
     let matches: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM run_snapshots WHERE snapshot_id=?1
             AND flow_id=?2 AND flow_version=?3 AND code_hash=?4)",
@@ -269,17 +322,6 @@ pub fn insert_identity(tx: &Transaction<'_>, identity: &RunIdentity) -> Result<(
             "run identity does not match snapshot".into(),
         ));
     }
-    tx.execute(
-        "INSERT INTO run_identities(run_id,flow_id,flow_version,code_hash,snapshot_id)
-         VALUES (?1,?2,?3,?4,?5)",
-        params![
-            identity.run_id,
-            identity.flow_id,
-            identity.flow_version,
-            identity.code_hash.as_slice(),
-            identity.snapshot_id
-        ],
-    )?;
     Ok(())
 }
 
@@ -300,12 +342,23 @@ pub fn identity(conn: &Connection, run_id: &str) -> Result<Option<RunIdentity>> 
     )
 }
 
-pub fn insert_live(tx: &Transaction<'_>, run: &LiveRun) -> Result<()> {
+pub fn insert_live(tx: &Transaction<'_>, run: &LiveRun, identity: &RunIdentity) -> Result<()> {
+    validate_identity(tx, identity)?;
+    if (run.run_id.as_str(), run.flow_id.as_str(), run.flow_version)
+        != (
+            identity.run_id.as_str(),
+            identity.flow_id.as_str(),
+            identity.flow_version,
+        )
+        || history(tx, &run.run_id)?.is_some()
+    {
+        return Err(CoreError::Invalid("conflicting run identity".into()));
+    }
     tx.execute(
         "INSERT INTO live_runs(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,
             attempt,admitted_at,admit_seq,admit_epoch,admit_segment,admit_offset,deadline_ms,
-            self_input,params_input,grant_guards,template_incarnation,end_instance)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+            self_input,params_input,grant_guards,template_incarnation,end_instance,snapshot_id)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             run.run_id,
             run.flow_id,
@@ -324,7 +377,8 @@ pub fn insert_live(tx: &Transaction<'_>, run: &LiveRun) -> Result<()> {
             encode(&run.params_input)?,
             encode(&run.grant_guards)?,
             run.template_incarnation,
-            run.end_instance
+            run.end_instance,
+            identity.snapshot_id
         ],
     )?;
     Ok(())
@@ -364,14 +418,28 @@ pub fn live(conn: &Connection, run_id: &str) -> Result<Option<LiveRun>> {
     )
 }
 
-pub fn insert_history(tx: &Transaction<'_>, run: &RunHistory) -> Result<()> {
+pub fn insert_history(
+    tx: &Transaction<'_>,
+    run: &RunHistory,
+    identity: &RunIdentity,
+) -> Result<()> {
+    validate_identity(tx, identity)?;
+    if (run.run_id.as_str(), run.flow_id.as_str(), run.flow_version)
+        != (
+            identity.run_id.as_str(),
+            identity.flow_id.as_str(),
+            identity.flow_version,
+        )
+    {
+        return Err(CoreError::Invalid("conflicting run identity".into()));
+    }
     tx.execute(
         "INSERT INTO run_history(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,
             admitted_at,admit_seq,first_claim_at,ended_at,state,error_kind,error_detail,result,
             result_size,call_counts,writes_sent,tokens_charged,cost_microusd,broken,
-            activation_count,script_started,phase,deadline_exempt,history_lost,commit_seq)
+            activation_count,script_started,phase,deadline_exempt,history_lost,commit_seq,snapshot_id)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
-            ?20,?21,?22,?23,?24,?25,?26)",
+            ?20,?21,?22,?23,?24,?25,?26,?27)",
         params![
             run.run_id,
             run.flow_id,
@@ -398,7 +466,8 @@ pub fn insert_history(tx: &Transaction<'_>, run: &RunHistory) -> Result<()> {
             run.phase,
             run.deadline_exempt,
             run.history_lost,
-            number(run.commit_seq)?
+            number(run.commit_seq)?,
+            identity.snapshot_id
         ],
     )?;
     Ok(())
@@ -451,7 +520,9 @@ pub fn finish_live(tx: &Transaction<'_>, run: &RunHistory) -> Result<()> {
     if live(tx, &run.run_id)?.is_none() {
         return Err(CoreError::NoSuchRun(run.run_id.clone()));
     }
-    insert_history(tx, run)?;
+    let identity =
+        identity(tx, &run.run_id)?.ok_or_else(|| CoreError::NoSuchRun(run.run_id.clone()))?;
+    insert_history(tx, run, &identity)?;
     tx.execute("DELETE FROM live_runs WHERE run_id=?1", [&run.run_id])?;
     Ok(())
 }
@@ -468,11 +539,16 @@ pub fn prune_history(tx: &Transaction<'_>, run_id: &str) -> Result<bool> {
     if deleted == 0 {
         return Ok(false);
     }
-    tx.execute("DELETE FROM run_identities WHERE run_id=?1", [run_id])?;
     Ok(true)
 }
 
 pub fn insert_obligation(tx: &Transaction<'_>, row: &Obligation) -> Result<()> {
+    if obligation(tx, &row.run_id, row.position)?.is_some() {
+        return Err(CoreError::Invalid("duplicate obligation".into()));
+    }
+    if row.state == ObligationState::Settled {
+        return save_receipt(tx, row);
+    }
     let hash = match row.receipt {
         Some(Receipt::Value(hash)) => Some(hash),
         _ => None,
@@ -496,7 +572,7 @@ pub fn insert_obligation(tx: &Transaction<'_>, row: &Obligation) -> Result<()> {
 }
 
 pub fn obligation(conn: &Connection, run_id: &str, position: u64) -> Result<Option<Obligation>> {
-    one(
+    let row = one(
         conn,
         "SELECT * FROM obligations WHERE run_id=?1 AND position=?2",
         params![run_id, number(position)?],
@@ -523,7 +599,22 @@ pub fn obligation(conn: &Connection, run_id: &str, position: u64) -> Result<Opti
                 settled_at: r.get("settled_at")?,
             })
         },
-    )
+    )?;
+    if row.is_some() {
+        return Ok(row);
+    }
+    Ok(saved_receipts(conn, run_id)?
+        .and_then(|mut saved| saved.remove(&position))
+        .map(|receipt| Obligation {
+            run_id: run_id.into(),
+            position,
+            handle: receipt.handle,
+            state: ObligationState::Settled,
+            audit_at: receipt.audit_at,
+            detail: receipt.detail,
+            receipt: Some(receipt.value_hash.map_or(Receipt::Unknown, Receipt::Value)),
+            settled_at: Some(receipt.settled_at),
+        }))
 }
 
 pub fn mark_obligation_unknown(tx: &Transaction<'_>, run_id: &str, position: u64) -> Result<bool> {
@@ -544,7 +635,7 @@ pub fn settle_obligation(
     receipt: Receipt,
     settled_at: i64,
 ) -> Result<SettleResult> {
-    let Some(row) = obligation(tx, run_id, position)? else {
+    let Some(mut row) = obligation(tx, run_id, position)? else {
         return Ok(SettleResult::Missing);
     };
     if row.handle.as_deref() != handle {
@@ -559,20 +650,13 @@ pub fn settle_obligation(
             },
         );
     }
-    let hash = match receipt {
-        Receipt::Value(hash) => Some(hash),
-        Receipt::Unknown => None,
-    };
+    row.state = ObligationState::Settled;
+    row.receipt = Some(receipt);
+    row.settled_at = Some(settled_at);
+    save_receipt(tx, &row)?;
     tx.execute(
-        "UPDATE obligations SET state='settled',value_hash=?3,receipt_unknown=?4,
-        settled_at=?5 WHERE run_id=?1 AND position=?2",
-        params![
-            run_id,
-            number(position)?,
-            hash.as_ref().map(|h| h.as_slice()),
-            receipt == Receipt::Unknown,
-            settled_at
-        ],
+        "DELETE FROM obligations WHERE run_id=?1 AND position=?2",
+        params![run_id, number(position)?],
     )?;
     Ok(SettleResult::Settled)
 }

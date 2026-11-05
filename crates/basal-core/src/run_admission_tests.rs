@@ -154,7 +154,8 @@ impl Fixture {
     }
     fn planned(&self, flow: &str, trigger: &str, due: i64) {
         self.rt.store().write(|tx| {
-            tx.execute("INSERT INTO schedule_fires(flow_id,trigger_id,version,due_ms,payload,planned_at) VALUES (?1,?2,1,?3,'{}',0)", params![flow,trigger,due])?;
+            let seq = if tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='live_runs')", [], |r| r.get::<_,bool>(0))? { Some(next_sequence(tx)?) } else { None };
+            tx.execute("INSERT INTO schedule_fires(flow_id,trigger_id,version,due_ms,payload,planned_at,seq) VALUES (?1,?2,1,?3,'{}',0,?4)", params![flow,trigger,due,seq])?;
             Ok(())
         }).unwrap();
     }
@@ -252,6 +253,73 @@ fn identity_survives_restored_counter_and_uses_full_id() {
         0,
         "production model must not receive staged runs"
     );
+}
+
+#[test]
+fn fire_and_admission_sequences_survive_empty_queues_reopen_and_rollback() {
+    let mut f = Fixture::new("shared-sequence");
+    f.scheduled("flow");
+    f.planned("flow", "old-fire", 1000);
+    let old: i64 = f
+        .store
+        .read(|c| Ok(c.query_row("SELECT MAX(seq) FROM schedule_fires", [], |r| r.get(0))?))
+        .unwrap();
+    f.schema();
+    let allocated = f
+        .store
+        .write(|tx| {
+            let n = next_sequence(tx)?;
+            assert!(n > old, "cutover must seed above pending legacy fires");
+            tx.execute("DELETE FROM schedule_fires", [])?;
+            schedule::tick::plan_flow_staged(
+                tx,
+                "flow",
+                Timestamp::from_millisecond(61_000).unwrap(),
+                &SchedulerConfig::default(),
+            )?;
+            let fire: i64 =
+                tx.query_row("SELECT MAX(seq) FROM schedule_fires", [], |r| r.get(0))?;
+            assert!(fire > n);
+            tx.execute("DELETE FROM schedule_fires", [])?;
+            let (_, admit) = next_run_id(tx, f.store.store_id())?;
+            assert!(admit > fire);
+            Ok(admit)
+        })
+        .unwrap();
+    let dir = f.dir.clone();
+    f.cleanup = false;
+    drop(f);
+    let f = Fixture::open(dir);
+    f.store
+        .write(|tx| {
+            schedule::tick::plan_flow_staged(
+                tx,
+                "flow",
+                Timestamp::from_millisecond(121_000).unwrap(),
+                &SchedulerConfig::default(),
+            )?;
+            let fire: i64 =
+                tx.query_row("SELECT MAX(seq) FROM schedule_fires", [], |r| r.get(0))?;
+            assert!(fire > allocated, "empty queues must not reset the sequence");
+            Ok(())
+        })
+        .unwrap();
+    let before: i64 = f
+        .store
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='next_run'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    let result: Result<()> = f.store.write(|tx| {
+        assert_eq!(next_sequence(tx)?, before);
+        Err(CoreError::Invalid("roll back allocation".into()))
+    });
+    assert!(result.is_err());
+    assert_eq!(f.store.write(next_sequence).unwrap(), before);
 }
 
 #[test]
@@ -403,7 +471,9 @@ fn corrupt_scheduled_fire_rolls_back_its_rate_counter_identity_and_epoch_reset()
             );
             let live = sql::live(c, report.new_runs()[0])?.unwrap();
             assert_eq!(live.trigger_id, "good");
-            assert_eq!(live.admit_seq, 1);
+            // The two planned fires used 1 and 2; the failed admission must
+            // roll back 3 so the good fire, rather than a gap, receives it.
+            assert_eq!(live.admit_seq, 3);
             assert_eq!(crate::state_epoch::recorded(c, "flow")?, 2);
             Ok(())
         })

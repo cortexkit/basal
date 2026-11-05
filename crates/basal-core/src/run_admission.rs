@@ -174,16 +174,13 @@ impl RunAdmission {
             &spec.script,
             &spec.manifest,
         )?;
-        sql::insert_identity(
-            tx,
-            &RunIdentity {
-                run_id: run_id.clone(),
-                flow_id: flow.into(),
-                flow_version: grant.version,
-                code_hash: grant.code_hash,
-                snapshot_id: snapshot,
-            },
-        )?;
+        let identity = RunIdentity {
+            run_id: run_id.clone(),
+            flow_id: flow.into(),
+            flow_version: grant.version,
+            code_hash: grant.code_hash,
+            snapshot_id: snapshot,
+        };
         let (self_input, params_input, grant_guards, incarnation, end_instance):
             (Option<String>, Option<String>, Option<String>, Option<i64>, bool) = tx.query_row(
             "SELECT CASE WHEN f.package IS NOT NULL THEN json_object('agent_id',f.owner) END,
@@ -212,6 +209,7 @@ impl RunAdmission {
                 template_incarnation: incarnation,
                 end_instance,
             },
+            &identity,
         )?;
         tx.execute("INSERT INTO trigger_inbox(flow_id,trigger_id,attempt,run_id,admitted_at) VALUES (?1,?2,?3,?4,?5)",
             params![flow, trigger_id, attempt, run_id, ctx.now_ms])?;
@@ -343,7 +341,9 @@ impl RunAdmission {
             let mut report = TickReport::default();
             self.admit_planned(tx, &ctx, &mut report)?;
             for flow in schedule::tick::due_flows(tx, now)? {
-                match fire(tx, || schedule::tick::plan_flow(tx, &flow, now, config)) {
+                match fire(tx, || {
+                    schedule::tick::plan_flow_staged(tx, &flow, now, config)
+                }) {
                     Ok(Some(planned)) => report.planned.push(planned),
                     Ok(None) => {}
                     Err(error) if fire_error(&error) => {
@@ -442,7 +442,7 @@ fn optional_json(text: Option<String>) -> Result<Value> {
         .map(|v| v.unwrap_or(Value::Null))
 }
 
-fn next_run_id(tx: &Transaction<'_>, store_id: &str) -> Result<(String, i64)> {
+pub(crate) fn next_sequence(tx: &Transaction<'_>) -> Result<i64> {
     let counter: Option<String> = tx
         .query_row("SELECT value FROM meta WHERE key='next_run'", [], |r| {
             r.get(0)
@@ -457,11 +457,16 @@ fn next_run_id(tx: &Transaction<'_>, store_id: &str) -> Result<(String, i64)> {
         .checked_add(1)
         .filter(|_| n > 0)
         .ok_or_else(|| CoreError::Store("admission counter exhausted".into()))?;
+    tx.execute("INSERT INTO meta(key,value) VALUES ('next_run',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [next.to_string()])?;
+    Ok(n)
+}
+
+fn next_run_id(tx: &Transaction<'_>, store_id: &str) -> Result<(String, i64)> {
+    let n = next_sequence(tx)?;
     let mut random = [0u8; 8];
     getrandom::fill(&mut random)
         .map_err(|e| CoreError::Store(format!("run identity entropy: {e}")))?;
     let random = u64::from_ne_bytes(random);
-    tx.execute("INSERT INTO meta(key,value) VALUES ('next_run',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [next.to_string()])?;
     Ok((format!("run-{store_id}-{n}-{random:016x}"), n))
 }
 
