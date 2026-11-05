@@ -97,6 +97,7 @@ impl TickReport {
 
 /// The scheduler over one store.
 pub struct Scheduler {
+    staged_runtime: Option<crate::Runtime>,
     store: Arc<Store>,
     clock: Arc<dyn Clock>,
     config: SchedulerConfig,
@@ -107,6 +108,7 @@ pub struct Scheduler {
 impl Scheduler {
     pub fn new(store: Arc<Store>, clock: Arc<dyn Clock>, config: SchedulerConfig) -> Self {
         Self {
+            staged_runtime: None,
             store,
             clock,
             config,
@@ -118,6 +120,11 @@ impl Scheduler {
     /// The same scheduler, admitting fires under these limits.
     pub fn with_limits(mut self, limits: AdmitLimits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    pub(crate) fn with_staged_runtime(mut self, runtime: crate::Runtime) -> Self {
+        self.staged_runtime = Some(runtime);
         self
     }
 
@@ -170,6 +177,9 @@ impl Scheduler {
     /// first, so they keep their place ahead of newer ones. Ticking again
     /// with the same `now` admits nothing new.
     pub fn tick_at(&self, now: Timestamp) -> Result<TickReport> {
+        if let Some(runtime) = &self.staged_runtime {
+            return runtime.staged_tick_at(now, &self.config, &self.limits);
+        }
         self.store
             .write(|tx| crate::templates::expire_schedules(tx, now.as_millisecond()))?;
         let mut report = TickReport::default();

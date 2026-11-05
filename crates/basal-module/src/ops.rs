@@ -1369,13 +1369,31 @@ impl Module {
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
         let as_of = self.rt.config().clock.now_ms();
-        // List has a smaller projection than health. Filter requested and
-        // visible flows before reading their cards or runs, and keep the whole
-        // reply on one store snapshot rather than issuing per-flow reads.
+        // List keeps a small row projection. Copy log-backed reconciliation
+        // status before opening SQLite; the runtime reads each run under its
+        // mutex, which must be acquired before the database connection.
         let ids = p.flow_ids.map(|ids| serde_json::json!(ids).to_string());
+        let log_reconcile = if self.rt.uses_run_log() {
+            Some(
+                self.rt
+                    .flow_health()
+                    .map_err(|e| self.core_error(e))?
+                    .into_iter()
+                    .filter(|f| !f.needs_reconcile.is_empty())
+                    .map(|f| f.flow_id)
+                    .collect::<std::collections::BTreeSet<_>>(),
+            )
+        } else {
+            None
+        };
         let entries = self.rt.store().read(|c| {
             let mut stmt = c.prepare(
-                "SELECT f.flow_id, f.approved_version, f.state='enabled',
+                if log_reconcile.is_some() { "SELECT f.flow_id,f.approved_version,f.state='enabled',f.disabled_by,f.disabled_reason,f.disabled_at,
+                    (SELECT MAX(i.version) FROM installs i WHERE i.flow_id=f.flow_id AND i.state='validated' AND NOT EXISTS(SELECT 1 FROM install_cards c WHERE c.flow_id=i.flow_id AND c.version=i.version AND c.state<>'pending')),
+                    r.run_id,r.state,r.ended_at,0,f.agent_retirement,f.state_epoch,r.error_kind,r.error_detail
+                    FROM flows f LEFT JOIN run_history r ON r.run_id=(SELECT run_id FROM run_history WHERE flow_id=f.flow_id ORDER BY admit_seq DESC,run_id DESC LIMIT 1)
+                    WHERE (?1 IS NULL OR f.flow_id IN (SELECT value FROM json_each(?1)))
+                    AND (?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL AND EXISTS(SELECT 1 FROM installs WHERE flow_id=f.flow_id AND author=?2) AND NOT EXISTS(SELECT 1 FROM installs WHERE flow_id=f.flow_id AND author<>?2))) ORDER BY f.flow_id" } else { "SELECT f.flow_id, f.approved_version, f.state='enabled',
                     f.disabled_by, f.disabled_reason, f.disabled_at,
                     (SELECT MAX(i.version) FROM installs i WHERE i.flow_id=f.flow_id AND i.state='validated' AND NOT EXISTS (SELECT 1 FROM install_cards c WHERE c.flow_id=i.flow_id AND c.version=i.version AND c.state<>'pending')),
                     r.run_id, r.state, COALESCE(r.ended_at,r.admitted_at),
@@ -1389,7 +1407,7 @@ impl Module {
                  AND (?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL
                     AND EXISTS(SELECT 1 FROM installs WHERE flow_id=f.flow_id AND author=?2)
                     AND NOT EXISTS(SELECT 1 FROM installs WHERE flow_id=f.flow_id AND author<>?2)))
-                 ORDER BY f.flow_id")?;
+                  ORDER BY f.flow_id" })?;
             let mut rows = stmt.query_map(rusqlite::params![ids, owner], |r| {
                 let approved: Option<u32> = r.get(1)?;
                 let disabled_by: Option<String> = r.get(3)?;
@@ -1424,6 +1442,7 @@ impl Module {
                 }))
             })?.collect::<rusqlite::Result<Vec<_>>>()?;
             for row in &mut rows {
+                if let Some(flows) = &log_reconcile { row["needs_reconcile"] = json!(flows.contains(row["flow_id"].as_str().expect("flow id"))); }
                 let flow_id = row["flow_id"].as_str().expect("flow id from store");
                 let losses = basal_core::grant_loss::losses(c, Some(flow_id))?
                     .into_iter().filter(|g| matches!(g.state.as_str(), "polling" | "stopped")).collect::<Vec<_>>();

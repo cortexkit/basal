@@ -60,7 +60,22 @@ impl Activation {
                 ) =>
             {
                 worker.kill();
-                self.fail("core", error.to_string(), &effects)
+                let kind = if matches!(&error,CoreError::Worker(detail) if detail.starts_with("run_limit:"))
+                {
+                    "limit"
+                } else if matches!(&error,CoreError::Worker(detail) if detail=="call is not available to the flow profile")
+                {
+                    "profile_violation"
+                } else if matches!(&error,CoreError::Worker(detail) if detail.starts_with("agent_retired:"))
+                {
+                    "agent_retired"
+                } else if matches!(&error,CoreError::Worker(detail) if detail.starts_with("version_revoked:"))
+                {
+                    "version_revoked"
+                } else {
+                    "core"
+                };
+                self.fail(kind, error.to_string(), &effects)
             }
             other => other,
         };
@@ -126,7 +141,7 @@ impl Activation {
             });
             rx
         };
-        for dispatch in self.recover_dispatches()? {
+        for dispatch in self.recover_dispatches_for_worker()? {
             pending.push(spawn(dispatch));
         }
         let state = self.state()?;
@@ -172,6 +187,9 @@ impl Activation {
                     Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {}
                 }
             }
+            for dispatch in self.recover_dispatches_for_worker()? {
+                pending.push(spawn(dispatch));
+            }
             let unknown: Vec<_> = self
                 .state()?
                 .calls
@@ -181,6 +199,10 @@ impl Activation {
                 .collect();
             if !unknown.is_empty() {
                 return Ok(ActivationEnd::NeedsReconcile { positions: unknown });
+            }
+            if let Some((kind, detail)) = control_failure(&self.state()?) {
+                worker.kill();
+                return self.fail(kind, detail, effects);
             }
             if self.deadline_passed()? || Instant::now() >= until {
                 worker.kill();
@@ -233,7 +255,7 @@ impl Activation {
                 }
             };
             match message {
-                WorkerMessage::HostCall(call) => match self.issue(call)? {
+                WorkerMessage::HostCall(call) => match self.issue_for_worker(call)? {
                     Issued::Dispatch(dispatch) => pending.push(spawn(*dispatch)),
                     Issued::Reply(outcome) => {
                         if worker.send(&ParentMessage::Deliver(outcome)).is_err() {
@@ -256,6 +278,10 @@ impl Activation {
                         self.requeue(true)?;
                         return Ok(ActivationEnd::Requeued);
                     }
+                    if let Some((kind, detail)) = control_failure(&self.state()?) {
+                        worker.kill();
+                        return self.fail(kind, detail, effects);
+                    }
                     return match result {
                         ActivationResult::Completed { value } => {
                             let mut terminal = self.terminal(RunState::Succeeded, effects);
@@ -276,7 +302,59 @@ impl Activation {
                                 Ok(ActivationEnd::Requeued)
                             }
                         }
-                        other => self.fail("worker", format!("{other:?}"), effects),
+                        ActivationResult::Failed(basal_proto::Failure::EngineMismatch {
+                            expected,
+                            actual,
+                        }) => {
+                            let detail = format!(
+                                "the worker refused prelude {expected:?}; it has {actual:?}"
+                            );
+                            let mut terminal = self.terminal(RunState::EngineMismatch, effects);
+                            terminal.error_detail = Some(detail.clone());
+                            self.finish(terminal)?;
+                            Ok(ActivationEnd::EngineMismatch { detail })
+                        }
+                        ActivationResult::Failed(basal_proto::Failure::Nondeterminism(detail)) => {
+                            self.fail("nondeterminism", format!("{detail:?}"), effects)
+                        }
+                        ActivationResult::Failed(basal_proto::Failure::Script { message }) => {
+                            self.fail("script", message, effects)
+                        }
+                        ActivationResult::Failed(basal_proto::Failure::ScriptHostRejection {
+                            position,
+                            message,
+                        }) => {
+                            let readiness = self
+                                .state()?
+                                .calls
+                                .get(&position)
+                                .and_then(|c| c.arrival.as_ref())
+                                .is_some_and(|a| {
+                                    a.settlement == Settlement::Rejected
+                                        && crate::ops::typed_scope_rejection(a.value.as_str(), true)
+                                });
+                            self.fail(
+                                if readiness {
+                                    "readiness_rejection"
+                                } else {
+                                    "script"
+                                },
+                                message,
+                                effects,
+                            )
+                        }
+                        ActivationResult::Failed(other) => {
+                            self.fail("activation", format!("{other:?}"), effects)
+                        }
+                        ActivationResult::Stalled => self.fail(
+                            "stalled",
+                            "the script waits on a promise no host call will settle".into(),
+                            effects,
+                        ),
+                        ActivationResult::BudgetExhausted(kind) => {
+                            worker.kill();
+                            self.fail("budget_exhausted", format!("{kind:?}"), effects)
+                        }
                     };
                 }
                 other => {

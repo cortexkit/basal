@@ -35,7 +35,43 @@ pub struct RecoveredHosts {
     hooks: Arc<dyn Hooks>,
     pub(crate) clock: Clock,
     pub(crate) watermark: Arc<dyn AdmissionLog>,
+    pub(crate) log: Arc<dyn RecordLog>,
     pub(crate) decisions: std::sync::Mutex<Option<crate::run_decisions::CloseServices>>,
+}
+
+fn budgets_for(store: &Store, id: &str, defaults: &Budgets) -> Result<Budgets> {
+    let manifest: String = store.read(|conn| Ok(conn.query_row(
+        "SELECT s.manifest FROM run_identities i JOIN run_snapshots s USING(snapshot_id) WHERE i.run_id=?1", [id], |r| r.get(0))?))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+    let mut budgets = defaults.clone();
+    if let Some(cap) = value.get("llm").and_then(|v| v.get("token_cap")) {
+        budgets.tokens = cap["tokens"]
+            .as_u64()
+            .ok_or_else(|| CoreError::Corrupt("invalid token cap".into()))?;
+        budgets.token_window_ms = cap["window"]
+            .as_str()
+            .and_then(crate::manifest::duration_ms)
+            .ok_or_else(|| CoreError::Corrupt("invalid token window".into()))?;
+    }
+    if let Some(cap) = value.get("model_cost_usd").filter(|cap| !cap.is_null()) {
+        let micros = |key: &str| -> Result<u64> {
+            let n = cap[key]
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0 && *n * 1_000_000.0 <= u64::MAX as f64)
+                .ok_or_else(|| CoreError::Corrupt("invalid dollar cap".into()))?;
+            Ok((n * 1_000_000.0).ceil() as u64)
+        };
+        budgets.cost_micros = micros("per_run")?;
+        budgets.cost_window = Some((
+            cap["window"]
+                .as_str()
+                .and_then(crate::manifest::duration_ms)
+                .ok_or_else(|| CoreError::Corrupt("invalid cost window".into()))?,
+            micros("usd")?,
+        ));
+    }
+    Ok(budgets)
 }
 
 impl RecoveredHosts {
@@ -75,6 +111,7 @@ impl RecoveredHosts {
         ));
         let epoch = watermark.synced_lsn().log_epoch;
         for (live, identity) in live {
+            let run_budgets = budgets_for(&store, &live.run_id, &budgets)?;
             if live.admit_lsn.log_epoch != epoch {
                 return Err(CoreError::Corrupt(
                     "live admission belongs to another log epoch".into(),
@@ -91,7 +128,7 @@ impl RecoveredHosts {
             let mut records =
                 Records::recover(live.run_id.clone(), live.admitted_at, log.clone(), &frames)?;
             records.bind_identity(identity);
-            let rows = accounting::rows(records.state(), &budgets)?;
+            let rows = accounting::rows(records.state(), &run_budgets)?;
             registry.insert_accounted(
                 live.run_id,
                 live.flow_id,
@@ -107,12 +144,17 @@ impl RecoveredHosts {
             hooks,
             clock,
             watermark,
+            log,
             decisions: std::sync::Mutex::new(None),
         })
     }
 
     pub fn registry(&self) -> &Arc<RunStore<Records>> {
         &self.registry
+    }
+
+    pub(crate) fn budgets_for(&self, id: &str) -> Result<Budgets> {
+        budgets_for(&self.store, id, &self.budgets)
     }
 
     fn arrived(&self, run_id: &str) -> Result<()> {
@@ -135,6 +177,7 @@ impl RecoveredHosts {
         if let Some(run) = self.registry.get(run_id) {
             match run.enter() {
                 Ok(entrant) => {
+                    let budgets = self.budgets_for(run_id)?;
                     let (ack, reason) = entrant.account(|records| {
                         records.check_healthy()?;
                         let state = records.state();
@@ -152,7 +195,7 @@ impl RecoveredHosts {
                         if let Some(reason) = reason {
                             return Ok((
                                 (CompletionAck::Quarantined, Some(reason)),
-                                accounting::rows(state, &self.budgets)?,
+                                accounting::rows(state, &budgets)?,
                             ));
                         }
                         let call = call.expect("durable intent has a call");
@@ -170,13 +213,13 @@ impl RecoveredHosts {
                                     },
                                     (!matches).then_some("contradicts_outcome"),
                                 ),
-                                accounting::rows(state, &self.budgets)?,
+                                accounting::rows(state, &budgets)?,
                             ));
                         }
                         if outcome.is_none() && call.unknown.is_some() {
                             return Ok((
                                 (CompletionAck::Duplicate, None),
-                                accounting::rows(state, &self.budgets)?,
+                                accounting::rows(state, &budgets)?,
                             ));
                         }
                         let generation = state.generation;
@@ -219,10 +262,20 @@ impl RecoveredHosts {
                             let value: serde_json::Value =
                                 serde_json::from_str(outcome.value.as_str())
                                     .map_err(|e| CoreError::Invalid(e.to_string()))?;
-                            let cost = value.get("structuredContent").unwrap_or(&value)["cost_usd"]
-                                .as_f64()
-                                .filter(|n| n.is_finite() && *n >= 0.0)
-                                .map(|n| (n * 1_000_000.0).ceil() as u64);
+                            let cost = reservation
+                                .as_ref()
+                                .filter(|r| {
+                                    r.cost_micros > 0
+                                        || r.input_tokens.saturating_add(r.output_tokens) == 0
+                                })
+                                .map(|r| {
+                                    (crate::classify_cost::charge(
+                                        r.cost_micros as f64 / 1_000_000.0,
+                                        Some(&value),
+                                        None,
+                                    ) * 1_000_000.0)
+                                        .ceil() as u64
+                                });
                             records.append(
                                 generation,
                                 Body::Arrived(Arrival {
@@ -266,9 +319,21 @@ impl RecoveredHosts {
                         if records.state().parked {
                             records.append(generation, Body::Woken)?;
                         }
+                        if let Some(identity) = records.identity()
+                            && self.hooks.at_run(
+                                run_id,
+                                &identity.flow_id,
+                                &Boundary::HostArrived,
+                                Some(position),
+                                records.state(),
+                            ) == Step::Crash
+                        {
+                            self.store.cut();
+                            return Err(CoreError::Cut);
+                        }
                         Ok((
                             (CompletionAck::Accepted, None),
-                            accounting::rows(records.state(), &self.budgets)?,
+                            accounting::rows(records.state(), &budgets)?,
                         ))
                     })?;
                     drop(entrant);

@@ -61,7 +61,10 @@ impl crate::runtime::Runtime {
                     approved.version,
                 ));
             }
-            for sql in [LIVE_RUN_VERSIONS_SQL, PENDING_MODEL_VERSIONS_SQL] {
+            let versions = if self.uses_run_log() {
+                ["SELECT DISTINCT flow_version FROM live_runs WHERE flow_id=?1", "SELECT DISTINCT r.flow_version FROM run_identities r CROSS JOIN broca_calls b WHERE r.flow_id=?1 AND b.run_id=r.run_id AND json_extract(b.snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(b.snapshot,'$.deferred'),0)=0"]
+            } else { [LIVE_RUN_VERSIONS_SQL,PENDING_MODEL_VERSIONS_SQL] };
+            for sql in versions {
                 for version in c.prepare(sql)?.query_map([flow], |r| r.get::<_, u32>(0))? {
                     live.insert(basal_host::flow_scope::flow_route_key(flow, version?));
                 }

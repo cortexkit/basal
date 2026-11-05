@@ -14,10 +14,47 @@ impl Runtime {
     /// timer, on the runtime clock. Pending work is signalled separately:
     /// including it here would spin while all activation slots are occupied.
     pub fn next_wake_at(&self, pool_next: Option<i64>) -> Result<Option<i64>> {
+        let log_timers = if self.uses_run_log() {
+            let runs = self.log_runs(None)?;
+            let states = self.log_states();
+            let deadline = runs
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r.state,
+                        crate::RunState::Pending
+                            | crate::RunState::Running
+                            | crate::RunState::Suspended
+                    )
+                })
+                .filter_map(|r| r.deadline_at)
+                .min();
+            let retry = runs
+                .iter()
+                .filter(|r| !r.state.is_terminal())
+                .filter_map(|r| states.get(&r.run_id))
+                .flat_map(|s| {
+                    s.calls
+                        .values()
+                        .filter(|c| c.arrival.is_none())
+                        .filter_map(|c| c.deferred.as_ref().map(|d| d.retry_not_before))
+                        .chain(s.event_bodies.last().and_then(|b| match b {
+                            crate::run_records::Body::EventBody {
+                                body: None,
+                                retry_at,
+                                ..
+                            } => *retry_at,
+                            _ => None,
+                        }))
+                })
+                .min();
+            Some((deadline, retry))
+        } else {
+            None
+        };
         let durable = self.store().read(|c| {
             let schedule: Option<i64> = c.query_row(NEXT_SCHEDULE, [], |r| r.get(0))?;
-            let deadline: Option<i64> = c.query_row(NEXT_DEADLINE, [], |r| r.get(0))?;
-            let retry: Option<i64> = c.query_row(NEXT_DEFERRED, [], |r| r.get(0))?;
+            let (deadline,retry) = if let Some(timers) = log_timers { timers } else { (c.query_row(NEXT_DEADLINE, [], |r| r.get::<_,Option<i64>>(0))?, c.query_row(NEXT_DEFERRED, [], |r| r.get::<_,Option<i64>>(0))?) };
             let expiry: Option<i64> = c.query_row("SELECT MIN(expires_at) FROM template_instances t JOIN flows f USING(flow_id) WHERE f.removed=0 AND t.expiry_notified=0", [], |r| r.get(0))?;
             let codemode = crate::codemode::retention::next_sweep_at(c)?;
             let grant: Option<i64> = c.query_row("SELECT MIN(next_poll_at) FROM flow_grant_losses WHERE state='polling' AND echoable=1", [], |r| r.get(0))?;

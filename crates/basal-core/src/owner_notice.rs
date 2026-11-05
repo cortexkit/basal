@@ -29,9 +29,14 @@ struct Failure {
     started: bool,
 }
 
-fn streak(conn: &Connection, flow: &str) -> Result<Streak> {
+fn streak(conn: &Connection, flow: &str, staged: bool) -> Result<Streak> {
     let mut result = Streak::default();
-    let mut stmt = conn.prepare_cached("SELECT run_id,state,error_kind,COALESCE(ended_at,admitted_at),COALESCE(flow_version,0),script_started FROM runs WHERE flow_id=?1 AND state IN ('succeeded','failed','engine_mismatch','cancelled') ORDER BY admit_seq DESC,run_id DESC")?;
+    let sql = if staged {
+        "SELECT run_id,state,error_kind,ended_at,flow_version,script_started FROM run_history WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC"
+    } else {
+        "SELECT run_id,state,error_kind,COALESCE(ended_at,admitted_at),COALESCE(flow_version,0),script_started FROM runs WHERE flow_id=?1 AND state IN ('succeeded','failed','engine_mismatch','cancelled') ORDER BY admit_seq DESC,run_id DESC"
+    };
+    let mut stmt = conn.prepare_cached(sql)?;
     let rows = stmt.query_map([flow], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -47,7 +52,7 @@ fn streak(conn: &Connection, flow: &str) -> Result<Streak> {
         if state == "succeeded" {
             break;
         }
-        if ops::counted_failure(conn, &run_id, &state, kind.as_deref())? {
+        if counted(conn, &run_id, &state, kind.as_deref(), staged)? {
             result.count += 1;
             result.since = Some(at);
             if result.latest.is_none() {
@@ -104,8 +109,33 @@ fn next_episode(tx: &Transaction, flow: &str) -> Result<i64> {
 }
 
 pub(crate) fn finish_run(tx: &Transaction, run_id: &str, now: i64) -> Result<()> {
+    finish(tx, run_id, now, false)
+}
+
+pub(crate) fn finish_run_staged(tx: &Transaction, run_id: &str, now: i64) -> Result<()> {
+    finish(tx, run_id, now, true)
+}
+
+fn counted(
+    conn: &Connection,
+    id: &str,
+    state: &str,
+    kind: Option<&str>,
+    staged: bool,
+) -> Result<bool> {
+    if !staged {
+        return ops::counted_failure(conn, id, state, kind);
+    }
+    ops::counted_failure_staged(conn, id, state, kind)
+}
+
+fn finish(tx: &Transaction, run_id: &str, now: i64, staged: bool) -> Result<()> {
     let (flow, state, version, kind): (String, String, u32, Option<String>) = tx.query_row(
-        "SELECT flow_id,state,COALESCE(flow_version,0),error_kind FROM runs WHERE run_id=?1",
+        if staged {
+            "SELECT flow_id,state,flow_version,error_kind FROM run_history WHERE run_id=?1"
+        } else {
+            "SELECT flow_id,state,COALESCE(flow_version,0),error_kind FROM runs WHERE run_id=?1"
+        },
         [run_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
@@ -152,12 +182,12 @@ pub(crate) fn finish_run(tx: &Transaction, run_id: &str, now: i64) -> Result<()>
                 [&flow],
             )?;
         }
-    } else if failing.is_none() && ops::counted_failure(tx, run_id, &state, kind.as_deref())? {
+    } else if failing.is_none() && counted(tx, run_id, &state, kind.as_deref(), staged)? {
         // Once this episode's notice is queued nothing more is sent until a
         // success, so later failures skip the history scan. A flow that keeps
         // failing would otherwise rescan its whole streak on every run, inside
         // the write transaction.
-        let streak = streak(tx, &flow)?;
+        let streak = streak(tx, &flow, staged)?;
         if streak.count >= 3 {
             let episode = next_episode(tx, &flow)?;
             enqueue(
@@ -191,7 +221,7 @@ pub(crate) fn auto_disabled_legacy(tx: &Transaction, flow: &str, now: i64) -> Re
         return Ok(());
     };
     let episode = next_episode(tx, flow)?;
-    let streak = streak(tx, flow)?;
+    let streak = streak(tx, flow, false)?;
     enqueue(
         tx,
         flow,

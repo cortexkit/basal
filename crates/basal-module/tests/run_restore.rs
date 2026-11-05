@@ -109,6 +109,7 @@ fn restored_runs_appear_in_diagnostics_and_operator_can_cancel_or_retrigger_with
                     dispatches: 100,
                     tokens: 100,
                     cost_micros: 100,
+                    cost_window: None,
                 },
                 Arc::new(NoHooks),
                 f.clock.clone(),
@@ -130,7 +131,8 @@ fn restored_runs_appear_in_diagnostics_and_operator_can_cancel_or_retrigger_with
                 auto_resume: false,
                 ..Default::default()
             },
-        );
+        )
+        .unwrap();
         let findings = call(&f, &Caller::Operator, "diagnostics.findings", Value::Null).unwrap();
         let finding = findings["findings"]
             .as_array()

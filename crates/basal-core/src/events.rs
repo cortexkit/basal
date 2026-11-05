@@ -375,6 +375,9 @@ impl Runtime {
     /// The entire fan-out commits before the caller acknowledges any notice.
     /// A failed transaction leaves every notice eligible for redelivery.
     pub fn admit_events(&self, notices: &[Notice]) -> Result<Report> {
+        if self.uses_run_log() {
+            return self.staged_admit_events(notices);
+        }
         let ctx = self.admit_context()?;
         let store_id = self.store().store_id().to_owned();
         let report = self.store().write(|tx| {
@@ -433,6 +436,9 @@ impl Runtime {
     /// Drain a bounded batch, preserving arrival order within each flow and
     /// rechecking approval, enablement and rate policy at admission time.
     pub fn drain_event_backlog(&self) -> Result<usize> {
+        if self.uses_run_log() {
+            return self.staged_drain_event_backlog();
+        }
         let ctx = self.admit_context()?;
         let store_id = self.store().store_id().to_owned();
         let admitted = self.store().write(|tx| {
@@ -488,7 +494,7 @@ impl Runtime {
 /// it may be any of theirs. Every other event wakes nothing. Returns how
 /// many wakes were committed; a notice that matches no pending call commits
 /// nothing and is acknowledged like any other.
-fn broca_wakes(tx: &Transaction, notice: &Notice, now: i64) -> Result<usize> {
+pub(crate) fn broca_wakes(tx: &Transaction, notice: &Notice, now: i64) -> Result<usize> {
     use basal_host::broca::WakeKind;
     let (module, name, version) = notice.identity()?;
     if module != "broca" || version != 1 {
@@ -793,10 +799,84 @@ fn body_targets_run(notice: &Notice, body: &[u8], flow_id: &str) -> bool {
 }
 
 impl Runtime {
+    fn saved_event_body(&self, id: &str) -> Result<Option<SavedBody>> {
+        if self.shared.staged_hosts.is_some() {
+            return self
+                .staged_snapshot(id)
+                .map(|s| {
+                    Ok(s.event_bodies.iter().rev().find_map(|b| match b {
+                        crate::run_records::Body::EventBody {
+                            body,
+                            attempt,
+                            retry_at,
+                            refusal,
+                            ..
+                        } => Some((
+                            body.as_ref().map(|b| b.as_bytes().to_vec()),
+                            i64::try_from(*attempt).unwrap_or(i64::MAX),
+                            *retry_at,
+                            refusal.clone(),
+                        )),
+                        _ => None,
+                    }))
+                })
+                .unwrap_or(Ok(None));
+        }
+        self.store().read(|c| {
+            use rusqlite::OptionalExtension;
+            Ok(c.query_row("SELECT body,attempt,retry_at,last_provider_refusal FROM event_body_journal WHERE run_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?)
+        })
+    }
+
+    fn save_staged_event_body(
+        &self,
+        run: &crate::Run,
+        digest: &str,
+        saved: SavedBody,
+    ) -> Result<()> {
+        let hosts = self.shared.staged_hosts.as_ref().expect("staged runtime");
+        let actor = hosts
+            .registry()
+            .get(&run.run_id)
+            .ok_or_else(|| crate::CoreError::NoSuchRun(run.run_id.clone()))?;
+        actor.activate(run.generation, |a| {
+            let (body, attempt, retry_at, refusal) = saved;
+            a.records().append(
+                run.generation,
+                crate::run_records::Body::EventBody {
+                    digest: digest.into(),
+                    body: body
+                        .map(String::from_utf8)
+                        .transpose()
+                        .map_err(|e| CoreError::Corrupt(e.to_string()))?,
+                    attempt: u64::try_from(attempt)
+                        .map_err(|_| CoreError::Corrupt("negative body attempt".into()))?,
+                    retry_at,
+                    refusal,
+                },
+            )?;
+            a.records().sync_terminal()
+        })
+    }
+
+    pub(crate) fn event_body_deadline_failure(&self, id: &str) -> Result<Option<(String, String)>> {
+        if self.shared.staged_hosts.is_none() {
+            return self.store().read(|c| body_deadline_failure(c, id));
+        }
+        let last = self
+            .saved_event_body(id)?
+            .and_then(|(body, _, _, refusal)| if body.is_none() { refusal } else { None });
+        last.map(|detail| {
+            let reply: serde_json::Value =
+                serde_json::from_str(&detail).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            Ok((provider_refusal_code(&reply).into(), detail))
+        })
+        .transpose()
+    }
+
     pub(crate) fn event_preamble(&self, run: &crate::Run, manifest: &Manifest) -> Result<Preamble> {
         use basal_host::{CallClass, CallRequest, Dispatched, TransportError};
         use basal_proto::{CallKind, Settlement};
-        use rusqlite::OptionalExtension;
         let payload: serde_json::Value = serde_json::from_str(run.trigger.as_str())
             .map_err(|e| CoreError::Corrupt(e.to_string()))?;
         let Some(encoded) = payload.get("event_notice") else {
@@ -810,8 +890,7 @@ impl Runtime {
         let now = self.config.clock.now_ms();
         if run.deadline_at.is_some_and(|deadline| now >= deadline) {
             let (kind, detail) = self
-                .store()
-                .read(|c| body_deadline_failure(c, &run.run_id))?
+                .event_body_deadline_failure(&run.run_id)?
                 .unwrap_or_else(|| {
                     (
                         "deadline".into(),
@@ -820,14 +899,7 @@ impl Runtime {
                 });
             return Ok(Preamble::Failed { kind, detail });
         }
-        let saved: Option<SavedBody> = self.store().read(|c| {
-            Ok(c.query_row(
-                "SELECT body,attempt,retry_at,last_provider_refusal FROM event_body_journal WHERE run_id=?1",
-                [&run.run_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?)
-        })?;
+        let saved = self.saved_event_body(&run.run_id)?;
         if let Some((Some(body), _, _, _)) = &saved {
             if !body_targets_run(&notice, body, &run.flow_id) {
                 return Ok(mismatch("flow-targeted body does not name the run's flow"));
@@ -852,13 +924,24 @@ impl Runtime {
             op: op.into(),
         };
         let first_provider_refusal = saved.as_ref().is_none_or(|(_, _, _, last)| last.is_none());
+        let last_refusal = saved
+            .as_ref()
+            .and_then(|(_, _, _, refusal)| refusal.clone());
         let attempt = saved.map_or(1, |(_, attempt, _, _)| attempt.saturating_add(1));
         // A durable query intent precedes the send; a crash may repeat the
         // read, but a committed body is always replayed without another call.
-        self.store().write(|tx| {
+        if self.shared.staged_hosts.is_some() {
+            self.save_staged_event_body(
+                run,
+                &notice.digest,
+                (None, attempt, None, last_refusal.clone()),
+            )?;
+        } else {
+            self.store().write(|tx| {
             tx.execute("INSERT INTO event_body_journal(run_id,attempt) VALUES (?1,?2) ON CONFLICT(run_id) DO UPDATE SET attempt=excluded.attempt,retry_at=NULL", params![run.run_id, attempt])?;
             Ok(())
         })?;
+        }
         let request = CallRequest {
             flow_version: run.flow_version,
             flow_id: run.flow_id.clone(),
@@ -925,10 +1008,18 @@ impl Runtime {
                         return Ok(mismatch("flow-targeted body does not name the run's flow"));
                     }
                     let trigger = script_trigger(&notice, &body)?;
-                    self.store().write(|tx| {
+                    if self.shared.staged_hosts.is_some() {
+                        self.save_staged_event_body(
+                            run,
+                            &notice.digest,
+                            (Some(body.clone()), attempt, None, last_refusal.clone()),
+                        )?;
+                    } else {
+                        self.store().write(|tx| {
                     tx.execute("UPDATE event_body_journal SET body=?2,digest=?3,retry_at=NULL WHERE run_id=?1", params![run.run_id, body, notice.digest])?;
                     Ok(())
                 })?;
+                    }
                     return Ok(Preamble::Ready(trigger));
                 }
             }
@@ -942,8 +1033,7 @@ impl Runtime {
         }
         if past_deadline {
             let (kind, detail) = self
-                .store()
-                .read(|c| body_deadline_failure(c, &run.run_id))?
+                .event_body_deadline_failure(&run.run_id)?
                 .unwrap_or_else(|| {
                     (
                         "deadline".into(),
@@ -967,13 +1057,29 @@ impl Runtime {
             .now_ms()
             .saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX))
             .min(run.deadline_at.unwrap_or(i64::MAX));
-        self.store().write(|tx| {
+        if self.shared.staged_hosts.is_some() {
+            self.save_staged_event_body(
+                run,
+                &notice.digest,
+                (
+                    None,
+                    attempt,
+                    Some(retry),
+                    provider_refusal
+                        .as_ref()
+                        .map(|(_, detail)| detail.clone())
+                        .or(last_refusal),
+                ),
+            )?;
+        } else {
+            self.store().write(|tx| {
                     tx.execute(
                         "UPDATE event_body_journal SET retry_at=?2,last_provider_refusal=COALESCE(?3,last_provider_refusal) WHERE run_id=?1",
                         params![run.run_id, retry, provider_refusal.as_ref().map(|(_, detail)| detail)],
                     )?;
                     Ok(())
                 })?;
+        }
         if first_provider_refusal && let Some((code, _)) = provider_refusal {
             tracing::warn!(
                 flow_id = %run.flow_id,

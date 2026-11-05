@@ -462,6 +462,7 @@ fn budgets() -> Budgets {
         dispatches: 100,
         tokens: 100,
         cost_micros: 100,
+        cost_window: None,
     }
 }
 

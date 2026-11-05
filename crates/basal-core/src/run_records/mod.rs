@@ -91,6 +91,8 @@ impl RecordLog for RunLog<Record> {
 }
 
 pub struct Records {
+    #[cfg(any(test, feature = "test-support"))]
+    detail_store: Option<Arc<crate::Store>>,
     run_id: String,
     log: Arc<dyn RecordLog>,
     state: State,
@@ -111,6 +113,8 @@ impl Records {
     }
     pub fn new(run_id: String, admitted_ms: i64, log: Arc<dyn RecordLog>) -> Self {
         Self {
+            #[cfg(any(test, feature = "test-support"))]
+            detail_store: None,
             run_id,
             log,
             state: State::new(admitted_ms),
@@ -124,6 +128,12 @@ impl Records {
     }
     pub fn state(&self) -> &State {
         &self.state
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn retain_detail(&mut self, store: Arc<crate::Store>) -> Result<()> {
+        crate::rig_projection::write(&store, &self.run_id, &self.state)?;
+        self.detail_store = Some(store);
+        Ok(())
     }
     pub(crate) fn bind_identity(&mut self, identity: crate::run_store_sql::RunIdentity) {
         self.identity = Some(identity);
@@ -254,6 +264,10 @@ impl Records {
         }
         self.last_lsn = lsn;
         self.required_start.get_or_insert(lsn);
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(store) = &self.detail_store {
+            crate::rig_projection::write(store, &self.run_id, &self.state)?;
+        }
         Ok((lsn, sync))
     }
 

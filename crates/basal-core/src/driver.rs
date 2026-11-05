@@ -92,16 +92,30 @@ struct Activation<'a> {
 
 /// A call ready to journal, including a board call waiting for its registry read.
 #[derive(Debug, Default)]
-struct Prepared {
+pub(crate) struct Prepared {
     /// Prepared dispatch bytes, rather than the script's arguments. Absent
     /// while a board or targeted call's agent registry read is deferred.
-    request: Option<JsonText>,
+    pub(crate) request: Option<JsonText>,
     /// Tokens to reserve for a model call.
-    tokens: Option<u64>,
-    classify_cost: bool,
-    args: Option<Value>,
+    pub(crate) tokens: Option<u64>,
+    pub(crate) classify_cost: bool,
+    pub(crate) args: Option<Value>,
     /// A failed agent registry read is retried without dispatching the call.
-    deferred: Option<basal_host::flow_refusal::FlowRefusal>,
+    pub(crate) deferred: Option<basal_host::flow_refusal::FlowRefusal>,
+}
+
+/// Both execution models prepare identical approved requests. Targeted module
+/// calls enforce max_targets by counting stable agent ids in prepared requests,
+/// read from an actor snapshot or the legacy journal.
+pub(crate) struct CallPreparation<'a> {
+    pub(crate) rt: &'a Runtime,
+    pub(crate) lease: &'a Lease,
+    pub(crate) run: &'a Run,
+    pub(crate) manifest: &'a Option<Manifest>,
+    pub(crate) input: &'a Value,
+    pub(crate) trigger: &'a Value,
+    pub(crate) tool_policies: &'a crate::classify_cost::ToolPolicies,
+    pub(crate) state: Option<&'a crate::run_records::State>,
 }
 
 impl Runtime {
@@ -128,6 +142,17 @@ impl Runtime {
             Ok(w) => w,
             Err(e) => {
                 // No worker: hand the run back untouched.
+                if self.uses_run_log() {
+                    let live = self
+                        .store()
+                        .read(|c| crate::run_store_sql::live(c, run_id))?
+                        .ok_or_else(|| CoreError::NoSuchRun(run_id.into()))?;
+                    self.staged_driver(run_id)?
+                        .owned(live, lease.generation)?
+                        .requeue(false)?;
+                    self.shared.staged_owners.lock().unwrap().remove(run_id);
+                    return Err(CoreError::Worker(e.to_string()));
+                }
                 self.shared
                     .store
                     .write(|tx| runs::exit(tx, &lease, &Exit::Requeue { broken: false }))?;
@@ -141,6 +166,9 @@ impl Runtime {
     /// is not pending (a pending run already past its deadline is failed
     /// here instead), or an earlier run of its flow holds the slot.
     fn claim(&self, run_id: &str) -> Result<std::result::Result<Lease, ActivationEnd>> {
+        if self.shared.staged_hosts.is_some() {
+            return self.staged_claim(run_id);
+        }
         if let Some(retry_in) = self.gate_wait(run_id) {
             // Core gave this run's install gate no answer a moment ago; it
             // is not asked again until the backoff passes.
@@ -211,6 +239,9 @@ impl Runtime {
     /// Drives a claimed activation. Never leaves the worker mid-activation:
     /// unless the worker finished cleanly, it is killed.
     pub fn drive(&self, lease: Lease, worker: &mut dyn WorkerChannel) -> ActivationEnd {
+        if self.shared.staged_hosts.is_some() {
+            return self.staged_drive(lease, worker);
+        }
         let run_id = lease.run_id.clone();
         let (end, idle) = match self.store().read(|c| runs::load(c, &run_id)) {
             Err(e) => (Err(e), false),
@@ -321,7 +352,7 @@ impl Runtime {
 const RUN_DEADLINE: &str = "the run passed its wall-clock deadline";
 
 /// What a disabled flow's new calls are refused with.
-fn disabled_refusal() -> Refusal {
+pub(crate) fn disabled_refusal() -> Refusal {
     Refusal::new(
         codes::FLOW_DISABLED,
         "the flow is disabled; it makes no new calls",
@@ -1174,11 +1205,13 @@ impl Activation<'_> {
         })?;
         self.reply(outcome)
     }
+}
 
+impl CallPreparation<'_> {
     /// Checks a new call's argument size and its grant in the approved
     /// manifest, then selects a model and builds its clamped request. The
     /// selector runs before the intent transaction, so refusal sends no model work.
-    fn prepare(&self, call: &HostCall) -> std::result::Result<Prepared, Refusal> {
+    pub(crate) fn prepare(&self, call: &HostCall) -> std::result::Result<Prepared, Refusal> {
         let cap = self.rt.config.limits.max_arg_bytes;
         if call.args.len() > cap {
             return Err(Refusal::new(
@@ -1201,7 +1234,7 @@ impl Activation<'_> {
                 "scripts cannot select a provider or model",
             ));
         }
-        let Some(manifest) = &self.manifest else {
+        let Some(manifest) = self.manifest else {
             return Err(Refusal::denied("the run has no approved manifest"));
         };
         if matches!(
@@ -1472,10 +1505,28 @@ impl Activation<'_> {
                         });
                     }
                 };
-                let targets = self.rt.store().read(|c| {
+                let targets = if let Some(state) = self.state {
+                    state
+                        .calls
+                        .values()
+                        .filter_map(|c| {
+                            if !matches!(c.identity.kind, CallKind::OpFor { .. }) {
+                                return None;
+                            }
+                            let value: Value =
+                                serde_json::from_str(c.intent.as_ref()?.frozen_request.as_str())
+                                    .ok()?;
+                            value["agent"].as_str().map(str::to_owned)
+                        })
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                } else {
+                    self.rt.store().read(|c| {
                     let mut stmt = c.prepare("SELECT DISTINCT json_extract(request,'$.agent') FROM journal_with_payloads WHERE run_id=?1 AND targeted=1 AND request IS NOT NULL")?;
                     Ok(stmt.query_map([&self.run.run_id], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
-                }).map_err(|e| Refusal::new("store_failure", e.to_string()))?;
+                }).map_err(|e| Refusal::new("store_failure", e.to_string()))?
+                };
                 if !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize {
                     return Err(Refusal::new(
                         "too_many_targets",
@@ -1689,6 +1740,22 @@ impl Activation<'_> {
             args: Some(args),
             ..prepared?
         })
+    }
+}
+
+impl Activation<'_> {
+    fn prepare(&self, call: &HostCall) -> std::result::Result<Prepared, Refusal> {
+        CallPreparation {
+            rt: self.rt,
+            lease: &self.lease,
+            run: &self.run,
+            manifest: &self.manifest,
+            input: &self.input,
+            trigger: &self.trigger,
+            tool_policies: &self.tool_policies,
+            state: None,
+        }
+        .prepare(call)
     }
 
     /// Checks the run's host-call and journal-size limits. Passing either

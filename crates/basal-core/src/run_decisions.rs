@@ -270,6 +270,7 @@ impl RecoveredHosts {
         let Some(run) = self.registry().get(id) else {
             return self.resolve_closed(id, position, resolution, actor, card, now);
         };
+        let budgets = self.budgets_for(id)?;
         let close = if resolution == Resolution::Cancel {
             Some(self.decisions.lock().unwrap().clone().ok_or_else(|| {
                 CoreError::Unavailable("staged close services are not bound".into())
@@ -395,7 +396,7 @@ impl RecoveredHosts {
                 .calls
                 .values()
                 .all(|c| c.unknown.is_none() || c.arrival.is_some());
-            let rows = crate::run_driver::accounting::rows(records.state(), &self.budgets)?;
+            let rows = crate::run_driver::accounting::rows(records.state(), &budgets)?;
             Ok((
                 if pending {
                     RunState::Pending
@@ -445,7 +446,7 @@ impl RecoveredHosts {
             live,
             RunState::Cancelled,
             now,
-            self.budgets.clone(),
+            self.budgets_for(id)?,
             effects,
         );
         self.registry()

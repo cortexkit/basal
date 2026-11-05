@@ -24,6 +24,26 @@ fn open(path: &Path) -> Result<Connection, String> {
     Ok(connection)
 }
 
+fn retained_projection(c: &Connection) -> Result<bool, String> {
+    let exists = |name: &str| {
+        c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+            [name],
+            |r| r.get::<_, bool>(0),
+        )
+        .map_err(|e| e.to_string())
+    };
+    if exists("rig_runs")? {
+        return Ok(true);
+    }
+    if exists("run_history")? {
+        return Err("run-log rig evidence requires retain_detail on the disposable runtime".into());
+    }
+    // Neither rig_runs nor run_history exists, so use the older SQLite
+    // execution tables retained during the run-log transition.
+    Ok(false)
+}
+
 /// prefrontal-core's store, read-only.
 pub struct CoreStore {
     pub path: PathBuf,
@@ -342,13 +362,14 @@ impl BasalStore {
     /// Every journaled call of every run of one flow, in order.
     pub fn calls(&self, flow_id: &str) -> Result<Vec<Call>, String> {
         let c = open(&self.path)?;
+        let retained = retained_projection(&c)?;
         let mut statement = c
             .prepare(
-                "SELECT j.run_id, j.position, j.kind_code, j.dispatch, j.attempts,
+                if retained { "SELECT j.run_id,j.position,j.kind_code,j.dispatch,j.attempts,j.settlement,j.value,j.request FROM rig_calls j JOIN rig_runs r USING(run_id) WHERE r.flow_id=?1 ORDER BY r.admit_seq,r.run_id,j.position" } else { "SELECT j.run_id, j.position, j.kind_code, j.dispatch, j.attempts,
                         j.settlement, CASE WHEN j.payload_pruned THEN '\"payload pruned\"' ELSE j.value END, CASE WHEN j.payload_pruned THEN '\"payload pruned\"' ELSE j.request END
                    FROM journal_with_payloads j JOIN runs r ON r.run_id = j.run_id
                   WHERE r.flow_id = ?1
-                  ORDER BY r.rowid, j.position",
+                   ORDER BY r.rowid, j.position" },
             )
             .map_err(|e| e.to_string())?;
         let rows = statement
@@ -390,8 +411,13 @@ impl BasalStore {
     /// install gate turned back before the run reached a worker is not one.
     pub fn activations(&self, run_id: &str) -> Result<i64, String> {
         let c = open(&self.path)?;
+        let retained = retained_projection(&c)?;
         c.query_row(
-            "SELECT COUNT(*) FROM activations WHERE run_id = ?1",
+            if retained {
+                "SELECT COUNT(*) FROM rig_activations WHERE run_id=?1"
+            } else {
+                "SELECT COUNT(*) FROM activations WHERE run_id = ?1"
+            },
             params![run_id],
             |r| r.get(0),
         )
@@ -402,10 +428,11 @@ impl BasalStore {
     /// value and the error, if any.
     pub fn runs(&self, flow_id: &str) -> Result<Vec<Run>, String> {
         let c = open(&self.path)?;
+        let retained = retained_projection(&c)?;
         let mut statement = c
             .prepare(
-                "SELECT run_id, state, result, error_kind, error_detail FROM runs
-                  WHERE flow_id = ?1 ORDER BY rowid",
+                if retained { "SELECT run_id,state,result,error_kind,error_detail FROM rig_runs WHERE flow_id=?1 ORDER BY admit_seq,run_id" } else { "SELECT run_id, state, result, error_kind, error_detail FROM runs
+                  WHERE flow_id = ?1 ORDER BY rowid" },
             )
             .map_err(|e| e.to_string())?;
         let rows = statement

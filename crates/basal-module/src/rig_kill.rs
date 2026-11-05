@@ -87,6 +87,70 @@ pub struct RigKillHook {
 }
 
 impl RigKillHook {
+    fn actor_evidence(
+        &self,
+        run_id: &str,
+        boundary: &Boundary,
+        position: Option<u64>,
+        state: &basal_core::run_records::State,
+    ) -> Option<String> {
+        let call = state.calls.get(&position?)?;
+        let args = call
+            .intent
+            .as_ref()
+            .map_or(&call.identity.args, |i| &i.frozen_request);
+        let dispatch = if call.unknown.is_some() && call.arrival.is_none() {
+            "unknown"
+        } else if call.deferred.is_some() && call.arrival.is_none() {
+            "deferred"
+        } else if call.accepted.is_some() {
+            "accepted"
+        } else if call.intent.is_some() {
+            "sent"
+        } else {
+            "none"
+        };
+        let settlement = call.sync.as_ref().map(|_| "fulfilled").or_else(|| {
+            call.delivery_order.and_then(|_| {
+                call.arrival
+                    .as_ref()
+                    .map(|a| basal_core::model::settlement_str(a.settlement))
+            })
+        });
+        let snapshots = self
+            .store
+            .get()
+            .and_then(|path| {
+                Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+            })
+            .and_then(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM broca_calls WHERE run_id=?1",
+                    [run_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .ok()
+            })
+            .unwrap_or(0);
+        Some(serde_json::json!({"run_id":run_id,"boundary":format!("{boundary:?}"),"args":serde_json::from_str::<serde_json::Value>(args.as_str()).ok()?,"dispatch":dispatch,"attempts":call.intent.as_ref().map_or(0,|i|i.attempts),"settlement":settlement,"broca_snapshots":snapshots}).to_string())
+    }
+
+    fn fire(&self, armed: &Armed, evidence: Option<String>) -> Step {
+        if let Some(evidence) = evidence {
+            let _ = std::fs::write(self.path.with_extension("evidence"), evidence);
+        }
+        // Removing the arm first prevents a restart from entering a kill loop.
+        if std::fs::remove_file(&self.path).is_err() {
+            return Step::Continue;
+        }
+        tracing::warn!(flow_id=%armed.flow_id,boundary=%armed.boundary,"rig kill hook: killing ck-basal");
+        eprintln!(
+            "ck-basal: rig kill hook: killing itself at {} in flow {}",
+            armed.boundary, armed.flow_id
+        );
+        crate::fatal::kill_self();
+    }
+
     /// Capture the journal at the crash boundary, before the supervisor can
     /// restart basal. This distinguishes a selected-but-unsent call from an
     /// accepted call whose result has not reached the journal.
@@ -147,9 +211,20 @@ impl RigKillHook {
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .ok()?;
+        let staged: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='run_identities')",
+                [],
+                |r| r.get(0),
+            )
+            .ok()?;
         connection
             .query_row(
-                "SELECT flow_id FROM runs WHERE run_id = ?1",
+                if staged {
+                    "SELECT flow_id FROM run_identities WHERE run_id=?1"
+                } else {
+                    "SELECT flow_id FROM runs WHERE run_id = ?1"
+                },
                 [run_id],
                 |r| r.get(0),
             )
@@ -164,7 +239,53 @@ pub fn matches(armed: &Armed, flow_id: Option<&str>, boundary: &Boundary) -> boo
 }
 
 impl Hooks for RigKillHook {
+    fn at_run(
+        &self,
+        run_id: &str,
+        flow_id: &str,
+        boundary: &Boundary,
+        position: Option<u64>,
+        state: &basal_core::run_records::State,
+    ) -> Step {
+        let Ok(text) = std::fs::read_to_string(&self.path) else {
+            return Step::Continue;
+        };
+        let Ok(armed) = serde_json::from_str::<Armed>(&text) else {
+            return Step::Continue;
+        };
+        if !matches(&armed, Some(flow_id), boundary) {
+            return Step::Continue;
+        }
+        // The driver supplies this run's records while holding its mutex.
+        // Re-entering the run here would deadlock. Run-log executions do not
+        // write the old SQLite journal tables.
+        self.fire(
+            &armed,
+            self.actor_evidence(run_id, boundary, position, state),
+        )
+    }
     fn at(&self, run_id: &str, boundary: &Boundary) -> Step {
+        if matches!(
+            boundary,
+            Boundary::DriverAppended
+                | Boundary::DriverSynced
+                | Boundary::DriverDispatched
+                | Boundary::DriverReleased
+        ) {
+            return Step::Continue;
+        }
+        if matches!(boundary, Boundary::HostArrived)
+            && let Some(path) = self.store.get()
+            && let Ok(c) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            && c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM live_runs WHERE run_id=?1)",
+                [run_id],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
+        {
+            return Step::Continue;
+        }
         let Ok(text) = std::fs::read_to_string(&self.path) else {
             return Step::Continue;
         };
@@ -179,21 +300,161 @@ impl Hooks for RigKillHook {
         if self.flow_of(run_id).as_deref() != Some(armed.flow_id.as_str()) {
             return Step::Continue;
         }
-        if let Some(evidence) = self.evidence(run_id, boundary) {
-            let _ = std::fs::write(self.path.with_extension("evidence"), evidence);
+        self.fire(&armed, self.evidence(run_id, boundary))
+    }
+}
+
+#[cfg(test)]
+mod actor_reader_tests {
+    use super::*;
+    use basal_core::{Admission, Clock, Durability, InstallGate, InstallRequest, Runtime, Store};
+    use basal_host::{
+        CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, TransportError,
+    };
+    use basal_proto::{ActivationResult, CallKind, HostCall, JsonText, WorkerMessage};
+    use std::sync::Mutex;
+
+    struct Observe {
+        hook: RigKillHook,
+        evidence: Mutex<Vec<serde_json::Value>>,
+    }
+    impl Hooks for Observe {
+        fn at(&self, _: &str, _: &Boundary) -> Step {
+            Step::Continue
         }
-        // Disarm before dying, so the restarted process passes the same
-        // boundary when it re-sends the call. Only one thread can remove the
-        // file; a thread that cannot (another got there first, or the file
-        // cannot be removed) carries on rather than risk a kill loop.
-        if std::fs::remove_file(&self.path).is_err() {
-            return Step::Continue;
+        fn at_run(
+            &self,
+            id: &str,
+            _: &str,
+            boundary: &Boundary,
+            position: Option<u64>,
+            state: &basal_core::run_records::State,
+        ) -> Step {
+            if matches!(boundary, Boundary::DriverSynced | Boundary::DriverReleased) {
+                self.evidence.lock().unwrap().push(
+                    serde_json::from_str(
+                        &self
+                            .hook
+                            .actor_evidence(id, boundary, position, state)
+                            .unwrap(),
+                    )
+                    .unwrap(),
+                );
+            }
+            Step::Continue
         }
-        let point = &armed.boundary;
-        let flow = &armed.flow_id;
-        tracing::warn!("rig kill hook: killing ck-basal in run {run_id} of {flow} at {point}");
-        eprintln!("ck-basal: rig kill hook: killing itself in run {run_id} of {flow} at {point}");
-        crate::fatal::kill_self();
+    }
+    struct QueryHost;
+    impl Host for QueryHost {
+        fn classify(&self, _: &CallKind) -> CallClass {
+            CallClass::Query
+        }
+        fn dispatch(&self, _: &CallRequest) -> Result<Dispatched, TransportError> {
+            Ok(Dispatched::Completed(HostOutcome::fulfilled(
+                JsonText::new("7").unwrap(),
+            )))
+        }
+        fn attach(&self, _: Arc<dyn CompletionSink>) {}
+        fn now_ms(&self) -> f64 {
+            100.0
+        }
+        fn random(&self) -> f64 {
+            0.5
+        }
+    }
+
+    #[test]
+    fn rig_evidence_reads_the_fenced_actor_of_a_real_staged_run() {
+        let root = basal_core::test_support::timestamp_scratch("rig-kill", "actor-reader");
+        let path = root.join("store.db");
+        let store = Arc::new(Store::open(&path, Durability::throwaway()).unwrap());
+        let named = Arc::new(OnceLock::new());
+        named.set(path).unwrap();
+        let hook = Arc::new(Observe {
+            hook: RigKillHook {
+                path: root.join("not-armed"),
+                store: named,
+            },
+            evidence: Mutex::new(Vec::new()),
+        });
+        let catalog = Arc::new(basal_host::catalog::MockCatalog::standard());
+        catalog.set_op(
+            "test",
+            "query",
+            basal_host::catalog::OpDecl {
+                kind: Some(basal_host::catalog::OpKind::Query),
+                cause_echo: true,
+                shell_capable: false,
+            },
+        );
+        let rt = Runtime::new_staged_scratch(
+            store,
+            Arc::new(QueryHost),
+            catalog,
+            hook.clone(),
+            None,
+            basal_core::runtime::Config {
+                clock: Clock::manual(100),
+                install_gate: InstallGate::Off,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        let manifest = serde_json::json!({"id":"actor-reader","version":1,"purpose":"Capture locked registry evidence","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}]});
+        let installed = rt
+            .install(&InstallRequest {
+                script: "return 7;".into(),
+                manifest: manifest.to_string(),
+                author: "operator".into(),
+                loop_override: false,
+            })
+            .unwrap();
+        rt.approve("actor-reader", 1, &installed.code_hash, "rig test")
+            .unwrap();
+        let Admission::Admitted { run_id } = rt
+            .admit_trigger("actor-reader", "first", JsonText::null())
+            .unwrap()
+        else {
+            panic!("not admitted")
+        };
+        let mut worker = basal_core::test_support::ScriptedWorker::new(vec![
+            WorkerMessage::HostCall(HostCall {
+                position: 0,
+                kind: CallKind::Op {
+                    module: "test".into(),
+                    op: "query".into(),
+                },
+                args: JsonText::new("{\"question\":1}").unwrap(),
+            }),
+            WorkerMessage::Blocked { awaiting: vec![0] },
+            WorkerMessage::Finished {
+                activation_id: 0,
+                result: ActivationResult::Completed {
+                    value: JsonText::new("7").unwrap(),
+                },
+            },
+        ]);
+        assert!(matches!(
+            rt.activate(&run_id, &mut worker).unwrap(),
+            basal_core::ActivationEnd::Succeeded { .. }
+        ));
+        let evidence = hook.evidence.lock().unwrap();
+        assert_eq!(evidence.len(), 2);
+        assert_eq!(evidence[0]["args"], serde_json::json!({"question":1}));
+        assert_eq!(evidence[0]["dispatch"], "sent");
+        assert_eq!(evidence[0]["attempts"], 1);
+        assert!(evidence[0]["settlement"].is_null());
+        assert_eq!(evidence[1]["settlement"], "fulfilled");
+        rt.store()
+            .read(|c| {
+                assert_eq!(
+                    c.query_row("SELECT COUNT(*) FROM journal", [], |r| r.get::<_, u64>(0))?,
+                    0
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 }
 

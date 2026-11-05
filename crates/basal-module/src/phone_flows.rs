@@ -35,10 +35,11 @@ impl Module {
         let membership_unavailable = membership.as_ref().is_some_and(Result::is_err);
         let workspaces = membership.and_then(Result::ok).unwrap_or_default();
         let now = self.rt.config().clock.now_ms();
+        let log_reconcile = self.log_reconcile_flows()?;
         let entries = self
             .rt
             .store()
-            .read(|c| entries(c, None, p.include_removed))
+            .read(|c| entries(c, None, p.include_removed, log_reconcile.as_ref()))
             .map_err(|e| self.core_error(e))?;
         let mut names = BTreeMap::new();
         let mut flows = Vec::new();
@@ -102,16 +103,28 @@ impl Module {
         if !(1..=50).contains(&limit) {
             return Err(invalid_params("runs must be from 1 to 50"));
         }
+        let log_reconcile = self.log_reconcile_flows()?;
+        let log_runs = if self.rt.uses_run_log() {
+            Some(
+                self.rt
+                    .runs_for_flow(&p.flow_id)
+                    .map_err(|e| self.core_error(e))?,
+            )
+        } else {
+            None
+        };
         let result = self
             .rt
             .store()
             .read(|c| {
-                let Some(mut entry) = entries(c, Some(&p.flow_id), true)?.pop() else {
+                let Some(mut entry) =
+                    entries(c, Some(&p.flow_id), true, log_reconcile.as_ref())?.pop()
+                else {
                     return Ok(None);
                 };
                 entry.value["manifest"] = entry.raw_manifest.clone();
                 entry.value["installs"] = json!(installs(c, &p.flow_id)?);
-                entry.value["runs"] = json!(runs(c, &p.flow_id, limit)?);
+                entry.value["runs"] = json!(runs(c, &p.flow_id, limit, log_runs.as_deref())?);
                 Ok(Some(entry))
             })
             .map_err(|e| self.core_error(e))?;
@@ -120,6 +133,21 @@ impl Module {
         };
         self.decorate(&mut entry, &mut BTreeMap::new());
         Ok(entry.value)
+    }
+
+    fn log_reconcile_flows(&self) -> Result<Option<std::collections::BTreeSet<String>>, OpError> {
+        if !self.rt.uses_run_log() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.rt
+                .flow_health()
+                .map_err(|e| self.core_error(e))?
+                .into_iter()
+                .filter(|f| !f.needs_reconcile.is_empty())
+                .map(|f| f.flow_id)
+                .collect(),
+        ))
     }
 
     pub(super) fn op_uninstall(&self, caller: &Caller, params: Value) -> OpResult {
@@ -192,18 +220,24 @@ fn entries(
     c: &rusqlite::Connection,
     flow_id: Option<&str>,
     include_removed: bool,
+    log_reconcile: Option<&std::collections::BTreeSet<String>>,
 ) -> basal_core::Result<Vec<Entry>> {
-    let mut statement = c.prepare(
+    let reconcile_sql = if log_reconcile.is_some() {
+        "0"
+    } else {
+        "EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile')"
+    };
+    let mut statement = c.prepare(&format!(
         "SELECT f.flow_id,f.approved_version,f.state,f.removed,f.owner,f.disabled_by,f.disabled_reason,
             COALESCE(i.manifest,p.manifest),i.author,COALESCE(i.version,f.approved_version),f.package,t.params,t.expires_at,
-            EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile'),
+             {reconcile_sql},
             (SELECT manifest FROM installs pending WHERE pending.flow_id=f.flow_id AND pending.version>COALESCE(f.approved_version,0) AND pending.state='validated'
              AND NOT EXISTS(SELECT 1 FROM install_cards WHERE flow_id=pending.flow_id AND version=pending.version AND state<>'pending') ORDER BY version DESC LIMIT 1)
          FROM flows f
          LEFT JOIN installs i ON i.flow_id=f.flow_id AND i.version=COALESCE(f.approved_version,(SELECT MAX(version) FROM installs WHERE flow_id=f.flow_id))
          LEFT JOIN package_versions p ON p.package=f.package AND p.version=f.approved_version
          LEFT JOIN template_instances t ON t.flow_id=f.flow_id
-         WHERE (?1 IS NULL OR f.flow_id=?1) AND (?2 OR f.removed=0) ORDER BY f.flow_id")?;
+          WHERE (?1 IS NULL OR f.flow_id=?1) AND (?2 OR f.removed=0) ORDER BY f.flow_id"))?;
     let rows = statement.query_map(rusqlite::params![flow_id, include_removed], |r| {
         let flow_id: String = r.get(0)?;
         let approved: Option<u32> = r.get(1)?;
@@ -213,7 +247,7 @@ fn entries(
         let owner = author.filter(|a| a != "operator" && a != LOCAL_AUTHOR);
         let disabled_by: Option<String> = r.get(5)?;
         let disabled_reason: Option<String> = r.get(6)?;
-        let reconcile: bool = r.get(13)?;
+        let reconcile: bool = if let Some(flows) = log_reconcile { flows.contains(&flow_id) } else { r.get(13)? };
         let state = if removed { "removed" } else if approved.is_none() { "pending_approval" } else if state == "disabled" { "disabled" } else if reconcile { "needs_reconcile" } else { "enabled" };
         Ok((json!({
             "flow_id":flow_id,"owner":owner,"version":r.get::<_,Option<u32>>(9)?,"state":state,
@@ -260,7 +294,7 @@ fn entries(
             value["trigger"] = Value::Null;
         }
         value["last_run"] = c.query_row(
-            "SELECT ended_at,state FROM runs WHERE flow_id=?1 AND ended_at IS NOT NULL AND state IN ('succeeded','failed','engine_mismatch','cancelled') ORDER BY ended_at DESC,admit_seq DESC,run_id DESC LIMIT 1",
+            if log_reconcile.is_some() { "SELECT ended_at,state FROM run_history WHERE flow_id=?1 ORDER BY ended_at DESC,admit_seq DESC,run_id DESC LIMIT 1" } else { "SELECT ended_at,state FROM runs WHERE flow_id=?1 AND ended_at IS NOT NULL AND state IN ('succeeded','failed','engine_mismatch','cancelled') ORDER BY ended_at DESC,admit_seq DESC,run_id DESC LIMIT 1" },
             [&flow_id], |r| Ok(json!({"at_ms":r.get::<_,i64>(0)?,"outcome":r.get::<_,String>(1)?})),
         ).optional()?.unwrap_or(Value::Null);
         entries.push(Entry {
@@ -304,24 +338,44 @@ fn installs(c: &rusqlite::Connection, flow_id: &str) -> basal_core::Result<Vec<V
     })?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn runs(c: &rusqlite::Connection, flow_id: &str, limit: u32) -> basal_core::Result<Vec<Value>> {
-    let mut statement = c.prepare(
-        "SELECT run_id,trigger,admitted_at,ended_at,state,error_kind,error_detail FROM runs
-         WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC LIMIT ?2",
-    )?;
-    let rows = statement
-        .query_map(rusqlite::params![flow_id, limit], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, Option<String>>(6)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+fn runs(
+    c: &rusqlite::Connection,
+    flow_id: &str,
+    limit: u32,
+    log_runs: Option<&[basal_core::Run]>,
+) -> basal_core::Result<Vec<Value>> {
+    let rows = if let Some(runs) = log_runs {
+        runs.iter()
+            .rev()
+            .take(limit as usize)
+            .map(|r| {
+                (
+                    r.run_id.clone(),
+                    r.trigger.as_str().to_owned(),
+                    r.admitted_at,
+                    r.ended_at,
+                    r.state.as_str().into(),
+                    r.error_kind.clone(),
+                    r.error_detail.clone(),
+                )
+            })
+            .collect()
+    } else {
+        let mut statement = c.prepare("SELECT run_id,trigger,admitted_at,ended_at,state,error_kind,error_detail FROM runs WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC LIMIT ?2")?;
+        statement
+            .query_map(rusqlite::params![flow_id, limit], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
     rows.into_iter()
         .map(|(id, trigger, at, end, outcome, kind, detail)| {
             let trigger = parse_json(&trigger)?;

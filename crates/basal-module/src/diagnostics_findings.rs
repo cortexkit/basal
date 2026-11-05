@@ -69,12 +69,34 @@ impl crate::module::Module {
             .map(events::Reader::health);
         let pool = self.pool.stats();
         let codemode_pool = self.codemode_pool.stats();
-        reply(
+        let log = if self.rt.uses_run_log() {
+            let read = || -> basal_core::Result<LogFindings> {
+                let health = self.rt.health()?;
+                let runs = health
+                    .unfinished
+                    .values()
+                    .flatten()
+                    .map(|id| self.rt.run(id))
+                    .collect::<basal_core::Result<Vec<_>>>()?;
+                Ok(LogFindings {
+                    flows: self.rt.flow_health()?,
+                    runs,
+                    deferred: self.rt.deferred_calls()?,
+                })
+            };
+            Some(read().map_err(|_| {
+                OpError::new("storage_unavailable", "cannot read basal diagnostics")
+            })?)
+        } else {
+            None
+        };
+        reply_with(
             self.rt.store(),
             now,
             window,
             events.as_ref(),
             &[("flows", &pool), ("codemode", &codemode_pool)],
+            log.as_ref(),
         )
     }
 }
@@ -83,6 +105,7 @@ impl crate::module::Module {
 /// finding; see `reply`.
 const READER_DOWN_GRACE_MS: i64 = 30_000;
 
+#[cfg(test)]
 fn reply(
     store: &Store,
     now: i64,
@@ -90,7 +113,24 @@ fn reply(
     events: Option<&events::Health>,
     pools: &[(&str, &crate::pool::PoolStats)],
 ) -> OpResult {
-    let mut findings = store_findings(store, now, window)
+    reply_with(store, now, window, events, pools, None)
+}
+
+struct LogFindings {
+    flows: Vec<basal_core::ops::FlowHealth>,
+    runs: Vec<basal_core::Run>,
+    deferred: Vec<(String, String, u64, i64)>,
+}
+
+fn reply_with(
+    store: &Store,
+    now: i64,
+    window: i64,
+    events: Option<&events::Health>,
+    pools: &[(&str, &crate::pool::PoolStats)],
+    log: Option<&LogFindings>,
+) -> OpResult {
+    let mut findings = store_findings_with(store, now, window, log)
         .map_err(|_| OpError::new("storage_unavailable", "cannot read basal diagnostics"))?;
     // The reader reconnects on purpose shortly before each bus credential
     // expires (about every 14 minutes) and is back within a second. A
@@ -179,7 +219,12 @@ fn aggregate<P: rusqlite::Params>(
     Ok(Some(finding))
 }
 
-fn store_findings(store: &Store, now: i64, window: i64) -> basal_core::Result<Vec<Finding>> {
+fn store_findings_with(
+    store: &Store,
+    now: i64,
+    window: i64,
+    log: Option<&LogFindings>,
+) -> basal_core::Result<Vec<Finding>> {
     store.read(|conn| {
         let mut findings = Vec::new();
         let staged: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='live_runs')", [], |r| r.get(0))?;
@@ -190,7 +235,7 @@ fn store_findings(store: &Store, now: i64, window: i64) -> basal_core::Result<Ve
                     "Use flow.reconcile with run_id and resolution cancel or retrigger; never resend unknown writes automatically."),
                 |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"flow_id":r.get::<_,String>(1)?,"run_id":r.get::<_,String>(2)?}))) }, Some(now))?);
         }
-        for flow in basal_core::ops::flow_health(conn, now)? {
+        for flow in if let Some(log) = log { log.flows.clone() } else { basal_core::ops::flow_health(conn, now)? } {
             if flow.auto_disabled || (flow.enabled && flow.consecutive_failures >= FAILURE_THRESHOLD as u64) {
                 let disabled_at: Option<i64> = conn.query_row("SELECT disabled_at FROM flows WHERE flow_id=?1",
                     [&flow.flow_id], |r| r.get(0))?;
@@ -216,7 +261,7 @@ fn store_findings(store: &Store, now: i64, window: i64) -> basal_core::Result<Ve
             sample["position"] = json!(r.get::<_,i64>(3)?);
             Ok((at, sample))
         };
-        findings.extend(aggregate(conn,
+        if log.is_none() { findings.extend(aggregate(conn,
             "SELECT deadline_at,flow_id,run_id FROM runs WHERE ended_at IS NULL AND deadline_at<=?1 ORDER BY deadline_at,run_id",
             [now.saturating_sub(OVERDUE_GRACE_MS)],
             finding("runs_overdue", "deadline", "warn", "Unfinished runs are past their recorded deadlines.",
@@ -233,6 +278,23 @@ fn store_findings(store: &Store, now: i64, window: i64) -> basal_core::Result<Ve
             [now.saturating_sub(STUCK_MS)],
             finding("reconcile_pending", "runs", "warn", "Runs admitted over an hour ago now need operator reconciliation; state-entry time is unavailable.",
                 "Inspect unknown calls and use flow.reconcile only after establishing their outcomes."), run_sample, Some(now))?);
+        } else if let Some(log) = log {
+            let sample = |at, flow: &str, id: &str| (at, json!({"at_ms":at,"flow_id":flow,"run_id":id}));
+            let deadline: Vec<_> = log.runs.iter().filter(|r| !r.state.is_terminal()).filter_map(|r|r.deadline_at.filter(|at|*at<=now.saturating_sub(OVERDUE_GRACE_MS)).map(|at|sample(at,&r.flow_id,&r.run_id))).collect();
+            let deferred = log.deferred.iter().filter(|(_,_,_,at)|*at<=now.saturating_sub(OVERDUE_GRACE_MS)).map(|(id,flow,p,at)| { let (at,mut value)=sample(*at,flow,id); value["position"]=json!(p); (at,value) }).collect();
+            let reconcile = log.runs.iter().filter(|r|r.state==basal_core::RunState::NeedsReconcile && r.admitted_at<=now.saturating_sub(STUCK_MS)).map(|r|sample(r.admitted_at,&r.flow_id,&r.run_id)).collect();
+            for (mut evidence, mut f) in [
+                (deadline, finding("runs_overdue", "deadline", "warn", "Unfinished runs are past their recorded deadlines.", "Inspect run state and the deadline sweep; diagnostics never cancels runs.")),
+                (deferred, finding("runs_overdue", "deferred", "warn", "Deferred calls are past their scheduled retry times.", "Inspect flow.health and deferred-call wake processing.")),
+                (reconcile, finding("reconcile_pending", "runs", "warn", "Runs admitted over an hour ago now need operator reconciliation; state-entry time is unavailable.", "Inspect unknown calls and use flow.reconcile only after establishing their outcomes.")),
+            ] {
+                evidence.sort_by_key(|(at,_)|*at);
+                if let Some((first,_))=evidence.first() {
+                    f.first_seen_ms = *first; f.last_seen_ms=now; f.count=evidence.len() as u64;
+                    f.samples=evidence.into_iter().take(SAMPLE_CAP).map(|(_,v)|v).collect(); findings.push(f);
+                }
+            }
+        }
         findings.extend(aggregate(conn,
             "SELECT created_at,flow_id,run_id,position,seq FROM decision_cards WHERE state='open' AND created_at<=?1 ORDER BY created_at,seq",
             [now.saturating_sub(STUCK_MS)],

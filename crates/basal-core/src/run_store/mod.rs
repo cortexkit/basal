@@ -43,6 +43,12 @@ pub trait TerminalWrite: Send + 'static {
 }
 
 pub trait TerminalBuilder<R>: Send + Sync {
+    fn can_close(&self, _: &R) -> bool {
+        true
+    }
+    fn prepare(&self, _: &mut R) -> Result<()> {
+        Ok(())
+    }
     fn is_success(&self) -> bool;
     fn build(
         &self,
@@ -234,6 +240,22 @@ impl<R: RunRecords> Run<R> {
 }
 
 impl Run<crate::run_records::Records> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn retain_detail_for_test(&self, store: Arc<Store>) -> Result<()> {
+        self.actor.lock().records.retain_detail(store)
+    }
+    /// Copy live reader state under the actor, before opening SQLite. Readers
+    /// may also observe Closing; they must prefer a committed history row.
+    pub fn reader_snapshot(&self) -> (String, String, u64, crate::run_records::State) {
+        let actor = self.actor.lock();
+        (
+            self.id.clone(),
+            self.flow.clone(),
+            actor.generation,
+            actor.records.state().clone(),
+        )
+    }
+
     pub(crate) fn closed_hint(&self, commit_seq: u64) {
         let mut actor = self.actor.lock();
         let generation = actor.generation;
@@ -500,6 +522,7 @@ impl<R: RunRecords> Activation<'_, R> {
 }
 
 pub struct RunStore<R> {
+    retain_detail: std::sync::atomic::AtomicBool,
     registry: Mutex<BTreeMap<String, Arc<Run<R>>>>,
     flows: Mutex<BTreeMap<String, Arc<Ordered<Accounting>>>>,
     committer: committer::Committer,
@@ -507,6 +530,20 @@ pub struct RunStore<R> {
 }
 
 impl RunStore<crate::run_records::Records> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retain_detail_for_test(&self, store: Arc<Store>) -> Result<()> {
+        crate::rig_projection::create(&store)?;
+        self.retain_detail.store(true, Ordering::Release);
+        for run in self.snapshot() {
+            run.actor.lock().records.retain_detail(store.clone())?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn retains_detail(&self) -> bool {
+        self.retain_detail.load(Ordering::Acquire)
+    }
     /// Copy replay anchors without holding an actor while the writer enters
     /// SQLite. A concurrent snapshot can only advance an anchor, so the earlier
     /// start copied here remains safe.
@@ -553,6 +590,7 @@ impl<R: RunRecords> RunStore<R> {
         log: Arc<dyn crate::run_admission::AdmissionLog>,
     ) -> Self {
         Self {
+            retain_detail: std::sync::atomic::AtomicBool::new(false),
             registry: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
             committer: committer::Committer::with_log(store, hooks, Some(log.clone())),
@@ -562,6 +600,7 @@ impl<R: RunRecords> RunStore<R> {
 
     pub fn new_staged(store: Arc<Store>, hooks: Arc<dyn Hooks>) -> Self {
         Self {
+            retain_detail: std::sync::atomic::AtomicBool::new(false),
             registry: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
             committer: committer::Committer::new(store, hooks),
@@ -659,6 +698,22 @@ impl<R: RunRecords> RunStore<R> {
             None => store.write(f),
         }
     }
+    pub(crate) fn accounting_read<T>(
+        &self,
+        flow: &str,
+        store: &Store,
+        f: impl FnOnce(&rusqlite::Connection, &BTreeMap<String, Vec<Reservation>>) -> Result<T>,
+    ) -> Result<T> {
+        let accounting = self
+            .flows
+            .lock()
+            .unwrap()
+            .entry(flow.into())
+            .or_insert_with(|| Arc::new(Ordered::new(Accounting::default(), Lock::Accounting)))
+            .clone();
+        let accounting = accounting.lock();
+        store.read(|conn| f(conn, &accounting.runs))
+    }
     pub fn close(
         &self,
         run: &Arc<Run<R>>,
@@ -703,6 +758,9 @@ impl<R: RunRecords> RunStore<R> {
                 return Ok(());
             }
             if run.routing() == Routing::Open {
+                if !builder.can_close(&actor.records) {
+                    return Err(CoreError::Unavailable("run changed before close".into()));
+                }
                 actor.generation = actor
                     .generation
                     .checked_add(1)
@@ -727,11 +785,14 @@ impl<R: RunRecords> RunStore<R> {
             .get(&run.id)
             .map(Vec::as_slice)
             .unwrap_or_default();
+        builder.prepare(&mut actor.records)?;
         let write = builder.build(&run.id, &actor.records, reservations)?;
         self.committer.commit(run.id.clone(), write)?;
         accounting.runs.remove(&run.id);
         run.routing.store(Routing::Closed as u8, Ordering::Release);
-        self.registry.lock().unwrap().remove(&run.id);
+        if !self.retain_detail.load(Ordering::Acquire) {
+            self.registry.lock().unwrap().remove(&run.id);
+        }
         drop(accounting);
         drop(actor);
         lock_order::assert_lock_free();
