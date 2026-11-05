@@ -504,9 +504,9 @@ cmd_test
                              str(rig / "home/projects/basal-rig-20260101t000000z"))
 
     def test_passing_contract_stops_its_temporary_daemon_and_reports_success(self):
-        scratch_root = SCRIPT.parents[1] / "target/scratch"
-        scratch_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=scratch_root) as home:
+        # The system temp directory, like the other rig tests: target/ may be
+        # a symlink to a removable volume, which the rig refuses as a root.
+        with tempfile.TemporaryDirectory() as home:
             result = self.run_shell('''
 guard_all_paths
 date() { printf '%s\\n' 20260101T000000Z; }
