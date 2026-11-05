@@ -193,6 +193,8 @@ fn production_cfg(tokens: &[Token]) -> Option<bool> {
 
 #[derive(Default, Debug)]
 struct Scan {
+    dropped_tables: bool,
+    checked_sql: usize,
     visited: BTreeSet<(PathBuf, bool)>,
     violations: Vec<String>,
     sql_reads: usize,
@@ -206,10 +208,28 @@ impl Scan {
         let path = path
             .canonicalize()
             .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        if self.dropped_tables && migration_path(&path) {
+            return;
+        }
         if !self.visited.insert((path.clone(), test)) {
             return;
         }
         let source = fs::read_to_string(&path).unwrap();
+        if self.dropped_tables && path.extension().is_some_and(|ext| ext == "sql") {
+            self.sql(
+                &path,
+                &source,
+                &Token {
+                    text: source.clone(),
+                    string: true,
+                    group: None,
+                    inner: vec![],
+                    at: 0,
+                },
+                "",
+            );
+            return;
+        }
         let directory = if matches!(
             path.file_name().unwrap().to_str().unwrap(),
             "lib.rs" | "main.rs" | "mod.rs"
@@ -315,10 +335,19 @@ impl Scan {
                 index = item_end + 1;
                 continue;
             }
-            if !test {
-                if token.string {
-                    self.sql(path, source, token, function);
-                }
+            if !test && token.string {
+                self.sql(path, source, token, function);
+            }
+            if !test
+                && self.dropped_tables
+                && token.text == "include_str"
+                && tokens.get(index + 1).is_some_and(|t| t.text == "!")
+                && let Some(args) = tokens.get(index + 2).filter(|t| t.group == Some('('))
+                && let Some(file) = args.inner.first().filter(|t| t.string)
+            {
+                self.file(&path.parent().unwrap().join(&file.text), false);
+            }
+            if !test && !self.dropped_tables {
                 if token.text == "use"
                     && import_contains_kv(header)
                     && !(path.ends_with("basal-core/src/driver.rs")
@@ -377,6 +406,39 @@ impl Scan {
     }
 
     fn sql(&mut self, path: &Path, source: &str, token: &Token, function: &str) {
+        if self.dropped_tables {
+            let words = sql_words(&token.text);
+            let sql = words.len() == 1
+                || words.iter().any(|w| {
+                    matches!(
+                        w.as_str(),
+                        "select"
+                            | "from"
+                            | "join"
+                            | "insert"
+                            | "update"
+                            | "delete"
+                            | "table"
+                            | "view"
+                            | "trigger"
+                    )
+                });
+            if sql {
+                self.checked_sql += 1;
+                if let Some(table) = words
+                    .iter()
+                    .find(|word| DROPPED_TABLES.contains(&word.as_str()))
+                {
+                    self.report(
+                        path,
+                        source,
+                        token,
+                        &format!("SQL references dropped table or view {table}"),
+                    );
+                }
+            }
+            return;
+        }
         // Journal labels name operations, not SQL tables.
         if matches!(token.text.as_str(), "kv.get" | "kv.set" | "kv.delete") {
             return;
@@ -448,6 +510,221 @@ fn safe_kv_import(tokens: &[Token]) -> bool {
             ))
             && safe_kv_import(&token.inner)
     })
+}
+
+// Before cutover, only these log-backed modules are guarded. Cutover widens the
+// roots to all runtime SQL; legacy execution must remain usable until then.
+const NEW_PATH_ROOTS: &[&str] = &[
+    "run_admission.rs",
+    "run_decisions.rs",
+    "run_driver/mod.rs",
+    "run_host.rs",
+    "run_log/mod.rs",
+    "run_readers.rs",
+    "run_records/mod.rs",
+    "run_retention.rs",
+    "run_store/mod.rs",
+    "run_store_sql.rs",
+    "staged_runtime.rs",
+];
+const DROPPED_TABLES: &[&str] = &[
+    "runs",
+    "journal",
+    "journal_payloads",
+    "mailbox",
+    "call_audit",
+    "activations",
+    "event_body_journal",
+    "journal_with_payloads",
+    "runs_with_snapshots",
+];
+
+fn migration_path(path: &Path) -> bool {
+    let name = path.file_name().unwrap().to_str().unwrap();
+    (name.starts_with("schema_") && name.ends_with(".sql"))
+        || name == "run_cutover.rs"
+        || path
+            .components()
+            .any(|part| part.as_os_str() == "run_cutover")
+}
+
+// SQL string values and comments are not identifiers. Double-quoted, backtick
+// and bracketed identifiers still yield words, including schema-qualified names.
+fn sql_words(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut words = Vec::new();
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            let identifier = words.last().is_some_and(|word: &String| {
+                matches!(
+                    word.as_str(),
+                    "from" | "join" | "into" | "update" | "table" | "view" | "trigger"
+                )
+            }) || sql[..i].trim_end().ends_with('.');
+            i += 1;
+            let start = i;
+            while i < bytes.len() {
+                if bytes[i] == b'\'' {
+                    let end = i;
+                    i += 1;
+                    if bytes.get(i) == Some(&b'\'') {
+                        i += 1;
+                    } else {
+                        if identifier {
+                            words.push(sql[start..end].replace("''", "'").to_ascii_lowercase());
+                        }
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        } else if bytes[i..].starts_with(b"--") {
+            i += bytes[i..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .unwrap_or(bytes.len() - i);
+        } else if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+        } else if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            words.push(sql[start..i].to_ascii_lowercase());
+        } else {
+            i += 1;
+        }
+    }
+    words
+}
+
+fn scan_new_path(root: &Path) -> Scan {
+    let mut scan = Scan {
+        dropped_tables: true,
+        ..Scan::default()
+    };
+    for module in NEW_PATH_ROOTS {
+        let path = root.join("crates/basal-core/src").join(module);
+        if path.exists() {
+            scan.file(&path, false);
+        }
+    }
+    scan
+}
+
+#[test]
+fn dropped_table_guard_covers_new_path_production_sql() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    for module in NEW_PATH_ROOTS {
+        assert!(
+            root.join("crates/basal-core/src").join(module).exists(),
+            "missing guarded root {module}"
+        );
+    }
+    let scan = scan_new_path(root);
+    assert!(
+        scan.checked_sql > 100,
+        "unexpectedly empty SQL scan: {scan:?}"
+    );
+    assert!(scan.violations.is_empty(), "{}", scan.violations.join("\n"));
+    assert!(
+        scan.visited
+            .iter()
+            .any(|(path, test)| !test && path.ends_with("run_driver/terminal.rs"))
+    );
+}
+
+#[test]
+fn dropped_table_guard_planted_runtime_violations_fail() {
+    for module in NEW_PATH_ROOTS {
+        for table in DROPPED_TABLES {
+            for quoted in [
+                format!("\"{table}\""),
+                format!("'{table}'"),
+                format!("[{table}]"),
+                format!("`{table}`"),
+            ] {
+                let sql = format!("SELECT * FROM main.{quoted}");
+                let source = format!("pub fn planted() {{ query({sql:?}); }}");
+                let path = format!("basal-core/src/{module}");
+                let fixture = Fixture::new(&[(&path, &source)]);
+                let scan = scan_new_path(&fixture.0);
+                assert_eq!(
+                    scan.violations.len(),
+                    1,
+                    "missed {path} / {table}: {scan:?}"
+                );
+                assert!(scan.violations[0].contains(table));
+            }
+        }
+    }
+}
+
+#[test]
+fn dropped_table_guard_migration_negative_control_passes() {
+    let fixture = Fixture::new(&[
+        (
+            "basal-core/src/run_retention.rs",
+            r#"mod run_cutover; const SQL: &str = include_str!("schema_cutover.sql");"#,
+        ),
+        (
+            "basal-core/src/run_retention/run_cutover.rs",
+            r#"fn migrate() { execute("INSERT INTO run_history SELECT * FROM runs"); }"#,
+        ),
+        (
+            "basal-core/src/schema_cutover.sql",
+            "DROP VIEW journal_with_payloads; DROP TABLE journal;",
+        ),
+    ]);
+    let scan = scan_new_path(&fixture.0);
+    assert!(scan.violations.is_empty(), "{scan:?}");
+    // A .sql suffix alone does not exempt runtime SQL.
+    fs::write(
+        fixture.0.join("crates/basal-core/src/runtime_query.sql"),
+        "SELECT * FROM mailbox",
+    )
+    .unwrap();
+    fs::write(
+        fixture.0.join("crates/basal-core/src/run_retention.rs"),
+        r#"const SQL: &str = include_str!("runtime_query.sql");"#,
+    )
+    .unwrap();
+    assert_eq!(scan_new_path(&fixture.0).violations.len(), 1);
+}
+
+#[test]
+fn dropped_table_guard_follows_modules_and_only_exempts_test_cfgs() {
+    let fixture = Fixture::new(&[
+        (
+            "basal-core/src/run_retention.rs",
+            r##"
+            // query("SELECT * FROM journal");
+            #[cfg(test)] fn helper() { query("SELECT * FROM runs"); }
+            #[cfg(any(test, feature="test-support"))] mod tests;
+            #[cfg(unix)] fn platform() { query("SELECT * FROM [mailbox]"); }
+            #[cfg(any(test,unix))] fn mixed() { query("SELECT * FROM `journal`"); }
+            mod nested { fn runtime() { query("CREATE VIEW bad AS SELECT * FROM activations"); } }
+            const SQL: &str = concat!("SELECT * FROM ", "call_audit");
+            fn safe() { query("SELECT 'runs', 'journal' FROM run_history -- mailbox"); }
+        "##,
+        ),
+        (
+            "basal-core/src/run_retention/tests.rs",
+            "fn helper() { query(\"SELECT * FROM runs\"); }",
+        ),
+    ]);
+    let scan = scan_new_path(&fixture.0);
+    assert_eq!(scan.violations.len(), 4, "{scan:?}");
 }
 
 fn source_files(directory: &Path, files: &mut BTreeSet<PathBuf>) {

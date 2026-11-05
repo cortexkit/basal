@@ -79,6 +79,7 @@ pub mod run_host;
 pub mod run_log;
 mod run_readers;
 pub mod run_records;
+mod run_retention;
 pub mod run_store;
 pub mod run_store_sql;
 pub mod runs;

@@ -1528,6 +1528,7 @@ impl Runtime {
                 }
             }
             self.flush_refusals()?;
+            self.retention_due(now)?;
             self.reap_threads();
             return Ok(expired);
         }

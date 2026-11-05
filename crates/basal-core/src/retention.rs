@@ -261,6 +261,10 @@ impl Runtime {
     /// Remove successful payloads without removing summaries or call metadata.
     /// The age is measured from the run's end, not its admission or last call.
     pub fn prune_payloads(&self, now_ms: i64, retention_ms: i64) -> Result<usize> {
+        if self.uses_run_log() {
+            // Successful log-backed runs have summaries only from terminal commit.
+            return Ok(0);
+        }
         let cutoff = now_ms.saturating_sub(retention_ms);
         let ids = self.store().read(|c| payload_candidates(c, cutoff))?;
         let mut pruned = 0;
@@ -277,6 +281,9 @@ impl Runtime {
     /// `now_ms` and have no open obligation. Never touches a run that is
     /// not terminal (`needs_reconcile` included).
     pub fn prune(&self, now_ms: i64, retention_ms: i64) -> Result<PruneReport> {
+        if self.uses_run_log() {
+            return crate::run_retention::prune(self.store(), now_ms, retention_ms);
+        }
         let cutoff = now_ms.saturating_sub(retention_ms);
         let ids = self.store().read(|c| candidates(c, cutoff, false))?;
         let mut report = PruneReport {
@@ -309,7 +316,9 @@ impl Runtime {
         }
         // Before pruning, while the journal still names the directories
         // earlier writes went to.
-        self.sweep_legacy_fs_temps()?;
+        if !self.uses_run_log() {
+            self.sweep_legacy_fs_temps()?;
+        }
         let config = &self.config.retention;
         let payloads = self.prune_payloads(now, millis(config.payloads))?;
         let runs = self.prune(now, millis(config.runs))?;
@@ -330,6 +339,17 @@ impl Runtime {
     }
 
     fn prune_history(&self, now: i64, cutoff: i64) -> Result<bool> {
+        if let Some(hosts) = &self.shared.staged_hosts {
+            let streak = millis(self.config.rate.window).saturating_mul(i64::from(
+                self.config.rate.saturated_windows_to_disable.max(1),
+            ));
+            return crate::run_retention::prune_history(
+                self.store(),
+                cutoff,
+                cutoff.min(now.saturating_sub(streak)),
+                |flow| hosts.registry().audit_at(flow),
+            );
+        }
         let mut full = false;
         for &(table, predicate) in HISTORY_PREDICATES {
             full |= self.delete_history_batch(table, predicate, cutoff)? == BATCH;

@@ -307,6 +307,56 @@ fn staged_runtime_admits_executes_and_reads_without_execution_rows() {
 }
 
 #[test]
+fn staged_deadline_service_prunes_history_on_its_retention_cadence() {
+    let f = Fixture::new(false);
+    f.install("retained", 1, json!({}));
+    let closed = f.admit("retained", "first");
+    let mut worker = ScriptedWorker::new(vec![op(0, "query", json!({})), finished()]);
+    assert!(matches!(
+        f.rt.activate(&closed, &mut worker).unwrap(),
+        ActivationEnd::Succeeded { .. }
+    ));
+    assert_eq!(f.rt.prune_payloads(i64::MAX, 0).unwrap(), 0);
+    let ended = f.clock.now_ms();
+    f.clock.set(ended + 90 * 24 * 3_600_000 - 1);
+    f.rt.enforce_deadlines().unwrap();
+    assert!(f.rt.run(&closed).is_ok());
+    let due = f.rt.shared.retention_next.lock().unwrap().unwrap();
+    assert_eq!(due, f.clock.now_ms() + 3_600_000);
+    f.clock.advance(1);
+    f.rt.enforce_deadlines().unwrap();
+    assert!(f.rt.run(&closed).is_ok(), "not due for maintenance yet");
+    f.clock.set(due);
+    f.rt.enforce_deadlines().unwrap();
+    f.rt.store()
+        .read(|c| {
+            for table in [
+                "run_history",
+                "obligations",
+                "run_identities",
+                "run_snapshots",
+            ] {
+                assert_eq!(
+                    c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                        .get::<_, i64>(0))?,
+                    0,
+                    "{table}"
+                );
+            }
+            assert_eq!(
+                c.query_row(
+                    "SELECT count(*) FROM tombstones WHERE kind='trigger'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                1
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn retained_projection_keeps_success_calls_and_one_row_per_activation() {
     let f = Fixture::new(true);
     f.install("retained", 1, json!({}));
