@@ -175,10 +175,14 @@ pub fn fixture(tag: &str, o: Options) -> Fixture {
     fixture_with_store(tag, o, |_| Ok(()))
 }
 
-pub fn fixture_with_store(
+pub fn fixture_with_store(tag:&str,o:Options,initialize:impl FnOnce(Arc<basal_core::Store>)->Result<(),String>)->Fixture {
+    fixture_with_recovered(tag,o,move|store,_|initialize(store))
+}
+
+pub fn fixture_with_recovered(
     tag: &str,
     o: Options,
-    initialize: impl FnOnce(Arc<basal_core::Store>) -> Result<(), String>,
+    initialize: impl FnOnce(Arc<basal_core::Store>,Arc<basal_core::run_host::RecoveredHosts>) -> Result<(), String>,
 ) -> Fixture {
     let dir = scratch(tag);
     let clock = Clock::manual(T0);
@@ -227,9 +231,9 @@ pub fn fixture_with_store(
             hooks: o.hooks.clone(),
         }),
         spawner,
-        |opened| {
+        |opened,recovered| {
             store = Some(Arc::downgrade(&opened));
-            initialize(opened)
+            initialize(opened,recovered)
         },
     )
     .expect("module starts");

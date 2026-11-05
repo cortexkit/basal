@@ -78,7 +78,7 @@ struct Cut(AtomicBool);
 impl Hooks for Cut {
     fn at(&self, _: &str, boundary: &Boundary) -> Step {
         lock_order::assert_lock_free();
-        if boundary == &Boundary::HostArrived && self.0.swap(false, Ordering::SeqCst) {
+        if boundary == &(Boundary::HostArrived { position: 0 }) && self.0.swap(false, Ordering::SeqCst) {
             Step::Crash
         } else {
             Step::Continue
@@ -576,7 +576,7 @@ pub(crate) fn closing_and_missing_obligations_are_retryable_q5_e() {
 #[test]
 pub(crate) fn arrival_before_acknowledgement_crash_recovers_the_same_outcome() {
     for boundary in Boundary::HOST {
-        assert_eq!(boundary, Boundary::HostArrived);
+        assert_eq!(boundary, Boundary::HostArrived { position: 0 });
         for closed in [false, true] {
             let f = Fixture::with_hooks(Arc::new(Cut(AtomicBool::new(true))));
             f.seed(true, closed);

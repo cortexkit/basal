@@ -112,7 +112,7 @@ fn owner_loss_after_call_commit_dispatches_once() {
     let slot: Slot = Arc::new(OnceLock::new());
     let taken = Arc::new(Mutex::new(None));
     let takeover = takeover_at(slot.clone(), taken.clone(), |b| {
-        matches!(b, Boundary::CallCommitted { position: 0 })
+        matches!(b, Boundary::DriverSynced { position: 0 })
     });
     let mock = world.mock.clone();
     let blocked = AtomicUsize::new(0);
@@ -277,7 +277,7 @@ fn owner_loss_around_order_commit_delivers_nothing_more() {
     let slot: Slot = Arc::new(OnceLock::new());
     let taken = Arc::new(Mutex::new(None));
     let hooks = takeover_at(slot.clone(), taken.clone(), |b| {
-        matches!(b, Boundary::OrderCommitted { position: 0, .. })
+        matches!(b, Boundary::DriverReleased { position: 0, .. })
     });
     let rt = runtime_with(&world, Arc::new(hooks));
     let _ = slot.set(rt.clone());

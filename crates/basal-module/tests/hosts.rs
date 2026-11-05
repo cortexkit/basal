@@ -1082,9 +1082,9 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
         let consent = Arc::new(CoreConsent::new(fake.clone()));
         let probe = Arc::new(Probe::crash_at(
             Point::parse(if pending_registry {
-                "CallCommitted { position: 0 }#1"
+                "DriverSynced { position: 0 }#1"
             } else {
-                "HostAnswered { position: 0 }#1"
+                "DriverDispatched { position: 0 }#1"
             })
             .unwrap(),
         ));
@@ -1502,7 +1502,7 @@ fn consent_refusal_codes_and_unknown_transport_are_typed() {
 struct ChangeCatalogAfterIntent(Arc<Fake>);
 impl basal_core::Hooks for ChangeCatalogAfterIntent {
     fn at(&self, _: &str, boundary: &basal_core::Boundary) -> basal_core::Step {
-        if *boundary == (basal_core::Boundary::CallCommitted { position: 0 }) {
+        if *boundary == (basal_core::Boundary::DriverSynced { position: 0 }) {
             self.0.catalog.lock().unwrap()["modules"][0]["roles"][0]["operations"][0]["kind"] =
                 json!("mutate");
         }
@@ -1610,14 +1610,14 @@ fn model_fixture(
         consent,
         hooks,
     };
-    let f = common::fixture_with_store(
+    let f = common::fixture_with_recovered(
         tag,
         common::Options {
             hosts: Some(dependencies),
             selector,
             ..common::Options::with_worker()
         },
-        |shared| snapshots.bind(shared).map_err(|e| e.to_string()),
+        |_shared,recovered| snapshots.bind_recovered(&recovered).map_err(|e| e.to_string()),
     );
     (f, model, fake, snapshots)
 }
@@ -1972,8 +1972,8 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
     use basal_testkit::harness::{Point, Probe};
     for boundary in [
         "ModelSelected { position: 0 }#1",
-        "CallCommitted { position: 0 }#1",
-        "HostAnswered { position: 0 }#1",
+        "DriverSynced { position: 0 }#1",
+        "DriverDispatched { position: 0 }#1",
     ] {
         let dir = common::scratch("selection-cut");
         let selector = Arc::new(FakeSelector::default());
@@ -2034,12 +2034,7 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
                 consent: Arc::new(CoreConsent::new(wire.clone())),
                 hooks,
             };
-            let module = Module::start_with_store(
-                config.clone(),
-                dependencies,
-                Arc::new(ProcessSpawner::new(&pool)),
-                |shared| snapshots.bind(shared).map_err(|e| e.to_string()),
-            )
+            let module = Module::start_with_store(config.clone(),dependencies,Arc::new(ProcessSpawner::new(&pool)),|shared,_recovered| snapshots.bind_recovered(&_recovered).map_err(|e| e.to_string()))
             .unwrap();
             (module, model, snapshots)
         };

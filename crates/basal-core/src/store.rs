@@ -196,7 +196,7 @@ impl Store {
             let synchronous: i64 = c.query_row("PRAGMA synchronous", [], |r| r.get(0))?;
             let fullfsync: i64 = c.query_row("PRAGMA fullfsync", [], |r| r.get(0))?;
             let checkpoint: i64 = c.query_row("PRAGMA checkpoint_fullfsync", [], |r| r.get(0))?;
-            let mode: String = c.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+            let mode: String = c.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
             Ok(Pragmas {
                 synchronous,
                 fullfsync: fullfsync != 0,

@@ -1,5 +1,8 @@
-//! End-to-end composition selected only by `Runtime::new_staged`. The ordinary
-//! constructor keeps the SQLite execution model until the cutover.
+//! The sole runtime composition: recovered actors, control-plane SQL and hosts.
+
+#[cfg(any(test,feature="test-support"))]
+#[path="run_fixture.rs"]
+pub(crate) mod fixtures;
 
 #[cfg(test)]
 #[path = "staged_runtime_tests.rs"]
@@ -9,9 +12,9 @@ use crate::{
     CoreError, Result, Runtime,
     admission::{Admission, TriggerSpec},
     channel::WorkerChannel,
-    driver::CallPreparation,
     manifest::Manifest,
     model::{Run, RunState, StoredClass},
+    preparation::CallPreparation,
     run_admission::RunAdmission,
     run_driver::{self, Driver, Gate, Prepared, Reply, Terminal, TerminalEffects},
     run_records::{
@@ -105,6 +108,7 @@ impl CloseDriver for Services {
     }
     fn closed(&self, id: &str) {
         if let Ok(rt) = self.runtime() {
+            rt.clear_event_scope_warning(id);
             rt.shared.staged_owners.lock().unwrap().remove(id);
             rt.shared.signal.bump();
             if let Ok(run) = rt.run(id) {
@@ -127,14 +131,15 @@ impl TerminalWrite for Effects {
         if let Some(actor) = &self.audit_actor {
             crate::reconcile::audit(tx, actor, "cancel", Some(&self.live.run_id), None, "")?;
         }
-        crate::owner_notice::finish_run_staged(tx, &self.live.run_id, self.now)?;
+        let owns=crate::run_removal::same_incarnation(tx,&self.live.flow_id,self.live.template_incarnation)?;
+        if owns {crate::owner_notice::finish_run_staged(tx, &self.live.run_id, self.now)?;}
         for body in &self.refusals {
             tx.execute(
                 "INSERT INTO outbox(at,kind,flow_id,body) VALUES(?1,'refusal_committed',?2,?3)",
                 params![self.now, self.live.flow_id, body],
             )?;
         }
-        if self.end_instance {
+        if owns && self.end_instance {
             let current: Option<i64> = tx
                 .query_row(
                     "SELECT incarnation FROM template_instances WHERE flow_id=?1",
@@ -160,9 +165,10 @@ impl TerminalEffects for Services {
         for call in state.calls.values().filter(|c| c.arrival.is_some()) {
             if let (Some(intent), Some(deferred)) = (&call.intent, &call.deferred)
                 && let Ok(refusal) =
-                    serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&deferred.cause)
+                    crate::refusal_receipt::decode_refusal(&deferred.cause)
             {
-                let saved = crate::journal::SavedRefusal::new(&request(live, intent)?, &refusal)?;
+                let saved =
+                    crate::refusal_receipt::SavedRefusal::new(&request(live, intent)?, &refusal)?;
                 refusals.push(
                     serde_json::to_string(&saved).map_err(|e| CoreError::Invalid(e.to_string()))?,
                 );
@@ -252,11 +258,12 @@ fn arrival(
 }
 
 impl run_driver::Services for Services {
+    fn removed(&self,live:&LiveRun)->Result<bool>{let rt=self.runtime()?;rt.store().read(|c|crate::run_removal::removed(c,live))}
     fn install(&self, live: &LiveRun) -> Result<Gate> {
         let rt = self.runtime()?;
+        if self.removed(live)? {return Ok(Gate::Removed);}
         let revoked = rt.store().read(|c| {
-            Ok(crate::packages::removed(c, &live.flow_id)?
-                || crate::install::revocation(c, &live.flow_id, live.flow_version)?.is_some())
+            Ok(crate::install::revocation(c, &live.flow_id, live.flow_version)?.is_some())
         })?;
         if revoked {
             return Ok(Gate::Revoked);
@@ -302,7 +309,7 @@ impl run_driver::Services for Services {
         let rt = self.runtime()?;
         if let Some(reason) = rt
             .store()
-            .read(|c| crate::install::revocation(c, &live.flow_id, live.flow_version))?
+            .read(|c|if crate::run_removal::removed(c,live)?{Ok(Some("the flow instance was removed".into()))}else{crate::install::revocation(c, &live.flow_id, live.flow_version)})?
         {
             let args = serde_json::from_str::<serde_json::Value>(call.args.as_str()).ok();
             return Ok(Prepared::Revoked {
@@ -363,7 +370,7 @@ impl run_driver::Services for Services {
             input: &live.self_input,
             trigger: &live.trigger,
             tool_policies: &policies,
-            state: Some(state),
+            state,
         }
         .prepare(call);
         let mut prepared = match preparation {
@@ -400,7 +407,7 @@ impl run_driver::Services for Services {
         {
             return Ok(Prepared::Refused {
                 class,
-                value: crate::driver::disabled_refusal().outcome().value,
+                value: crate::preparation::disabled_refusal().outcome().value,
                 notify: false,
             });
         }
@@ -562,94 +569,43 @@ impl run_driver::Services for Services {
     }
     fn dispatch(&self, live: &LiveRun, intent: &Intent) -> Result<Reply> {
         let rt = self.runtime()?;
-        let mut request = request(live, intent)?;
+        let request = request(live, intent)?;
         let class = match intent.call.class {
             StoredClass::Query => CallClass::Query,
             class => CallClass::Mutation {
                 honours_idempotency_keys: class == StoredClass::KeyedMutation,
             },
         };
-        let previous_unsent = rt
-            .staged_snapshot(&live.run_id)
-            .and_then(|s| s.calls.get(&intent.call.position).cloned())
-            .is_some_and(|c| {
-                c.prior_intents
-                    .last()
-                    .and_then(|i| i.dispatch_count_window.as_ref())
-                    .is_some_and(|d| d.count == 0)
-                    || c.resolutions.last().is_some_and(|r| {
-                        r.choice == "not_applied" && r.attempts.saturating_add(1) == intent.attempts
-                    })
-            });
-        let mut maybe_sent =
-            (intent.attempts > 1 && intent.call.class != StoredClass::Query && !previous_unsent)
-                .then_some(basal_host::UnknownReason::BasalRestarted);
-        let mut retries = 0;
-        let answer = loop {
-            if retries > 0
-                && let Err(error) = rt.store().write(|tx| self.dispatch_check(tx, live))
-            {
-                if let Some(reason) = maybe_sent {
+        let call=rt.staged_snapshot(&live.run_id).and_then(|s|s.calls.get(&intent.call.position).cloned()).ok_or_else(||CoreError::Corrupt("authorized call is absent from its actor".into()))?;
+        let maybe_sent=if intent.call.class!=StoredClass::Query&&call.prior_maybe_sent() {
+            Some(call.ambiguous_reason())
+        }else{None};
+        // One invocation owns exactly one host send. A retry must return to the
+        // actor for another checked, counted and synced Intent with the same key.
+        let answer=match rt.shared.host.dispatch_classified(&request,class) {
+            Ok(reply)=>Ok(reply),
+            Err(TransportError::Refused(refusal))=>Err(refusal),
+            Err(error)=>{
+                let (sent,detail)=match error {
+                    TransportError::Unavailable{sent,detail}=>(sent,detail),
+                    TransportError::ScopeCut{detail}=>(basal_host::Sent::Maybe(basal_host::UnknownReason::ConnectionLost),detail),
+                    TransportError::Refused(_)=>unreachable!("handled typed refusal"),
+                };
+                let proven_unsent=sent==basal_host::Sent::Never;
+                let safe=intent.call.class.safe_to_resend()||proven_unsent;
+                if safe&&call.transport_failures()<u64::from(rt.config.unavailable_retries) {
+                    let now=self.now_ms();
+                    let cause=match sent {basal_host::Sent::Never=>"transport did not send the call".to_owned(),basal_host::Sent::Maybe(reason)=>reason.as_str().to_owned()};
+                    return Ok(Reply::Deferred(crate::run_records::Deferred{position:intent.call.position,retry_not_before:now.saturating_add(i64::try_from(rt.config.retry_backoff.as_millis()).unwrap_or(i64::MAX)),cause,audit_at:now,proven_unsent,refund_dispatch:false,attempt:Some(intent.attempts)}));
+                }
+                if intent.call.class!=StoredClass::Query&&(!proven_unsent||maybe_sent.is_some()) {
+                    let reason=if intent.call.class.safe_to_resend(){basal_host::UnknownReason::RetriesExhausted}else{match sent{basal_host::Sent::Maybe(reason)=>reason,basal_host::Sent::Never=>maybe_sent.unwrap_or(basal_host::UnknownReason::BasalRestarted)}};
                     return Ok(Reply::Unknown(reason.as_str().into()));
                 }
-                return match error {
-                    CoreError::Invalid(reason) => Ok(Reply::Revoked(reason)),
-                    other => Err(other),
-                };
-            }
-            match rt.shared.host.dispatch_classified(&request, class) {
-                Ok(reply) => break Ok(reply),
-                Err(TransportError::Refused(refusal)) => break Err(refusal),
-                Err(TransportError::Unavailable { sent, detail }) => {
-                    if let basal_host::Sent::Maybe(reason) = sent {
-                        maybe_sent = Some(reason);
-                    }
-                    if (intent.call.class.safe_to_resend() || sent == basal_host::Sent::Never)
-                        && retries < rt.config.unavailable_retries
-                    {
-                        retries += 1;
-                        request.attempt = request.attempt.saturating_add(1);
-                        std::thread::sleep(rt.config.retry_backoff);
-                        continue;
-                    }
-                    if let Some(reason) =
-                        maybe_sent.filter(|_| intent.call.class != StoredClass::Query)
-                    {
-                        return Ok(Reply::Unknown(
-                            if intent.call.class.safe_to_resend() {
-                                basal_host::UnknownReason::RetriesExhausted
-                            } else {
-                                reason
-                            }
-                            .as_str()
-                            .into(),
-                        ));
-                    }
-                    let outcome = crate::runtime::unavailable_rejection(&detail);
-                    return Ok(Reply::Completed(arrival(
-                        intent.call.position,
-                        rt.cap_result(&outcome).unwrap_or(outcome),
-                        intent.reservation.as_ref(),
-                    )));
-                }
-                Err(TransportError::ScopeCut { detail }) => {
-                    if intent.call.class == StoredClass::Query
-                        && retries < rt.config.unavailable_retries
-                    {
-                        retries += 1;
-                        request.attempt = request.attempt.saturating_add(1);
-                        continue;
-                    }
-                    if intent.call.class != StoredClass::Query {
-                        return Ok(Reply::Unknown("connection_lost".into()));
-                    }
-                    let outcome = crate::runtime::unavailable_rejection(&detail);
-                    return Ok(Reply::Completed(arrival(
-                        intent.call.position,
-                        rt.cap_result(&outcome).unwrap_or(outcome),
-                        intent.reservation.as_ref(),
-                    )));
-                }
+                let outcome=crate::runtime::unavailable_rejection(&detail);
+                let mut arrived=arrival(intent.call.position,rt.cap_result(&outcome).unwrap_or(outcome),intent.reservation.as_ref());
+                if proven_unsent&&maybe_sent.is_none() {arrived.usage=Some(crate::run_records::Usage{input_tokens:0,output_tokens:0});arrived.cost_micros=Some(0);}
+                return Ok(Reply::Completed(arrived));
             }
         };
         if answer.is_ok() {
@@ -716,6 +672,8 @@ impl run_driver::Services for Services {
                         .map_err(|e| CoreError::Invalid(e.to_string()))?,
                     audit_at: intent.audit_at,
                     proven_unsent: true,
+                    refund_dispatch: true,
+                    attempt: None,
                 }))
             }
             Err(refusal) => {
@@ -740,6 +698,8 @@ impl run_driver::Services for Services {
                             .map_err(|e| CoreError::Invalid(e.to_string()))?,
                         audit_at: intent.audit_at,
                         proven_unsent: true,
+                    refund_dispatch: true,
+                    attempt: None,
                     }));
                 }
                 if refusal.reason == basal_host::flow_refusal::RefusalReason::AgentRetired {
@@ -808,6 +768,7 @@ impl run_driver::Services for Services {
                 "runtime stopped for recovery".into(),
             ));
         }
+        if crate::run_removal::removed(tx,live)? {return Err(CoreError::Invalid("the flow instance was removed".into()));}
         if let Some(reason) = crate::install::revocation(tx, &live.flow_id, live.flow_version)? {
             return Err(CoreError::Invalid(reason));
         }
@@ -1153,6 +1114,9 @@ impl Runtime {
             }));
         }
         let run = self.staged_run(id)?;
+        if run.state==RunState::Cancelled && run.error_kind.as_deref()==Some("removed") {
+            return Ok(Err(ActivationEnd::Revoked{version:run.flow_version.unwrap_or(0),cause:crate::gate::RevokeCause::Removed,detail:"the flow instance was removed".into()}));
+        }
         if run.state != RunState::Pending {
             return Ok(Err(ActivationEnd::NotRunnable { state: run.state }));
         }
@@ -1208,13 +1172,14 @@ impl Runtime {
             }
             other => {
                 self.shared.staged_owners.lock().unwrap().remove(id);
+                let removed=matches!(&other,Ok(run_driver::Claim::Removed));
                 match other {
                     Ok(run_driver::Claim::Deferred) => Ok(Err(ActivationEnd::Deferred {
                         detail: "waiting for core install status".into(),
                         retry_in: self.gate_wait(id).unwrap_or(self.config.install_gate_retry),
                     })),
-                    Ok(run_driver::Claim::Revoked) => {
-                        self.staged_driver(id)?.cancel(Terminal::new(
+                    Ok(run_driver::Claim::Revoked)|Ok(run_driver::Claim::Removed) => {
+                        let mut terminal=Terminal::new(
                             live.clone(),
                             RunState::Cancelled,
                             self.config.clock.now_ms(),
@@ -1225,11 +1190,13 @@ impl Runtime {
                                 acknowledgements: Default::default(),
                                 audit_actor: None,
                             }),
-                        ))?;
+                        );
+                        if removed{terminal.error_kind=Some("removed".into());terminal.error_detail=Some("the flow instance was removed".into());}
+                        self.staged_driver(id)?.cancel(terminal)?;
                         Ok(Err(ActivationEnd::Revoked {
                             version: live.flow_version,
-                            cause: crate::gate::RevokeCause::AlreadyRevoked,
-                            detail: "install no longer approved".into(),
+                            cause: if removed{crate::gate::RevokeCause::Removed}else{crate::gate::RevokeCause::AlreadyRevoked},
+                            detail: if removed{"the flow instance was removed"}else{"install no longer approved"}.into(),
                         }))
                     }
                     Err(CoreError::OwnerLost { .. }) => Ok(Err(ActivationEnd::OwnerLost)),
@@ -1416,6 +1383,7 @@ impl Runtime {
         self.shared.signal.bump();
         self.flush_staged_live_refusals()?;
         self.flush_refusals()?;
+        self.release_unused_flow_routes()?;
         Ok(ids)
     }
 
@@ -1528,7 +1496,7 @@ impl Runtime {
     pub(crate) fn staged_startable(&self) -> Result<Vec<(String, String)>> {
         let hosts = self.shared.staged_hosts.as_ref().expect("staged runtime");
         let ids: Vec<(String,String,bool)> = self.store().read(|c| {
-            Ok(c.prepare("SELECT r.run_id,r.flow_id,f.state='enabled' FROM live_runs r JOIN flows f USING(flow_id) WHERE r.history_lost=0 AND NOT EXISTS(SELECT 1 FROM live_runs o WHERE o.flow_id=r.flow_id AND o.admit_seq<r.admit_seq) ORDER BY r.admit_seq,r.run_id")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?,r.get(2)?)))?.collect::<rusqlite::Result<_>>()?)
+            Ok(c.prepare("SELECT r.run_id,r.flow_id,f.state='enabled' FROM live_runs r JOIN flows f USING(flow_id) WHERE r.history_lost=0 AND f.removed=0 AND NOT EXISTS(SELECT 1 FROM outbox q WHERE q.kind='run.removed' AND q.delivered_at IS NULL AND CAST(json_extract(q.body,'$.run_id') AS TEXT)=r.run_id) AND (r.template_incarnation IS NULL OR EXISTS(SELECT 1 FROM template_instances t WHERE t.flow_id=r.flow_id AND t.incarnation=r.template_incarnation)) AND NOT EXISTS(SELECT 1 FROM live_runs o WHERE o.flow_id=r.flow_id AND o.admit_seq<r.admit_seq) ORDER BY r.admit_seq,r.run_id")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?,r.get(2)?)))?.collect::<rusqlite::Result<_>>()?)
         })?;
         let now = self.config.clock.now_ms();
         let mut ready = Vec::new();
@@ -1549,10 +1517,11 @@ impl Runtime {
                         .filter(|c| c.arrival.is_none())
                         .filter_map(|c| c.deferred.as_ref())
                         .filter(|d| {
-                            d.retry_not_before == i64::MAX
-                                && serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(
-                                    &d.cause,
-                                )
+                            // Approval clears the SQL grant hold before this
+                            // actor wake. Migrated deferrals can have finite
+                            // future retry times as well as the hold sentinel.
+                            d.retry_not_before > now
+                                && crate::refusal_receipt::decode_refusal(&d.cause)
                                 .is_ok_and(|r| r.grant_absent())
                         })
                         .cloned()

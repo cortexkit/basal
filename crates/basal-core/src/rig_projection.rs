@@ -6,7 +6,7 @@ use rusqlite::params;
 pub(crate) fn create(store: &Store) -> Result<()> {
     store.write(|tx| {
         tx.execute_batch("CREATE TABLE IF NOT EXISTS rig_runs(run_id TEXT PRIMARY KEY,flow_id TEXT NOT NULL,admit_seq INTEGER NOT NULL,state TEXT NOT NULL,result TEXT,error_kind TEXT,error_detail TEXT);
-            CREATE TABLE IF NOT EXISTS rig_calls(run_id TEXT NOT NULL,position INTEGER NOT NULL,kind_code INTEGER NOT NULL,dispatch TEXT NOT NULL,attempts INTEGER NOT NULL,settlement TEXT,value TEXT,request TEXT,PRIMARY KEY(run_id,position));
+            CREATE TABLE IF NOT EXISTS rig_calls(run_id TEXT NOT NULL,position INTEGER NOT NULL,kind_code INTEGER NOT NULL,dispatch TEXT NOT NULL,attempts INTEGER NOT NULL,settlement TEXT,value TEXT,request TEXT,detail TEXT NOT NULL,PRIMARY KEY(run_id,position));
             CREATE TABLE IF NOT EXISTS rig_activations(run_id TEXT NOT NULL,activation INTEGER NOT NULL,PRIMARY KEY(run_id,activation));")?;
         Ok(())
     })
@@ -19,7 +19,7 @@ pub(crate) fn write(store: &Store, id: &str, state: &State) -> Result<()> {
         for call in state.calls.values() {
             let row = crate::run_readers::call(call)?;
             let kind = crate::model::kind_columns(&row.kind)?.0;
-            tx.execute("INSERT INTO rig_calls VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(run_id,position) DO UPDATE SET dispatch=excluded.dispatch,attempts=excluded.attempts,settlement=excluded.settlement,value=excluded.value,request=excluded.request", params![id,crate::model::position_i64(row.position)?,kind,row.dispatch.as_str(),row.attempts,row.outcome.as_ref().map(|o| crate::model::settlement_str(o.settlement)),row.outcome.as_ref().map(|o| o.value.as_str()),row.request.as_ref().map(|r|r.as_str())])?;
+            tx.execute("INSERT INTO rig_calls VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(run_id,position) DO UPDATE SET dispatch=excluded.dispatch,attempts=excluded.attempts,settlement=excluded.settlement,value=excluded.value,request=excluded.request,detail=excluded.detail", params![id,crate::model::position_i64(row.position)?,kind,row.dispatch.as_str(),row.attempts,row.outcome.as_ref().map(|o| crate::model::settlement_str(o.settlement)),row.outcome.as_ref().map(|o| o.value.as_str()),row.request.as_ref().map(|r|r.as_str()),serde_json::to_string(call).map_err(|e|crate::CoreError::Invalid(e.to_string()))?])?;
         }
         // The activation ordinal is taken from Activated records, never claims.
         for activation in 1..=state.activation_count {

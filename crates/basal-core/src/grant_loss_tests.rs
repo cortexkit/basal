@@ -1,9 +1,11 @@
 use super::*;
 use basal_host::flow_scope::{FlowScope, RegisteredScope};
 use basal_host::{
-    CallClass, MockCatalog,
+    CallClass, MockCatalog,Dispatched,TransportError,
     flow_refusal::{FlowRefusal, RefusalReason},
 };
+use crate::run_records::{Body,State,Claim,CallIdentity,Intent,Deferred};
+use crate::model::StoredClass;
 use basal_proto::{CallKind, JsonText};
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -137,42 +139,33 @@ impl Fixture {
         catalog.add_agent("new-agent");
         catalog.add_named_agent("old-agent", "OLD");
         let catalog = wrap(catalog, dir.join("store.sqlite"));
-        let rt = Runtime::new(
-            store,
-            host.clone(),
-            catalog,
-            Arc::new(crate::NoHooks),
-            None,
-            Config {
-                clock: crate::Clock::manual(0),
-                ..Config::default()
-            },
-        );
+        let rt = Runtime::new(store,
+        host.clone(),
+        catalog,
+        Arc::new(crate::NoHooks),
+        None,
+        Config {
+            clock: crate::Clock::manual(0),
+            ..Config::default()
+        },).expect("runtime startup");
         *rt.shared.retention_next.lock().unwrap() = Some(3_600_000);
         Self { rt, host, dir }
     }
     fn lose(&self, run: &str, refusal: FlowRefusal, args: Value) {
         self.lose_after(run, refusal, args, true);
     }
-    fn lose_after(&self, run: &str, refusal: FlowRefusal, args: Value, prior_unsent: bool) {
-        let class = if prior_unsent {
-            StoredClass::Query
-        } else {
-            StoredClass::KeyedMutation
-        };
-        *lock(&self.host.refusal) = refusal;
-        self.rt.store().write(|tx| {
-            tx.execute("INSERT INTO runs(run_id,flow_id,flow_version,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,deadline_ms) VALUES (?1,'flow',1,?1,1,'null',?2,zeroblob(32),'pending',0,600000)",params![run,runs::snapshot(tx,"flow",Some(1),&[0;32],"return 1",&manifest(1,json!([])))?])?;
-            let lease = runs::claim(tx,run,"owner",0)?;
-            journal::insert_call(tx,&lease,"flow",&journal::NewCall {position:0,kind:&CallKind::Op {module:"plexus".into(),op:"github".into()},args:&JsonText::new(args.to_string()).unwrap(),class,request:None})?;
-            Ok(())
-        }).unwrap();
-        let request = Runtime::request(
-            &self.rt.run(run).unwrap(),
-            &self.rt.calls(run).unwrap()[0],
-            1,
-        );
-        self.rt.dispatch(request, class, prior_unsent).unwrap();
+        fn lose_after(&self,run:&str,refusal:FlowRefusal,args:Value,prior_unsent:bool) {
+        let class=if prior_unsent{StoredClass::Query}else{StoredClass::KeyedMutation};*lock(&self.host.refusal)=refusal;
+        // These are previously admitted calls. This bookkeeping fixture does not
+        // exercise the scheduler's single-flow activation-slot admission gate.
+        let mut state=State::new(0);state.generation=1;state.claim=Some(Claim{first_claim_ms:0,deadline_at:600000});state.activation_count=1;state.script_started=true;state.phase="script".into();
+        self.rt.fixture_run(run,"flow",1,"return 1",&manifest(1,json!([])),state).unwrap();
+        let args=JsonText::new(args.to_string()).unwrap();let call=basal_proto::HostCall{position:0,kind:CallKind::Op{module:"plexus".into(),op:"github".into()},args:args.clone()};
+        self.rt.fixture_append(run,Body::Intent(Intent{call:CallIdentity::new(call,class),idempotency_key:Some(crate::ids::idempotency_key("flow",run,0)),frozen_request:args,attempts:1,dispatch_count_window:Some(crate::run_records::DispatchCount{window_start:0,count:1}),audit_at:0,reservation:None})).unwrap();
+        if prior_unsent{self.rt.fixture_append(run,Body::Deferred(Deferred{position:0,retry_not_before:0,cause:"fixture intent was not sent".into(),audit_at:0,proven_unsent:true,refund_dispatch:true,attempt:None})).unwrap();}
+        self.rt.fixture_dispatch_pending(run).unwrap();
+        self.rt.shared.staged_owners.lock().unwrap().remove(run);
+        if !self.rt.fixture_control_failure(run).unwrap(){let state=self.rt.staged_snapshot(run).unwrap();if state.calls.values().any(|c|c.deferred.is_some()&&c.arrival.is_none()){let live=self.rt.store().read(|c|crate::run_store_sql::live(c,run)).unwrap().unwrap();self.rt.staged_driver(run).unwrap().owned(live,state.generation).unwrap().park(&[0]).unwrap();}}
     }
     fn approve(&self, owner: &str, targets: Value) {
         let m = manifest(2, targets);
@@ -332,10 +325,9 @@ fn keeping_disabled_stops_polling_until_explicit_owner_enable() {
             .unwrap()
     );
     assert_eq!(f.rt.grant_losses().unwrap()[0].state, "cleared");
+    f.rt.startable().unwrap();
     assert_eq!(
-        f.rt.store()
-            .read(|c| journal::deferred_until(c, "run", 0))
-            .unwrap(),
+        f.rt.deferred_calls().unwrap().into_iter().find(|(id,_,p,_)|id=="run"&&*p==0).map(|(_,_,_,at)|at),
         Some(1_000_000)
     );
 }
@@ -468,7 +460,7 @@ fn stale_positive_diagnostic_cannot_clear_a_repeat_loss() {
         refusal.detail.as_mut().unwrap()["grant_label"] = json!("updated grant label");
         rt.store()
             .write(|tx| {
-                crate::grant_loss::record(tx, "flow", "run", &refusal, rt.config.clock.now_ms())
+                crate::grant_loss::record_staged(tx, "flow", "run", &refusal, rt.config.clock.now_ms())
             })
             .unwrap();
     }));

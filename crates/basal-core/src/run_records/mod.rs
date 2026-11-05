@@ -241,9 +241,14 @@ impl Records {
     /// The driver registers its dispatch entrant before releasing the actor,
     /// then syncs this cut before handing anything to the host. Separating the
     /// append from the wait also permits a lock-free crash hook between them.
-    pub(crate) fn append_pending(&mut self, generation: u64, body: Body) -> Result<(Lsn, bool)> {
+    pub(crate) fn append_pending(&mut self, generation: u64, mut body: Body) -> Result<(Lsn, bool)> {
         if self.poisoned {
             return Err(CoreError::Cut);
+        }
+        if let Body::Deferred(deferred)=&mut body {
+            let attempt=self.state.calls.get(&deferred.position).and_then(|c|c.intent.as_ref()).map(|i|i.attempts);
+            if deferred.attempt.is_some()&&deferred.attempt!=attempt {return Err(CoreError::Invalid("deferral names a different intent attempt".into()));}
+            deferred.attempt=attempt;
         }
         let sync = self.state.requires_sync(&body)?;
         // Validate before writing; failed appends must not change the overlay.

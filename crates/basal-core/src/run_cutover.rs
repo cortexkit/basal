@@ -6,7 +6,7 @@
 
 mod audit;
 mod convert;
-mod legacy;
+pub(crate) mod legacy;
 mod pages;
 #[cfg(test)]
 pub(crate) mod tests;

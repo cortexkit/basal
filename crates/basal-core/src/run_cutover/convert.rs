@@ -266,6 +266,8 @@ fn call(c: &Connection, row: &Row, admitted: i64) -> Result<CallState> {
             cause: text(row, "refusal_detail")?.into(),
             audit_at: at,
             proven_unsent: class == StoredClass::Mutation,
+            refund_dispatch: true,
+                    attempt: None,
         });
     }
     Ok(state)

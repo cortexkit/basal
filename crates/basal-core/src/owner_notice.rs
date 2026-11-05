@@ -29,12 +29,10 @@ struct Failure {
     started: bool,
 }
 
-fn streak(conn: &Connection, flow: &str, staged: bool) -> Result<Streak> {
+fn streak(conn: &Connection, flow: &str) -> Result<Streak> {
     let mut result = Streak::default();
-    let sql = if staged {
+    let sql = {
         "SELECT run_id,state,error_kind,ended_at,flow_version,script_started FROM run_history WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC"
-    } else {
-        "SELECT run_id,state,error_kind,COALESCE(ended_at,admitted_at),COALESCE(flow_version,0),script_started FROM runs WHERE flow_id=?1 AND state IN ('succeeded','failed','engine_mismatch','cancelled') ORDER BY admit_seq DESC,run_id DESC"
     };
     let mut stmt = conn.prepare_cached(sql)?;
     let rows = stmt.query_map([flow], |r| {
@@ -52,7 +50,7 @@ fn streak(conn: &Connection, flow: &str, staged: bool) -> Result<Streak> {
         if state == "succeeded" {
             break;
         }
-        if counted(conn, &run_id, &state, kind.as_deref(), staged)? {
+        if counted(conn, &run_id, &state, kind.as_deref())? {
             result.count += 1;
             result.since = Some(at);
             if result.latest.is_none() {
@@ -108,34 +106,17 @@ fn next_episode(tx: &Transaction, flow: &str) -> Result<i64> {
     )?)
 }
 
-pub(crate) fn finish_run(tx: &Transaction, run_id: &str, now: i64) -> Result<()> {
-    finish(tx, run_id, now, false)
-}
-
 pub(crate) fn finish_run_staged(tx: &Transaction, run_id: &str, now: i64) -> Result<()> {
-    finish(tx, run_id, now, true)
+    finish(tx, run_id, now)
 }
 
-fn counted(
-    conn: &Connection,
-    id: &str,
-    state: &str,
-    kind: Option<&str>,
-    staged: bool,
-) -> Result<bool> {
-    if !staged {
-        return ops::counted_failure(conn, id, state, kind);
-    }
+fn counted(conn: &Connection, id: &str, state: &str, kind: Option<&str>) -> Result<bool> {
     ops::counted_failure_staged(conn, id, state, kind)
 }
 
-fn finish(tx: &Transaction, run_id: &str, now: i64, staged: bool) -> Result<()> {
+fn finish(tx: &Transaction, run_id: &str, now: i64) -> Result<()> {
     let (flow, state, version, kind): (String, String, u32, Option<String>) = tx.query_row(
-        if staged {
-            "SELECT flow_id,state,flow_version,error_kind FROM run_history WHERE run_id=?1"
-        } else {
-            "SELECT flow_id,state,COALESCE(flow_version,0),error_kind FROM runs WHERE run_id=?1"
-        },
+        "SELECT flow_id,state,flow_version,error_kind FROM run_history WHERE run_id=?1",
         [run_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
@@ -182,12 +163,12 @@ fn finish(tx: &Transaction, run_id: &str, now: i64, staged: bool) -> Result<()> 
                 [&flow],
             )?;
         }
-    } else if failing.is_none() && counted(tx, run_id, &state, kind.as_deref(), staged)? {
+    } else if failing.is_none() && counted(tx, run_id, &state, kind.as_deref())? {
         // Once this episode's notice is queued nothing more is sent until a
         // success, so later failures skip the history scan. A flow that keeps
         // failing would otherwise rescan its whole streak on every run, inside
         // the write transaction.
-        let streak = streak(tx, &flow, staged)?;
+        let streak = streak(tx, &flow)?;
         if streak.count >= 3 {
             let episode = next_episode(tx, &flow)?;
             enqueue(
@@ -209,10 +190,10 @@ fn finish(tx: &Transaction, run_id: &str, now: i64, staged: bool) -> Result<()> 
     Ok(())
 }
 
-pub(crate) fn auto_disabled_legacy(tx: &Transaction, flow: &str, now: i64) -> Result<()> {
+pub(crate) fn auto_disabled_committed(tx: &Transaction, flow: &str, now: i64) -> Result<()> {
     // Rate limits count admissions, including runs outside the terminal failure streak.
     let latest = tx.query_row(
-        "SELECT run_id,COALESCE(flow_version,0),error_kind,script_started FROM runs WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC LIMIT 1",
+        "SELECT run_id,flow_version,error_kind,script_started FROM run_history WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC LIMIT 1",
         [flow],
         |r| Ok(Failure { run_id: r.get(0)?, version: r.get(1)?, kind: r.get(2)?, started: r.get(3)? }),
     ).optional()?;
@@ -221,7 +202,7 @@ pub(crate) fn auto_disabled_legacy(tx: &Transaction, flow: &str, now: i64) -> Re
         return Ok(());
     };
     let episode = next_episode(tx, flow)?;
-    let streak = streak(tx, flow, false)?;
+    let streak = streak(tx, flow)?;
     enqueue(
         tx,
         flow,

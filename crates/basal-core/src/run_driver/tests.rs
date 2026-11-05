@@ -577,7 +577,7 @@ fn closing_counts_dispatch_before_its_append_to_sync_gap() {
     impl Hooks for Pause {
         fn at(&self, _: &str, boundary: &Boundary) -> Step {
             lock_order::assert_lock_free();
-            if boundary == &Boundary::DriverAppended {
+            if boundary == &(Boundary::DriverAppended { position: 0 }) {
                 self.arrived.send(()).unwrap();
                 self.resume
                     .lock()
@@ -948,6 +948,8 @@ fn retry_consumes_unsent_proof_before_another_possible_send() {
             cause: "not sent".into(),
             audit_at: 20,
             proven_unsent: true,
+                    refund_dispatch: true,
+                    attempt: None,
         }));
     f.send(&a, 0, "write");
     let mut retries = a.recover_dispatches().unwrap();
@@ -1003,7 +1005,7 @@ pub(crate) fn crash_case(boundary: Boundary) {
         .idempotency_key
         .clone();
     *f.cut.0.lock().unwrap() = Some(boundary.clone());
-    let result = if boundary == Boundary::DriverReleased {
+    let result = if boundary == (Boundary::DriverReleased { position: 0 }) {
         a.release(&[0]).map(|_| ())
     } else {
         match a.issue(call(5, "keyed")) {

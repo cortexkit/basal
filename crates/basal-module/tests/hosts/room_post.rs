@@ -860,8 +860,8 @@ fn room_journals_before_send_and_replays_the_identical_intent_after_a_cut() {
     };
     use basal_testkit::harness::{Point, Probe};
     for (point, sent_before_cut) in [
-        ("CallCommitted { position: 0 }#1", 0),
-        ("HostAnswered { position: 0 }#1", 1),
+        ("DriverSynced { position: 0 }#1", 0),
+        ("DriverDispatched { position: 0 }#1", 1),
     ] {
         let dir = common::scratch("room-cut");
         let clock = Clock::manual(common::T0);

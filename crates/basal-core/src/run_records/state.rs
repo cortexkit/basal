@@ -41,6 +41,32 @@ pub struct CallState {
     pub resolutions: Vec<Resolution>,
 }
 
+impl CallState {
+    fn resolved_through(&self)->u64 {
+        self.resolutions.iter().rev().find(|r|r.choice=="not_applied").map_or(0,|r|r.attempts)
+    }
+    /// Every earlier attempt needs its own unsent proof. A later refusal cannot
+    /// erase an older ambiguous send, even when a keyed retry is safe.
+    pub(crate) fn prior_maybe_sent(&self)->bool {
+        let resolved=self.resolved_through();
+        self.prior_intents.iter().filter(|i|i.attempts>resolved).any(|intent| {
+            // Older snapshots encoded a refunded, proven-unsent attempt by
+            // zeroing its dispatch count, before deferrals carried ordinals.
+            !intent.dispatch_count_window.as_ref().is_some_and(|c|c.count==0)
+                && !self.prior_deferrals.iter().any(|d|d.attempt==Some(intent.attempts)&&d.proven_unsent)
+        })
+    }
+    pub(crate) fn transport_failures(&self)->u64 {
+        let resolved=self.resolved_through();
+        self.prior_deferrals.iter().filter(|d|!d.refund_dispatch).filter_map(|d|d.attempt).filter(|a|*a>resolved).collect::<std::collections::BTreeSet<_>>().len() as u64
+    }
+    pub(crate) fn ambiguous_reason(&self)->basal_host::UnknownReason {
+        self.unknown.as_deref().and_then(basal_host::UnknownReason::parse)
+            .or_else(||self.deferred.iter().chain(self.prior_deferrals.iter().rev()).filter(|d|!d.proven_unsent&&!d.refund_dispatch).filter(|d|d.attempt.is_none_or(|a|a>self.resolved_through())).find_map(|d|basal_host::UnknownReason::parse(&d.cause)))
+            .unwrap_or(basal_host::UnknownReason::BasalRestarted)
+    }
+}
+
 /// The complete replay start point. The worker receives every issued call but
 /// only outcomes that have been released to the script. Unreleased arrivals
 /// remain in the mailbox; local kv effects already belong to the pending writes
@@ -286,7 +312,8 @@ impl State {
                         ));
                     }
                     let mut previous = previous.clone();
-                    if old.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                    let previous_attempt=previous.attempts;
+                    if old.deferred.as_ref().is_some_and(|d| d.refund_dispatch)
                         && let Some(count) = &mut previous.dispatch_count_window
                     {
                         count.count = 0;
@@ -295,7 +322,8 @@ impl State {
                     old.intent = Some(intent.clone());
                     // Proof that the previous attempt was unsent cannot
                     // authorize another retry after this attempt may be sent.
-                    if let Some(deferred) = old.deferred.take() {
+                    if let Some(mut deferred) = old.deferred.take() {
+                        deferred.attempt.get_or_insert(previous_attempt);
                         old.prior_deferrals.push(deferred);
                     }
                 } else {
@@ -369,7 +397,11 @@ impl State {
             }
             Body::Deferred(deferred) => {
                 let call = self.call_mut(deferred.position)?;
-                if let Some(prior) = call.deferred.replace(deferred.clone()) {
+                let mut deferred=deferred.clone();
+                let attempt=call.intent.as_ref().map(|i|i.attempts);
+                if deferred.attempt.is_some()&&deferred.attempt!=attempt {return Err(corrupt("deferral names a different intent attempt"));}
+                deferred.attempt=attempt;
+                if let Some(prior) = call.deferred.replace(deferred) {
                     call.prior_deferrals.push(prior);
                 }
             }

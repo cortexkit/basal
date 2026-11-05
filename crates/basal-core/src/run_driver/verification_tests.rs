@@ -38,7 +38,7 @@ fn pause(boundary: Boundary) -> (Arc<Pause>, mpsc::Receiver<()>, mpsc::Sender<()
 #[test]
 fn dispatch_return_at_the_closing_cut_is_in_the_terminal_projection() {
     let f = Fixture::new();
-    let (hooks, reached, resume) = pause(Boundary::DriverDispatched);
+    let (hooks, reached, resume) = pause(Boundary::DriverDispatched { position: 0 });
     let driver = Driver::new_staged(
         f.store.clone(),
         f.registry.clone(),

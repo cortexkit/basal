@@ -157,22 +157,20 @@ impl Fixture {
                 shell_capable: false,
             },
         );
-        let rt = Runtime::new(
-            store,
-            source.clone(),
-            Arc::new(catalog.clone()),
-            Arc::new(crate::NoHooks),
-            None,
-            Config {
-                clock: Clock::manual(1_000),
-                install_gate: InstallGate::Off,
-                rate: crate::RateLimits {
-                    max_runs,
-                    ..Default::default()
-                },
+        let rt = Runtime::new(store,
+        source.clone(),
+        Arc::new(catalog.clone()),
+        Arc::new(crate::NoHooks),
+        None,
+        Config {
+            clock: Clock::manual(1_000),
+            install_gate: InstallGate::Off,
+            rate: crate::RateLimits {
+                max_runs,
                 ..Default::default()
             },
-        );
+            ..Default::default()
+        },).expect("runtime startup");
         Self {
             rt,
             source,

@@ -39,9 +39,9 @@ pub use spec::{
 pub use table::{Approval, ScheduleRow, ScheduleState, ScheduledFlow};
 pub use tick::{AdmittedFire, DroppedFire, Planned, PlannedFire, fire_trigger_id};
 
-use crate::admission::{Admission, AdmitContext};
-use crate::error::{CoreError, Result};
-use crate::hooks::{NoHooks, Step};
+use crate::admission::Admission;
+use crate::error::Result;
+
 use crate::rate::RateLimits;
 use crate::store::Store;
 
@@ -97,22 +97,22 @@ impl TickReport {
 
 /// The scheduler over one store.
 pub struct Scheduler {
-    staged_runtime: Option<crate::Runtime>,
+    runtime: crate::Runtime,
     store: Arc<Store>,
     clock: Arc<dyn Clock>,
     config: SchedulerConfig,
-    hooks: Arc<dyn TickHooks>,
+
     limits: AdmitLimits,
 }
 
 impl Scheduler {
-    pub fn new(store: Arc<Store>, clock: Arc<dyn Clock>, config: SchedulerConfig) -> Self {
+    pub fn new(runtime: crate::Runtime, clock: Arc<dyn Clock>, config: SchedulerConfig) -> Self {
+        let store = runtime.shared.store.clone();
         Self {
-            staged_runtime: None,
+            runtime,
             store,
             clock,
             config,
-            hooks: Arc::new(NoHooks),
             limits: AdmitLimits::default(),
         }
     }
@@ -123,35 +123,12 @@ impl Scheduler {
         self
     }
 
-    pub(crate) fn with_staged_runtime(mut self, runtime: crate::Runtime) -> Self {
-        self.staged_runtime = Some(runtime);
-        self
-    }
-
-    /// The same scheduler, asking `hooks` at every commit boundary of a tick
-    /// whether to carry on or to stop as if the process had died there.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_hooks(mut self, hooks: Arc<dyn TickHooks>) -> Self {
-        self.hooks = hooks;
-        self
-    }
-
     pub fn store(&self) -> &Store {
         &self.store
     }
 
     pub fn now(&self) -> Timestamp {
         self.clock.now()
-    }
-
-    fn at(&self, point: TickPoint) -> Result<()> {
-        match self.hooks.at(&point) {
-            Step::Continue => Ok(()),
-            Step::Crash => {
-                self.store.cut();
-                Err(CoreError::Cut)
-            }
-        }
     }
 
     pub fn schedule(&self, flow_id: &str) -> Result<Option<ScheduleRow>> {
@@ -172,91 +149,8 @@ impl Scheduler {
         self.tick_at(self.now())
     }
 
-    /// Plans every active schedule due at `now` and admits every planned
-    /// fire. Fires left planned by an interrupted earlier tick are admitted
-    /// first, so they keep their place ahead of newer ones. Ticking again
-    /// with the same `now` admits nothing new.
+    /// Plans and admits the tick in the log-backed admission batch.
     pub fn tick_at(&self, now: Timestamp) -> Result<TickReport> {
-        if let Some(runtime) = &self.staged_runtime {
-            return runtime.staged_tick_at(now, &self.config, &self.limits);
-        }
-        self.store
-            .write(|tx| crate::templates::expire_schedules(tx, now.as_millisecond()))?;
-        let mut report = TickReport::default();
-        // While admission drains, planning still runs: fires are decided
-        // when they fall due (so they count as on time) and wait in the
-        // planned fires until admission resumes.
-        self.admit_planned(now, &mut report.admitted)?;
-        let due = self.store.read(|c| tick::due_flows(c, now))?;
-        for flow_id in due {
-            let planned = self.store.write(|tx| {
-                tx.execute_batch("SAVEPOINT schedule_planning")?;
-                match tick::plan_flow(tx, &flow_id, now, &self.config) {
-                    Ok(planned) => {
-                        tx.execute_batch("RELEASE schedule_planning")?;
-                        Ok(planned)
-                    }
-                    Err(error) => {
-                        tx.execute_batch("ROLLBACK TO schedule_planning; RELEASE schedule_planning")?;
-                        let CoreError::Corrupt(detail) = error else { return Err(error); };
-                        // Planning found stored schedule data this build cannot
-                        // use: a spec that no longer compiles, a version or due
-                        // time out of range, a scan that contradicts itself.
-                        // Disable only this flow's schedule and record why, so
-                        // one bad row cannot stop every other flow from being
-                        // planned on each tick. The row was read inside this
-                        // same immediate write transaction, so no other writer
-                        // can have replaced it since: the schedule disabled is
-                        // the one found bad, never a newer approved one.
-                        tx.execute("UPDATE schedules SET state='disabled', updated_at=?2 WHERE flow_id=?1", rusqlite::params![flow_id, now.as_millisecond()])?;
-                        tx.execute("INSERT INTO audit(at,actor,action,detail) VALUES (?1,'runtime','schedule.corrupt',?2)", rusqlite::params![now.as_millisecond(), serde_json::json!({"flow_id":flow_id,"error":detail}).to_string()])?;
-                        Ok(None)
-                    }
-                }
-            })?;
-            if let Some(planned) = planned {
-                report.planned.push(planned);
-                self.at(TickPoint::Planned {
-                    flow_id: flow_id.clone(),
-                })?;
-            }
-        }
-        self.admit_planned(now, &mut report.admitted)?;
-        report.waiting = self.store.read(tick::planned_count)?;
-        Ok(report)
-    }
-
-    /// Admits planned fires oldest first, one commit each, until none is
-    /// left or admission is draining. A waiting epoch change blocks only its
-    /// own flow for this pass; the next pass checks that flow again.
-    fn admit_planned(&self, now: Timestamp, out: &mut Vec<AdmittedFire>) -> Result<()> {
-        let store_id = self.store.store_id().to_owned();
-        let ctx = AdmitContext {
-            now_ms: now.as_millisecond(),
-            rate: self.limits.rate,
-            default_deadline_ms: self.limits.default_deadline_ms,
-        };
-        let mut blocked = std::collections::BTreeSet::new();
-        loop {
-            let Some(fire) = self
-                .store
-                .write(|tx| tick::admit_next_unblocked(tx, &store_id, &ctx, &blocked))?
-            else {
-                return Ok(());
-            };
-            if fire.admission == Admission::Draining {
-                return Ok(());
-            }
-            if fire.admission == Admission::StateBusy {
-                blocked.insert(fire.flow_id);
-                continue;
-            }
-            let point = TickPoint::Admitted {
-                flow_id: fire.flow_id.clone(),
-                trigger_id: fire.trigger_id.clone(),
-            };
-            out.push(fire);
-            self.at(point)?;
-        }
+        self.runtime.staged_tick_at(now, &self.config, &self.limits)
     }
 }

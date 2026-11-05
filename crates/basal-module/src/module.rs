@@ -86,6 +86,12 @@ pub struct Module {
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 
+pub(crate) struct PreparedStore {
+    store: Arc<Store>,
+    recovered: Arc<basal_core::run_host::RecoveredHosts>,
+    hooks: Arc<dyn basal_core::Hooks>,
+}
+
 impl Module {
     /// Revoke flow execution before any transport closure or child kill can
     /// manufacture a failed activation or a rejected provider result.
@@ -138,21 +144,56 @@ impl Module {
         hosts: Hosts,
         spawner: Arc<dyn Spawn>,
     ) -> Result<Self, String> {
-        Self::start_with_store(config, hosts, spawner, |_| Ok(()))
+        Self::start_with_store(config, hosts, spawner, |_, _| Ok(()))
     }
 
     /// Prepare the store, orphan recovery, scheduler and scratch directory
     /// before binding adapters. Bind before attaching completion sinks: a host
     /// can poll saved calls immediately when attached. A preparation failure
     /// therefore cannot retain an adapter's writer lease or start pool workers.
+    pub(crate) fn prepare(
+        config: &ModuleConfig,
+        hooks: Arc<dyn basal_core::Hooks>,
+    ) -> Result<PreparedStore, String> {
+        let store = Arc::new(config.open_store()?);
+        let recovered = Runtime::recover_hosts(store.clone(), hooks.clone(), &config.runtime)
+            .map_err(|e| format!("migrating/recovering flow runs: {e}"))?;
+        Ok(PreparedStore {
+            store,
+            recovered,
+            hooks,
+        })
+    }
+
     pub fn start_with_store(
         config: ModuleConfig,
         hosts: Hosts,
         spawner: Arc<dyn Spawn>,
-        initialize: impl FnOnce(Arc<Store>) -> Result<(), String>,
+        initialize: impl FnOnce(
+            Arc<Store>,
+            Arc<basal_core::run_host::RecoveredHosts>,
+        ) -> Result<(), String>,
     ) -> Result<Self, String> {
-        let store = config.open_store()?;
-        let store = Arc::new(store);
+        let prepared = Self::prepare(&config, hosts.hooks.clone())?;
+        Self::start_prepared(config, hosts, spawner, prepared, initialize)
+    }
+
+    pub(crate) fn start_prepared(
+        config: ModuleConfig,
+        mut hosts: Hosts,
+        spawner: Arc<dyn Spawn>,
+        prepared: PreparedStore,
+        initialize: impl FnOnce(
+            Arc<Store>,
+            Arc<basal_core::run_host::RecoveredHosts>,
+        ) -> Result<(), String>,
+    ) -> Result<Self, String> {
+        let PreparedStore {
+            store,
+            recovered,
+            hooks,
+        } = prepared;
+        hosts.hooks = hooks;
         let runtime_config = Config {
             auto_resume: false,
             ..config.runtime
@@ -173,32 +214,14 @@ impl Module {
             clock,
             Arc::new(Metrics::default()),
         );
-        // No runtime or completion sink exists yet. Recovering orphan claims
-        // needs only the writer lease, and cannot call an unbound adapter.
-        let recovered = store
-            .write(basal_core::runs::requeue_orphans)
-            .map_err(|e| format!("recovering runs: {e}"))?;
-        if !recovered.is_empty() {
-            tracing::info!(target: "engine", "recovered {} runs left running", recovered.len());
-        }
-        let default_deadline_ms = i64::try_from(runtime_config.limits.default_deadline.as_millis())
-            .map_err(|_| "building the scheduler: default deadline too long".to_owned())?;
-        let scheduler = basal_core::schedule::Scheduler::new(
-            store.clone(),
-            Arc::new(runtime_config.clock.clone()),
-            runtime_config.schedule.clone(),
-        )
-        .with_limits(basal_core::schedule::AdmitLimits {
-            rate: runtime_config.rate,
-            default_deadline_ms,
-        });
+
         std::fs::create_dir_all(&config.dry_run.scratch_root).map_err(|e| {
             format!(
                 "creating the dry-run directory {}: {e}",
                 config.dry_run.scratch_root.display()
             )
         })?;
-        initialize(store.clone())?;
+        initialize(store.clone(), recovered.clone())?;
         let codemode = crate::codemode::Codemode::new(
             store.clone(),
             &hosts,
@@ -206,14 +229,20 @@ impl Module {
             &runtime_config,
         )
         .map_err(|error| format!("recovering codemode runs: {error}"))?;
-        let rt = Runtime::new(
-            store,
+        let rt = Runtime::new_staged(
+            recovered,
             hosts.host.clone(),
             hosts.catalog.clone(),
             hosts.hooks,
             None,
             runtime_config.clone(),
-        );
+        )
+        .map_err(|e| format!("configuring recovered flow runtime: {e}"))?;
+        rt.recover()
+            .map_err(|e| format!("requeueing recovered flow runs: {e}"))?;
+        let scheduler = rt
+            .scheduler()
+            .map_err(|e| format!("building scheduler: {e}"))?;
         let engine = Engine::with_scheduler(
             rt.clone(),
             pool.clone(),

@@ -665,14 +665,17 @@ impl crate::Runtime {
 
     pub fn end_instance(&self, flow_id: &str) -> Result<Value, TemplateError> {
         let now = self.config().clock.now_ms();
+        let mut targets=Vec::new();
         let result = self.store().write(|tx| {
             if !is_instance(tx, flow_id)? {
                 return Ok(None);
             }
             let ended = end(tx, flow_id, now)?;
+            targets=crate::run_removal::capture(tx,flow_id,now)?;
             Ok(Some(json!({"flow_id":flow_id,"ended":ended})))
         })?;
         self.shared.signal.bump();
+        if result.is_some(){self.removal_captured(&targets)?;self.resume_run_removals()?;self.flush_refusals()?;}
         result.ok_or_else(|| refused("package_not_template", Value::Null))
     }
 }
@@ -697,6 +700,7 @@ pub(crate) fn end(tx: &rusqlite::Transaction<'_>, flow_id: &str, now: i64) -> cr
     expire_schedules(tx, now)?;
     let changed = tx.execute("UPDATE flows SET removed=1 WHERE flow_id=?1 AND removed=0 AND EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?1)", [flow_id])?;
     if changed > 0 {
+        crate::run_removal::capture(tx,flow_id,now)?;
         crate::template_events::enqueue(tx, flow_id, "flow_instance_ended", now)?;
         let now = jiff::Timestamp::from_millisecond(now)
             .map_err(|e| crate::CoreError::Invalid(e.to_string()))?;
@@ -705,16 +709,6 @@ pub(crate) fn end(tx: &rusqlite::Transaction<'_>, flow_id: &str, now: i64) -> cr
     Ok(changed > 0)
 }
 
-/// All terminal run transitions share this hook, so failure, cancellation and
-/// successful completion end one-shots and journaled self-end requests alike.
-pub(crate) fn finish_run(tx: &rusqlite::Transaction<'_>, run_id: &str) -> crate::Result<()> {
-    use rusqlite::OptionalExtension;
-    let flow = tx.query_row("SELECT r.flow_id,r.ended_at FROM runs r JOIN template_instances t USING(flow_id) WHERE r.run_id=?1 AND r.end_instance=1 AND r.ended_at IS NOT NULL AND r.template_incarnation=t.incarnation", [run_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).optional()?;
-    if let Some((flow, at)) = flow {
-        end(tx, &flow, at)?;
-    }
-    Ok(())
-}
 
 pub(crate) fn expire_schedules(tx: &rusqlite::Transaction<'_>, now: i64) -> crate::Result<()> {
     crate::template_events::prune(tx, now)?;
@@ -734,35 +728,6 @@ pub(crate) fn expire_schedules(tx: &rusqlite::Transaction<'_>, now: i64) -> crat
     Ok(())
 }
 
-/// This local effect and its journal outcome commit together. Ending is deferred
-/// until the requesting run reaches a terminal state, including after replay.
-pub(crate) fn request_end(
-    tx: &rusqlite::Transaction<'_>,
-    run_id: &str,
-    args: &basal_proto::JsonText,
-) -> crate::Result<basal_host::HostOutcome> {
-    let value: Value = serde_json::from_str(args.as_str())
-        .map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
-    if !value.as_object().is_some_and(|object| object.is_empty()) {
-        return Ok(crate::kv::rejection(
-            "invalid_arguments",
-            "instance.end takes no arguments",
-        ));
-    }
-    let changed = tx.execute(
-        "UPDATE runs SET end_instance=1 WHERE run_id=?1 AND template_incarnation IS NOT NULL",
-        [run_id],
-    )?;
-    if changed == 0 {
-        return Ok(crate::kv::rejection(
-            "not_a_template_instance",
-            "only template instances may end themselves",
-        ));
-    }
-    Ok(basal_host::HostOutcome::fulfilled(
-        basal_proto::JsonText::new("true").expect("small JSON"),
-    ))
-}
 
 struct UniqueJson(Value);
 impl<'de> Deserialize<'de> for UniqueJson {

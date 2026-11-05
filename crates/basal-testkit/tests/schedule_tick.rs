@@ -76,19 +76,17 @@ fn open(
     schedule: SchedulerConfig,
 ) -> (Runtime, Scheduler) {
     let store = Store::open(dir.join("basal.db"), Durability::throwaway()).expect("open");
-    let rt = Runtime::new(
-        Arc::new(store),
-        Arc::new(MockHost::new()),
-        Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            clock: clock.clone(),
-            schedule,
-            install_gate: basal_core::InstallGate::Off,
-            ..Config::default()
-        },
-    );
+    let rt = { let runtime=Runtime::new(Arc::new(store),
+    Arc::new(MockHost::new()),
+    Arc::new(MockCatalog::standard()),
+    Arc::new(NoHooks),
+    None,
+    Config {
+        clock: clock.clone(),
+        schedule,
+        install_gate: basal_core::InstallGate::Off,
+        ..Config::default()
+    },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
     let sched = rt.scheduler().expect("scheduler");
     let sched = match hooks {
         Some(h) => sched.with_hooks(h),

@@ -107,7 +107,7 @@ impl TerminalBuilder<Records> for Terminal {
         for call in deferred {
             let deferred = call.deferred.expect("filtered deferral");
             let outcome =
-                serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&deferred.cause)
+                crate::refusal_receipt::decode_refusal(&deferred.cause)
                     .map(|r| r.outcome())
                     .unwrap_or_else(|_| crate::kv::rejection("route_unavailable", &deferred.cause));
             records.append(
@@ -220,6 +220,7 @@ impl TerminalBuilder<Records> for Terminal {
         records.sync_terminal()?;
         Ok(Box::new(Projection {
             summary,
+            incarnation:self.live.template_incarnation,
             state,
             budgets: self.budgets.clone(),
             effects,
@@ -229,6 +230,7 @@ impl TerminalBuilder<Records> for Terminal {
 }
 
 struct Projection {
+    incarnation:Option<i64>,
     summary: RunHistory,
     state: State,
     budgets: Budgets,
@@ -242,6 +244,9 @@ impl TerminalWrite for Projection {
         history.commit_seq = sql::next_commit_seq(tx)?;
         sql::finish_live(tx, &history)?;
         let id = &history.run_id;
+        // A re-created template owns a new state domain. Ordinary closes,
+        // including failure/cancellation in the same incarnation, keep overlays.
+        if crate::run_removal::same_incarnation(tx,&history.flow_id,self.incarnation)? {
         let mut effects: Vec<_> = self
             .state
             .calls
@@ -281,6 +286,7 @@ impl TerminalWrite for Projection {
                     )?;
                 }
             }
+        }
         }
         accounting::fold(
             tx,

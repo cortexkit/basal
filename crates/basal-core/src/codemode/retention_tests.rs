@@ -52,25 +52,23 @@ fn fixture(now: i64) -> Fixture {
     ));
     let store = Store::open(dir.join("core.db"), crate::Durability::throwaway()).unwrap();
     let clock = Clock::manual(now);
-    let rt = Runtime::new(
-        Arc::new(store),
-        Arc::new(NoDispatch),
-        Arc::new(basal_host::catalog::MockCatalog::new()),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            clock: clock.clone(),
-            install_gate: InstallGate::Off,
-            // Flow retention runs once a week here, so the engine's next
-            // wake shows the codemode horizon rather than the flow
-            // retention interval.
-            retention: crate::retention::RetentionConfig {
-                interval: std::time::Duration::from_secs(7 * 24 * 3600),
-                ..Default::default()
-            },
-            ..Config::default()
+    let rt = Runtime::new(Arc::new(store),
+    Arc::new(NoDispatch),
+    Arc::new(basal_host::catalog::MockCatalog::new()),
+    Arc::new(NoHooks),
+    None,
+    Config {
+        clock: clock.clone(),
+        install_gate: InstallGate::Off,
+        // Flow retention runs once a week here, so the engine's next
+        // wake shows the codemode horizon rather than the flow
+        // retention interval.
+        retention: crate::retention::RetentionConfig {
+            interval: std::time::Duration::from_secs(7 * 24 * 3600),
+            ..Default::default()
         },
-    );
+        ..Config::default()
+    },).expect("runtime startup");
     Fixture { rt, clock, dir }
 }
 

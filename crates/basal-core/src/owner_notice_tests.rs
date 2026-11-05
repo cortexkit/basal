@@ -129,14 +129,12 @@ fn restart(f: &mut Fixture) {
     let mut scratch = Fixture::new(1000);
     std::mem::swap(&mut scratch.rt, &mut f.rt);
     drop(scratch);
-    f.rt = Runtime::new(
-        Arc::new(Store::open(f.path.join("basal.db"), Durability::throwaway()).unwrap()),
-        f.source.clone(),
-        Arc::new(f.catalog.clone()),
-        Arc::new(crate::NoHooks),
-        None,
-        f.rt.config().clone(),
-    );
+    f.rt = Runtime::new(Arc::new(Store::open(f.path.join("basal.db"), Durability::throwaway()).unwrap()),
+    f.source.clone(),
+    Arc::new(f.catalog.clone()),
+    Arc::new(crate::NoHooks),
+    None,
+    f.rt.config().clone(),).expect("runtime startup");
 }
 
 #[test]
@@ -441,7 +439,7 @@ fn auto_disabled_without_an_admitted_run_is_not_enqueued() {
     let logs = CapturedLogs::default();
     let _guard = tracing::subscriber::set_default(logs.clone());
     f.rt.store()
-        .write(|tx| crate::owner_notice::auto_disabled_legacy(tx, "flow", 1000))
+        .write(|tx| crate::owner_notice::auto_disabled_committed(tx, "flow", 1000))
         .unwrap();
     assert!(f.rt.outbox().unwrap().is_empty());
     assert!(

@@ -73,7 +73,7 @@ struct CutAtSecondCall;
 
 impl Hooks for CutAtSecondCall {
     fn at(&self, _run_id: &str, boundary: &Boundary) -> Step {
-        if *boundary == (Boundary::CallCommitted { position: 1 }) {
+        if *boundary == (Boundary::DriverSynced { position: 1 }) {
             Step::Crash
         } else {
             Step::Continue

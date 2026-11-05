@@ -39,20 +39,18 @@ fn production_retention_catches_up_full_batches_without_waiting_a_whole_interval
             std::process::id()
         )));
         let clock = Clock::manual(now);
-        let rt = Runtime::new(
-            Arc::new(
-                Store::open(temp.0.join("core.db"), basal_core::Durability::throwaway()).unwrap(),
-            ),
-            Arc::new(NoDispatch),
-            Arc::new(basal_host::catalog::MockCatalog::new()),
-            Arc::new(NoHooks),
-            None,
-            Config {
-                clock: clock.clone(),
-                install_gate: InstallGate::Off,
-                ..Config::default()
-            },
-        );
+        let rt = Runtime::new(Arc::new(
+            Store::open(temp.0.join("core.db"), basal_core::Durability::throwaway()).unwrap(),
+        ),
+        Arc::new(NoDispatch),
+        Arc::new(basal_host::catalog::MockCatalog::new()),
+        Arc::new(NoHooks),
+        None,
+        Config {
+            clock: clock.clone(),
+            install_gate: InstallGate::Off,
+            ..Config::default()
+        },).expect("runtime startup");
         rt.store().write(|tx| {
             tx.execute("INSERT INTO flows(flow_id,created_at) VALUES ('flow',0)", [])?;
             let snapshot = basal_core::runs::snapshot(tx,"flow",None,&[0;32],"return 1;","{}")?;

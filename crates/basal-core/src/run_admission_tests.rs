@@ -75,18 +75,16 @@ impl Fixture {
                 body: basal_host::EventBody::Inline,
             },
         );
-        let rt = Runtime::new(
-            store.clone(),
-            Arc::new(MockHost::new()),
-            Arc::new(catalog),
-            Arc::new(NoHooks),
-            None,
-            Config {
-                clock: Clock::manual(1000),
-                install_gate: InstallGate::Off,
-                ..Config::default()
-            },
-        );
+        let rt = Runtime::new(store.clone(),
+        Arc::new(MockHost::new()),
+        Arc::new(catalog),
+        Arc::new(NoHooks),
+        None,
+        Config {
+            clock: Clock::manual(1000),
+            install_gate: InstallGate::Off,
+            ..Config::default()
+        },).expect("runtime startup");
         Self {
             store,
             rt,

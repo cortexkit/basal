@@ -1,8 +1,8 @@
 use crate as basal_core;
-use basal_core::admission::{self, AdmitContext};
+use basal_core::admission::AdmitContext;
 use basal_core::error::CoreError;
 use basal_core::manifest::Manifest;
-use basal_core::{Admission, Clock, Config, Durability, InstallGate, NoHooks, Runtime, Store};
+use basal_core::{Admission, Clock, Config, Durability, InstallGate, NoHooks, Runtime, RunState, Store};
 use basal_host::{MockCatalog, mock::MockHost};
 use basal_proto::JsonText;
 use serde_json::{Value, json};
@@ -26,18 +26,16 @@ fn fixture(tag: &str) -> Fixture {
     fixture_at(dir)
 }
 fn fixture_at(dir: std::path::PathBuf) -> Fixture {
-    let rt = Runtime::new(
-        Arc::new(Store::open(dir.join("core.db"), Durability::throwaway()).unwrap()),
-        Arc::new(MockHost::new()),
-        Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            clock: Clock::manual(1000),
-            install_gate: InstallGate::Off,
-            ..Config::default()
-        },
-    );
+    let rt = Runtime::new(Arc::new(Store::open(dir.join("core.db"), Durability::throwaway()).unwrap()),
+    Arc::new(MockHost::new()),
+    Arc::new(MockCatalog::standard()),
+    Arc::new(NoHooks),
+    None,
+    Config {
+        clock: Clock::manual(1000),
+        install_gate: InstallGate::Off,
+        ..Config::default()
+    },).expect("runtime startup");
     Fixture {
         rt,
         dir,
@@ -95,21 +93,7 @@ fn admit(f: &Fixture, id: &str, trigger: &str) -> String {
         other => panic!("not admitted: {other:?}"),
     }
 }
-fn finish(f: &Fixture, run: &str) {
-    f.rt.store()
-        .write(|tx| {
-            let lease = basal_core::runs::claim(tx, run, "worker", 1000)?;
-            basal_core::runs::exit(
-                tx,
-                &lease,
-                &basal_core::runs::Exit::Succeeded {
-                    value: "null".into(),
-                },
-            )?;
-            Ok(())
-        })
-        .unwrap();
-}
+fn finish(f:&Fixture,run:&str){f.rt.fixture_finish(run,RunState::Succeeded,Some(json!(1)),None).unwrap();}
 
 #[test]
 fn manifest_epoch_defaults_is_bounded_and_round_trips() {
@@ -169,9 +153,8 @@ fn epoch_reset_commits_with_admission_and_rolls_back_with_it() {
     };
     let result: basal_core::Result<()> = f.rt.store().write(|tx| {
         assert!(matches!(
-            admission::admit_current(
+            f.rt.fixture_rollback_admission(
                 tx,
-                f.rt.store().store_id(),
                 "flow",
                 "rollback",
                 JsonText::null(),
@@ -372,64 +355,14 @@ fn epoch_migration_defaults_existing_kv_to_one_without_changing_it() {
 }
 
 #[test]
-fn epoch_change_waits_for_old_runs_and_fences_late_writes() {
-    use basal_core::{journal, kv, runs};
-    use basal_proto::{CallKind, Primitive};
-    let f = fixture("old-writes");
-    approve(&f, 1, None);
-    let old = admit(&f, "flow", "old");
-    approve(&f, 2, Some(2));
-    assert_eq!(
-        f.rt.admit_trigger("flow", "new", JsonText::null()).unwrap(),
-        Admission::StateBusy,
-        "pending old work also prevents a reset"
-    );
-    let lease =
-        f.rt.store()
-            .write(|tx| runs::claim(tx, &old, "worker", 1000))
-            .unwrap();
-    assert_eq!(f.rt.run(&old).unwrap().flow_version, Some(1));
-    assert_eq!(
-        f.rt.admit_trigger("flow", "new", JsonText::null()).unwrap(),
-        Admission::StateBusy
-    );
-    let kind = CallKind::Primitive(Primitive::KvSet);
-    let args = JsonText::new(r#"{"key":"late","value":99}"#).unwrap();
-    let call = journal::NewCall {
-        position: 0,
-        kind: &kind,
-        args: &args,
-        class: basal_core::model::StoredClass::Local,
-        request: None,
-    };
-    f.rt.store()
-        .write(|tx| {
-            journal::insert_call(tx, &lease, "flow", &call)?;
-            let outcome = kv::apply(tx, "flow", &kind, &args, &f.rt.config().kv)?;
-            journal::accept_outcome(tx, &old, 0, None, &outcome, journal::Source::Local)?;
-            journal::release_next(tx, &lease, &[0])?;
-            runs::exit(tx, &lease, &runs::Exit::Succeeded { value: "99".into() })?;
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(state(&f, "flow"), (1, 1), "old run writes after approval");
-    admit(&f, "flow", "new");
-    assert_eq!(state(&f, "flow"), (2, 0));
-    let late = f.rt.store().write(|tx| {
-        journal::insert_call(
-            tx,
-            &lease,
-            "flow",
-            &journal::NewCall {
-                position: 1,
-                ..call
-            },
-        )?;
-        kv::apply(tx, "flow", &kind, &args, &f.rt.config().kv)?;
-        Ok(())
-    });
-    assert!(matches!(late, Err(CoreError::OwnerLost { .. })));
-    assert_eq!(state(&f, "flow"), (2, 0));
+fn epoch_change_waits_for_old_runs_and_fences_late_writes(){
+    use basal_proto::{CallKind,Primitive,HostCall};
+    let f=fixture("old-writes");approve(&f,1,None);let old=admit(&f,"flow","old");approve(&f,2,Some(2));assert_eq!(f.rt.admit_trigger("flow","new",JsonText::null()).unwrap(),Admission::StateBusy,"pending work prevents reset");
+    let activation=f.rt.fixture_activation(&old).unwrap();assert_eq!(f.rt.run(&old).unwrap().flow_version,Some(1));assert_eq!(f.rt.admit_trigger("flow","new",JsonText::null()).unwrap(),Admission::StateBusy);
+    let call=HostCall{position:0,kind:CallKind::Primitive(Primitive::KvSet),args:JsonText::new(r#"{"key":"late","value":99}"#).unwrap()};
+    assert!(matches!(activation.issue(call.clone()).unwrap(),crate::run_driver::Issued::Pending));assert!(activation.release(&[0]).unwrap().is_some());f.rt.fixture_finish(&old,RunState::Succeeded,Some(json!(99)),None).unwrap();
+    assert_eq!(state(&f,"flow"),(1,1),"old run's overlay commits before slot release");admit(&f,"flow","new");assert_eq!(state(&f,"flow"),(2,0));
+    let late=activation.issue(HostCall{position:1,..call});assert!(matches!(late,Err(CoreError::OwnerLost{..})));assert_eq!(state(&f,"flow"),(2,0));
 }
 
 #[test]

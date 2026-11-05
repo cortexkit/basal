@@ -56,10 +56,6 @@ pub struct Usage {
     pub cached_input_tokens: u64,
 }
 
-fn to_i64(n: u64) -> Result<i64> {
-    i64::try_from(n).map_err(|_| CoreError::Invalid(format!("{n} tokens")))
-}
-
 use crate::model::to_u64;
 
 /// A model call ready to journal: the exact request to send, and the
@@ -170,74 +166,6 @@ pub fn window_start(now_ms: i64, window_ms: i64) -> i64 {
         return now_ms;
     }
     now_ms.div_euclid(window_ms) * window_ms
-}
-
-/// One reservation to make.
-#[derive(Debug, Clone)]
-pub(crate) struct Reservation<'a> {
-    pub send_id: &'a str,
-    pub flow_id: &'a str,
-    pub run_id: &'a str,
-    pub position: u64,
-    pub window_ms: i64,
-    pub cap: u64,
-    pub amount: u64,
-    pub now_ms: i64,
-}
-
-/// Reserves `amount` against the flow's current window, or refuses when
-/// what the window already counts (outstanding reservations included) plus
-/// `amount` exceeds the cap. Runs in the transaction that journals the
-/// call, so the check and the reservation are one atomic step.
-pub(crate) fn reserve(
-    tx: &Transaction,
-    r: &Reservation<'_>,
-) -> Result<std::result::Result<(), Refusal>> {
-    let start = window_start(r.now_ms, r.window_ms);
-    tx.execute(
-        "INSERT OR IGNORE INTO token_windows (flow_id, window_ms, window_start) VALUES (?1, ?2, ?3)",
-        params![r.flow_id, r.window_ms, start],
-    )?;
-    let used: i64 = tx.query_row(
-        "SELECT reserved + input_tokens + cache_write_tokens + output_tokens + unreported_tokens \
-         FROM token_windows WHERE flow_id = ?1 AND window_ms = ?2 AND window_start = ?3",
-        params![r.flow_id, r.window_ms, start],
-        |row| row.get(0),
-    )?;
-    let used = to_u64(used, "window usage")?;
-    if used.saturating_add(r.amount) > r.cap {
-        return Ok(Err(Refusal::new(
-            codes::TOKEN_CAP,
-            format!(
-                "the call needs up to {} tokens and the window has {} of {} left",
-                r.amount,
-                r.cap.saturating_sub(used),
-                r.cap
-            ),
-        )));
-    }
-    let amount = to_i64(r.amount)?;
-    tx.execute(
-        "UPDATE token_windows SET reserved = reserved + ?4 \
-         WHERE flow_id = ?1 AND window_ms = ?2 AND window_start = ?3",
-        params![r.flow_id, r.window_ms, start, amount],
-    )?;
-    let position = crate::model::position_i64(r.position)?;
-    tx.execute(
-        "INSERT INTO token_ledger (send_id, flow_id, run_id, position, window_ms, window_start, \
-         reserved, state, reserved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'reserved', ?8)",
-        params![
-            r.send_id,
-            r.flow_id,
-            r.run_id,
-            position,
-            r.window_ms,
-            start,
-            amount,
-            r.now_ms
-        ],
-    )?;
-    Ok(Ok(()))
 }
 
 /// What a settled call reported.

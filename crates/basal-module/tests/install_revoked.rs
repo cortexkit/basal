@@ -131,7 +131,7 @@ fn push_mid_script_stops_the_next_call_and_health_does_not_count_a_failure() {
 
 #[test]
 fn sent_call_settles_before_the_next_call_is_refused() {
-    let (f, hook) = fixture("push-sent-call", Boundary::HostAnswered { position: 0 });
+    let (f, hook) = fixture("push-sent-call", Boundary::DriverDispatched { position: 0 });
     let script =
         "await ops.call('mock','send',{value:7}); return await ops.call('mock','echo',{});";
     let m = manifest("sent-flow");
@@ -157,7 +157,7 @@ fn sent_call_settles_before_the_next_call_is_refused() {
 
 #[test]
 fn push_between_journal_and_send_refuses_the_dispatch_attempt() {
-    let (f, hook) = fixture("push-before-send", Boundary::CallCommitted { position: 0 });
+    let (f, hook) = fixture("push-before-send", Boundary::DriverSynced { position: 0 });
     let script = "return await ops.call('mock','echo',{});";
     let m = manifest("unsent-flow");
     common::install_approved(&f, &Caller::Operator, script, &m);

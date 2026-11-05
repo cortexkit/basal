@@ -225,7 +225,7 @@ fn withdrawal_journals_before_send_and_replays_identical_intent_after_cut() {
     );
     let consent = Arc::new(CoreConsent::new(fake.clone()));
     let probe = Arc::new(Probe::crash_at(
-        Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+        Point::parse("DriverDispatched { position: 0 }#1").unwrap(),
     ));
     let mut dependencies = hosts(fake.clone(), consent.clone());
     dependencies.hooks = probe.clone();

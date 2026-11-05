@@ -1,90 +1,22 @@
-use super::*;
+
 
 #[test]
-fn next_wake_includes_the_install_gate_retry() {
-    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
-    let rt = &fixture.rt;
-    rt.store().write(|tx| {
-        tx.execute("INSERT INTO flows(flow_id,created_at) VALUES ('waiting',0)", [])?;
-        crate::runs::snapshot(tx,"waiting",None,&[0;32],"return 1","{}")?;
-            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at) VALUES ('waiting','waiting','trigger',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='waiting'),zeroblob(32),'pending',0)", [])?;
-        Ok(())
-    }).unwrap();
-    *rt.shared.retention_next.lock().unwrap() = Some(i64::MAX);
-    rt.back_off("waiting").unwrap();
-    let at = rt.shared.gate_backoff.lock().unwrap()["waiting"].retry_at_ms;
-    assert_eq!(rt.next_wake_at(None).unwrap(), Some(at));
+fn next_wake_includes_the_install_gate_retry(){
+ let fixture=crate::runtime_authorization_regressions::TestRuntime::new();let rt=&fixture.rt;
+ rt.store().write(|tx|{tx.execute("INSERT INTO flows(flow_id,created_at) VALUES('waiting',0)",[])?;Ok(())}).unwrap();
+ rt.fixture_run("waiting","waiting",1,"return 1","{}",crate::run_records::State::new(0)).unwrap();
+ *rt.shared.retention_next.lock().unwrap()=Some(i64::MAX);rt.back_off("waiting").unwrap();
+ let at=rt.shared.gate_backoff.lock().unwrap()["waiting"].retry_at_ms;assert_eq!(rt.next_wake_at(None).unwrap(),Some(at));
 }
 
 #[test]
-fn new_gate_backoffs_reap_terminal_and_pruned_runs() {
-    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
-    let rt = &fixture.rt;
-    for id in ["done", "gone", "waiting"] {
-        rt.store().write(|tx| {
-            crate::runs::snapshot(tx,"f",None,&[0;32],"return 1","{}")?;
-            tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at) VALUES (?1,'f',?1,1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='f'),zeroblob(32),'pending',1)", [id])?;
-            Ok(())
-        }).unwrap();
-        rt.back_off(id).unwrap();
-    }
-    rt.store()
-        .write(|tx| {
-            tx.execute("UPDATE runs SET state='cancelled' WHERE run_id='done'", [])?;
-            tx.execute("DELETE FROM runs WHERE run_id='gone'", [])?;
-            Ok(())
-        })
-        .unwrap();
-    rt.back_off("waiting").unwrap();
-    let table = rt.shared.gate_backoff.lock().unwrap();
-    assert_eq!(table.len(), 1);
-    assert_eq!(table["waiting"].failures, 2);
+fn new_gate_backoffs_reap_terminal_and_pruned_runs(){
+ let fixture=crate::runtime_authorization_regressions::TestRuntime::new();let rt=&fixture.rt;
+ rt.store().write(|tx|{tx.execute("INSERT INTO flows(flow_id,created_at) VALUES('f',0)",[])?;Ok(())}).unwrap();
+ for id in ["done","gone","waiting"]{rt.fixture_run(id,"f",1,"return 1","{}",crate::run_records::State::new(1)).unwrap();rt.back_off(id).unwrap();}
+ for id in ["done","gone"]{rt.fixture_finish(id,crate::RunState::Cancelled,None,None).unwrap();}
+ rt.store().write(|tx|{tx.execute("DELETE FROM run_history WHERE run_id='gone'",[])?;Ok(())}).unwrap();
+ rt.back_off("waiting").unwrap();let table=rt.shared.gate_backoff.lock().unwrap();assert_eq!(table.len(),1);assert_eq!(table["waiting"].failures,2);
 }
 
-#[test]
-fn removed_instance_gate_reports_removal_not_revocation() {
-    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
-    let rt = &fixture.rt;
-    rt.store().write(|tx| {
-        tx.execute_batch("INSERT INTO flows(flow_id,package,removed,created_at) VALUES ('instance','package',1,1); INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES ('instance',0,zeroblob(32),'return 1','{}'); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,owner,generation,admitted_at) VALUES ('run','instance','trigger',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='instance'),zeroblob(32),'running','parent',1,1);")?;
-        Ok(())
-    }).unwrap();
-    let lease = Lease {
-        run_id: "run".into(),
-        owner: "parent".into(),
-        generation: 1,
-    };
-    let run = rt.store().read(|conn| runs::load(conn, "run")).unwrap();
-    let Gate::Closed(ActivationEnd::Revoked { cause, .. }) =
-        rt.check_install(&lease, &run).unwrap()
-    else {
-        panic!("removed instance activated");
-    };
-    assert_eq!(cause, RevokeCause::Removed);
-}
 
-#[test]
-fn removed_cancellation_rechecks_mark_in_its_write_transaction() {
-    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    for migration in crate::schema::MIGRATIONS {
-        conn.execute_batch(migration.statements).unwrap();
-    }
-    conn.execute_batch("INSERT INTO flows(flow_id,package,removed,created_at) VALUES ('instance','package',1,1); INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES ('instance',0,zeroblob(32),'return 1','{}'); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,owner,generation,admitted_at) VALUES ('run','instance','trigger',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='instance'),zeroblob(32),'running','parent',1,1);").unwrap();
-    let lease = Lease {
-        run_id: "run".into(),
-        owner: "parent".into(),
-        generation: 1,
-    };
-    assert!(crate::packages::removed(&conn, "instance").unwrap());
-    // The instance was read as removed above, but reconciliation restores
-    // it before the cancelling write transaction starts. That earlier read
-    // can't authorize the cancellation: the transaction must check the
-    // removed mark again and leave the run running.
-    conn.execute("UPDATE flows SET removed=0 WHERE flow_id='instance'", [])
-        .unwrap();
-    let tx = conn.transaction().unwrap();
-    assert!(!cancel_removed(&tx, &lease, "instance", "removed").unwrap());
-    assert!(lease.holds(&tx).unwrap());
-    assert_eq!(runs::state(&tx, "run").unwrap(), crate::RunState::Running);
-    tx.commit().unwrap();
-}

@@ -31,14 +31,9 @@
 
 use std::time::Duration;
 
-use basal_host::InstallStatus;
-
 use crate::error::Result;
-use crate::ids::{code_hash, hex};
-use crate::install;
-use crate::model::Run;
-use crate::runs::{self, Exit, Lease};
-use crate::runtime::{ActivationEnd, Runtime};
+
+use crate::runtime::Runtime;
 
 /// Whether activations ask core first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,35 +74,8 @@ pub(crate) struct Backoff {
     failures: u32,
 }
 
-/// What the gate decided.
-pub(crate) enum Gate {
-    /// Core stands behind the run's code: activate it.
-    Open,
-    /// Nothing is activated; the run already left `running`.
-    Closed(ActivationEnd),
-}
-
 fn millis(d: Duration) -> i64 {
     i64::try_from(d.as_millis()).unwrap_or(i64::MAX)
-}
-
-/// An earlier read is only a hint: reconciliation can clear removal before
-/// this writer is acquired. The mark and cancellation must share one transaction.
-fn cancel_removed(
-    tx: &rusqlite::Transaction,
-    lease: &Lease,
-    flow_id: &str,
-    detail: &str,
-) -> Result<bool> {
-    if !crate::packages::removed(tx, flow_id)? {
-        return Ok(false);
-    }
-    if !lease.holds(tx)? {
-        return Err(lease.lost());
-    }
-    runs::forget_claim(tx, lease)?;
-    runs::cancel(tx, &lease.run_id, detail)?;
-    Ok(true)
 }
 
 impl Runtime {
@@ -132,8 +100,10 @@ impl Runtime {
     pub(crate) fn back_off(&self, run_id: &str) -> Result<Duration> {
         let now = self.config.clock.now_ms();
         let live = self.store().read(|conn| {
-            let mut stmt = conn.prepare(if self.uses_run_log() { "SELECT run_id FROM live_runs" } else { "SELECT run_id FROM runs WHERE state IN ('pending','running','suspended','needs_reconcile')" })?;
-            let ids = stmt.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+            let mut stmt = conn.prepare("SELECT run_id FROM live_runs")?;
+            let ids = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
             Ok(ids)
         })?;
         let mut table = self
@@ -169,170 +139,6 @@ impl Runtime {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(run_id);
-    }
-
-    /// The gate for one claimed activation of `run`, held under `lease`.
-    pub(crate) fn check_install(&self, lease: &Lease, run: &Run) -> Result<Gate> {
-        if self
-            .store()
-            .read(|c| crate::packages::removed(c, &run.flow_id))?
-        {
-            let detail = "instance removed before activating".to_owned();
-            let cancelled = self
-                .store()
-                .write(|tx| cancel_removed(tx, lease, &run.flow_id, &detail))?;
-            if cancelled {
-                self.clear_backoff(&lease.run_id);
-                self.clear_event_scope_warning(&lease.run_id);
-                self.shared.signal.bump();
-                return Ok(Gate::Closed(ActivationEnd::Revoked {
-                    version: run.flow_version.unwrap_or(0),
-                    cause: RevokeCause::Removed,
-                    detail,
-                }));
-            }
-        }
-        if self.config.install_gate == InstallGate::Off {
-            return Ok(Gate::Open);
-        }
-        let flow_id = &run.flow_id;
-        let Some(version) = run.flow_version else {
-            // Admission records the version of every run; without one there
-            // is nothing to ask core about, and no answer means no activation.
-            return self.defer(lease, "the run records no flow version".into());
-        };
-        if let Some(reason) = self
-            .store()
-            .read(|c| install::revocation(c, flow_id, version))?
-        {
-            return self.refuse(lease, run, version, RevokeCause::AlreadyRevoked, reason);
-        }
-        let run_hash = hex(&code_hash(&run.script, &run.manifest));
-        let (cause, reason) = match self.shared.host.install_status(flow_id, version) {
-            Ok(InstallStatus::Active { code_hash, scope }) if code_hash == run_hash => {
-                if let Some(registered) = &scope {
-                    let previous: Option<String> = self.store().read(|c| {
-                        Ok(c.query_row(
-                            "SELECT scope_health FROM flows WHERE flow_id=?1",
-                            [flow_id],
-                            |r| r.get(0),
-                        )?)
-                    })?;
-                    if let Some(previous) = previous {
-                        let previous: serde_json::Value = serde_json::from_str(&previous)
-                            .map_err(|e| crate::error::CoreError::Corrupt(e.to_string()))?;
-                        let clears = previous["reason"] == "no_flow_scope"
-                            || (previous["reason"] == "target_flow_unsupported"
-                                && previous["provider"]
-                                    .as_str()
-                                    .is_some_and(|p| registered.targets.contains(p)));
-                        if clears {
-                            self.store().write(|tx| {
-                                tx.execute(
-                                    "UPDATE flows SET scope_health=NULL WHERE flow_id=?1",
-                                    [flow_id],
-                                )?;
-                                Ok(())
-                            })?;
-                        }
-                    }
-                }
-                self.configure_flow_version(flow_id, version, scope);
-                self.clear_backoff(&run.run_id);
-                return Ok(Gate::Open);
-            }
-            Ok(InstallStatus::Active { code_hash, .. }) => (
-                RevokeCause::HashMismatch {
-                    core: code_hash.clone(),
-                    run: run_hash.clone(),
-                },
-                format!(
-                    "core approved code hash {code_hash} for {flow_id} v{version}, \
-                     but the run holds code hash {run_hash}"
-                ),
-            ),
-            Ok(InstallStatus::Revoked { .. }) => (
-                RevokeCause::Revoked,
-                format!("core revoked {flow_id} v{version}"),
-            ),
-            Ok(InstallStatus::Unknown) => (
-                RevokeCause::Unknown,
-                format!("core holds no install of {flow_id} v{version}"),
-            ),
-            Ok(
-                InstallStatus::Pending { .. }
-                | InstallStatus::Declined { .. }
-                | InstallStatus::Expired { .. },
-            ) => (
-                RevokeCause::Unknown,
-                format!("core holds no install of {flow_id} v{version}"),
-            ),
-            Ok(InstallStatus::Rejected { .. }) => (
-                RevokeCause::Unknown,
-                format!("core holds no install of {flow_id} v{version}"),
-            ),
-            Err(e) => {
-                return self.defer(
-                    lease,
-                    format!("core gave no install status for {flow_id} v{version}: {e}"),
-                );
-            }
-        };
-        self.refuse(lease, run, version, cause, reason)
-    }
-
-    /// No answer from core: the run goes back to `pending` untouched and
-    /// waits out its backoff.
-    fn defer(&self, lease: &Lease, detail: String) -> Result<Gate> {
-        self.store().write(|tx| {
-            runs::exit(tx, lease, &Exit::Deferred)?;
-            tx.execute(
-                "UPDATE runs SET error_detail = ?2 WHERE run_id = ?1",
-                rusqlite::params![lease.run_id, detail],
-            )?;
-            Ok(())
-        })?;
-        let retry_in = self.back_off(&lease.run_id)?;
-        self.shared.signal.bump();
-        Ok(Gate::Closed(ActivationEnd::Deferred { detail, retry_in }))
-    }
-
-    /// Core does not stand behind the run's code: the version is recorded
-    /// as revoked and the run is cancelled, in one transaction.
-    fn refuse(
-        &self,
-        lease: &Lease,
-        run: &Run,
-        version: u32,
-        cause: RevokeCause,
-        reason: String,
-    ) -> Result<Gate> {
-        let now = self.config.clock.now_ms();
-        let detail = format!("cancelled before activating: {reason}");
-        self.store().write(|tx| {
-            if !lease.holds(tx)? {
-                return Err(lease.lost());
-            }
-            install::revoke(tx, &run.flow_id, version, &reason, now)?;
-            runs::forget_claim(tx, lease)?;
-            runs::cancel(tx, &lease.run_id, &detail)?;
-            crate::reconcile::audit(
-                tx,
-                install::CORE_ACTOR,
-                "cancel",
-                Some(&lease.run_id),
-                None,
-                &reason,
-            )
-        })?;
-        self.clear_backoff(&lease.run_id);
-        self.clear_event_scope_warning(&lease.run_id);
-        self.shared.signal.bump();
-        Ok(Gate::Closed(ActivationEnd::Revoked {
-            version,
-            cause,
-            detail,
-        }))
     }
 }
 

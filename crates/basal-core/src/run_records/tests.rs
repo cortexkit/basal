@@ -172,6 +172,8 @@ fn every_record_roundtrips_with_strict_frame_types() {
             cause: "not ready".into(),
             audit_at: 2,
             proven_unsent: true,
+                    refund_dispatch: true,
+                    attempt: None,
         }),
         Body::Unknown {
             position: 0,
@@ -836,6 +838,8 @@ fn lifecycle_readiness_and_refusal_state_survive_a_snapshot() {
             cause: "readiness".into(),
             audit_at: 20,
             proven_unsent: true,
+                    refund_dispatch: true,
+                    attempt: None,
         }),
     );
     append(

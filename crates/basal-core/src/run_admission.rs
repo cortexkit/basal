@@ -218,6 +218,8 @@ impl RunAdmission {
     }
 
     /// Admit an explicit trigger under the currently approved flow version.
+    #[cfg(test)]
+    pub(crate) fn fixture_current(&self,tx:&Transaction<'_>,flow:&str,id:&str,trigger:JsonText,ctx:&AdmitContext)->Result<Admission>{self.current(tx,flow,id,trigger,"manual",ctx)}
     pub fn admit_trigger(
         &self,
         flow: &str,

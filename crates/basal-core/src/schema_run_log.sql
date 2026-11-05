@@ -114,6 +114,9 @@ CREATE TABLE run_log_segments (
     PRIMARY KEY(log_epoch, seq)
 ) WITHOUT ROWID;
 
+CREATE INDEX outbox_run_removals ON outbox(CAST(json_extract(body,'$.run_id') AS TEXT))
+    WHERE kind='run.removed' AND delivered_at IS NULL;
+
 -- The cutover replaces these shared control tables, preserving their rows.
 -- Small keyed control rows fit index leaves. Snapshots, history, call detail
 -- and unsettled obligations retain rowids: their large payloads would spill

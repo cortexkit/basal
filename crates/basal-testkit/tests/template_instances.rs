@@ -53,7 +53,7 @@ fn journaled_self_end_survives_crash_and_replay_once() {
     let world = World::new("template-self-end-replay");
     world.catalog.add_named_agent(OWNER, "Owner");
     let probe = Arc::new(Probe::crash_at(
-        Point::parse("LocalCommitted { position: 0 }#1").unwrap(),
+        Point::parse("DriverReleased { position: 0 }#1").unwrap(),
     ));
     let rt = world
         .runtime(probe.clone(), config(InstallGate::Off))

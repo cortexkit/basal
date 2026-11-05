@@ -168,17 +168,15 @@ fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_neve
     let carrier = Arc::new(Carrier(AtomicUsize::new(0)));
     let host =
         Arc::new(basal_host::builtins::BuiltinHost::default().with_secret_host(carrier.clone()));
-    let rt = Runtime::new(
-        store,
-        host,
-        Arc::new(basal_host::MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            install_gate: InstallGate::Off,
-            ..Config::default()
-        },
-    );
+    let rt = Runtime::new(store,
+    host,
+    Arc::new(basal_host::MockCatalog::standard()),
+    Arc::new(NoHooks),
+    None,
+    Config {
+        install_gate: InstallGate::Off,
+        ..Config::default()
+    },).expect("runtime startup");
     let manifest = json!({"id":"secret-journal","version":1,"purpose":"Journal security regression",
         "trigger":{"schedule":{"interval":"1h"}},"net":{"fetch":[{"host":"x.test","methods":["GET"]}]},
         "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/repos/a"},"methods":["GET"]}]}).to_string();
@@ -332,14 +330,12 @@ fn second_review_abandonment_rechecks_confirmation_after_unlocked_probe() {
         store: store.clone(),
         reads: AtomicUsize::new(0),
     });
-    let rt = Runtime::new(
-        store,
-        host.clone(),
-        Arc::new(basal_host::MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config::default(),
-    );
+    let rt = Runtime::new(store,
+    host.clone(),
+    Arc::new(basal_host::MockCatalog::standard()),
+    Arc::new(NoHooks),
+    None,
+    Config::default(),).expect("runtime startup");
     let manifest = json!({"id":"guarded-secret","version":1,"purpose":"guarded cleanup","trigger":{"schedule":{"interval":"1h"}},
         "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/"},"methods":["GET"]}]}).to_string();
     let installed = rt

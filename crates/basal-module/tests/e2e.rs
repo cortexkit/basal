@@ -951,9 +951,9 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
         &[
             "--routing-fake",
             "--kill-worker-at",
-            "CallCommitted { position: 1 }#1",
+            "DriverSynced { position: 1 }#1",
             "--kill-self-at",
-            "HostAnswered { position: 2 }#1",
+            "DriverDispatched { position: 2 }#1",
         ],
     );
     assert!(
@@ -1031,7 +1031,7 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
 fn a_store_error_ends_the_process_non_zero_and_the_restart_recovers() {
     let dir = scratch("store-error");
     let _directory = Directory(dir.clone());
-    let mut h = Harness::start(&dir, &["--cut-store-at", "CallCommitted { position: 1 }#1"]);
+    let mut h = Harness::start(&dir, &["--cut-store-at", "DriverSynced { position: 1 }#1"]);
     install_and_approve(&mut h, "flow-cut", json!({ "interval": "1h" }));
     h.ok(json!({ "cmd": "clock", "set_ms": T0 + HOUR + 10_000 }));
     // The store fails under the run's second call: the module exits rather

@@ -37,7 +37,7 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
         const next = await ops.call('mock', 'echo', { after: w.tag });
         return { winner: w.tag, next: next.after };
     "#;
-    let cut = Point::parse("OrderCommitted { position: 1 }#1").expect("point");
+    let cut = Point::parse("DriverReleased { position: 1 }#1").expect("point");
     let probe = Arc::new(Probe::crash_at(cut));
     let cut_probe = probe.clone();
     let mock = world.mock.clone();
@@ -55,13 +55,13 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     let (accepted, acceptance) = mpsc::channel();
     let acceptance = Mutex::new(acceptance);
     let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
-        if matches!(b, Boundary::AcceptedCommitted { position: 0 }) {
+        if matches!(b, Boundary::HostArrived { position: 0 }) {
             accepted.send(()).expect("acceptance receiver");
         }
         // Force the echo to answer before the long call reaches the mock,
         // then hold its outcome until the long call's acceptance is durable.
         // The recovery completion needs an accepted call, not an unsent row.
-        if matches!(b, Boundary::HostAnswered { position: 1 }) {
+        if matches!(b, Boundary::DriverDispatched { position: 1 }) {
             // A late answer can arrive after the watchdog's deadline; report
             // that failure on the test thread, not inside the dispatch hook.
             let _ = answered.send(());
@@ -137,7 +137,7 @@ fn completion_after_suspended_report_is_not_lost() {
     let once = Arc::new(AtomicBool::new(false));
     let flag = once.clone();
     let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
-        if matches!(b, Boundary::EndingReceived) && !flag.swap(true, Ordering::SeqCst) {
+        if matches!(b, Boundary::DriverBeforeClose) && !flag.swap(true, Ordering::SeqCst) {
             let handle = mock.handle_for(run_id, 0).expect("accepted");
             assert!(mock.complete(&handle, done_value()));
         }
@@ -315,7 +315,7 @@ fn local_effect_behind_unresolved_call_applies_once() {
         const lv = await l;
         return { v, lv: lv.done };
     "#;
-    let cut = Point::parse("LocalCommitted { position: 1 }#1").expect("point");
+    let cut = Point::parse("DriverReleased { position: 1 }#1").expect("point");
     let run = run_with_cuts(&world, script, &[cut], &config()).expect("runs");
     assert_eq!(run.fired, vec![true]);
     assert_eq!(run.summary.state, "succeeded", "{run:#?}");

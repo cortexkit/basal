@@ -40,7 +40,7 @@ fn crash_then_recover(world: &World, script: &str, cut: &str) -> (basal_core::Ru
 fn unknown_unkeyed_mutation_needs_reconcile() {
     let world = World::new("unknown-unkeyed");
     let script = "const r = await ops.call('mock', 'post', { n: 1 }); return r.applied.n;";
-    let (rt, run_id) = crash_then_recover(&world, script, "HostAnswered { position: 0 }#1");
+    let (rt, run_id) = crash_then_recover(&world, script, "DriverDispatched { position: 0 }#1");
     let run = rt
         .run_to_rest(&run_id, Duration::from_secs(30))
         .expect("run");
@@ -80,7 +80,7 @@ fn unknown_unkeyed_mutation_needs_reconcile() {
 fn unknown_keyed_mutation_is_reissued_with_the_same_key() {
     let world = World::new("unknown-keyed");
     let script = "const r = await ops.call('mock', 'send', { n: 1 }); return r.applied.n;";
-    let (rt, run_id) = crash_then_recover(&world, script, "HostAnswered { position: 0 }#1");
+    let (rt, run_id) = crash_then_recover(&world, script, "DriverDispatched { position: 0 }#1");
     let run = finish(&rt, &world, &run_id);
     assert_eq!(run.state, RunState::Succeeded, "{run:#?}");
     let key = rt.calls(&run_id).expect("calls")[0].idempotency_key.clone();

@@ -95,14 +95,12 @@ fn fingerprint_mismatch_is_engine_mismatch_without_replay() {
     other.engine_override = Some("quickjs-ng 9.9.9 via rquickjs 9.9.9".into());
     let other = Arc::new(other);
     let store = Arc::new(Store::open(world.store_path(), world.durability).expect("store"));
-    let rt = Runtime::new(
-        store,
-        Arc::new(world.mock.clone()),
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(other.clone()),
-        config(),
-    );
+    let rt = { let runtime=Runtime::new(store,
+    Arc::new(world.mock.clone()),
+    Arc::new(world.catalog.clone()),
+    Arc::new(NoHooks),
+    Some(other.clone()),
+    config(),).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
     let end = rt.resume(&run_id).expect("activation");
     assert!(
         matches!(end, ActivationEnd::EngineMismatch { .. }),

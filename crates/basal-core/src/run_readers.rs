@@ -272,11 +272,7 @@ impl crate::Runtime {
     }
 
     pub fn open_reservations(&self, id: &str) -> Result<u64> {
-        if !self.uses_run_log() {
-            return self
-                .store()
-                .read(|c| crate::tokens::open_reservations(c, id));
-        }
+        {}
         let state = self.staged_snapshot(id);
         let identity = self
             .store()
@@ -306,11 +302,7 @@ impl crate::Runtime {
     }
 
     pub fn classify_cost_spent(&self, id: &str) -> Result<f64> {
-        if !self.uses_run_log() {
-            return self
-                .store()
-                .read(|c| crate::classify_cost::spent(c, "flow", id));
-        }
+        {}
         let identity = self
             .store()
             .read(|c| sql::identity(c, id))?
@@ -333,9 +325,7 @@ impl crate::Runtime {
     }
 
     pub fn deferred_calls(&self) -> Result<Vec<(String, String, u64, i64)>> {
-        if !self.uses_run_log() {
-            return self.store().read(crate::journal::deferred_calls);
-        }
+        {}
         let mut calls = Vec::new();
         for run in self
             .shared
@@ -366,9 +356,7 @@ impl crate::Runtime {
     /// Ordered run projection for module readers. Finished triggers come from
     /// history; live execution fields come only from the registry.
     pub fn runs_for_flow(&self, flow: &str) -> Result<Vec<Run>> {
-        if !self.uses_run_log() {
-            return self.store().read(|c| crate::runs::for_flow(c, flow));
-        }
+        {}
         self.log_runs(Some(flow))
     }
 
@@ -400,10 +388,7 @@ impl crate::Runtime {
     }
 
     pub fn replay_size(&self, id: &str) -> Result<u64> {
-        if self.uses_run_log() {
-            return Ok(self.staged_snapshot(id).map_or(0, |s| s.calls.len() as u64));
-        }
-        self.store().read(|c| crate::journal::replay_size(c, id))
+        Ok(self.staged_snapshot(id).map_or(0, |s| s.calls.len() as u64))
     }
 
     pub(crate) fn log_health(&self) -> Result<crate::ops::Health> {

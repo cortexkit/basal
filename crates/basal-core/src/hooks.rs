@@ -6,9 +6,8 @@
 //! passes and then crash at each one. In production the hooks are
 //! [`NoHooks`] and cost one virtual call.
 
-// Generate the inventory from the declaration itself: adding a crash point must
-// also make the verification matrix handle it, including when SQLite journal
-// crash points are removed after production execution switches to the run log.
+// Generate the inventory from the declaration itself: adding a crash point
+// also requires an explicit scenario in the exhaustive verification matrix.
 macro_rules! boundaries {
     ($(#[$outer:meta])* $vis:vis enum $name:ident {
         $($(#[$doc:meta])* $variant:ident $({$($field:ident: $ty:ty),*})?),* $(,)?
@@ -58,15 +57,18 @@ pub enum Boundary {
     /// A snapshot is copied and appended atomically, before its sync wait.
     MidSnapshot,
     /// A driver's identity record is appended, before its required sync.
-    DriverAppended,
+    DriverAppended { position: u64 },
     /// A remote Intent is durable, before the host is called.
-    DriverSynced,
+    DriverSynced { position: u64 },
     /// The host returned, before Accepted or Arrived is appended.
-    DriverDispatched,
-    /// Released is appended, before Deliver or terminal projection.
-    DriverReleased,
-    /// A host outcome is durable, before its acknowledgement leaves the runtime.
-    HostArrived,
+    DriverDispatched { position: u64 },
+    /// Delivery order is recorded, before Deliver or a synchronous reply.
+    DriverReleased { position: u64 },
+    /// The last point before the Open-to-Closing seal. RunStoreBuilt is too
+    /// late to test cancellation winning this race: the run is already sealed.
+    DriverBeforeClose,
+    /// An outcome or accepted handle is durable, before its acknowledgement.
+    HostArrived { position: u64 },
     /// The restore marker, lost runs and new epoch committed atomically.
     RestoreMarked,
     /// Old segment directories were quarantined and directory entries synced.
@@ -75,6 +77,8 @@ pub enum Boundary {
     RestoreStarted,
     /// Restore completion committed; the next boot must recover normally.
     RestoreFinished,
+    /// Removal and its immutable live-run target IDs committed, before closes.
+    RemovalCaptured,
     /// Legacy temporary-file sweep and audit capture, before the phase commit.
     MigrationSweepReady,
     /// Sweep and pre-migration evidence are durable.
@@ -111,50 +115,7 @@ pub enum Boundary {
     MigrationFinishReady,
     /// Migration completion committed; normal startup may proceed.
     MigrationFinishCommitted,
-    /// The activation claimed the run (its generation is committed).
-    Claimed { generation: u64 },
-    /// The runtime fingerprint was recorded at the run's first activation.
-    FingerprintRecorded,
-    /// A call left unresolved by an earlier activation was authorized to be
-    /// sent again.
-    ResendAuthorized { position: u64 },
-    /// The `Activate` frame was sent.
-    ActivateSent { generation: u64 },
-    /// A `HostCall` frame arrived; nothing about it is committed.
-    HostCallReceived { position: u64 },
-    /// A `Blocked` frame arrived; nothing has been released for it.
-    BlockedReceived,
-    /// The router selected a model, but the call is not journaled or sent yet.
-    ModelSelected { position: u64 },
-    /// A remote call's row is committed; it has not been dispatched.
-    CallCommitted { position: u64 },
-    /// A synchronous call's row, value and order are committed; the reply
-    /// has not been sent.
-    SyncCommitted { position: u64 },
-    /// The reply to a synchronous call was sent.
-    SyncReplied { position: u64 },
-    /// A local call's row, effect and outcome are committed.
-    LocalCommitted { position: u64 },
-    /// A refused call's row, audit row and rejection are committed.
-    RefusalCommitted { position: u64 },
-    /// The host answered a dispatch; nothing about the answer is committed.
-    HostAnswered { position: u64 },
-    /// An outcome is committed to the mailbox.
-    OutcomeCommitted { position: u64 },
-    /// The host's acceptance of a long-running call is committed.
-    AcceptedCommitted { position: u64 },
-    /// An outcome's delivery order is committed; the `Deliver` frame has not
-    /// been sent.
-    OrderCommitted { position: u64, order: u64 },
-    /// The `Deliver` frame was sent.
-    Delivered { position: u64 },
-    /// A `LongRunning` frame was sent.
-    LongRunningSent,
-    /// The worker reported how the activation ended; the run is still
-    /// `running`.
-    EndingReceived,
-    /// The run left `running`.
-    Exited,
+
 }
 }
 
@@ -185,12 +146,13 @@ impl Boundary {
         Self::RestoreStarted,
         Self::RestoreFinished,
     ];
-    pub const HOST: [Self; 1] = [Self::HostArrived];
-    pub const RUN_DRIVER: [Self; 4] = [
-        Self::DriverAppended,
-        Self::DriverSynced,
-        Self::DriverDispatched,
-        Self::DriverReleased,
+    pub const HOST: [Self; 1] = [Self::HostArrived { position: 0 }];
+    pub const RUN_DRIVER: [Self; 5] = [
+        Self::DriverAppended { position: 0 },
+        Self::DriverSynced { position: 0 },
+        Self::DriverDispatched { position: 0 },
+        Self::DriverReleased { position: 0 },
+        Self::DriverBeforeClose,
     ];
     pub const RUN_LOG_GC: [Self; 3] = [
         Self::RunLogGcCommitted,
@@ -198,7 +160,7 @@ impl Boundary {
         Self::RunLogGcSynced,
     ];
 
-    /// File-writer crash points, exercised before the runtime switches paths.
+    /// File-writer crash points, exercised independently on every platform.
     pub const RUN_LOG: [Self; 5] = [
         Self::RunLogAppended,
         Self::RunLogReserved,

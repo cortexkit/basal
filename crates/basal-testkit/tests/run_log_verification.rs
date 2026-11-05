@@ -311,7 +311,7 @@ fn random_scripts_with_concurrent_calls_sync_interleavings_and_crashes_preserve_
             .into_iter()
             .filter(|p| {
                 matches!(
-                    p.boundary.as_str(),
+                    p.boundary.split_once(" {").map_or(p.boundary.as_str(),|(kind,_)|kind),
                     "DriverAppended" | "DriverSynced" | "DriverDispatched" | "DriverReleased"
                 )
             })

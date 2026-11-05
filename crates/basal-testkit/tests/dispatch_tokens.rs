@@ -248,9 +248,7 @@ fn llm_call_over_the_cap_is_a_journaled_rejection() {
     let calls = rt.calls(&run_id).expect("calls");
     let outcome = calls[0].outcome.as_ref().expect("journaled");
     assert_eq!(outcome.settlement, Settlement::Rejected);
-    let audit = rt
-        .store()
-        .read(|c| basal_core::audit::rows(c, &run_id))
+    let audit = rt.fixture_call_identities(&run_id)
         .expect("audit");
     assert_eq!(audit[0].outcome, "token_cap");
     let usage = rt
@@ -269,8 +267,8 @@ fn llm_call_over_the_cap_is_a_journaled_rejection() {
 fn reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id() {
     let script = "const x = await llm({ prompt: 'x', max_output: 999999 }); return x.done;";
     for (cut, min_sends) in [
-        ("HostAnswered { position: 0 }#1", 2),
-        ("CallCommitted { position: 0 }#1", 1),
+        ("DriverDispatched { position: 0 }#1", 2),
+        ("DriverSynced { position: 0 }#1", 1),
     ] {
         let world = World::new("tokens-reissue");
         let point = Point::parse(cut).expect("point");

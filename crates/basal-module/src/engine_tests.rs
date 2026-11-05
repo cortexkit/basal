@@ -30,17 +30,15 @@ fn engine_with_spawner(
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("store.db");
     let clock = basal_core::Clock::manual(0);
-    let rt = Runtime::new(
-        Arc::new(Store::open(&path, Durability::throwaway()).unwrap()),
-        Arc::new(MockHost::new()),
-        Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            clock: clock.clone(),
-            ..Config::default()
-        },
-    );
+    let rt = Runtime::new(Arc::new(Store::open(&path, Durability::throwaway()).unwrap()),
+    Arc::new(MockHost::new()),
+    Arc::new(MockCatalog::standard()),
+    Arc::new(NoHooks),
+    None,
+    Config {
+        clock: clock.clone(),
+        ..Config::default()
+    },).expect("runtime startup");
     let metrics = Arc::new(Metrics::default());
     let mut config = PoolConfig::new("missing", WorkerLaunch::Plain);
     config.warm_spares = 0;
@@ -860,37 +858,32 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
     // on a test kernel that provides seccomp but not Landlock.
     pool.landlock = crate::pool::LandlockPolicy::Optional;
     let mut store = None;
-    let module = crate::module::Module::start_with_store(
-        crate::module::ModuleConfig {
-            store_path: dir.join("store.db"),
-            durability: Durability::throwaway(),
-            runtime: Config {
-                clock: clock.clone(),
-                install_gate: basal_core::InstallGate::Off,
-                max_broken_activations: 1,
-                unavailable_retries: 0,
-                ..Config::default()
-            },
-            pool: pool.clone(),
-            engine: EngineConfig::default(),
-            dry_run: crate::dryrun::DryRunConfig::new(dir.join("dry")),
+    let module = crate::module::Module::start_with_store(crate::module::ModuleConfig {
+        store_path: dir.join("store.db"),
+        durability: Durability::throwaway(),
+        runtime: Config {
+            clock: clock.clone(),
+            install_gate: basal_core::InstallGate::Off,
+            max_broken_activations: 1,
+            unavailable_retries: 0,
+            ..Config::default()
         },
-        crate::module::Hosts {
-            host,
-            transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
-            catalog: Arc::new(MockCatalog::standard()),
-            consent: Arc::new(MockConsent::new()),
-            hooks: Arc::new(HoldBlocked {
-                entered: blocked,
-                release: Mutex::new(resumed),
-            }),
-        },
-        Arc::new(crate::pool::ProcessSpawner::new(&pool)),
-        |opened| {
-            store = Some(opened);
-            Ok(())
-        },
-    )
+        pool: pool.clone(),
+        engine: EngineConfig::default(),
+        dry_run: crate::dryrun::DryRunConfig::new(dir.join("dry")),
+    },crate::module::Hosts {
+        host,
+        transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
+        catalog: Arc::new(MockCatalog::standard()),
+        consent: Arc::new(MockConsent::new()),
+        hooks: Arc::new(HoldBlocked {
+            entered: blocked,
+            release: Mutex::new(resumed),
+        }),
+    },Arc::new(crate::pool::ProcessSpawner::new(&pool)),|opened,_recovered| {
+        store = Some(opened);
+        Ok(())
+    })
     .unwrap();
     let rt = module.rt.clone();
     let mut request = request("shutdown-cut");
@@ -972,19 +965,17 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
         "shutdown must not reject the in-flight query"
     );
     drop(rt);
-    let recovered = Runtime::new(
-        store.take().unwrap(),
-        Arc::new(MockHost::new()),
-        Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            clock,
-            auto_resume: false,
-            install_gate: basal_core::InstallGate::Off,
-            ..Config::default()
-        },
-    );
+    let recovered = Runtime::new(store.take().unwrap(),
+    Arc::new(MockHost::new()),
+    Arc::new(MockCatalog::standard()),
+    Arc::new(NoHooks),
+    None,
+    Config {
+        clock,
+        auto_resume: false,
+        install_gate: basal_core::InstallGate::Off,
+        ..Config::default()
+    },).expect("runtime startup");
     assert_eq!(recovered.recover().unwrap(), vec![run.clone()]);
     let pending = recovered.run(&run).unwrap();
     assert_eq!(pending.state, RunState::Pending);

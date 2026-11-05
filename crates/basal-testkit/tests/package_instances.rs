@@ -387,17 +387,15 @@ fn instance_agent_lookup_leaves_the_sqlite_writer_available() {
         store_path: world.store_path(),
         lookups: std::sync::atomic::AtomicUsize::new(0),
     });
-    let rt = basal_core::Runtime::new(
-        store,
-        Arc::new(world.mock.clone()),
-        catalog.clone(),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            auto_resume: false,
-            ..common::config()
-        },
-    );
+    let rt = { let runtime=basal_core::Runtime::new(store,
+    Arc::new(world.mock.clone()),
+    catalog.clone(),
+    Arc::new(NoHooks),
+    None,
+    Config {
+        auto_resume: false,
+        ..common::config()
+    },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
     rt.register_package("return 1;", &manifest(1).to_string())
         .unwrap();
     let first = rt.ensure_instance("dark-wake", 1, OWNER, 1).unwrap();

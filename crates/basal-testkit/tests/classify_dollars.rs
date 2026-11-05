@@ -76,17 +76,15 @@ fn fixture(cap: f64) -> (World, Runtime, Arc<Provider>, Value, Clock) {
         )),
     });
     let clock = Clock::manual(100);
-    let rt = Runtime::new(
-        store,
-        provider.clone(),
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        basal_core::Config {
-            clock: clock.clone(),
-            ..config()
-        },
-    );
+    let rt = { let runtime=Runtime::new(store,
+    provider.clone(),
+    Arc::new(world.catalog.clone()),
+    Arc::new(NoHooks),
+    Some(world.source.clone()),
+    basal_core::Config {
+        clock: clock.clone(),
+        ..config()
+    },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
     rt.recover().unwrap();
     let mut m = test_manifest();
     m["model_cost_usd"] = json!({"per_run":cap,"usd":cap,"window":"1h"});

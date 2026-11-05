@@ -128,19 +128,13 @@ impl Runtime {
                 .ok_or_else(|| CoreError::Corrupt("secret revoke version missing".into()))?;
             let mut busy = false;
             if body["retirement"] == true {
+                // RunStore::close_impl drains all dispatch entrants before its
+                // terminal transaction removes live_runs. No entrant outlives
+                // its live row; closed obligations and Broca calls keep the
+                // version busy after that transaction.
                 busy = self.store().read(|connection| {
-                    if self.uses_run_log() { return crate::run_readers::retirement_busy(connection, &flow, version); }
-                    Ok(connection.query_row(&format!("SELECT EXISTS(SELECT 1 FROM runs r WHERE r.flow_id=?1 AND r.flow_version=?2 AND (r.state IN ('pending','running','suspended','needs_reconcile') OR ({})))", crate::retention::OBLIGATIONS), params![flow, version], |row| row.get::<_, bool>(0))?)
+                    crate::run_readers::retirement_busy(connection, &flow, version)
                 })?;
-                busy |= self
-                    .shared
-                    .inflight
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .values()
-                    .any(|route| {
-                        route.flow_id == flow && route.version.map(u64::from) == Some(version)
-                    });
             }
             let result = (!busy).then(|| self.shared.host.secret_revoke(body["request"].clone()));
             let success = result.as_ref().is_some_and(|result| {

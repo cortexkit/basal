@@ -1710,7 +1710,7 @@ async fn crash(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> Case {
     // start unarmed. The switch names this flow, so no other flow's run can
     // trip it; its only remote call is the digest, at position 0 (the journal
     // counts from 0).
-    let point = "HostAnswered { position: 0 }";
+    let point = "DriverDispatched { position: 0 }";
     let armed = json!({ "flow_id": flow.id, "boundary": point });
     if let Err(e) = std::fs::write(&rig.kill_file, armed.to_string()) {
         case.check("the kill switch is armed", false, json!(e.to_string()));
@@ -2003,10 +2003,11 @@ async fn models_inner(
     }
     let first = flows::model(&format!("rig-model-first-{tag}"), &agent.name, false, false);
     let mut minimal = Case::new(MODEL_CASES[0]);
-    // On hook builds, kill before the first dispatch. The hook captures the
-    // committed request before the host has any snapshot; replay must use it.
+    // DriverSynced kills after durable intent and before the first send. The
+    // actor hook captures the frozen request before the host has a snapshot;
+    // recovery must use the same request and key.
     if !args.no_kill_hook {
-        arm_model(rig, &first, "CallCommitted { position: 0 }")?;
+        arm_model(rig, &first, "DriverSynced { position: 0 }")?;
     }
     let run = model_run(rig, agent, &first, &mut minimal).await;
     let _ = std::fs::remove_file(&rig.kill_file);
@@ -2199,14 +2200,14 @@ async fn models_followups(
         let flow = flows::model(&format!("rig-model-crash-{tag}"), &agent.name, false, false);
         let mut crash = Case::new(MODEL_CASES[5]);
         let before = basal_pid();
-        arm_model(rig, &flow, "AcceptedCommitted { position: 0 }")?;
+        arm_model(rig, &flow, "HostArrived { position: 0 }")?;
         let recovered = model_run(rig, agent, &flow, &mut crash).await;
         let checkpoint = kill_evidence(rig);
         let _ = std::fs::remove_file(&rig.kill_file);
         let after = basal_pid();
         crash.check(
             "kill -9 landed after Broca accepted the send and before journaled result",
-            checkpoint["boundary"] == "AcceptedCommitted { position: 0 }"
+            checkpoint["boundary"] == "HostArrived { position: 0 }"
                 && checkpoint["dispatch"] == "accepted"
                 && checkpoint["settlement"].is_null()
                 && before.is_some()

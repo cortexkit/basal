@@ -769,8 +769,8 @@ fn wait_journals_before_send_and_replays_identical_intent_after_cut() {
     };
     use basal_testkit::harness::{Point, Probe};
     for (point, sent_before_cut) in [
-        ("CallCommitted { position: 0 }#1", 0),
-        ("HostAnswered { position: 0 }#1", 1),
+        ("DriverSynced { position: 0 }#1", 0),
+        ("DriverDispatched { position: 0 }#1", 1),
     ] {
         let dir = common::scratch("wait-cut");
         let clock = Clock::manual(common::T0);

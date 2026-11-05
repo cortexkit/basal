@@ -188,7 +188,7 @@ pub fn check(
         kind,
         now_ms,
         limits,
-        crate::owner_notice::auto_disabled_legacy,
+        crate::owner_notice::auto_disabled_committed,
     )
 }
 

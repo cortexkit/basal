@@ -62,20 +62,18 @@ impl Host for Provider {
     }
 }
 fn open(world: &World, provider: Arc<Provider>, clock: &Clock) -> Runtime {
-    Runtime::new(
-        Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-        provider,
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        Config {
-            clock: clock.clone(),
-            install_gate: InstallGate::Core,
-            deferral_retry: Duration::from_millis(100),
-            auto_resume: false,
-            ..Config::default()
-        },
-    )
+    { let runtime=Runtime::new(Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+    provider,
+    Arc::new(world.catalog.clone()),
+    Arc::new(NoHooks),
+    Some(world.source.clone()),
+    Config {
+        clock: clock.clone(),
+        install_gate: InstallGate::Core,
+        deferral_retry: Duration::from_millis(100),
+        auto_resume: false,
+        ..Config::default()
+    },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime }
 }
 
 #[test]

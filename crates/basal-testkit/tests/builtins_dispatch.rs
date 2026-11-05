@@ -118,17 +118,15 @@ impl Host for Split {
 
 fn open(world: &World, host: Arc<Split>, hooks: Arc<dyn basal_core::Hooks>) -> Runtime {
     let store = Arc::new(Store::open(world.store_path(), world.durability).expect("store"));
-    let rt = Runtime::new(
-        store,
-        host,
-        Arc::new(world.catalog.clone()),
-        hooks,
-        Some(world.source.clone()),
-        Config {
-            selector: world.selector.clone(),
-            ..config()
-        },
-    );
+    let rt = { let runtime=Runtime::new(store,
+    host,
+    Arc::new(world.catalog.clone()),
+    hooks,
+    Some(world.source.clone()),
+    Config {
+        selector: world.selector.clone(),
+        ..config()
+    },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
     rt.recover().expect("recover");
     rt
 }
@@ -265,9 +263,7 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
 
     // Audit rows name the built-in and carry a digest of its arguments,
     // never the file's text.
-    let audit = rt
-        .store()
-        .read(|c| basal_core::audit::rows(c, &run_id))
+    let audit = rt.fixture_call_identities(&run_id)
         .expect("audit");
     let rows: Vec<(&str, &str)> = audit
         .iter()
@@ -418,7 +414,7 @@ fn recovery_reissues_queries_and_writes_and_reconciles_a_post() {
         let world = World::new("builtins-recover");
         let host = Split::new(&world);
         let probe = Arc::new(Probe::crash_at(
-            Point::parse("HostAnswered { position: 0 }#1").expect("point"),
+            Point::parse("DriverDispatched { position: 0 }#1").expect("point"),
         ));
         let rt = open(&world, host.clone(), probe.clone());
         let run_id = admit_with(&rt, &world, &script, &files.manifest());

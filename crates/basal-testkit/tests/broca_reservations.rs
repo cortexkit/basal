@@ -24,20 +24,18 @@ fn setup(world: &World) -> (Runtime, Arc<BrocaHost>, Arc<FakeBroca>, Arc<BrocaSt
         "basal".into(),
         world.selector.clone(),
     ));
-    let rt = Runtime::new(
-        store,
-        host.clone(),
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        Config {
-            selector: world.selector.clone(),
-            auto_resume: false,
-            activation_deadline: Duration::from_secs(60),
-            install_gate: basal_core::InstallGate::Off,
-            ..Config::default()
-        },
-    );
+    let rt = { let runtime=Runtime::new(store,
+    host.clone(),
+    Arc::new(world.catalog.clone()),
+    Arc::new(NoHooks),
+    Some(world.source.clone()),
+    Config {
+        selector: world.selector.clone(),
+        auto_resume: false,
+        activation_deadline: Duration::from_secs(60),
+        install_gate: basal_core::InstallGate::Off,
+        ..Config::default()
+    },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
     rt.recover().unwrap();
     (rt, host, fake, snapshots)
 }
@@ -310,20 +308,18 @@ fn usage_settles_once_when_an_outcome_is_redelivered_after_a_restart() {
             "basal".into(),
             world.selector.clone(),
         ));
-        let rt = Runtime::new(
-            store,
-            host.clone(),
-            Arc::new(world.catalog.clone()),
-            Arc::new(NoHooks),
-            Some(world.source.clone()),
-            Config {
-                selector: world.selector.clone(),
-                auto_resume: false,
-                activation_deadline: Duration::from_secs(60),
-                install_gate: basal_core::InstallGate::Off,
-                ..Config::default()
-            },
-        );
+        let rt = { let runtime=Runtime::new(store,
+        host.clone(),
+        Arc::new(world.catalog.clone()),
+        Arc::new(NoHooks),
+        Some(world.source.clone()),
+        Config {
+            selector: world.selector.clone(),
+            auto_resume: false,
+            activation_deadline: Duration::from_secs(60),
+            install_gate: basal_core::InstallGate::Off,
+            ..Config::default()
+        },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
         (rt, host, fake.clone(), snapshots)
     };
     assert!(snapshots.load().unwrap()[0].acknowledged);

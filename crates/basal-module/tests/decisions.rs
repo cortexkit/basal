@@ -524,7 +524,7 @@ fn each_unknown_site_records_its_reason_and_the_card_shows_it() {
     rig.install(POST);
     rig.crash();
     let probe = Arc::new(Probe::crash_at(
-        Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+        Point::parse("DriverDispatched { position: 0 }#1").unwrap(),
     ));
     rig.start(probe.clone());
     let run = rig.admit("one").unwrap();
@@ -839,7 +839,7 @@ fn reconciled_as_applied_is_journaled_and_replays_the_same_rejection() {
     // run from the top over the recorded rejection.
     rig.crash();
     let probe = Arc::new(Probe::crash_at(
-        Point::parse("HostAnswered { position: 1 }#1").unwrap(),
+        Point::parse("DriverDispatched { position: 1 }#1").unwrap(),
     ));
     rig.start(probe.clone());
     rig.fake.answer_decision(&key, Some("applied"));

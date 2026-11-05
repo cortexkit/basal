@@ -434,14 +434,12 @@ fn retained_projection_does_not_count_an_install_gate_deferral_as_an_activation(
 fn ordinary_constructor_creates_neither_run_log_nor_rig_projection() {
     let root = crate::test_support::timestamp_scratch("staged-runtime", "ordinary");
     let store = Arc::new(Store::open(root.join("store.db"), Durability::throwaway()).unwrap());
-    let rt = Runtime::new(
-        store,
-        Arc::new(TestHost::default()),
-        Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config::default(),
-    );
+    let rt = Runtime::new(store,
+    Arc::new(TestHost::default()),
+    Arc::new(MockCatalog::standard()),
+    Arc::new(NoHooks),
+    None,
+    Config::default(),).expect("runtime startup");
     assert!(!rt.uses_run_log());
     assert!(!root.join("run-log").exists());
     rt.store().read(|c| { assert_eq!(c.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'rig_%' OR name='run_history'",[],|r|r.get::<_,u64>(0))?,0); Ok(()) }).unwrap();

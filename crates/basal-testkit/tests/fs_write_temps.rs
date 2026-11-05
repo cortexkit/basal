@@ -132,17 +132,15 @@ impl Host for TempHost {
 
 fn open(world: &World, host: Arc<TempHost>) -> (Runtime, Arc<Store>) {
     let store = Arc::new(Store::open(world.store_path(), world.durability).expect("store"));
-    let rt = Runtime::new(
-        store.clone(),
-        host,
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        Config {
-            selector: world.selector.clone(),
-            ..config()
-        },
-    );
+    let rt = { let runtime=Runtime::new(store.clone(),
+    host,
+    Arc::new(world.catalog.clone()),
+    Arc::new(NoHooks),
+    Some(world.source.clone()),
+    Config {
+        selector: world.selector.clone(),
+        ..config()
+    },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
     rt.recover().expect("recover");
     (rt, store)
 }

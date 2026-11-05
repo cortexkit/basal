@@ -43,7 +43,7 @@ use super::config::SchedulerConfig;
 use super::due::DueScan;
 use super::spec::MissedPolicy;
 use super::table::{self, ScheduleState, from_ms, to_ms};
-use crate::admission::{self, Admission, AdmitContext};
+use crate::admission::{Admission, AdmitContext};
 use crate::error::{CoreError, Result};
 
 /// The trigger id of the fire for one due time. Admission deduplicates on
@@ -263,38 +263,6 @@ fn dropped_reason(admission: &Admission) -> Option<&'static str> {
         Admission::RateLimited => Some("rate_limited"),
         _ => None,
     }
-}
-
-/// Admits the oldest planned fire, in the caller's transaction, under the
-/// flow's version approved now, and removes it from the planned fires
-/// unless admission is draining or waiting for an older state epoch's runs.
-/// A fire refused for good is recorded in
-/// `schedule_dropped`. `None` when nothing is planned.
-pub fn admit_next(
-    tx: &Transaction,
-    store_id: &str,
-    ctx: &AdmitContext,
-) -> Result<Option<AdmittedFire>> {
-    admit_next_unblocked(tx, store_id, ctx, &std::collections::BTreeSet::new())
-}
-
-/// Per-pass exclusions preserve order within each flow without allowing a
-/// waiting flow's oldest fire to block unrelated flows or be retried in a loop.
-pub(crate) fn admit_next_unblocked(
-    tx: &Transaction,
-    store_id: &str,
-    ctx: &AdmitContext,
-    blocked: &std::collections::BTreeSet<String>,
-) -> Result<Option<AdmittedFire>> {
-    admit_next_with(
-        tx,
-        ctx,
-        blocked,
-        |e| matches!(e, CoreError::Corrupt(_)),
-        |flow, trigger_id, trigger| {
-            admission::admit_current(tx, store_id, flow, trigger_id, trigger, ctx)
-        },
-    )
 }
 
 pub(crate) fn admit_next_with(

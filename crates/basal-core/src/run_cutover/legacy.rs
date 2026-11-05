@@ -189,3 +189,23 @@ pub(super) fn established(c: &Connection, call: &Row) -> Result<Option<Establish
     }
     Ok(None)
 }
+
+// Historical schema tests inspect the migration input; these are readers only,
+// never an alternate activation, resend or delivery implementation.
+#[cfg(test)]
+pub(crate) fn inspect_run(c:&Connection,id:&str)->Result<crate::Run> {
+    c.query_row(&format!("SELECT {} FROM runs_with_snapshots WHERE run_id=?1",crate::model::RUN_COLUMNS),[id],crate::Run::from_row)?
+}
+#[cfg(test)]
+pub(crate) fn inspect_calls(c:&Connection,id:&str)->Result<Vec<crate::CallRow>> {
+    let mut statement=c.prepare(&format!("SELECT {} FROM journal_with_payloads WHERE run_id=?1 ORDER BY position",crate::model::CALL_COLUMNS))?;
+    let mut rows=Vec::new();for row in statement.query_map([id],crate::CallRow::from_row)?{rows.push(row??);}Ok(rows)
+}
+#[cfg(test)]
+pub(crate) fn inspect_call(c:&Connection,id:&str,position:u64)->Result<Option<crate::CallRow>> {Ok(inspect_calls(c,id)?.into_iter().find(|r|r.position==position))}
+#[cfg(test)]
+pub(crate) fn inspect_prefix(c:&Connection,id:&str)->Result<Vec<basal_proto::RecordedCall>> {Ok(inspect_calls(c,id)?.iter().map(crate::CallRow::recorded).collect())}
+#[cfg(test)]
+pub(crate) fn inspect_size(c:&Connection,id:&str)->Result<(u64,u64)> {
+    Ok(c.query_row("SELECT COUNT(*),COALESCE(SUM(args_bytes+request_bytes+COALESCE(value_bytes,(SELECT length(CAST(m.value AS BLOB)) FROM mailbox m WHERE m.run_id=j.run_id AND m.position=j.position),0)),0) FROM journal j WHERE run_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?)))?)
+}

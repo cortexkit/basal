@@ -121,14 +121,12 @@ fn runtime(
         install_gate: basal_core::InstallGate::Off,
         ..Config::default()
     };
-    Ok(Runtime::new(
-        Arc::new(store),
-        Arc::new(mock.clone()),
-        Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
-        Some(source),
-        config,
-    ))
+    Ok(Runtime::new(Arc::new(store),
+    Arc::new(mock.clone()),
+    Arc::new(MockCatalog::standard()),
+    Arc::new(NoHooks),
+    Some(source),
+    config,).expect("runtime startup"))
 }
 
 fn commit_cost(fullfsync: bool, samples: usize) -> Result<Value, String> {

@@ -79,14 +79,12 @@ impl Host for RecordingHost {
 fn terminal_model_acknowledgement_retires_its_flow_without_a_global_sweep() {
     let fixture = TestRuntime::new();
     let host = Arc::new(RecordingHost::default());
-    let rt = crate::Runtime::new(
-        fixture.rt.shared.store.clone(),
-        host.clone(),
-        Arc::new(basal_host::MockCatalog::standard()),
-        Arc::new(crate::NoHooks),
-        None,
-        crate::Config::default(),
-    );
+    let rt = crate::Runtime::new(fixture.rt.shared.store.clone(),
+    host.clone(),
+    Arc::new(basal_host::MockCatalog::standard()),
+    Arc::new(crate::NoHooks),
+    None,
+    crate::Config::default(),).expect("runtime startup");
     rt.store().write(|tx| {
         tx.execute_batch("INSERT INTO flows(flow_id,removed,created_at) VALUES ('f',1,0);\
             INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES ('f',1,zeroblob(32),'return 1','{}');\

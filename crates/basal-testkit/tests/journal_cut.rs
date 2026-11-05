@@ -180,13 +180,13 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
     // behind an unresolved one, a local effect behind an unresolved call,
     // and a cut inside the resumed activation.
     let chosen = [
-        "CallCommitted { position: 0 }#1",
-        "OrderCommitted { position: 1 }#1",
-        "SyncCommitted { position: 2 }#1",
-        "RefusalCommitted { position: 4 }#1",
-        "LocalCommitted { position: 5 }#1",
-        "CallCommitted { position: 6 }#1",
-        "HostAnswered { position: 6 }#1",
+        "DriverSynced { position: 0 }#1",
+        "DriverReleased { position: 1 }#1",
+        "DriverReleased { position: 2 }#1",
+        "DriverReleased { position: 4 }#1",
+        "DriverReleased { position: 5 }#1",
+        "DriverSynced { position: 6 }#1",
+        "DriverDispatched { position: 6 }#1",
         "Claimed { generation: 2 }#1",
     ];
     let firsts: Vec<Point> = base.phases[0]

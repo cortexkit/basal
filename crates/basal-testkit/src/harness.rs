@@ -216,27 +216,12 @@ impl Point {
 /// Something a test does at a boundary instead of crashing.
 pub type Action = Box<dyn Fn(&str, &Boundary) + Send + Sync>;
 
-/// A boundary's name for cutting. The delivery order is left out of an
-/// order commit's name: which of two calls completing in parallel gets the
-/// lower order depends on timing, and the cut should still land at the
-/// same call's release.
-pub fn point_name(boundary: &Boundary) -> String {
-    match boundary {
-        Boundary::OrderCommitted { position, .. } => {
-            format!("OrderCommitted {{ position: {position} }}")
-        }
-        other => format!("{other:?}"),
-    }
-}
+/// The closed run-log boundaries have no delivery-order fields to normalise.
+pub fn point_name(boundary:&Boundary)->String {format!("{boundary:?}")}
 
-/// Boundaries that can occur a different number of times in two runs of the
-/// same script: how often the worker reports itself blocked, and in how
-/// many replies the parent reports long-running calls, depend on when
-/// outcomes arrive. A cut named by one of these may not be reached in
-/// another run; every other boundary of a run is always reached again.
-pub fn is_repeat_prone(point: &Point) -> bool {
-    point.boundary == "BlockedReceived" || point.boundary == "LongRunningSent"
-}
+/// Worker-message timing points were retired; no remaining boundary gets a
+/// blanket exemption from the crash campaign's reached-point assertion.
+pub fn is_repeat_prone(_point:&Point)->bool {false}
 
 /// Records every boundary passed, and crashes (or runs an action) at one.
 #[derive(Default)]
@@ -377,7 +362,7 @@ impl Summary {
 
 pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary, CoreError> {
     let run = rt.run(run_id)?;
-    let calls = rt.calls(run_id)?;
+    let calls = rt.fixture_calls(run_id)?;
     let positions: HashMap<String, u64> = calls
         .iter()
         .map(|c| (c.idempotency_key.clone(), c.position))
@@ -401,14 +386,13 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
             *per_call.entry(*p).or_insert(0) += 1;
         }
     }
-    let (audit, audit_rows, kv, tokens) = rt.store().read(|c| {
-        let audit: BTreeMap<u64, String> = basal_core::audit::rows(c, run_id)?
-            .into_iter()
-            .map(|r| (r.position, r.outcome))
-            .collect();
+    let audit: BTreeMap<u64,String>=rt.fixture_call_identities(run_id)?.into_iter().map(|row|(row.position,row.outcome)).collect();
+    let (audit_rows, kv, tokens) = rt.store().read(|c| {
+        // Count independently persisted rig identities for the recovered prefix;
+        // a discarded lazy tail is not part of the run's replayable call set.
         let rows: i64 = c.query_row(
-            "SELECT COUNT(*) FROM call_audit WHERE run_id = ?1",
-            [run_id],
+            "SELECT COUNT(*) FROM rig_calls WHERE run_id=?1 AND position<?2",
+            rusqlite::params![run_id,calls.len() as i64],
             |r| r.get(0),
         )?;
         let mut stmt =
@@ -450,7 +434,7 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
         .into_iter()
         .map(|(k, v)| (k.to_owned(), u64::try_from(v).unwrap_or(u64::MAX)))
         .collect();
-        Ok((audit, rows as usize, kv, tokens))
+        Ok((rows as usize, kv, tokens))
     })?;
     let mut first: HashMap<String, String> = HashMap::new();
     let mut broca_reuse = 0;
@@ -516,17 +500,19 @@ impl World {
     /// starting process does.
     pub fn runtime(&self, hooks: Arc<dyn Hooks>, config: Config) -> Result<Runtime, CoreError> {
         let store = Arc::new(Store::open(self.store_path(), self.durability)?);
-        let rt = Runtime::new(
-            store,
-            Arc::new(self.mock.clone()),
-            Arc::new(self.catalog.clone()),
-            hooks,
-            Some(self.source.clone()),
-            Config {
-                selector: self.selector.clone(),
-                ..config
-            },
-        );
+        // Constructor crashes have their own migration/recovery matrix; this
+        // harness starts its script-boundary campaign after initial cutover.
+        basal_core::run_cutover::Migration::new(store.clone(),self.dir.join("run-log"),Arc::new(basal_core::NoHooks)).run()?;
+        let rt = Runtime::new(store,
+        Arc::new(self.mock.clone()),
+        Arc::new(self.catalog.clone()),
+        hooks,
+        Some(self.source.clone()),
+        Config {
+            selector: self.selector.clone(),
+            ..config
+        },)?;
+        rt.retain_detail_for_test()?;
         rt.recover()?;
         Ok(rt)
     }

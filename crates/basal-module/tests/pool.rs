@@ -412,7 +412,7 @@ struct KillWorkerOnFirstCall {
 
 impl Hooks for KillWorkerOnFirstCall {
     fn at(&self, run_id: &str, boundary: &Boundary) -> Step {
-        if *boundary == (Boundary::CallCommitted { position: 0 })
+        if *boundary == (Boundary::DriverSynced { position: 0 })
             && !self.done.swap(true, Ordering::SeqCst)
         {
             let killed = self.pool.get().is_some_and(|p| p.kill_for_run(run_id));

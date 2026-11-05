@@ -194,18 +194,16 @@ fn runtime(path: &std::path::Path) -> Runtime {
 }
 
 fn runtime_with_catalog(path: &std::path::Path, catalog: MockCatalog) -> Runtime {
-    Runtime::new(
-        Arc::new(Store::open(path, Durability::throwaway()).unwrap()),
-        Arc::new(MockHost::new()),
-        Arc::new(catalog),
-        Arc::new(basal_core::NoHooks),
-        None,
-        Config {
-            clock: Clock::manual(1000),
-            install_gate: InstallGate::Off,
-            ..Default::default()
-        },
-    )
+    Runtime::new(Arc::new(Store::open(path, Durability::throwaway()).unwrap()),
+    Arc::new(MockHost::new()),
+    Arc::new(catalog),
+    Arc::new(basal_core::NoHooks),
+    None,
+    Config {
+        clock: Clock::manual(1000),
+        install_gate: InstallGate::Off,
+        ..Default::default()
+    },).expect("runtime startup")
 }
 
 const DELIVERED_SUBJECT: &str = "ck.account.event.prefrontal-core.digest_delivered.v1";

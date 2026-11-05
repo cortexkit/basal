@@ -125,8 +125,7 @@ fn staged_dry_run_uses_its_own_log_and_retains_success_call_detail() {
         DryRunConfig::new(&scratch),
         f.module.rt.config().clone(),
         f.module.metrics.clone(),
-    )
-    .staged_for_test();
+    );
     let manifest = json!({"id":"scratch-reader","version":1,"purpose":"Read retained dry-run calls","trigger":{"schedule":{"interval":"1h"}}});
     let reply = runner
         .run(&DryRunRequest {

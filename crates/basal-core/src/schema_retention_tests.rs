@@ -1,8 +1,4 @@
 use super::MIGRATIONS;
-use crate::retention::{
-    BATCH, CANDIDATES_SQL, HISTORY_BATCH_SQL, HISTORY_PREDICATES, OBLIGATIONS,
-    RATE_WINDOWS_PREDICATE,
-};
 use rusqlite::{Connection, types::Value};
 use std::collections::BTreeMap;
 
@@ -207,145 +203,11 @@ fn additive_retention_indexes_preserve_populated_tables_in_every_state() {
     );
 }
 
-fn candidates_query(unsettled: bool) -> String {
-    CANDIDATES_SQL
-        .replace("{predicate}", if unsettled { "" } else { "NOT" })
-        .replace("{OBLIGATIONS}", OBLIGATIONS)
-        .replace("{BATCH}", &BATCH.to_string())
-}
 
-fn history_query(table: &str) -> String {
-    let predicate = if table == "rate_windows" {
-        RATE_WINDOWS_PREDICATE
-    } else {
-        HISTORY_PREDICATES
-            .iter()
-            .find(|(name, _)| *name == table)
-            .unwrap()
-            .1
-    };
-    HISTORY_BATCH_SQL
-        .replace("{table}", table)
-        .replace("{predicate}", predicate)
-        .replace("{BATCH}", &BATCH.to_string())
-}
 
-/// Requires the plan for `sql` on `conn` to search `index`. `analyzed` only
-/// labels the failure: the caller decides whether `conn` has statistics.
-fn assert_plan(conn: &Connection, sql: &str, index: &str, analyzed: bool) {
-    let plan: Vec<String> = conn
-        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-        .unwrap()
-        .query_map([64], |r| r.get(3))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    assert!(
-        plan.iter()
-            .any(|step| step.starts_with("SEARCH ") && step.contains(&format!("INDEX {index} "))),
-        "{index} (analyzed={analyzed}): {plan:?}"
-    );
-}
 
-fn plan_store() -> Connection {
-    let conn = populated_schema_11();
-    migrate(&conn);
-    conn
-}
 
-/// Every retention query must search its index both on a fresh store, which
-/// has no planner statistics, and after `ANALYZE` has recorded them. The two
-/// fixtures hold the same data; only the second is analyzed, so the planner
-/// sees each case both ways. They are only read, so every case shares them.
-#[test]
-fn runs_retention_plan() {
-    let mut cases = Vec::new();
-    for index in [
-        "runs_retention",
-        "outbox_refusal_run",
-        "quarantine_obligation",
-    ] {
-        for unsettled in [false, true] {
-            cases.push((candidates_query(unsettled), index));
-        }
-    }
-    for (table, index) in [
-        ("rate_windows", "call_audit_refund_window"),
-        ("token_windows", "token_ledger_retention_window"),
-        ("quarantine", "quarantine_retention"),
-        ("call_audit", "call_audit_retention"),
-        ("audit", "audit_retention"),
-        ("outbox", "outbox_retention"),
-        ("schedule_dropped", "schedule_dropped_retention"),
-        ("token_ledger", "token_ledger_retention"),
-        ("token_windows", "token_windows_retention"),
-        ("rate_windows", "rate_windows_retention"),
-        ("decision_cards", "decision_cards_retention"),
-    ] {
-        cases.push((history_query(table), index));
-    }
-    assert_eq!(cases.len(), 17);
 
-    let unanalyzed = plan_store();
-    let analyzed = plan_store();
-    analyzed.execute_batch("ANALYZE").unwrap();
-    for (sql, index) in &cases {
-        assert_plan(&unanalyzed, sql, index, false);
-        assert_plan(&analyzed, sql, index, true);
-    }
-}
-
-#[test]
-fn indexable_ordering_preserves_candidate_and_history_batches() {
-    let conn = plan_store();
-    for cutoff in [64, 512, 2048] {
-        for unsettled in [false, true] {
-            let sql = candidates_query(unsettled);
-            let original = sql
-                .replace("ORDER BY +r.run_id", "ORDER BY r.run_id")
-                .replace(
-                    "CAST(json_extract(o.body,'$.run_id') AS TEXT)",
-                    "json_extract(o.body,'$.run_id')",
-                );
-            let read = |query: &str| -> Vec<String> {
-                conn.prepare(query)
-                    .unwrap()
-                    .query_map([cutoff], |r| r.get(0))
-                    .unwrap()
-                    .collect::<rusqlite::Result<_>>()
-                    .unwrap()
-            };
-            let rows = read(&sql);
-            assert_eq!(
-                rows,
-                read(&original),
-                "unsettled={unsettled}, cutoff={cutoff}"
-            );
-            assert!(rows.len() <= 128);
-        }
-        for table in HISTORY_PREDICATES
-            .iter()
-            .map(|(table, _)| *table)
-            .chain(["rate_windows"])
-        {
-            let sql = history_query(table);
-            let original = sql.replace("ORDER BY +rowid", "ORDER BY rowid");
-            conn.execute_batch("SAVEPOINT batch").unwrap();
-            let deleted = conn.execute(&sql, [cutoff]).unwrap();
-            assert!(deleted <= 128);
-            let rows = snapshot(&conn, table);
-            conn.execute_batch("ROLLBACK TO batch").unwrap();
-            assert_eq!(
-                conn.execute(&original, [cutoff]).unwrap(),
-                deleted,
-                "{table}"
-            );
-            assert_eq!(snapshot(&conn, table), rows, "{table}, cutoff={cutoff}");
-            conn.execute_batch("ROLLBACK TO batch; RELEASE batch")
-                .unwrap();
-        }
-    }
-}
 
 #[test]
 fn refusal_expression_preserves_run_id_text_affinity() {

@@ -50,7 +50,7 @@ pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>>
                     .intent
                     .as_ref()
                     .is_some_and(|current| std::ptr::eq(current, intent))
-                    && call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                    && call.deferred.as_ref().is_some_and(|d| d.refund_dispatch)
                 {
                     continue;
                 }
@@ -204,7 +204,7 @@ pub(crate) fn fold(
                     .intent
                     .as_ref()
                     .is_some_and(|current| std::ptr::eq(current, intent))
-                    && call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                    && call.deferred.as_ref().is_some_and(|d| d.refund_dispatch)
                 {
                     continue;
                 }

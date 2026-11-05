@@ -69,7 +69,7 @@ impl crate::module::Module {
             .map(events::Reader::health);
         let pool = self.pool.stats();
         let codemode_pool = self.codemode_pool.stats();
-        let log = if self.rt.uses_run_log() {
+        let log = {
             let read = || -> basal_core::Result<LogFindings> {
                 let health = self.rt.health()?;
                 let runs = health
@@ -84,11 +84,8 @@ impl crate::module::Module {
                     deferred: self.rt.deferred_calls()?,
                 })
             };
-            Some(read().map_err(|_| {
-                OpError::new("storage_unavailable", "cannot read basal diagnostics")
-            })?)
-        } else {
-            None
+            read()
+                .map_err(|_| OpError::new("storage_unavailable", "cannot read basal diagnostics"))?
         };
         reply_with(
             self.rt.store(),
@@ -96,7 +93,7 @@ impl crate::module::Module {
             window,
             events.as_ref(),
             &[("flows", &pool), ("codemode", &codemode_pool)],
-            log.as_ref(),
+            &log,
         )
     }
 }
@@ -113,9 +110,10 @@ fn reply(
     events: Option<&events::Health>,
     pools: &[(&str, &crate::pool::PoolStats)],
 ) -> OpResult {
-    reply_with(store, now, window, events, pools, None)
+    reply_with(store, now, window, events, pools, &LogFindings::default())
 }
 
+#[derive(Default)]
 struct LogFindings {
     flows: Vec<basal_core::ops::FlowHealth>,
     runs: Vec<basal_core::Run>,
@@ -128,7 +126,7 @@ fn reply_with(
     window: i64,
     events: Option<&events::Health>,
     pools: &[(&str, &crate::pool::PoolStats)],
-    log: Option<&LogFindings>,
+    log: &LogFindings,
 ) -> OpResult {
     let mut findings = store_findings_with(store, now, window, log)
         .map_err(|_| OpError::new("storage_unavailable", "cannot read basal diagnostics"))?;
@@ -223,7 +221,7 @@ fn store_findings_with(
     store: &Store,
     now: i64,
     window: i64,
-    log: Option<&LogFindings>,
+    log: &LogFindings,
 ) -> basal_core::Result<Vec<Finding>> {
     store.read(|conn| {
         let mut findings = Vec::new();
@@ -235,7 +233,7 @@ fn store_findings_with(
                     "Use flow.reconcile with run_id and resolution cancel or retrigger; never resend unknown writes automatically."),
                 |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"flow_id":r.get::<_,String>(1)?,"run_id":r.get::<_,String>(2)?}))) }, Some(now))?);
         }
-        for flow in if let Some(log) = log { log.flows.clone() } else { basal_core::ops::flow_health(conn, now)? } {
+        for flow in log.flows.clone() {
             if flow.auto_disabled || (flow.enabled && flow.consecutive_failures >= FAILURE_THRESHOLD as u64) {
                 let disabled_at: Option<i64> = conn.query_row("SELECT disabled_at FROM flows WHERE flow_id=?1",
                     [&flow.flow_id], |r| r.get(0))?;
@@ -252,33 +250,7 @@ fn store_findings_with(
                 });
             }
         }
-        let run_sample = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(i64, Value)> {
-            let at: i64 = r.get(0)?;
-            Ok((at, json!({"at_ms":at, "flow_id":r.get::<_,String>(1)?, "run_id":r.get::<_,String>(2)?})))
-        };
-        let call_sample = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(i64, Value)> {
-            let (at, mut sample) = run_sample(r)?;
-            sample["position"] = json!(r.get::<_,i64>(3)?);
-            Ok((at, sample))
-        };
-        if log.is_none() { findings.extend(aggregate(conn,
-            "SELECT deadline_at,flow_id,run_id FROM runs WHERE ended_at IS NULL AND deadline_at<=?1 ORDER BY deadline_at,run_id",
-            [now.saturating_sub(OVERDUE_GRACE_MS)],
-            finding("runs_overdue", "deadline", "warn", "Unfinished runs are past their recorded deadlines.",
-                "Inspect run state and the deadline sweep; diagnostics never cancels runs."), run_sample, Some(now))?);
-        findings.extend(aggregate(conn,
-            "SELECT j.retry_not_before,r.flow_id,r.run_id,j.position FROM journal j JOIN runs r USING(run_id) WHERE j.dispatch='deferred' AND j.retry_not_before<=?1 AND r.ended_at IS NULL AND r.state IN ('pending','running','suspended') ORDER BY j.retry_not_before,r.run_id,j.position",
-            [now.saturating_sub(OVERDUE_GRACE_MS)],
-            finding("runs_overdue", "deferred", "warn", "Deferred calls are past their scheduled retry times.",
-                "Inspect flow.health and deferred-call wake processing."), call_sample, Some(now))?);
-        // Reconcile state-entry times are not stored. Admission age is the
-        // available conservative signal, not a claim about time in that state.
-        findings.extend(aggregate(conn,
-            "SELECT admitted_at,flow_id,run_id FROM runs WHERE state='needs_reconcile' AND admitted_at<=?1 ORDER BY admitted_at,run_id",
-            [now.saturating_sub(STUCK_MS)],
-            finding("reconcile_pending", "runs", "warn", "Runs admitted over an hour ago now need operator reconciliation; state-entry time is unavailable.",
-                "Inspect unknown calls and use flow.reconcile only after establishing their outcomes."), run_sample, Some(now))?);
-        } else if let Some(log) = log {
+        {
             let sample = |at, flow: &str, id: &str| (at, json!({"at_ms":at,"flow_id":flow,"run_id":id}));
             let deadline: Vec<_> = log.runs.iter().filter(|r| !r.state.is_terminal()).filter_map(|r|r.deadline_at.filter(|at|*at<=now.saturating_sub(OVERDUE_GRACE_MS)).map(|at|sample(at,&r.flow_id,&r.run_id))).collect();
             let deferred = log.deferred.iter().filter(|(_,_,_,at)|*at<=now.saturating_sub(OVERDUE_GRACE_MS)).map(|(id,flow,p,at)| { let (at,mut value)=sample(*at,flow,id); value["position"]=json!(p); (at,value) }).collect();

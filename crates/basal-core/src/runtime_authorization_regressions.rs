@@ -45,14 +45,12 @@ impl TestRuntime {
         std::fs::create_dir_all(&path).unwrap();
         let store =
             Arc::new(Store::open(path.join("store.sqlite"), Durability::throwaway()).unwrap());
-        let rt = Runtime::new(
-            store,
-            Arc::new(MockHost::new()),
-            Arc::new(MockCatalog::standard()),
-            Arc::new(NoHooks),
-            None,
-            Config::default(),
-        );
+        let rt = Runtime::new(store,
+        Arc::new(MockHost::new()),
+        Arc::new(MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        Config::default(),).expect("runtime startup");
         Self {
             rt,
             _dir: ScratchDir(path),
@@ -172,9 +170,9 @@ fn huge_usage_settles_and_keeps_window_totals_integral() {
 
 #[test]
 fn health_does_not_hide_a_store_error() {
-    let conn = connection();
-    conn.execute("DROP TABLE meta", []).unwrap();
-    assert!(ops::health(&conn).is_err());
+    let fixture=TestRuntime::new();
+    fixture.rt.store().write(|tx|{tx.execute("DROP TABLE meta",[])?;Ok(())}).unwrap();
+    assert!(fixture.rt.health().is_err());
 }
 
 #[test]
@@ -209,7 +207,7 @@ fn corrupt_schedule_does_not_block_healthy_schedules() {
     }).unwrap();
     let now = jiff::Timestamp::from_millisecond(60000).unwrap();
     let scheduler = schedule::Scheduler::new(
-        fixture.rt.shared.store.clone(),
+        fixture.rt.clone(),
         Arc::new(schedule::ManualClock::new(now)),
         schedule::SchedulerConfig::default(),
     );
@@ -250,7 +248,7 @@ fn corrupt_oldest_fire_does_not_block_healthy_fires() {
     }).unwrap();
     let now = jiff::Timestamp::from_millisecond(60000).unwrap();
     let scheduler = schedule::Scheduler::new(
-        fixture.rt.shared.store.clone(),
+        fixture.rt.clone(),
         Arc::new(schedule::ManualClock::new(now)),
         schedule::SchedulerConfig::default(),
     );

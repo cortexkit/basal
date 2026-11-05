@@ -187,18 +187,16 @@ async fn fixture(server: &Server) -> (Runtime, Arc<BlockingTransport>) {
         }))
         .unwrap(),
     );
-    let rt = Runtime::new(
-        Arc::new(Store::open(server.dir.join("reader.db"), Durability::throwaway()).unwrap()),
-        Arc::new(MockHost::new()),
-        Arc::new(SubcCatalog::new(transport.clone()).with_daemon_capabilities(capabilities)),
-        Arc::new(basal_core::NoHooks),
-        None,
-        Config {
-            clock: Clock::manual(1000),
-            install_gate: InstallGate::Off,
-            ..Default::default()
-        },
-    );
+    let rt = Runtime::new(Arc::new(Store::open(server.dir.join("reader.db"), Durability::throwaway()).unwrap()),
+    Arc::new(MockHost::new()),
+    Arc::new(SubcCatalog::new(transport.clone()).with_daemon_capabilities(capabilities)),
+    Arc::new(basal_core::NoHooks),
+    None,
+    Config {
+        clock: Clock::manual(1000),
+        install_gate: InstallGate::Off,
+        ..Default::default()
+    },).expect("runtime startup");
     let install_rt = rt.clone();
     tokio::task::spawn_blocking(move || {
         let installed = install_rt.install(&InstallRequest {

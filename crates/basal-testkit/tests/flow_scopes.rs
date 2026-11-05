@@ -310,21 +310,19 @@ impl Fixture {
             Arc::new(CoreHost::new(wire.clone())),
             Arc::new(world.mock.clone()),
         ));
-        let rt = Runtime::new(
-            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-            host,
-            Arc::new(world.catalog.clone()),
-            hooks,
-            Some(world.source.clone()),
-            Config {
-                activation_deadline,
-                install_gate: InstallGate::Core,
-                clock: clock.clone(),
-                deferral_retry: Duration::from_millis(100),
-                auto_resume: false,
-                ..Config::default()
-            },
-        );
+        let rt = { let runtime=Runtime::new(Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+        host,
+        Arc::new(world.catalog.clone()),
+        hooks,
+        Some(world.source.clone()),
+        Config {
+            activation_deadline,
+            install_gate: InstallGate::Core,
+            clock: clock.clone(),
+            deferral_retry: Duration::from_millis(100),
+            auto_resume: false,
+            ..Config::default()
+        },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
         let mut manifest = test_manifest();
         manifest.as_object_mut().unwrap().remove("llm");
         manifest["ops"] = json!([{"module":"mock","op":"send"}]);
@@ -376,19 +374,17 @@ impl Fixture {
             Arc::new(CoreHost::new(wire.clone())),
             Arc::new(world.mock.clone()),
         ));
-        let rt = Runtime::new(
-            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-            host,
-            Arc::new(world.catalog.clone()),
-            Arc::new(NoHooks),
-            Some(world.source.clone()),
-            Config {
-                install_gate: InstallGate::Core,
-                clock: clock.clone(),
-                auto_resume: false,
-                ..Config::default()
-            },
-        );
+        let rt = { let runtime=Runtime::new(Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+        host,
+        Arc::new(world.catalog.clone()),
+        Arc::new(NoHooks),
+        Some(world.source.clone()),
+        Config {
+            install_gate: InstallGate::Core,
+            clock: clock.clone(),
+            auto_resume: false,
+            ..Config::default()
+        },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
         Self {
             world,
             wire,
@@ -452,7 +448,7 @@ struct LiveCallRetirementProbe {
 }
 impl basal_core::hooks::Hooks for LiveCallRetirementProbe {
     fn at(&self, run: &str, boundary: &basal_core::hooks::Boundary) -> basal_core::hooks::Step {
-        if *boundary == basal_core::hooks::Boundary::EndingReceived {
+        if *boundary == basal_core::hooks::Boundary::DriverBeforeClose {
             let (rt, wire) = self.context.lock().unwrap().clone().unwrap();
             // Drain the dispatch threads before ending the run, so the counter
             // observes every unregister while the run is still live.
@@ -1939,7 +1935,7 @@ fn changed_target_epoch_drops_old_routes_and_invalidates_old_run_pins() {
 fn replay_reasks_core_and_outside_audience_call_fails_unsent() {
     let script = "const codes=[]; for(let i=0;i<2;i++) { try { await ops.call('mock','echo',{}, {for:'Alice'}); codes.push(null); } catch(e) { codes.push(e.data.code); } } return codes;";
     let probe = Arc::new(basal_testkit::harness::Probe::crash_at(
-        basal_testkit::harness::Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+        basal_testkit::harness::Point::parse("DriverDispatched { position: 0 }#1").unwrap(),
     ));
     let f = Fixture::with_hooks(
         "target-replay",
@@ -2077,7 +2073,7 @@ fn delegation_refusals_do_not_penalize_uncaught_runs() {
 #[test]
 fn midcall_target_scope_cut_survives_restart_without_resending_keyed_mutation() {
     let probe = Arc::new(basal_testkit::harness::Probe::crash_at(
-        basal_testkit::harness::Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+        basal_testkit::harness::Point::parse("DriverDispatched { position: 0 }#1").unwrap(),
     ));
     let f = Fixture::with_host_options(
         "target-cut-restart",
