@@ -67,6 +67,7 @@ pub struct State {
     last_key: Option<(String, Vec<String>)>,
     totals: BTreeMap<(String, Vec<String>), Total>,
     wal: PathBuf,
+    page_size: u64,
     salt: [u8; 8],
     previous_frames: u64,
     pending_frames: u64,
@@ -93,6 +94,9 @@ pub struct Probe<'a> {
 
 impl<'a> Probe<'a> {
     pub fn start(store: &'a basal_core::Store, wal: PathBuf, threshold: c_int) -> Self {
+        let page_size = store
+            .read(|conn| Ok(conn.query_row("PRAGMA page_size", [], |row| row.get(0))?))
+            .unwrap();
         let initial_io = Io::read();
         let probe = Self {
             store,
@@ -102,6 +106,7 @@ impl<'a> Probe<'a> {
                 last_key: None,
                 totals: BTreeMap::new(),
                 wal,
+                page_size,
                 salt: [0; 8],
                 previous_frames: 0,
                 pending_frames: 0,
@@ -196,7 +201,7 @@ impl<'a> Probe<'a> {
                 json!({"phase": phase, "sql": statements,
                     "kind": transaction_kind(phase, statements),
                     "transactions": total.transactions, "frames": total.frames,
-                    "wal_frame_bytes": total.frames * (4096 + 24),
+                    "wal_frame_bytes": total.frames * (state.page_size + 24),
                     "sqlite_write_bytes": total.sqlite_bytes,
                     "write_bytes": total.bytes})
             })
@@ -357,7 +362,7 @@ unsafe extern "C" fn wal(
         let owners = owners.expect("dbstat page ownership");
         let mut pages = Vec::new();
         for frame in frames - added..frames {
-            file.seek(SeekFrom::Start(32 + frame * (4096 + 24)))
+            file.seek(SeekFrom::Start(32 + frame * (state.page_size + 24)))
                 .unwrap();
             let mut number = [0; 4];
             file.read_exact(&mut number).unwrap();
@@ -374,8 +379,9 @@ unsafe extern "C" fn wal(
             .last_key
             .clone()
             .unwrap_or_else(|| (state.phase.clone(), state.statements.clone()));
+        let wal_frame_bytes = added * (state.page_size + 24);
         state.transactions.push(json!({"phase": phase, "kind": transaction_kind(&phase, &statements),
-            "sql": statements, "wal_frames": added, "wal_frame_bytes": added * (4096 + 24), "pages": pages}));
+            "sql": statements, "wal_frames": added, "wal_frame_bytes": wal_frame_bytes, "pages": pages}));
         // SQLite can emit COMMIT's PROFILE event before invoking the WAL hook.
         // Attach frames to that completed transaction, not the following one.
         if let Some(key) = state.last_key.clone() {
