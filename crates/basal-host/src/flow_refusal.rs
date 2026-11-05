@@ -124,8 +124,11 @@ impl FlowRefusal {
     pub fn message(&self) -> &'static str {
         match self.reason {
             RefusalReason::NoFlowScope => "waiting for core to register the flow scope",
+            // The daemon refuses this both for a module that never declared
+            // flow-scopes/v1 and for one that has not finished registering
+            // after a restart, so the text must not assert which.
             RefusalReason::TargetFlowUnsupported => {
-                "the target module does not yet provide flow-scopes/v1"
+                "the daemon does not accept flow calls to this module yet: it is still registering, or it does not declare flow-scopes/v1; retry later"
             }
             RefusalReason::ResourceBusy => "the provider's exclusive resource is busy",
             RefusalReason::ConsentUnavailable => {
