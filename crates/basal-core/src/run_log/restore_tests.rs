@@ -1,5 +1,193 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy)]
+enum RecoveryCase {
+    Absent,
+    Foreign,
+    Older,
+    Newer,
+    ReservedSpare,
+    MidGc,
+    BrokenLink,
+    MissingSealed,
+    CorruptSealed,
+    TornBelowKnown,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Expected {
+    ReinitializeOnce,
+    RecoverNormally,
+    OperatorDiagnostic(&'static str),
+}
+
+#[test]
+fn verification_matrix_restore_and_recovery_outcomes() {
+    use RecoveryCase::*;
+    let cases = [
+        (Absent, Expected::ReinitializeOnce),
+        (Foreign, Expected::ReinitializeOnce),
+        (Older, Expected::ReinitializeOnce),
+        (Newer, Expected::ReinitializeOnce),
+        (ReservedSpare, Expected::RecoverNormally),
+        (MidGc, Expected::RecoverNormally),
+        (
+            BrokenLink,
+            Expected::OperatorDiagnostic("broken Link chain"),
+        ),
+        (
+            MissingSealed,
+            Expected::OperatorDiagnostic("registered sealed segment missing"),
+        ),
+        (
+            CorruptSealed,
+            Expected::OperatorDiagnostic("torn tail below durable end or in sealed segment"),
+        ),
+        (
+            TornBelowKnown,
+            Expected::OperatorDiagnostic("torn tail below durable end or in sealed segment"),
+        ),
+    ];
+    for (case, expected) in cases {
+        let f = prepared();
+        match case {
+            Absent => fs::remove_dir_all(f.config(Arc::new(NoHooks)).directory).unwrap(),
+            Foreign => {
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .open(f.scratch.file(0))
+                    .unwrap();
+                Header::write(
+                    &mut file,
+                    Identity {
+                        store_id: [99; 16],
+                        log_epoch: 3,
+                    },
+                    f.store.lease_epoch(),
+                    0,
+                )
+                .unwrap();
+                file.sync_all().unwrap();
+            }
+            Older => fs::OpenOptions::new()
+                .write(true)
+                .open(f.scratch.file(0))
+                .unwrap()
+                .set_len(HEADER_LEN)
+                .unwrap(),
+            Newer => {
+                fs::copy(f.scratch.file(1), f.scratch.file(9)).unwrap();
+            }
+            ReservedSpare => {
+                fs::remove_file(f.scratch.file(1)).unwrap();
+            }
+            MidGc => {
+                let cut = Cut::new();
+                let (log, _) =
+                    RunLog::<RunFact>::open(f.config(cut.clone()), f.registry.clone()).unwrap();
+                log.rotate().unwrap();
+                let start = log.append(vec![RunFact::live()]).unwrap();
+                log.sync_through(start).unwrap();
+                cut.arm(Boundary::RunLogGcCommitted);
+                assert_eq!(
+                    log.reclaim(BTreeMap::from([("live".into(), start)])),
+                    Err(Error::Cut)
+                );
+                drop(log);
+            }
+            BrokenLink | MissingSealed | CorruptSealed => {
+                let (log, _) =
+                    RunLog::<RunFact>::open(f.config(Arc::new(NoHooks)), f.registry.clone())
+                        .unwrap();
+                log.rotate().unwrap();
+                drop(log);
+                match case {
+                    BrokenLink => {
+                        let mut file = fs::OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(f.scratch.file(1))
+                            .unwrap();
+                        Header::read(&mut file).unwrap();
+                        let frame = format::read_frame(&mut file).unwrap().unwrap();
+                        let mut end: SegmentEnd = format::decode(&frame.payload).unwrap();
+                        end.crc ^= 1;
+                        file.seek(SeekFrom::Start(HEADER_LEN)).unwrap();
+                        file.write_all(&format::frame(LINK, &end).unwrap()).unwrap();
+                        file.sync_all().unwrap();
+                    }
+                    MissingSealed => fs::remove_file(f.scratch.file(0)).unwrap(),
+                    CorruptSealed => fs::OpenOptions::new()
+                        .write(true)
+                        .open(f.scratch.file(0))
+                        .unwrap()
+                        .set_len(HEADER_LEN + 2)
+                        .unwrap(),
+                    _ => unreachable!(),
+                }
+            }
+            TornBelowKnown => {
+                let known = f.meta().log_hwm.lsn;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(f.scratch.file(0))
+                    .unwrap()
+                    .set_len(known.offset - 1)
+                    .unwrap();
+            }
+        }
+        match expected {
+            Expected::ReinitializeOnce => restore_once(&f),
+            Expected::RecoverNormally => {
+                let before = f.meta();
+                for _ in 0..2 {
+                    let (log, records) = RunLog::<RunFact>::open_restoring(
+                        f.config(Arc::new(NoHooks)),
+                        f.store.clone(),
+                    )
+                    .unwrap();
+                    assert!(
+                        records.records.iter().any(|r| r.record == RunFact::live()),
+                        "{case:?}"
+                    );
+                    assert_eq!(
+                        f.meta(),
+                        before,
+                        "{case:?}: normal recovery must not advance the epoch"
+                    );
+                    assert!(
+                        !f.store.read(|c| sql::history_lost(c, "live")).unwrap(),
+                        "{case:?}"
+                    );
+                    drop(log);
+                }
+            }
+            Expected::OperatorDiagnostic(diagnostic) => {
+                let before = f.meta();
+                for _ in 0..2 {
+                    let error = match RunLog::<RunFact>::open_restoring(
+                        f.config(Arc::new(NoHooks)),
+                        f.store.clone(),
+                    ) {
+                        Err(error) => error,
+                        Ok(_) => panic!("{case:?}: damaged log started"),
+                    };
+                    assert_eq!(error, Error::Corrupt(diagnostic), "{case:?}");
+                    assert!(
+                        error.to_string().contains(diagnostic),
+                        "{case:?}: operator must see the damage"
+                    );
+                    assert_eq!(f.meta(), before, "{case:?}");
+                    assert!(
+                        !f.store.read(|c| sql::history_lost(c, "live")).unwrap(),
+                        "{case:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn prepared() -> Fixture {
     let f = Fixture::new();
     let log = RunLog::<RunFact>::create(f.config(Arc::new(NoHooks)), f.registry.clone()).unwrap();
@@ -142,42 +330,45 @@ fn every_restore_boundary_resumes_once_including_both_sides_of_marker_clear() {
         Boundary::RESTORE.iter().map(|b| format!("{b:?}")).collect()
     );
     for boundary in Boundary::RESTORE {
-        let f = prepared();
-        fs::remove_dir_all(&f.config(Arc::new(NoHooks)).directory).unwrap();
-        let hooks = Cut::new();
-        hooks.arm(boundary.clone());
-        assert!(
-            matches!(
-                RunLog::<RunFact>::open_restoring(f.config(hooks), f.store.clone()),
-                Err(Error::Cut)
-            ),
-            "{boundary:?}"
-        );
-        assert_eq!(
-            f.store.read(sql::restore_pending).unwrap(),
-            boundary != Boundary::RestoreFinished
-        );
-        let mut config = f.config(Arc::new(NoHooks));
-        let Fixture {
-            scratch,
-            store,
-            registry,
-        } = f;
-        drop(registry);
-        drop(store);
-        let store =
-            Arc::new(Store::open(scratch.0.join("store.db"), Durability::default()).unwrap());
-        config.lease_epoch = store.lease_epoch();
-        let (log, _) = RunLog::<RunFact>::open_restoring(config.clone(), store.clone()).unwrap();
-        let meta = store.read(sql::meta).unwrap();
-        assert_eq!(meta.log_epoch, 4, "{boundary:?}");
-        assert!(!store.read(sql::restore_pending).unwrap());
-        assert!(store.read(|c| sql::history_lost(c, "live")).unwrap());
-        drop(log);
-        let (log, _) = RunLog::<RunFact>::open_restoring(config, store.clone()).unwrap();
-        assert_eq!(store.read(sql::meta).unwrap(), meta);
-        drop(log);
+        crash_case(boundary);
     }
+}
+
+pub(crate) fn crash_case(boundary: Boundary) {
+    let f = prepared();
+    fs::remove_dir_all(&f.config(Arc::new(NoHooks)).directory).unwrap();
+    let hooks = Cut::new();
+    hooks.arm(boundary.clone());
+    assert!(
+        matches!(
+            RunLog::<RunFact>::open_restoring(f.config(hooks), f.store.clone()),
+            Err(Error::Cut)
+        ),
+        "{boundary:?}"
+    );
+    assert_eq!(
+        f.store.read(sql::restore_pending).unwrap(),
+        boundary != Boundary::RestoreFinished
+    );
+    let mut config = f.config(Arc::new(NoHooks));
+    let Fixture {
+        scratch,
+        store,
+        registry,
+    } = f;
+    drop(registry);
+    drop(store);
+    let store = Arc::new(Store::open(scratch.0.join("store.db"), Durability::default()).unwrap());
+    config.lease_epoch = store.lease_epoch();
+    let (log, _) = RunLog::<RunFact>::open_restoring(config.clone(), store.clone()).unwrap();
+    let meta = store.read(sql::meta).unwrap();
+    assert_eq!(meta.log_epoch, 4, "{boundary:?}");
+    assert!(!store.read(sql::restore_pending).unwrap());
+    assert!(store.read(|c| sql::history_lost(c, "live")).unwrap());
+    drop(log);
+    let (log, _) = RunLog::<RunFact>::open_restoring(config, store.clone()).unwrap();
+    assert_eq!(store.read(sql::meta).unwrap(), meta);
+    drop(log);
 }
 
 #[test]

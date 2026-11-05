@@ -6,6 +6,28 @@
 //! passes and then crash at each one. In production the hooks are
 //! [`NoHooks`] and cost one virtual call.
 
+// Generate the inventory from the declaration itself: adding a crash point must
+// also make the verification matrix handle it, including when SQLite journal
+// crash points are removed after production execution switches to the run log.
+macro_rules! boundaries {
+    ($(#[$outer:meta])* $vis:vis enum $name:ident {
+        $($(#[$doc:meta])* $variant:ident $({$($field:ident: $ty:ty),*})?),* $(,)?
+    }) => {
+        $(#[$outer])*
+        $vis enum $name {
+            $($(#[$doc])* $variant $({$($field: $ty),*})?),*
+        }
+        impl $name {
+            /// One representative of every boundary, including data-bearing ones.
+            /// Positions and generations are zero in this inventory.
+            pub const ALL: &'static [Self] = &[
+                $(Self::$variant $({$($field: 0),*})?),*
+            ];
+        }
+    };
+}
+
+boundaries! {
 /// A point between two records.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Boundary {
@@ -98,6 +120,7 @@ pub enum Boundary {
     /// The run left `running`.
     Exited,
 }
+}
 
 impl Boundary {
     pub const RESTORE: [Self; 4] = [
@@ -163,3 +186,7 @@ impl Hooks for NoHooks {
         Step::Continue
     }
 }
+
+#[cfg(test)]
+#[path = "verification_matrix.rs"]
+mod verification_matrix;

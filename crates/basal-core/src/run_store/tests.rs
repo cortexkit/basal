@@ -590,7 +590,7 @@ impl Hooks for CrashOn {
     }
 }
 
-fn crash_case(boundary: Boundary) {
+pub(crate) fn crash_case(boundary: Boundary) {
     let mut f = Fixture::new("crash");
     let path = f.path(Arc::new(CrashOn(boundary.clone())));
     // The records adapter stands in for the later replay stage. These are

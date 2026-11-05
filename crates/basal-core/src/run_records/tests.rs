@@ -791,7 +791,7 @@ impl Hooks for CrashSnapshot {
 }
 
 #[test]
-fn mid_snapshot_crash_keeps_durable_invariants_with_or_without_unsynced_tail() {
+pub(crate) fn mid_snapshot_crash_keeps_durable_invariants_with_or_without_unsynced_tail() {
     let fixture = Fixture::new("mid-snapshot");
     let (mut records, log) = journal();
     seed_invariants(&mut records);

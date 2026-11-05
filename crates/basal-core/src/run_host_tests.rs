@@ -515,7 +515,7 @@ fn settlement_failure_rolls_back_receipt_usage_and_acknowledgement() {
 }
 
 #[test]
-fn closing_and_missing_obligations_are_retryable_q5_e() {
+pub(crate) fn closing_and_missing_obligations_are_retryable_q5_e() {
     use std::sync::mpsc;
     use std::time::Duration;
     struct Pause {
@@ -575,7 +575,7 @@ fn closing_and_missing_obligations_are_retryable_q5_e() {
 }
 
 #[test]
-fn arrival_before_acknowledgement_crash_recovers_the_same_outcome() {
+pub(crate) fn arrival_before_acknowledgement_crash_recovers_the_same_outcome() {
     for boundary in Boundary::HOST {
         assert_eq!(boundary, Boundary::HostArrived);
         for closed in [false, true] {

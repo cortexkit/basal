@@ -768,13 +768,7 @@ impl crate::Runtime {
         if retrigger {
             // Closing and admission are separate transactions: the old slot is
             // already released before the ordinary gate examines the retry.
-            let admission = crate::run_admission::RunAdmission::new_staged(
-                self.shared.store.clone(),
-                hosts.watermark.clone(),
-                self.shared.hooks.clone(),
-            );
-            let result = admission.retrigger(id, &self.admit_context()?)?;
-            self.shared.signal.bump();
+            let result = self.staged_retrigger(id)?;
             Ok(Some(result))
         } else {
             Ok(None)

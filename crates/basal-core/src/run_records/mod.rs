@@ -4,7 +4,7 @@
 mod codec;
 mod state;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod types;
 
 use std::sync::Arc;

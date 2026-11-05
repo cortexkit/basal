@@ -21,7 +21,7 @@ pub(crate) mod accounting;
 mod local;
 mod terminal;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod worker;
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
@@ -960,6 +960,11 @@ impl Activation {
                     .is_some_and(|r| r.choice == "not_applied" && r.attempts == intent.attempts)
             {
                 self.run.activate(self.generation, |a| {
+                    if a.is_dispatching(intent.call.position)
+                        || a.records().state().calls.get(&intent.call.position) != Some(call)
+                    {
+                        return Ok(());
+                    }
                     a.records()
                         .append(
                             self.generation,

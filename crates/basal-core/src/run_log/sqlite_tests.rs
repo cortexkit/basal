@@ -154,74 +154,78 @@ fn history(id: &str) -> sql::RunHistory {
 #[test]
 fn sqlite_gc_floor_commit_precedes_unlink_and_recovers_at_every_boundary() {
     for boundary in Boundary::RUN_LOG_GC {
-        let f = Fixture::new();
-        let cut = Cut::new();
-        let log = RunLog::<RunFact>::create(f.config(cut.clone()), f.registry.clone()).unwrap();
-        f.admit("live", log.synced_lsn());
-        f.admit("finished", log.synced_lsn());
-        log.append(vec![
-            RunFact::live(),
-            RunFact {
-                run_id: "finished".into(),
-                facts: Facts::committed(),
-            },
-        ])
-        .unwrap();
-        log.rotate().unwrap();
-        log.append(vec![RunFact::live()]).unwrap();
-        log.rotate().unwrap();
-        let start = log.append(vec![RunFact::live()]).unwrap();
-        log.sync_through(start).unwrap();
-        sql::write_synced(&f.store, &log.watermark(), |tx| {
-            sql::finish_live(tx, &history("finished"))
-        })
-        .unwrap();
-        cut.arm(boundary.clone());
-        assert_eq!(
-            log.reclaim(BTreeMap::from([("live".into(), start)])),
-            Err(Error::Cut)
-        );
-        let meta = f.meta();
-        assert_eq!(meta.gc_floor.first_retained, 2, "{boundary:?}");
-        assert_eq!(meta.gc_floor.predecessor.unwrap().lsn.sequence, 1);
-        assert_eq!(
-            meta.gc_floor.live_starts,
-            BTreeMap::from([("live".into(), start)])
-        );
-        assert_eq!(meta.gc_floor.synced_lsn, start);
-        assert_eq!(meta.log_hwm.lsn, start);
-        assert_eq!(f.registry.snapshot().unwrap().first_retained, 2);
-        assert!(!f.registry.snapshot().unwrap().segments.contains_key(&0));
-        assert!(!f.registry.snapshot().unwrap().segments.contains_key(&1));
-        let present = (f.scratch.file(0).exists(), f.scratch.file(1).exists());
-        assert_eq!(
-            present,
-            match boundary {
-                Boundary::RunLogGcCommitted => (true, true),
-                Boundary::RunLogGcUnlinked => (false, true),
-                Boundary::RunLogGcSynced => (false, false),
-                _ => panic!("new GC boundary needs crash assertions"),
-            }
+        gc_crash_case(boundary);
+    }
+}
+
+pub(crate) fn gc_crash_case(boundary: Boundary) {
+    let f = Fixture::new();
+    let cut = Cut::new();
+    let log = RunLog::<RunFact>::create(f.config(cut.clone()), f.registry.clone()).unwrap();
+    f.admit("live", log.synced_lsn());
+    f.admit("finished", log.synced_lsn());
+    log.append(vec![
+        RunFact::live(),
+        RunFact {
+            run_id: "finished".into(),
+            facts: Facts::committed(),
+        },
+    ])
+    .unwrap();
+    log.rotate().unwrap();
+    log.append(vec![RunFact::live()]).unwrap();
+    log.rotate().unwrap();
+    let start = log.append(vec![RunFact::live()]).unwrap();
+    log.sync_through(start).unwrap();
+    sql::write_synced(&f.store, &log.watermark(), |tx| {
+        sql::finish_live(tx, &history("finished"))
+    })
+    .unwrap();
+    cut.arm(boundary.clone());
+    assert_eq!(
+        log.reclaim(BTreeMap::from([("live".into(), start)])),
+        Err(Error::Cut)
+    );
+    let meta = f.meta();
+    assert_eq!(meta.gc_floor.first_retained, 2, "{boundary:?}");
+    assert_eq!(meta.gc_floor.predecessor.unwrap().lsn.sequence, 1);
+    assert_eq!(
+        meta.gc_floor.live_starts,
+        BTreeMap::from([("live".into(), start)])
+    );
+    assert_eq!(meta.gc_floor.synced_lsn, start);
+    assert_eq!(meta.log_hwm.lsn, start);
+    assert_eq!(f.registry.snapshot().unwrap().first_retained, 2);
+    assert!(!f.registry.snapshot().unwrap().segments.contains_key(&0));
+    assert!(!f.registry.snapshot().unwrap().segments.contains_key(&1));
+    let present = (f.scratch.file(0).exists(), f.scratch.file(1).exists());
+    assert_eq!(
+        present,
+        match boundary {
+            Boundary::RunLogGcCommitted => (true, true),
+            Boundary::RunLogGcUnlinked => (false, true),
+            Boundary::RunLogGcSynced => (false, false),
+            _ => panic!("new GC boundary needs crash assertions"),
+        }
+    );
+    drop(log);
+    for _ in 0..2 {
+        let (log, recovered) =
+            RunLog::<RunFact>::open(f.config(Arc::new(NoHooks)), f.registry.clone()).unwrap();
+        assert_eq!(recovered.records.len(), 1);
+        // Compare recovery to the literal values in Facts::committed, not
+        // values derived from the recovered log: deadlines, broken counts,
+        // budgets, retry keys and acknowledged outcomes must survive GC.
+        assert_eq!(recovered.records[0].record, RunFact::live());
+        assert!(!f.scratch.file(0).exists());
+        assert!(!f.scratch.file(1).exists());
+        assert_eq!(f.meta(), meta);
+        assert!(
+            !f.store
+                .read(|c| Ok(sql::history(c, "finished")?.unwrap().history_lost))
+                .unwrap()
         );
         drop(log);
-        for _ in 0..2 {
-            let (log, recovered) =
-                RunLog::<RunFact>::open(f.config(Arc::new(NoHooks)), f.registry.clone()).unwrap();
-            assert_eq!(recovered.records.len(), 1);
-            // Compare recovery to the literal values in Facts::committed, not
-            // values derived from the recovered log: deadlines, broken counts,
-            // budgets, retry keys and acknowledged outcomes must survive GC.
-            assert_eq!(recovered.records[0].record, RunFact::live());
-            assert!(!f.scratch.file(0).exists());
-            assert!(!f.scratch.file(1).exists());
-            assert_eq!(f.meta(), meta);
-            assert!(
-                !f.store
-                    .read(|c| Ok(sql::history(c, "finished")?.unwrap().history_lost))
-                    .unwrap()
-            );
-            drop(log);
-        }
     }
 }
 
@@ -587,4 +591,4 @@ fn sqlite_registry_fences_each_mutation_and_filters_other_epochs() {
 }
 
 #[path = "restore_tests.rs"]
-mod restore;
+pub(crate) mod restore;

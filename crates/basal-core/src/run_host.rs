@@ -499,4 +499,4 @@ impl CompletionSink for RecoveredHosts {
 
 #[cfg(test)]
 #[path = "run_host_tests.rs"]
-mod tests;
+pub(crate) mod tests;

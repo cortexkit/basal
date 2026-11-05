@@ -289,77 +289,81 @@ fn admission_boundaries_preserve_atomicity_and_redelivery() {
     // This list is the admission stage's closed set. Later crash verification
     // combines it with the boundaries owned by the other lifecycle stages.
     for boundary in [Boundary::AdmissionWritten, Boundary::AdmissionCommitted] {
-        let mut f = Fixture::new("crash");
-        f.event("flow");
-        f.schema();
-        let dir = f.dir.clone();
-        let crash = Arc::new(CrashOn {
-            boundary: boundary.clone(),
-            after: if boundary == Boundary::AdmissionWritten {
-                2
-            } else {
-                1
-            },
-            seen: AtomicUsize::new(0),
-        });
-        let path = f.path(crash);
-        let acked = Cell::new(false);
-        assert_eq!(
-            path.admit_events(&[notice(1), notice(2)], &ctx(100), &NoWakes, || {
-                acked.set(true);
-                Ok(())
-            }),
-            Err(CoreError::Cut)
-        );
-        assert!(!acked.get());
-        drop(path);
-        f.cleanup = false;
-        drop(f);
-        let restarted = Fixture::open(dir);
-        let committed = boundary == Boundary::AdmissionCommitted;
-        assert_eq!(restarted.count("live_runs"), if committed { 2 } else { 0 });
-        assert_eq!(
-            restarted.count("event_receipts"),
-            if committed { 2 } else { 0 }
-        );
-        assert_eq!(
-            restarted.count("run_identities"),
-            if committed { 2 } else { 0 }
-        );
-        let before = restarted.ids();
-        let path = restarted.path(Arc::new(NoHooks));
-        let report = path
-            .admit_events(&[notice(1), notice(2)], &ctx(100), &NoWakes, || Ok(()))
-            .unwrap();
-        if committed {
-            assert_eq!(report.duplicate, 2);
-            assert_eq!(restarted.ids(), before);
-        } else {
-            assert_eq!(report.admitted, 2);
-        }
-        assert_eq!(restarted.count("trigger_inbox"), 2);
-        restarted
-            .rt
-            .store()
-            .read(|c| {
-                assert_eq!(
-                    c.query_row(
-                        "SELECT runs FROM rate_windows WHERE flow_id='flow'",
-                        [],
-                        |r| r.get::<_, i64>(0)
-                    )?,
-                    2
-                );
-                assert_eq!(
-                    c.query_row("SELECT value FROM meta WHERE key='next_run'", [], |r| {
-                        r.get::<_, String>(0)
-                    })?,
-                    "3"
-                );
-                Ok(())
-            })
-            .unwrap();
+        crash_case(boundary);
     }
+}
+
+pub(crate) fn crash_case(boundary: Boundary) {
+    let mut f = Fixture::new("crash");
+    f.event("flow");
+    f.schema();
+    let dir = f.dir.clone();
+    let crash = Arc::new(CrashOn {
+        boundary: boundary.clone(),
+        after: if boundary == Boundary::AdmissionWritten {
+            2
+        } else {
+            1
+        },
+        seen: AtomicUsize::new(0),
+    });
+    let path = f.path(crash);
+    let acked = Cell::new(false);
+    assert_eq!(
+        path.admit_events(&[notice(1), notice(2)], &ctx(100), &NoWakes, || {
+            acked.set(true);
+            Ok(())
+        }),
+        Err(CoreError::Cut)
+    );
+    assert!(!acked.get());
+    drop(path);
+    f.cleanup = false;
+    drop(f);
+    let restarted = Fixture::open(dir);
+    let committed = boundary == Boundary::AdmissionCommitted;
+    assert_eq!(restarted.count("live_runs"), if committed { 2 } else { 0 });
+    assert_eq!(
+        restarted.count("event_receipts"),
+        if committed { 2 } else { 0 }
+    );
+    assert_eq!(
+        restarted.count("run_identities"),
+        if committed { 2 } else { 0 }
+    );
+    let before = restarted.ids();
+    let path = restarted.path(Arc::new(NoHooks));
+    let report = path
+        .admit_events(&[notice(1), notice(2)], &ctx(100), &NoWakes, || Ok(()))
+        .unwrap();
+    if committed {
+        assert_eq!(report.duplicate, 2);
+        assert_eq!(restarted.ids(), before);
+    } else {
+        assert_eq!(report.admitted, 2);
+    }
+    assert_eq!(restarted.count("trigger_inbox"), 2);
+    restarted
+        .rt
+        .store()
+        .read(|c| {
+            assert_eq!(
+                c.query_row(
+                    "SELECT runs FROM rate_windows WHERE flow_id='flow'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                2
+            );
+            assert_eq!(
+                c.query_row("SELECT value FROM meta WHERE key='next_run'", [], |r| {
+                    r.get::<_, String>(0)
+                })?,
+                "3"
+            );
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]

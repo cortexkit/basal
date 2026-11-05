@@ -1,6 +1,6 @@
 use super::*;
 #[path = "sqlite_tests.rs"]
-mod sqlite;
+pub(crate) mod sqlite;
 use crate::NoHooks;
 use std::{
     fs::{self, OpenOptions},
@@ -175,7 +175,7 @@ fn reopen(scratch: &Scratch, registry: Arc<MemoryRegistry>) -> (RunLog<Facts>, R
     RunLog::open(scratch.config(Arc::new(NoHooks), 1), registry).unwrap()
 }
 
-fn crash_case(boundary: Boundary) {
+pub(crate) fn crash_case(boundary: Boundary) {
     let scratch = Scratch::new();
     let registry = MemoryRegistry::new();
     let cut = Cut::new();

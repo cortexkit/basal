@@ -17,6 +17,9 @@ use std::{
     },
 };
 
+#[path = "verification_tests.rs"]
+mod verification_matrix;
+
 #[derive(Default)]
 struct MemoryLog {
     records: Mutex<Vec<Record>>,
@@ -962,173 +965,178 @@ fn retry_consumes_unsent_proof_before_another_possible_send() {
 #[test]
 fn each_driver_boundary_preserves_every_causal_recovery_clause() {
     for boundary in Boundary::RUN_DRIVER {
-        let f = Fixture::new();
-        let a = f.claim(0);
-        a.requeue(true).unwrap();
-        f.send(&a, 0, "write");
-        f.send(&a, 1, "keyed");
-        let mut model = arrival(2, "11");
-        model.usage = Some(crate::run_records::Usage {
-            input_tokens: 4,
-            output_tokens: 2,
-        });
-        model.cost_micros = Some(1);
-        f.service
-            .replies
-            .lock()
-            .unwrap()
-            .push_back(Reply::Completed(model));
-        f.send(&a, 2, "model");
-        let deadline = a.state().unwrap().claim.unwrap().deadline_at;
-        let key = a.state().unwrap().calls[&1]
-            .intent
-            .as_ref()
-            .unwrap()
-            .idempotency_key
-            .clone();
-        // A durable unkeyed Intent with no outcome must not be resent. A keyed
-        // one may retry, but must retain its frozen request and original key.
-        drop(a.issue(call(3, "write")).unwrap());
-        drop(a.issue(call(4, "keyed")).unwrap());
-        let retry_key = a.state().unwrap().calls[&4]
-            .intent
-            .as_ref()
-            .unwrap()
-            .idempotency_key
-            .clone();
-        *f.cut.0.lock().unwrap() = Some(boundary.clone());
-        let result = if boundary == Boundary::DriverReleased {
-            a.release(&[0]).map(|_| ())
-        } else {
-            match a.issue(call(5, "keyed")) {
-                Ok(Issued::Dispatch(d)) => d.send(),
-                Err(e) => Err(e),
-                _ => panic!("not dispatch"),
-            }
-        };
-        assert!(matches!(result, Err(CoreError::Cut)), "{boundary:?}");
-        let recovered = f.log.recover(&f.live.run_id);
-        let state = recovered.state();
-        assert_eq!(
-            state.claim.as_ref().unwrap().deadline_at,
-            deadline,
-            "{boundary:?}"
-        );
-        assert_eq!(state.broken, 1, "{boundary:?}");
-        // Acknowledged outcomes survive even when release/order was lazy.
-        for p in [0, 1] {
-            assert_eq!(
-                state.calls[&p].arrival.as_ref().unwrap().value.as_str(),
-                "42",
-                "{boundary:?}"
-            );
+        crash_case(boundary);
+    }
+}
+
+pub(crate) fn crash_case(boundary: Boundary) {
+    let f = Fixture::new();
+    let a = f.claim(0);
+    a.requeue(true).unwrap();
+    f.send(&a, 0, "write");
+    f.send(&a, 1, "keyed");
+    let mut model = arrival(2, "11");
+    model.usage = Some(crate::run_records::Usage {
+        input_tokens: 4,
+        output_tokens: 2,
+    });
+    model.cost_micros = Some(1);
+    f.service
+        .replies
+        .lock()
+        .unwrap()
+        .push_back(Reply::Completed(model));
+    f.send(&a, 2, "model");
+    let deadline = a.state().unwrap().claim.unwrap().deadline_at;
+    let key = a.state().unwrap().calls[&1]
+        .intent
+        .as_ref()
+        .unwrap()
+        .idempotency_key
+        .clone();
+    // A durable unkeyed Intent with no outcome must not be resent. A keyed
+    // one may retry, but must retain its frozen request and original key.
+    drop(a.issue(call(3, "write")).unwrap());
+    drop(a.issue(call(4, "keyed")).unwrap());
+    let retry_key = a.state().unwrap().calls[&4]
+        .intent
+        .as_ref()
+        .unwrap()
+        .idempotency_key
+        .clone();
+    *f.cut.0.lock().unwrap() = Some(boundary.clone());
+    let result = if boundary == Boundary::DriverReleased {
+        a.release(&[0]).map(|_| ())
+    } else {
+        match a.issue(call(5, "keyed")) {
+            Ok(Issued::Dispatch(d)) => d.send(),
+            Err(e) => Err(e),
+            _ => panic!("not dispatch"),
         }
+    };
+    assert!(matches!(result, Err(CoreError::Cut)), "{boundary:?}");
+    let recovered = f.log.recover(&f.live.run_id);
+    let state = recovered.state();
+    assert_eq!(
+        state.claim.as_ref().unwrap().deadline_at,
+        deadline,
+        "{boundary:?}"
+    );
+    assert_eq!(state.broken, 1, "{boundary:?}");
+    // The outcome was synced before acknowledgement, even if its later
+    // Released record and worker delivery order were not synced.
+    for p in [0, 1] {
         assert_eq!(
-            state.calls[&1].intent.as_ref().unwrap().idempotency_key,
-            key,
+            state.calls[&p].arrival.as_ref().unwrap().value.as_str(),
+            "42",
             "{boundary:?}"
-        );
-        let synced_sends = state.calls.values().filter(|c| c.intent.is_some()).count();
-        assert_eq!(
-            state.calls[&2].arrival.as_ref().unwrap().value.as_str(),
-            "11"
-        );
-        assert_eq!(
-            state.calls[&2]
-                .arrival
-                .as_ref()
-                .unwrap()
-                .usage
-                .as_ref()
-                .unwrap()
-                .input_tokens,
-            4
-        );
-        let accounted = accounting::rows(state, &budgets()).unwrap();
-        assert_eq!(
-            accounted
-                .iter()
-                .filter(|r| r.window.0.starts_with("token:"))
-                .map(|r| r.amount)
-                .sum::<u64>(),
-            6,
-            "{boundary:?}: token budget"
-        );
-        assert_eq!(
-            accounted
-                .iter()
-                .filter(|r| r.window.0.starts_with("cost:"))
-                .map(|r| r.amount)
-                .sum::<u64>(),
-            1,
-            "{boundary:?}: dollar budget"
-        );
-        assert!(
-            synced_sends >= f.service.sent.lock().unwrap().len(),
-            "{boundary:?}: budget undercount"
-        );
-        // Resume in a new registry. A possibly sent unkeyed write is Unknown,
-        // never automatically dispatched a second time.
-        let resumed_fixture = Fixture::new();
-        let store = resumed_fixture.store.clone();
-        let registry = Arc::new(RunStore::new_staged(store.clone(), Arc::new(NoHooks)));
-        let generation = state.generation;
-        registry
-            .insert(
-                f.live.run_id.clone(),
-                f.live.flow_id.clone(),
-                generation,
-                recovered,
-            )
-            .unwrap();
-        let driver = Driver::new_staged(
-            store,
-            registry,
-            f.service.clone(),
-            Arc::new(NoHooks),
-            budgets(),
-        );
-        let Claim::Active(resume) = driver.claim(f.live.clone(), generation).unwrap() else {
-            panic!("not resumed")
-        };
-        for dispatch in resume.recover_dispatches().unwrap() {
-            dispatch.send().unwrap();
-        }
-        let resumed = resume.state().unwrap();
-        assert!(resumed.calls[&3].unknown.is_some());
-        assert_eq!(
-            resumed.calls[&4].intent.as_ref().unwrap().idempotency_key,
-            retry_key
-        );
-        assert_eq!(
-            resumed.calls[&4]
-                .intent
-                .as_ref()
-                .unwrap()
-                .frozen_request
-                .as_str(),
-            "{\"frozen\":true}"
-        );
-        let rows = accounting::rows(&resumed, &budgets()).unwrap();
-        assert!(
-            rows.iter()
-                .filter(|r| r.window.0.starts_with("dispatch:"))
-                .map(|r| r.amount)
-                .sum::<u64>()
-                >= f.service.sent.lock().unwrap().len() as u64
-        );
-        assert_eq!(resume.state().unwrap().claim.unwrap().deadline_at, deadline);
-        assert_eq!(
-            f.service
-                .sent
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|i| i.call.position == 0)
-                .count(),
-            1
         );
     }
+    assert_eq!(
+        state.calls[&1].intent.as_ref().unwrap().idempotency_key,
+        key,
+        "{boundary:?}"
+    );
+    let synced_sends = state.calls.values().filter(|c| c.intent.is_some()).count();
+    assert_eq!(
+        state.calls[&2].arrival.as_ref().unwrap().value.as_str(),
+        "11"
+    );
+    assert_eq!(
+        state.calls[&2]
+            .arrival
+            .as_ref()
+            .unwrap()
+            .usage
+            .as_ref()
+            .unwrap()
+            .input_tokens,
+        4
+    );
+    let accounted = accounting::rows(state, &budgets()).unwrap();
+    assert_eq!(
+        accounted
+            .iter()
+            .filter(|r| r.window.0.starts_with("token:"))
+            .map(|r| r.amount)
+            .sum::<u64>(),
+        6,
+        "{boundary:?}: token budget"
+    );
+    assert_eq!(
+        accounted
+            .iter()
+            .filter(|r| r.window.0.starts_with("cost:"))
+            .map(|r| r.amount)
+            .sum::<u64>(),
+        1,
+        "{boundary:?}: dollar budget"
+    );
+    assert!(
+        synced_sends >= f.service.sent.lock().unwrap().len(),
+        "{boundary:?}: budget undercount"
+    );
+    // Resume in a new registry. A possibly sent unkeyed write is Unknown,
+    // never automatically dispatched a second time.
+    let resumed_fixture = Fixture::new();
+    let store = resumed_fixture.store.clone();
+    let registry = Arc::new(RunStore::new_staged(store.clone(), Arc::new(NoHooks)));
+    let generation = state.generation;
+    registry
+        .insert(
+            f.live.run_id.clone(),
+            f.live.flow_id.clone(),
+            generation,
+            recovered,
+        )
+        .unwrap();
+    let driver = Driver::new_staged(
+        store,
+        registry,
+        f.service.clone(),
+        Arc::new(NoHooks),
+        budgets(),
+    );
+    let Claim::Active(resume) = driver.claim(f.live.clone(), generation).unwrap() else {
+        panic!("not resumed")
+    };
+    for dispatch in resume.recover_dispatches().unwrap() {
+        dispatch.send().unwrap();
+    }
+    let resumed = resume.state().unwrap();
+    assert!(resumed.calls[&3].unknown.is_some());
+    assert_eq!(
+        resumed.calls[&4].intent.as_ref().unwrap().idempotency_key,
+        retry_key
+    );
+    assert_eq!(
+        resumed.calls[&4]
+            .intent
+            .as_ref()
+            .unwrap()
+            .frozen_request
+            .as_str(),
+        "{\"frozen\":true}"
+    );
+    let rows = accounting::rows(&resumed, &budgets()).unwrap();
+    assert!(
+        rows.iter()
+            .filter(|r| r.window.0.starts_with("dispatch:"))
+            .map(|r| r.amount)
+            .sum::<u64>()
+            >= f.service.sent.lock().unwrap().len() as u64
+    );
+    assert_eq!(resume.state().unwrap().claim.unwrap().deadline_at, deadline);
+    assert_eq!(
+        f.service
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|i| i.call.position == 0)
+            .count(),
+        1
+    );
 }
 
 #[test]

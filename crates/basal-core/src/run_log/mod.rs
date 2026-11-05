@@ -11,7 +11,7 @@ mod registry;
 mod restore;
 pub use registry::SqliteRegistry;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::{Boundary, Hooks, Step};
 pub use format::SegmentEnd;

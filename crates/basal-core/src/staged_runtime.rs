@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 #[path = "staged_runtime_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 use crate::{
     CoreError, Result, Runtime,

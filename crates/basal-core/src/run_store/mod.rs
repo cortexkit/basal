@@ -4,7 +4,7 @@
 mod committer;
 pub mod lock_order;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::{
     CoreError, Result, Store,

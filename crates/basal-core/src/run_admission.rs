@@ -505,4 +505,4 @@ fn fire_audit(
 
 #[cfg(test)]
 #[path = "run_admission_tests.rs"]
-mod tests;
+pub(crate) mod tests;
