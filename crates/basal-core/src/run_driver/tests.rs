@@ -862,6 +862,78 @@ fn local_overlay_sync_order_and_non_success_terminal_detail() {
 }
 
 #[test]
+fn recovery_snapshot_cannot_resend_a_completed_or_accepted_call() {
+    for reply in [
+        Reply::Completed(arrival(0, "42")),
+        Reply::Accepted("h".into()),
+    ] {
+        let f = Fixture::new();
+        let a = f.claim(0);
+        a.defer_preparation(call(0, "query"), StoredClass::Query, "not sent".into(), 0)
+            .unwrap();
+        let mut prepared = a.recover_dispatches().unwrap();
+        assert_eq!(prepared.len(), 1);
+        let dispatch = prepared.pop().unwrap();
+        f.service.replies.lock().unwrap().push_back(reply);
+
+        // Recovery has copied the unresolved Intent. Finish the first send and
+        // drop its entrant before recovery checks whether the position is idle.
+        let retries = a
+            .recover_dispatches_after_snapshot(false, || {
+                std::thread::spawn(move || dispatch.send().unwrap())
+                    .join()
+                    .unwrap();
+            })
+            .unwrap();
+        for dispatch in retries {
+            dispatch.send().unwrap();
+        }
+
+        assert_eq!(f.service.sent.lock().unwrap().len(), 1);
+        let state = a.state().unwrap();
+        assert_eq!(state.calls[&0].intent.as_ref().unwrap().attempts, 1);
+        assert!(state.calls[&0].prior_intents.is_empty());
+        assert!(state.calls[&0].arrival.is_some() || state.calls[&0].accepted.is_some());
+    }
+}
+
+#[test]
+fn pending_preparation_recovery_has_one_authorization_owner() {
+    let f = Fixture::new();
+    let a = f.claim(0);
+    a.defer_preparation(call(0, "query"), StoredClass::Query, "not sent".into(), 0)
+        .unwrap();
+
+    // Both recovery paths observe the pending preparation. The second path
+    // publishes its Intent and completes before the first path can authorize.
+    let retries = a
+        .recover_dispatches_after_snapshot(false, || {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let dispatches = a.recover_dispatches().unwrap();
+                        assert_eq!(dispatches.len(), 1);
+                        for dispatch in dispatches {
+                            dispatch.send().unwrap();
+                        }
+                    })
+                    .join()
+                    .unwrap();
+            });
+        })
+        .unwrap();
+    for dispatch in retries {
+        dispatch.send().unwrap();
+    }
+
+    assert_eq!(f.service.sent.lock().unwrap().len(), 1);
+    let state = a.state().unwrap();
+    assert_eq!(state.calls[&0].intent.as_ref().unwrap().attempts, 1);
+    assert!(state.calls[&0].prior_intents.is_empty());
+    assert!(state.calls[&0].arrival.is_some());
+}
+
+#[test]
 fn retry_consumes_unsent_proof_before_another_possible_send() {
     let f = Fixture::new();
     let a = f.claim(0);

@@ -33,7 +33,7 @@ use crate::{
     hooks::{Boundary, Hooks, Step},
     model::StoredClass,
     run_records::{
-        Arrival, ArrivalDurability, Body, CallIdentity, Intent, KvEffect, Records, State,
+        Arrival, ArrivalDurability, Body, CallIdentity, CallState, Intent, KvEffect, Records, State,
     },
     run_store::{CloseDriver, Entrant, Run, RunRecords, RunStore},
     run_store_sql::LiveRun,
@@ -543,7 +543,7 @@ impl Activation {
                         "remote call must count one dispatch".into(),
                     ));
                 }
-                self.authorize_or_refuse(*intent, refuse_budgets)
+                self.authorize_or_refuse(*intent, refuse_budgets, None)
                     .map(|dispatch| match dispatch {
                         Some(dispatch) => Issued::Dispatch(Box::new(dispatch)),
                         None => Issued::Pending,
@@ -724,10 +724,11 @@ impl Activation {
         &self,
         intent: Intent,
         refuse_budgets: bool,
+        expected: Option<&CallState>,
     ) -> Result<Option<Dispatch>> {
         let identity = intent.call.clone();
-        match self.authorize(intent) {
-            Ok(dispatch) => Ok(Some(dispatch)),
+        match self.authorize(intent, expected) {
+            Ok(dispatch) => Ok(dispatch),
             Err(CoreError::Invalid(reason))
                 if refuse_budgets && reason.ends_with("budget exhausted") =>
             {
@@ -738,10 +739,17 @@ impl Activation {
         }
     }
 
-    fn authorize(&self, intent: Intent) -> Result<Dispatch> {
-        let (entrant, cut, deadline_at) = self.run.activate(self.generation, |a| {
-            if a.is_dispatching(intent.call.position) {
-                return Err(CoreError::Unavailable("call already dispatching".into()));
+    fn authorize(&self, intent: Intent, expected: Option<&CallState>) -> Result<Option<Dispatch>> {
+        let authorized = self.run.activate(self.generation, |a| {
+            // Recovery reads a snapshot without holding the actor during host
+            // preparation. A send may finish and drop its entrant before we
+            // return here, so an idle position alone is not permission to retry.
+            // Compare and append under the same actor to give only one observer
+            // ownership of the pending preparation or retry.
+            if a.is_dispatching(intent.call.position)
+                || a.records().state().calls.get(&intent.call.position) != expected
+            {
+                return Ok(None);
             }
             let cut = a.account(|records, others| {
                 let body = Body::Intent(intent.clone());
@@ -774,12 +782,15 @@ impl Activation {
                 Some(intent.call.position),
                 a.records().state(),
             )?;
-            Ok((
+            Ok(Some((
                 a.dispatch_entrant_for(intent.call.position),
                 cut,
                 deadline_at,
-            ))
+            )))
         })?;
+        let Some((entrant, cut, deadline_at)) = authorized else {
+            return Ok(None);
+        };
         self.driver
             .at(&self.live.run_id, Boundary::DriverAppended)?;
         entrant.finish(|records| {
@@ -792,14 +803,14 @@ impl Activation {
             )
         })?;
         self.driver.at(&self.live.run_id, Boundary::DriverSynced)?;
-        Ok(Dispatch {
+        Ok(Some(Dispatch {
             driver: self.driver.clone(),
             live: self.live.clone(),
             generation: self.generation,
             intent,
             entrant,
             deadline_at,
-        })
+        }))
     }
 
     /// A durable unkeyed Intent is possibly sent, including a crash before the
@@ -813,8 +824,18 @@ impl Activation {
     }
 
     fn recover_dispatches_inner(&self, refuse_budgets: bool) -> Result<Vec<Dispatch>> {
+        self.recover_dispatches_after_snapshot(refuse_budgets, || {})
+    }
+
+    fn recover_dispatches_after_snapshot(
+        &self,
+        refuse_budgets: bool,
+        after_snapshot: impl FnOnce(),
+    ) -> Result<Vec<Dispatch>> {
         let mut dispatches = Vec::new();
-        for call in self.state()?.calls.values() {
+        let snapshot = self.state()?;
+        after_snapshot();
+        for call in snapshot.calls.values() {
             if call.arrival.is_some() || call.sync.is_some() || call.accepted.is_some() {
                 continue;
             }
@@ -846,6 +867,7 @@ impl Activation {
                         continue;
                     }
                 }
+                let expected = call;
                 let call = HostCall {
                     position: call.identity.position,
                     kind: call.identity.kind.clone(),
@@ -884,7 +906,9 @@ impl Activation {
                                 == intent.call
                             && intent.attempts == 1 =>
                     {
-                        if let Some(dispatch) = self.authorize_or_refuse(*intent, refuse_budgets)? {
+                        if let Some(dispatch) =
+                            self.authorize_or_refuse(*intent, refuse_budgets, Some(expected))?
+                        {
                             dispatches.push(dispatch);
                         }
                     }
@@ -967,7 +991,7 @@ impl Activation {
                     .last()
                     .is_some_and(|r| r.choice == "not_applied");
             if let Some(dispatch) =
-                self.authorize_or_refuse(retry, refuse_budgets && proven_unsent)?
+                self.authorize_or_refuse(retry, refuse_budgets && proven_unsent, Some(call))?
             {
                 dispatches.push(dispatch);
             }
