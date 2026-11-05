@@ -2449,7 +2449,10 @@ fn activation_end(result: ActivationResult, rejections: &BTreeMap<u64, Rejection
             if value.as_str().len() > RESULT_BYTES {
                 failed(
                     "result_too_large",
-                    format!("return value has {} bytes", value.as_str().len()),
+                    format!(
+                        "return value has {} bytes; the limit is {RESULT_BYTES}. The tool calls above already ran. Return only what is needed next, such as counts, ids or the first items",
+                        value.as_str().len()
+                    ),
                 )
             } else if serde_json::from_str::<Value>(value.as_str()).is_err() {
                 failed("result_not_json", "return value is not JSON")
