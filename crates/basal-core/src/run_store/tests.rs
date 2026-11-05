@@ -385,7 +385,8 @@ fn staged_saturation_disables_with_sqlite_only_notice_and_card() {
         tx.execute_batch("INSERT INTO run_snapshots(snapshot_id,flow_id,flow_version,code_hash,script,manifest) VALUES(1,'flow',1,zeroblob(32),'return 1','{}');
             INSERT INTO run_identities SELECT 'live',flow_id,flow_version,code_hash,snapshot_id FROM run_snapshots WHERE flow_id='flow' LIMIT 1;
             INSERT INTO run_identities SELECT 'history',flow_id,flow_version,code_hash,snapshot_id FROM run_snapshots WHERE flow_id='flow' LIMIT 1;
-            INSERT INTO live_runs VALUES('live','flow',1,'fire','schedule','{}',0,100,1,0,0,0,60000,'{}','{}','[]',NULL,0);")?;
+            INSERT INTO live_runs(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,attempt,admitted_at,admit_seq,admit_epoch,admit_segment,admit_offset,deadline_ms,self_input,params_input,grant_guards,template_incarnation,end_instance)
+            VALUES('live','flow',1,'fire','schedule','{}',0,100,1,0,0,0,60000,'{}','{}','[]',NULL,0);")?;
         sql::insert_history(tx, &sql::RunHistory {
             run_id: "history".into(), flow_id: "flow".into(), flow_version: 1, trigger_id: "old-fire".into(), trigger_kind: "schedule".into(), trigger: json!({}), admitted_at: 0, admit_seq: 99, first_claim_at: Some(1), ended_at: 2, state: crate::model::RunState::Failed, error_kind: Some("worker".into()), error_detail: None, result: None, result_size: 0, call_counts: json!({}), writes_sent: 0, tokens_charged: 0, cost_microusd: 0, broken: 0, activation_count: 1, script_started: true, phase: "script".into(), deadline_exempt: false, history_lost: false, commit_seq: 1,
         })?;

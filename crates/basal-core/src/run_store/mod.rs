@@ -285,6 +285,12 @@ pub struct Entrant<R: RunRecords> {
     position: Option<u64>,
 }
 impl<R: RunRecords> Entrant<R> {
+    /// Copy a reader's version and data under one actor lock. A claim can
+    /// advance the generation even when it writes no execution record.
+    pub fn inspect<T>(&self, f: impl FnOnce(u64, &R) -> Result<T>) -> Result<T> {
+        let actor = self.run.actor.lock();
+        f(actor.generation, &actor.records)
+    }
     pub(crate) fn account<T>(
         &self,
         f: impl FnOnce(&mut R) -> Result<(T, Vec<Reservation>)>,

@@ -45,6 +45,14 @@ pub enum Boundary {
     DriverReleased,
     /// A host outcome is durable, before its acknowledgement leaves the runtime.
     HostArrived,
+    /// The restore marker, lost runs and new epoch committed atomically.
+    RestoreMarked,
+    /// Old segment directories were quarantined and directory entries synced.
+    RestoreQuarantined,
+    /// The new epoch has a durable active segment and registered spare.
+    RestoreStarted,
+    /// Restore completion committed; the next boot must recover normally.
+    RestoreFinished,
     /// The activation claimed the run (its generation is committed).
     Claimed { generation: u64 },
     /// The runtime fingerprint was recorded at the run's first activation.
@@ -92,6 +100,12 @@ pub enum Boundary {
 }
 
 impl Boundary {
+    pub const RESTORE: [Self; 4] = [
+        Self::RestoreMarked,
+        Self::RestoreQuarantined,
+        Self::RestoreStarted,
+        Self::RestoreFinished,
+    ];
     pub const HOST: [Self; 1] = [Self::HostArrived];
     pub const RUN_DRIVER: [Self; 4] = [
         Self::DriverAppended,

@@ -39,6 +39,15 @@ pub struct RunAdmission {
 }
 
 impl RunAdmission {
+    /// Construct log-backed admission explicitly. Production keeps using the
+    /// SQLite execution journal until the run-log schema is enabled.
+    pub fn new_staged(
+        store: Arc<Store>,
+        log: Arc<dyn AdmissionLog>,
+        hooks: Arc<dyn Hooks>,
+    ) -> Self {
+        Self { store, log, hooks }
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_for_test(
         store: Arc<Store>,
@@ -90,23 +99,40 @@ impl RunAdmission {
         kind: &str,
         ctx: &AdmitContext,
     ) -> Result<Admission> {
-        let tomb: Option<String> = tx
-            .query_row(
-                "SELECT run_id FROM tombstones WHERE kind='trigger' AND key=?1",
-                [admission::trigger_key(flow, trigger_id)],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(run_id) = tomb {
-            return Ok(Admission::Tombstoned { run_id });
-        }
-        let existing: Option<String> = tx.query_row(
+        self.current_attempt(tx, flow, trigger_id, trigger, kind, ctx, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn current_attempt(
+        &self,
+        tx: &Transaction<'_>,
+        flow: &str,
+        trigger_id: &str,
+        trigger: JsonText,
+        kind: &str,
+        ctx: &AdmitContext,
+        retry: Option<u32>,
+    ) -> Result<Admission> {
+        if retry.is_none() {
+            let tomb: Option<String> = tx
+                .query_row(
+                    "SELECT run_id FROM tombstones WHERE kind='trigger' AND key=?1",
+                    [admission::trigger_key(flow, trigger_id)],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(run_id) = tomb {
+                return Ok(Admission::Tombstoned { run_id });
+            }
+            let existing: Option<String> = tx.query_row(
             "SELECT run_id FROM trigger_inbox WHERE flow_id=?1 AND trigger_id=?2 ORDER BY attempt LIMIT 1",
             params![flow, trigger_id], |r| r.get(0),
         ).optional()?;
-        if let Some(run_id) = existing {
-            return Ok(Admission::Duplicate { run_id });
+            if let Some(run_id) = existing {
+                return Ok(Admission::Duplicate { run_id });
+            }
         }
+        let attempt = retry.unwrap_or(1);
         let approved = install::approved(tx, flow)?;
         let spec = TriggerSpec {
             flow_id: flow.into(),
@@ -175,7 +201,7 @@ impl RunAdmission {
                 trigger_id: trigger_id.into(),
                 trigger_kind: kind.into(),
                 trigger: decode(spec.trigger.as_str())?,
-                attempt: 1,
+                attempt,
                 admitted_at: ctx.now_ms,
                 admit_seq: seq,
                 admit_lsn: self.watermark(tx)?,
@@ -187,8 +213,8 @@ impl RunAdmission {
                 end_instance,
             },
         )?;
-        tx.execute("INSERT INTO trigger_inbox(flow_id,trigger_id,attempt,run_id,admitted_at) VALUES (?1,?2,1,?3,?4)",
-            params![flow, trigger_id, run_id, ctx.now_ms])?;
+        tx.execute("INSERT INTO trigger_inbox(flow_id,trigger_id,attempt,run_id,admitted_at) VALUES (?1,?2,?3,?4,?5)",
+            params![flow, trigger_id, attempt, run_id, ctx.now_ms])?;
         self.at(&run_id, Boundary::AdmissionWritten)?;
         Ok(Admission::Admitted { run_id })
     }
@@ -205,6 +231,16 @@ impl RunAdmission {
             fire(tx, || {
                 self.current(tx, flow, trigger_id, trigger, "manual", ctx)
             })
+        })
+    }
+
+    /// Explicitly retry finished work under the current approval and normal gate.
+    /// It runs in its own transaction after close, with a new ID and attempt.
+    pub fn retrigger(&self, run_id: &str, ctx: &AdmitContext) -> Result<Admission> {
+        self.batch(|tx| {
+            let run = sql::history(tx, run_id)?.ok_or_else(|| CoreError::NoSuchRun(run_id.into()))?;
+            let attempt: u32 = tx.query_row("SELECT COALESCE(MAX(attempt),0)+1 FROM trigger_inbox WHERE flow_id=?1 AND trigger_id=?2", params![run.flow_id, run.trigger_id], |r| r.get(0))?;
+            self.current_attempt(tx, &run.flow_id, &run.trigger_id, JsonText::new(run.trigger.to_string()).map_err(|e| CoreError::Invalid(e.to_string()))?, &run.trigger_kind, ctx, Some(attempt))
         })
     }
 

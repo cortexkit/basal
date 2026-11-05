@@ -192,6 +192,18 @@ impl Runtime {
         resolution: Resolution,
         actor: &str,
     ) -> Result<RunState> {
+        if let Some(hosts) = &self.shared.staged_hosts {
+            let state = hosts.resolve(
+                run_id,
+                position,
+                resolution,
+                actor,
+                None,
+                self.config().clock.now_ms(),
+            )?;
+            self.shared.signal.bump();
+            return Ok(state);
+        }
         let state = self
             .store()
             .write(|tx| resolve(tx, run_id, position, &resolution, actor, None))?;

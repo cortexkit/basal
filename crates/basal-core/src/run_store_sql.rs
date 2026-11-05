@@ -733,6 +733,32 @@ pub fn write_meta(tx: &Transaction<'_>, state: &Meta) -> Result<()> {
     Ok(())
 }
 
+pub fn restore_pending(conn: &Connection) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='restore_pending'",
+            [],
+            |r| r.get::<_, String>(0),
+        )?
+        .as_str()
+        == "1")
+}
+
+pub fn set_restore_pending(tx: &Transaction<'_>, pending: bool) -> Result<()> {
+    set_meta_value(tx, "restore_pending", if pending { "1" } else { "0" })
+}
+
+pub fn history_lost(conn: &Connection, run_id: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT history_lost FROM live_runs WHERE run_id=?1",
+            [run_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
 pub fn advance_log_hwm(tx: &Transaction<'_>, synced: EpochLsn) -> Result<()> {
     let epoch: u64 = decode(meta_value(tx, "log_epoch")?)?;
     let old: EpochLsn = decode(meta_value(tx, "log_hwm")?)?;
@@ -788,7 +814,8 @@ pub fn next_commit_seq(tx: &Transaction<'_>) -> Result<u64> {
 #[cfg(any(test, feature = "test-support"))]
 pub fn create_test_schema(tx: &Transaction<'_>, state: &Meta) -> Result<()> {
     tx.execute_batch(DDL)?;
-    write_meta(tx, state)
+    write_meta(tx, state)?;
+    set_restore_pending(tx, false)
 }
 
 #[cfg(test)]

@@ -183,6 +183,14 @@ impl Driver {
     /// Admission and recovery register the complete accounting contribution
     /// before exposing a run, including runs that have not been activated yet.
     pub fn register(&self, live: &LiveRun, mut records: Records) -> Result<Arc<Run<Records>>> {
+        if self
+            .store
+            .read(|c| crate::run_store_sql::history_lost(c, &live.run_id))?
+        {
+            return Err(CoreError::Invalid(
+                "history_lost runs cannot activate".into(),
+            ));
+        }
         let identity = self.store.read(|conn| {
             crate::run_store_sql::identity(conn, &live.run_id)?
                 .ok_or_else(|| CoreError::Corrupt("live run has no identity".into()))
@@ -226,6 +234,14 @@ impl Driver {
     /// gate answer publishes neither Claimed nor Activated, even if another run
     /// forces a group sync while the gate is outstanding.
     pub fn claim(self: &Arc<Self>, live: LiveRun, generation: u64) -> Result<Claim> {
+        if self
+            .store
+            .read(|c| crate::run_store_sql::history_lost(c, &live.run_id))?
+        {
+            return Err(CoreError::Invalid(
+                "history_lost runs cannot activate".into(),
+            ));
+        }
         let run = self
             .registry
             .get(&live.run_id)
@@ -552,6 +568,10 @@ impl Activation {
             }
             if !intent.call.class.safe_to_resend()
                 && !call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                && !call
+                    .resolutions
+                    .last()
+                    .is_some_and(|r| r.choice == "not_applied" && r.attempts == intent.attempts)
             {
                 self.run.activate(self.generation, |a| {
                     a.records()

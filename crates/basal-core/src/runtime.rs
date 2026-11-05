@@ -244,7 +244,7 @@ impl Signal {
 
 /// State shared by every runtime handle over one store in one process.
 pub(crate) struct Shared {
-    staged_hosts: Option<Arc<crate::run_host::RecoveredHosts>>,
+    pub(crate) staged_hosts: Option<Arc<crate::run_host::RecoveredHosts>>,
     stopping: AtomicBool,
     pub(crate) store: Arc<Store>,
     pub(crate) host: Arc<dyn Host>,

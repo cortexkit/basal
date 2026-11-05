@@ -31,9 +31,11 @@ use crate::{
 pub struct RecoveredHosts {
     pub(crate) store: Arc<Store>,
     registry: Arc<RunStore<Records>>,
-    budgets: Budgets,
+    pub(crate) budgets: Budgets,
     hooks: Arc<dyn Hooks>,
-    clock: Clock,
+    pub(crate) clock: Clock,
+    pub(crate) watermark: Arc<dyn AdmissionLog>,
+    pub(crate) decisions: std::sync::Mutex<Option<crate::run_decisions::CloseServices>>,
 }
 
 impl RecoveredHosts {
@@ -50,8 +52,9 @@ impl RecoveredHosts {
         clock: Clock,
     ) -> Result<Self> {
         let live = store.read(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT run_id FROM live_runs ORDER BY admit_seq,run_id")?;
+            let mut stmt = conn.prepare(
+                "SELECT run_id FROM live_runs WHERE history_lost=0 ORDER BY admit_seq,run_id",
+            )?;
             let ids = stmt
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -103,6 +106,8 @@ impl RecoveredHosts {
             budgets,
             hooks,
             clock,
+            watermark,
+            decisions: std::sync::Mutex::new(None),
         })
     }
 

@@ -1609,10 +1609,41 @@ impl Module {
         #[serde(deny_unknown_fields)]
         struct Params {
             run_id: String,
-            position: u64,
+            position: Option<u64>,
             resolution: Value,
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        let Some(position) = p.position else {
+            let retrigger = match p.resolution.as_str() {
+                Some("cancel") => false,
+                Some("retrigger") => true,
+                _ => {
+                    return Err(invalid_params(
+                        "run-level resolution is cancel or retrigger",
+                    ));
+                }
+            };
+            let admission = self
+                .rt
+                .reconcile_history_lost(&p.run_id, retrigger, &caller.label())
+                .map_err(|e| self.core_error(e))?;
+            let admission = admission.map(|a| {
+                use basal_core::admission::Admission;
+                match a {
+                    Admission::Admitted { run_id } => json!({"state":"admitted","run_id":run_id}),
+                    Admission::Duplicate { run_id } => json!({"state":"duplicate","run_id":run_id}),
+                    Admission::Tombstoned { run_id } => {
+                        json!({"state":"tombstoned","run_id":run_id})
+                    }
+                    Admission::Draining => json!({"state":"draining"}),
+                    Admission::NotApproved => json!({"state":"not_approved"}),
+                    Admission::Disabled => json!({"state":"disabled"}),
+                    Admission::RateLimited => json!({"state":"rate_limited"}),
+                    Admission::StateBusy => json!({"state":"state_busy"}),
+                }
+            });
+            return Ok(json!({"run_id": p.run_id, "state": "cancelled", "admission": admission}));
+        };
         let resolution = match &p.resolution {
             Value::String(s) if s == "not_applied" => Resolution::NotApplied,
             Value::String(s) if s == "cancel" => Resolution::Cancel,
@@ -1643,7 +1674,7 @@ impl Module {
         };
         let state = self
             .rt
-            .reconcile(&p.run_id, p.position, resolution, &caller.label())
+            .reconcile(&p.run_id, position, resolution, &caller.label())
             .map_err(|e| self.core_error(e))?;
         Ok(json!({ "run_id": p.run_id, "state": state.as_str() }))
     }

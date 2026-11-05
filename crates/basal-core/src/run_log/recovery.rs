@@ -57,6 +57,15 @@ impl Engine {
         registry: Arc<dyn SegmentRegistry>,
         initialize: bool,
     ) -> Result<(Self, Recovered<R>)> {
+        Self::open_locked(config, registry, initialize, None)
+    }
+
+    pub(super) fn open_locked<R: LogRecord>(
+        config: Config,
+        registry: Arc<dyn SegmentRegistry>,
+        initialize: bool,
+        lock: Option<Arc<platform::DirectoryLock>>,
+    ) -> Result<(Self, Recovered<R>)> {
         registry.check_lease(config.lease_epoch)?;
         if initialize {
             platform::mkdir(&config.directory)?;
@@ -67,7 +76,12 @@ impl Engine {
         } else if !config.directory.is_dir() {
             return Err(Error::RestoreRequired("log directory absent"));
         }
-        let lock = platform::DirectoryLock::acquire(&config.directory.join(".lock"))?;
+        let lock = match lock {
+            Some(lock) => lock,
+            None => Arc::new(platform::DirectoryLock::acquire(
+                &config.directory.join(".lock"),
+            )?),
+        };
         let directory = config
             .directory
             .join(format!("e{}", config.identity.log_epoch));
@@ -133,15 +147,10 @@ impl Engine {
                 return Err(Error::Corrupt("segment sequence gap"));
             }
             let reserved = state == SegmentState::Reserved;
-            if reserved
-                && known
-                    >= (Lsn {
-                        sequence: seq,
-                        offset: HEADER_LEN,
-                    })
-            {
-                return Err(Error::Corrupt("reserved segment has a durable dependency"));
-            }
+            // A restored store may know an LSN beyond this old spare. Read its
+            // real valid end first; the final end comparison detects that restore.
+            // Rejecting known >= spare.header here would misclassify an early
+            // log end as damage before the reserved-file repair rules can run.
             if reserved && index + 1 != count {
                 return Err(Error::Corrupt("reserved segment is not last"));
             }
@@ -153,7 +162,20 @@ impl Engine {
                     new_file(&config, registry.as_ref(), &directory, seq)?.0
                 }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    return Err(Error::Corrupt("registered active segment missing"));
+                    // The run-log design (run-log.md §6.3, Recovery reading)
+                    // and its restore acceptance matrix require holes to fail
+                    // closed: a later active segment proves a sealed predecessor
+                    // was damaged. GC removes its row first. The design's §12
+                    // missing-segment restore rule therefore applies only to an
+                    // early end, never a hole in the chain.
+                    if snapshot
+                        .segments
+                        .range((seq + 1)..)
+                        .any(|(_, s)| *s == SegmentState::Active)
+                    {
+                        return Err(Error::Corrupt("registered sealed segment missing"));
+                    }
+                    return Err(Error::RestoreRequired("registered active segment missing"));
                 }
                 Err(e) => return Err(e.into()),
             };
@@ -337,7 +359,7 @@ impl Engine {
         }
         let (file, header, end, sealed) = last.ok_or(Error::Corrupt("no active segment"))?;
         if end.lsn < known {
-            return Err(Error::Corrupt("log below durable end"));
+            return Err(Error::RestoreRequired("log below durable end"));
         }
         // The valid recovered prefix is synced before a caller can depend on it.
         registry.check_lease(config.lease_epoch)?;

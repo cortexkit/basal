@@ -9,7 +9,7 @@ CREATE TABLE run_identities (
 );
 CREATE INDEX run_identities_flow ON run_identities(flow_id, flow_version);
 
--- Only admission data lives here; execution state belongs to the run actor.
+-- Execution state belongs to the actor; history_lost survives a missing log.
 CREATE TABLE live_runs (
     run_id TEXT PRIMARY KEY NOT NULL,
     flow_id TEXT NOT NULL,
@@ -29,6 +29,7 @@ CREATE TABLE live_runs (
     grant_guards TEXT NOT NULL CHECK(json_valid(grant_guards)),
     template_incarnation INTEGER,
     end_instance INTEGER NOT NULL CHECK(end_instance IN (0,1)),
+    history_lost INTEGER NOT NULL DEFAULT 0 CHECK(history_lost IN (0,1)),
     FOREIGN KEY(run_id, flow_id, flow_version)
         REFERENCES run_identities(run_id, flow_id, flow_version)
 );

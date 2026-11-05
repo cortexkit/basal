@@ -71,6 +71,7 @@ pub mod reconcile;
 pub mod retention;
 mod revocation;
 pub mod run_admission;
+pub mod run_decisions;
 pub mod run_driver;
 pub mod run_host;
 pub mod run_log;

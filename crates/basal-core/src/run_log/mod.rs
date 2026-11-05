@@ -8,6 +8,7 @@ mod gc;
 mod platform;
 mod recovery;
 mod registry;
+mod restore;
 pub use registry::SqliteRegistry;
 #[cfg(test)]
 mod tests;
@@ -149,6 +150,7 @@ impl crate::run_admission::AdmissionLog for Watermark {
     }
 }
 
+#[derive(Clone)]
 pub struct Config {
     /// The run-log directory, not the production store root.
     pub directory: PathBuf,
@@ -358,7 +360,7 @@ struct Engine {
     config: Config,
     registry: Arc<dyn SegmentRegistry>,
     directory: PathBuf,
-    _lock: platform::DirectoryLock,
+    _lock: Arc<platform::DirectoryLock>,
     file: File,
     header: Header,
     end: SegmentEnd,

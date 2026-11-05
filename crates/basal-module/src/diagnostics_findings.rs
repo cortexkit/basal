@@ -182,6 +182,14 @@ fn aggregate<P: rusqlite::Params>(
 fn store_findings(store: &Store, now: i64, window: i64) -> basal_core::Result<Vec<Finding>> {
     store.read(|conn| {
         let mut findings = Vec::new();
+        let staged: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='live_runs')", [], |r| r.get(0))?;
+        if staged {
+            findings.extend(aggregate(conn,
+                "SELECT admitted_at,flow_id,run_id FROM live_runs WHERE history_lost=1 ORDER BY admitted_at,run_id",
+                [], finding("history_lost", "runs", "error", "Live runs lost their log during a restore and hold their flow slots.",
+                    "Use flow.reconcile with run_id and resolution cancel or retrigger; never resend unknown writes automatically."),
+                |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"flow_id":r.get::<_,String>(1)?,"run_id":r.get::<_,String>(2)?}))) }, Some(now))?);
+        }
         for flow in basal_core::ops::flow_health(conn, now)? {
             if flow.auto_disabled || (flow.enabled && flow.consecutive_failures >= FAILURE_THRESHOLD as u64) {
                 let disabled_at: Option<i64> = conn.query_row("SELECT disabled_at FROM flows WHERE flow_id=?1",

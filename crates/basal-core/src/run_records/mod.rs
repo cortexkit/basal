@@ -103,6 +103,12 @@ pub struct Records {
 }
 
 impl Records {
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+    pub fn revision(&self) -> Lsn {
+        self.last_lsn
+    }
     pub fn new(run_id: String, admitted_ms: i64, log: Arc<dyn RecordLog>) -> Self {
         Self {
             run_id,

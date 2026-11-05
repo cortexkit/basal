@@ -371,6 +371,27 @@ impl State {
                 self.call_mut(resolution.position)?
                     .resolutions
                     .push(resolution.clone());
+                if matches!(
+                    resolution.choice.as_str(),
+                    "not_applied" | "applied" | "observed_result"
+                ) {
+                    self.call_mut(resolution.position)?.unknown = None;
+                    if let Some(arrival) = &resolution.observed_outcome {
+                        self.apply(generation, &Body::Arrived(arrival.clone()))?;
+                    }
+                    if self
+                        .calls
+                        .values()
+                        .all(|c| c.unknown.is_none() || c.arrival.is_some())
+                    {
+                        self.parked = false;
+                        self.phase = "pending".into();
+                        self.readiness = self
+                            .readiness
+                            .checked_add(1)
+                            .ok_or_else(|| corrupt("readiness overflow"))?;
+                    }
+                }
             }
             Body::Closed { commit_seq } => {
                 self.commit_seq = Some(*commit_seq);

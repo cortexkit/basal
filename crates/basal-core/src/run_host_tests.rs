@@ -801,3 +801,6 @@ fn a_failed_arrival_sync_cannot_acknowledge_an_in_memory_duplicate() {
         CompletionAck::Accepted
     );
 }
+
+#[path = "run_decisions_tests.rs"]
+mod decisions;

@@ -818,7 +818,7 @@ pub enum Answered {
 /// Find the card on the answering provider's path. If basal lost the acceptance
 /// reply and has no id, the echoed dedup key or the decision body's flow, run
 /// and call identity recover the durable intent without crossing providers.
-fn find(
+pub(crate) fn find(
     conn: &Connection,
     path: &basal_host::DecisionPath,
     answer: &DecisionAnswer,
@@ -1087,6 +1087,34 @@ impl Runtime {
 
     pub fn expire_decision_on(&self, path: &basal_host::DecisionPath, id: &str) -> Result<()> {
         let now = self.config().clock.now_ms();
+        if let Some(hosts) = &self.shared.staged_hosts {
+            let card = self.store().read(|c| {
+                first(
+                    c,
+                    "WHERE elicitation_id=?1 AND consent_path=?2 ORDER BY seq DESC",
+                    params![id, path.key()],
+                )
+            })?;
+            if let Some(card) = card {
+                let answer = DecisionAnswer {
+                    elicitation_id: id.into(),
+                    choice: None,
+                    dedup_key: Some(card.dedup_key.clone()),
+                    flow_id: card.flow_id.clone(),
+                    version: card.version,
+                    decision: card.kind,
+                    run_id: card.run_id.clone(),
+                    call_key: card.call_key.clone(),
+                    grant_context: if card.kind == DecisionKind::GrantLost {
+                        Some(card.context()?)
+                    } else {
+                        None
+                    },
+                };
+                hosts.answer_decision(path, &answer, now)?;
+            }
+            return Ok(());
+        }
         self.store().write(|tx| {
             let Some(card) = first(
                 tx,
@@ -1139,6 +1167,9 @@ impl Runtime {
     /// to raise, in one transaction.
     pub fn decisions_due(&self) -> Result<Vec<DecisionRecord>> {
         let now = self.config().clock.now_ms();
+        if let Some(hosts) = &self.shared.staged_hosts {
+            return hosts.decisions_due(now);
+        }
         self.store().write(|tx| {
             refresh(tx, now)?;
             due(tx)
@@ -1160,9 +1191,12 @@ impl Runtime {
         decision: &DecisionAnswer,
     ) -> Result<Answered> {
         let now = self.config().clock.now_ms();
-        let (answered, woke) = self
-            .store()
-            .write(|tx| answer_on(tx, path, decision, now))?;
+        let (answered, woke) = if let Some(hosts) = &self.shared.staged_hosts {
+            hosts.answer_decision(path, decision, now)?
+        } else {
+            self.store()
+                .write(|tx| answer_on(tx, path, decision, now))?
+        };
         self.shared.signal.bump();
         if let Some(run_id) = woke {
             self.wake(&run_id);

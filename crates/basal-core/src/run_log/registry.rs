@@ -21,7 +21,7 @@ fn error(e: CoreError) -> Error {
 
 fn live_admissions(conn: &Connection) -> crate::Result<BTreeMap<String, EpochLsn>> {
     let mut stmt =
-        conn.prepare("SELECT run_id, admit_epoch, admit_segment, admit_offset FROM live_runs")?;
+        conn.prepare("SELECT run_id, admit_epoch, admit_segment, admit_offset FROM live_runs WHERE history_lost=0")?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get(0)?,

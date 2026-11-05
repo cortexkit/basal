@@ -604,3 +604,34 @@ fn production_constructors_stay_on_original_admission() {
         })
         .unwrap();
 }
+
+#[test]
+fn history_lost_holds_the_slot_and_blocks_a_new_state_epoch() {
+    let f = Fixture::new("history-lost-slot");
+    f.schema();
+    f.scheduled("busy");
+    let path = f.path(Arc::new(NoHooks));
+    let Admission::Admitted { run_id } = path
+        .admit_trigger("busy", "old", JsonText::null(), &ctx(100))
+        .unwrap()
+    else {
+        panic!("admitted")
+    };
+    f.store
+        .write(|tx| {
+            tx.execute(
+                "UPDATE live_runs SET history_lost=1 WHERE run_id=?1",
+                [&run_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    f.approve("busy", 2, 2, json!({"schedule":{"interval":"1m"}}));
+    assert_eq!(
+        path.admit_trigger("busy", "new", JsonText::null(), &ctx(100))
+            .unwrap(),
+        Admission::StateBusy
+    );
+    assert_eq!(f.count("live_runs"), 1);
+    assert!(f.store.read(|c| sql::history_lost(c, &run_id)).unwrap());
+}

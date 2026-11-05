@@ -74,7 +74,9 @@ impl Fixture {
         }
     }
     fn config(&self, hooks: Arc<dyn Hooks>) -> Config {
-        self.scratch.config(hooks, self.store.lease_epoch())
+        let mut config = self.scratch.config(hooks, self.store.lease_epoch());
+        config.identity.store_id = self.store.store_id().as_bytes().try_into().unwrap();
+        config
     }
     fn admit(&self, id: &str, lsn: Lsn) {
         self.store
@@ -583,3 +585,6 @@ fn sqlite_registry_fences_each_mutation_and_filters_other_epochs() {
             .is_err()
     );
 }
+
+#[path = "restore_tests.rs"]
+mod restore;

@@ -1057,3 +1057,66 @@ fn each_driver_boundary_preserves_every_causal_recovery_clause() {
         );
     }
 }
+
+#[test]
+fn history_lost_is_never_registered_or_claimed_for_activation() {
+    let f = Fixture::new();
+    f.store
+        .write(|tx| {
+            tx.execute("UPDATE live_runs SET history_lost=1", [])?;
+            Ok(())
+        })
+        .unwrap();
+    let before = f.log.records.lock().unwrap().len();
+    assert!(
+        f.driver
+            .register(
+                &f.live,
+                Records::new(f.live.run_id.clone(), f.live.admitted_at, f.log.clone())
+            )
+            .is_err()
+    );
+    assert!(f.driver.claim(f.live.clone(), 0).is_err());
+    assert_eq!(f.log.records.lock().unwrap().len(), before);
+    assert!(f.service.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn not_applied_authorizes_only_one_unkeyed_retry_and_retains_its_key() {
+    let f = Fixture::new();
+    let a = f.claim(0);
+    let Issued::Dispatch(dispatch) = a.issue(call(0, "write")).unwrap() else {
+        panic!("dispatch")
+    };
+    drop(dispatch);
+    assert!(a.recover_dispatches().unwrap().is_empty());
+    let intent = a.state().unwrap().calls[&0].intent.clone().unwrap();
+    a.run
+        .enter()
+        .unwrap()
+        .finish(|r| {
+            r.append(
+                a.generation,
+                Body::Resolution(crate::run_records::Resolution {
+                    position: 0,
+                    attempts: intent.attempts,
+                    idempotency_key: intent.idempotency_key.clone(),
+                    choice: "not_applied".into(),
+                    observed_outcome: None,
+                    usage: None,
+                    elicitation_id: "operator-answer".into(),
+                }),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut retries = a.recover_dispatches().unwrap();
+    assert_eq!(retries.len(), 1);
+    let retry = retries.pop().unwrap();
+    assert_eq!(retry.intent.idempotency_key, intent.idempotency_key);
+    assert_eq!(retry.intent.attempts, 2);
+    drop(retry);
+    assert!(a.recover_dispatches().unwrap().is_empty());
+    assert!(a.state().unwrap().calls[&0].unknown.is_some());
+    assert!(f.service.sent.lock().unwrap().is_empty());
+}
