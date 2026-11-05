@@ -13,6 +13,36 @@ use std::{
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(target_os = "linux")]
+#[test]
+fn measured_log_counts_headers_appends_rotation_and_successful_syncs() {
+    let scratch = Scratch::new();
+    let measurement = measurement::Measurement::default();
+    let log = RunLog::<Facts>::create_measured(
+        scratch.config(Arc::new(NoHooks), 1),
+        MemoryRegistry::new(),
+        &measurement,
+    )
+    .unwrap();
+    let end = log.append(vec![Facts::committed()]).unwrap();
+    log.sync_through(end).unwrap();
+    log.rotate().unwrap();
+    drop(log);
+    let stats = measurement.stats();
+    let sizes: u64 = fs::read_dir(scratch.epoch())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "seg"))
+        .map(|p| fs::metadata(p).unwrap().len())
+        .sum();
+    assert_eq!(stats.append_bytes, sizes);
+    assert_eq!(stats.segment_creates, 3);
+    assert_eq!(stats.rotations, 1);
+    assert!(stats.file_syncs >= stats.segment_creates + 2);
+    assert!(stats.directory_syncs >= stats.segment_creates);
+    assert!(stats.write_bytes > 0);
+}
+
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
