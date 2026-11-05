@@ -3,8 +3,25 @@
 //! The registry adapter owns short control-plane transactions; this module owns
 //! files and never holds a registry lock across a sync wait.
 
+// Measurement is opt-in and absent from production builds. The operation itself
+// is identical with or without the Linux benchmark observer.
+macro_rules! observe_io {
+    ($operation:expr, $body:expr) => {{
+        #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+        {
+            crate::run_log::measurement::observe($operation, || $body)
+        }
+        #[cfg(not(all(target_os = "linux", any(test, feature = "test-support"))))]
+        {
+            $body
+        }
+    }};
+}
+
 mod format;
 mod gc;
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+pub mod measurement;
 mod platform;
 mod recovery;
 mod registry;
@@ -181,6 +198,16 @@ pub struct RunLog<R: LogRecord> {
 }
 
 impl<R: LogRecord> RunLog<R> {
+    /// Fresh disposable logs only; counts file I/O separately from registry SQL.
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    pub fn create_measured(
+        config: Config,
+        registry: Arc<dyn SegmentRegistry>,
+        measurement: &measurement::Measurement,
+    ) -> Result<Self> {
+        let _scope = measurement.enter();
+        Self::create(config, registry)
+    }
     /// Explicit initialization is for a fresh epoch only. The caller performing
     /// journal migration or store-restore recovery decides when it is safe;
     /// ordinary open never initializes missing logs.
@@ -206,6 +233,8 @@ impl<R: LogRecord> RunLog<R> {
     }
 
     fn spawn(mut engine: Engine) -> Self {
+        #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+        let measurement = measurement::current();
         let epoch = engine.config.identity.log_epoch;
         let (tx, rx) = mpsc::channel();
         let synced = Arc::new(Mutex::new(engine.synced));
@@ -213,6 +242,8 @@ impl<R: LogRecord> RunLog<R> {
         #[cfg(test)]
         let sync_count = engine.sync_count.clone();
         let worker = thread::spawn(move || {
+            #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+            let _scope = measurement.as_ref().map(measurement::Measurement::enter);
             let mut fatal: Option<Error> = None;
             while let Ok(first) = rx.recv() {
                 let mut commands = vec![first];
@@ -426,7 +457,10 @@ impl Engine {
         if self.sealed {
             return Err(Error::Corrupt("append after seal"));
         }
-        self.file.write_all(bytes)?;
+        observe_io!(
+            measurement::Operation::Append(bytes.len() as u64),
+            self.file.write_all(bytes)
+        )?;
         self.end = SegmentEnd {
             lsn: Lsn {
                 sequence: self.header.seq,
@@ -513,6 +547,8 @@ impl Engine {
         self.register(sequence)?;
         self.at(Boundary::RunLogPromoted)?;
         self.synced = self.end.lsn;
+        #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+        measurement::rotated();
         Ok(self.synced)
     }
 }

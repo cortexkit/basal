@@ -7,6 +7,10 @@ use std::{
 };
 
 pub(super) fn sync(file: &File) -> io::Result<()> {
+    observe_io!(super::measurement::Operation::FileSync, sync_inner(file))
+}
+
+fn sync_inner(file: &File) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
@@ -24,6 +28,13 @@ pub(super) fn sync(file: &File) -> io::Result<()> {
 }
 
 pub(super) fn sync_dir(path: &Path) -> io::Result<()> {
+    observe_io!(
+        super::measurement::Operation::DirectorySync,
+        sync_dir_inner(path)
+    )
+}
+
+fn sync_dir_inner(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         File::open(path)?.sync_all()
@@ -43,7 +54,7 @@ pub(super) fn create(path: &Path) -> io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)
+    observe_io!(super::measurement::Operation::Create, options.open(path))
 }
 
 pub(super) fn mkdir(path: &Path) -> io::Result<()> {

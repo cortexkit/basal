@@ -45,7 +45,10 @@ impl Header {
         bytes.extend_from_slice(&seq.to_le_bytes());
         let crc = crc32c(&bytes);
         bytes.extend_from_slice(&crc.to_le_bytes());
-        file.write_all(&bytes)?;
+        observe_io!(
+            super::measurement::Operation::Append(bytes.len() as u64),
+            file.write_all(&bytes)
+        )?;
         Ok(Self {
             identity,
             lease,

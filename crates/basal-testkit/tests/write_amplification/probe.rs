@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_int, c_void};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -17,6 +17,16 @@ pub struct Io {
 }
 
 impl Io {
+    pub fn thread_writes() -> u64 {
+        std::fs::read_to_string("/proc/thread-self/io")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("write_bytes:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
     pub fn read() -> Self {
         let text = std::fs::read_to_string("/proc/self/io").expect("Linux I/O accounting");
         let field = |name: &str| {
@@ -48,6 +58,7 @@ struct Total {
     transactions: u64,
     frames: u64,
     bytes: u64,
+    sqlite_bytes: u64,
 }
 
 pub struct State {
@@ -65,6 +76,13 @@ pub struct State {
     checkpoints: u64,
     threshold: c_int,
     errors: Vec<String>,
+    initial_io: Io,
+    event_gaps: u64,
+    transaction_start: u64,
+    transaction_checkpoint_bytes: u64,
+    commit_thread_io: u64,
+    page_owners: BTreeMap<u32, String>,
+    transactions: Vec<Value>,
 }
 
 /// Unregisters callbacks under the connection lock before freeing their context.
@@ -75,6 +93,7 @@ pub struct Probe<'a> {
 
 impl<'a> Probe<'a> {
     pub fn start(store: &'a basal_core::Store, wal: PathBuf, threshold: c_int) -> Self {
+        let initial_io = Io::read();
         let probe = Self {
             store,
             state: Box::new(Mutex::new(State {
@@ -86,12 +105,19 @@ impl<'a> Probe<'a> {
                 salt: [0; 8],
                 previous_frames: 0,
                 pending_frames: 0,
-                last_io: Io::read().writes,
+                last_io: initial_io.writes,
                 checkpoint_bytes: 0,
                 pending_checkpoint_bytes: 0,
                 checkpoints: 0,
                 threshold,
                 errors: Vec::new(),
+                initial_io,
+                event_gaps: 0,
+                transaction_start: Io::thread_writes(),
+                transaction_checkpoint_bytes: 0,
+                commit_thread_io: 0,
+                page_owners: BTreeMap::new(),
+                transactions: Vec::new(),
             })),
         };
         store
@@ -133,8 +159,13 @@ impl<'a> Probe<'a> {
         self.state.lock().unwrap().phase = phase.into();
     }
 
+    pub fn initial_io(&self) -> Io {
+        self.state.lock().unwrap().initial_io
+    }
+
     pub fn checkpoint(&self, conn: &Connection) {
         let before = Io::read().writes;
+        let thread_before = Io::thread_writes();
         let (log, done): (i64, i64) = conn
             .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
                 Ok((row.get(1)?, row.get(2)?))
@@ -143,13 +174,15 @@ impl<'a> Probe<'a> {
         assert_eq!(log, done, "no outstanding reader may hide checkpoint work");
         let after = Io::read().writes;
         let mut state = self.state.lock().unwrap();
+        state.event_gaps += before - state.last_io;
         state.pending_checkpoint_bytes = 0;
         let phase = state.phase.clone();
-        state
+        let total = state
             .totals
             .entry((phase, vec!["checkpoint tail".into()]))
-            .or_default()
-            .bytes += after - before;
+            .or_default();
+        total.bytes += after - before;
+        total.sqlite_bytes += Io::thread_writes() - thread_before;
         state.last_io = after;
     }
 
@@ -161,11 +194,29 @@ impl<'a> Probe<'a> {
             .iter()
             .map(|((phase, statements), total)| {
                 json!({"phase": phase, "sql": statements,
+                    "kind": transaction_kind(phase, statements),
                     "transactions": total.transactions, "frames": total.frames,
+                    "wal_frame_bytes": total.frames * (4096 + 24),
+                    "sqlite_write_bytes": total.sqlite_bytes,
                     "write_bytes": total.bytes})
             })
             .collect();
-        json!({"kinds": kinds, "autocheckpoints": state.checkpoints,
+        let mut steps: BTreeMap<&str, Value> = ["admission", "claim", "terminal_summary", "registry_segment", "retention", "checkpoint", "schedule_planning", "read_only_fence", "other"]
+            .into_iter().map(|name| (name, json!({"transactions": 0, "wal_frames": 0, "wal_frame_bytes": 0, "sqlite_write_bytes": 0}))).collect();
+        for kind in &kinds {
+            let step = steps.get_mut(kind["kind"].as_str().unwrap()).unwrap();
+            for (dest, source) in [
+                ("transactions", "transactions"),
+                ("wal_frames", "frames"),
+                ("wal_frame_bytes", "wal_frame_bytes"),
+                ("sqlite_write_bytes", "sqlite_write_bytes"),
+            ] {
+                step[dest] = json!(step[dest].as_u64().unwrap() + kind[source].as_u64().unwrap());
+            }
+        }
+        json!({"kinds": kinds, "steps": steps, "transactions": state.transactions,
+            "sql_event_gap_write_bytes": state.event_gaps,
+            "autocheckpoints": state.checkpoints,
             "autocheckpoint_write_bytes": state.checkpoint_bytes})
     }
 }
@@ -221,6 +272,8 @@ unsafe extern "C" fn trace(
             && (sql.starts_with("BEGIN") || (!readonly && !control && autocommit))
         {
             state.last_key = None;
+            state.transaction_start = Io::thread_writes();
+            state.transaction_checkpoint_bytes = 0;
         }
         if event == ffi::SQLITE_TRACE_STMT as u32 && !readonly && !control {
             state.statements.push(sql.clone());
@@ -233,10 +286,14 @@ unsafe extern "C" fn trace(
             let key = (state.phase.clone(), std::mem::take(&mut state.statements));
             state.last_key = Some(key.clone());
             let frames = state.pending_frames;
+            let sqlite_bytes =
+                Io::thread_writes() - state.transaction_start - state.transaction_checkpoint_bytes;
             let total = state.totals.entry(key).or_default();
             total.transactions += 1;
             total.frames += frames;
             total.bytes += bytes;
+            total.sqlite_bytes += sqlite_bytes;
+            state.commit_thread_io = Io::thread_writes();
             state.pending_frames = 0;
             state.pending_checkpoint_bytes = 0;
             state.last_io = now;
@@ -259,10 +316,17 @@ unsafe extern "C" fn wal(
 ) -> c_int {
     let result = std::panic::catch_unwind(|| {
         let mut state = unsafe { &*context.cast::<Mutex<State>>() }.lock().unwrap();
+        if let Some(key) = state.last_key.clone() {
+            // COMMIT's PROFILE can precede its WAL callback. Attribute the
+            // SQLite tail on this same connection thread to that commit too.
+            let now = Io::thread_writes();
+            let tail = now - state.commit_thread_io;
+            state.totals.get_mut(&key).unwrap().sqlite_bytes += tail;
+            state.commit_thread_io = now;
+        }
         let mut header = [0; 32];
-        std::fs::File::open(&state.wal)
-            .and_then(|mut f| f.read_exact(&mut header))
-            .expect("WAL header");
+        let mut file = std::fs::File::open(&state.wal).unwrap();
+        file.read_exact(&mut header).expect("WAL header");
         let salt: [u8; 8] = header[16..24].try_into().unwrap();
         let frames = frames as u64;
         let added = if salt != state.salt {
@@ -270,6 +334,48 @@ unsafe extern "C" fn wal(
         } else {
             frames - state.previous_frames
         };
+        // Reading dbstat here observes the committed btrees, including indexes
+        // and overflow pages. Disable trace only for this observer query so it
+        // cannot recursively acquire State's mutex or pollute the workload SQL.
+        unsafe {
+            ffi::sqlite3_trace_v2(db, 0, None, std::ptr::null_mut());
+        }
+        let owners = (|| -> rusqlite::Result<BTreeMap<u32, String>> {
+            let conn = unsafe { Connection::from_handle(db)? };
+            conn.prepare("SELECT pageno,name FROM dbstat")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect()
+        })();
+        unsafe {
+            ffi::sqlite3_trace_v2(
+                db,
+                (ffi::SQLITE_TRACE_STMT | ffi::SQLITE_TRACE_PROFILE) as u32,
+                Some(trace),
+                context,
+            );
+        }
+        let owners = owners.expect("dbstat page ownership");
+        let mut pages = Vec::new();
+        for frame in frames - added..frames {
+            file.seek(SeekFrom::Start(32 + frame * (4096 + 24)))
+                .unwrap();
+            let mut number = [0; 4];
+            file.read_exact(&mut number).unwrap();
+            let page = u32::from_be_bytes(number);
+            let owner = owners
+                .get(&page)
+                .or_else(|| state.page_owners.get(&page))
+                .map(String::as_str)
+                .unwrap_or("freelist_or_unmapped");
+            pages.push(json!({"page": page, "object": owner}));
+        }
+        state.page_owners = owners;
+        let (phase, statements) = state
+            .last_key
+            .clone()
+            .unwrap_or_else(|| (state.phase.clone(), state.statements.clone()));
+        state.transactions.push(json!({"phase": phase, "kind": transaction_kind(&phase, &statements),
+            "sql": statements, "wal_frames": added, "wal_frame_bytes": added * (4096 + 24), "pages": pages}));
         // SQLite can emit COMMIT's PROFILE event before invoking the WAL hook.
         // Attach frames to that completed transaction, not the following one.
         if let Some(key) = state.last_key.clone() {
@@ -281,6 +387,7 @@ unsafe extern "C" fn wal(
         state.salt = salt;
         if state.threshold > 0 && frames >= state.threshold as u64 {
             let before = Io::read().writes;
+            let thread_before = Io::thread_writes();
             // Installing a WAL hook replaces SQLite's auto-checkpoint hook.
             // Reproduce its PASSIVE threshold policy rather than silently
             // measuring a database with auto-checkpointing disabled.
@@ -296,16 +403,21 @@ unsafe extern "C" fn wal(
             if rc != ffi::SQLITE_OK {
                 state.errors.push(format!("auto-checkpoint returned {rc}"));
             }
-            let bytes = Io::read().writes - before;
+            let after = Io::read().writes;
+            let bytes = after - before;
+            let sqlite_bytes = Io::thread_writes() - thread_before;
+            state.transaction_checkpoint_bytes += sqlite_bytes;
             let phase = state.phase.clone();
-            state
+            let total = state
                 .totals
                 .entry((phase, vec!["automatic checkpoint".into()]))
-                .or_default()
-                .bytes += bytes;
+                .or_default();
+            total.bytes += bytes;
+            total.sqlite_bytes += sqlite_bytes;
             state.checkpoint_bytes += bytes;
             if state.last_key.is_some() {
-                state.last_io = Io::read().writes;
+                state.event_gaps += before - state.last_io;
+                state.last_io = after;
             } else {
                 state.pending_checkpoint_bytes += bytes;
             }
@@ -318,4 +430,27 @@ unsafe extern "C" fn wal(
         state.errors.push("WAL callback failed".into());
     }
     ffi::SQLITE_OK
+}
+
+fn transaction_kind(phase: &str, statements: &[String]) -> &'static str {
+    let has = |text: &str| statements.iter().any(|s| s.contains(text));
+    if has("checkpoint") {
+        "checkpoint"
+    } else if phase.contains("retention") {
+        "retention"
+    } else if has("INSERT INTO run_history") {
+        "terminal_summary"
+    } else if has("INSERT INTO live_runs") {
+        "admission"
+    } else if has("run_log_segments") {
+        "registry_segment"
+    } else if has("schedule_fires") || has("schedules") {
+        "schedule_planning"
+    } else if has("UPDATE runs SET state='running'") {
+        "claim"
+    } else if statements.len() == 1 && has("CREATE TABLE IF NOT EXISTS cortexkit_fence") {
+        "read_only_fence"
+    } else {
+        "other"
+    }
 }
