@@ -160,6 +160,7 @@ fn measure(
     limit: u64,
     batch: bool,
 ) {
+    let _io = PROCESS_IO.lock().unwrap_or_else(|p| p.into_inner());
     let n = if batch { 20 * INSTANCES } else { N };
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = root.join(format!(
@@ -520,6 +521,12 @@ fn log_delta(after: run_log::measurement::Stats, before: run_log::measurement::S
         "rotations": after.rotations - before.rotations})
 }
 
+/// The probe reads this process's I/O counters, which include every thread's
+/// writes. libtest runs tests in parallel threads, so a test that writes files
+/// while another test is between its two counter reads skews that test's
+/// totals. Every test that writes or reads the counters holds this lock.
+static PROCESS_IO: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn checkpoint_unmeasured(store: &Store) {
     store
         .read(|c| {
@@ -531,6 +538,7 @@ fn checkpoint_unmeasured(store: &Store) {
 
 #[test]
 fn benchmark_store_and_probe_use_requested_page_size() {
+    let _io = PROCESS_IO.lock().unwrap_or_else(|p| p.into_inner());
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
         "../../target/scratch/write-page-size-{}",
         std::process::id()
@@ -584,6 +592,7 @@ fn benchmark_store_and_probe_use_requested_page_size() {
 
 #[test]
 fn probe_maps_transaction_pages_to_tables_and_indexes_and_reconciles_gaps() {
+    let _io = PROCESS_IO.lock().unwrap_or_else(|p| p.into_inner());
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
         "../../target/scratch/write-probe-{}",
         std::process::id()
