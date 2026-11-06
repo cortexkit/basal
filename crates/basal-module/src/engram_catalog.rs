@@ -33,6 +33,12 @@ const CATALOG_JSON: &str = r#"{
       "class": "excluded",
       "reason": "Dry-run output is temporary scratch that can be regenerated and must not be restored.",
       "path": "dry-run"
+    },
+    {
+      "entry_id": "basal/run-log",
+      "class": "excluded",
+      "reason": "The run log holds only runs still in progress and is never restored. After a store restore, basal detects that its log is missing or older and marks those runs as needing reconciliation instead of resuming them, so a stale log could only resume runs from the wrong point.",
+      "path": "run-log"
     }
   ]
 }
@@ -165,7 +171,7 @@ mod tests {
         assert_eq!(descriptor["schema_version"], 1);
         assert_eq!(descriptor["module_id"], "basal");
         let entries = descriptor["entries"].as_array().expect("catalog entries");
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 5);
         assert_eq!(entries[0]["entry_id"], "basal/store");
         assert_eq!(entries[0]["class"], "portable");
         assert_eq!(entries[0]["mechanism"], "page-db");
@@ -179,6 +185,9 @@ mod tests {
         assert_eq!(entries[2]["class"], "excluded");
         assert_eq!(entries[3]["entry_id"], "basal/dry-run");
         assert_eq!(entries[3]["class"], "excluded");
+        assert_eq!(entries[4]["entry_id"], "basal/run-log");
+        assert_eq!(entries[4]["class"], "excluded");
+        assert_eq!(entries[4]["path"], "run-log");
         for entry in entries {
             assert!(
                 !entry["reason"].as_str().unwrap().trim().is_empty(),

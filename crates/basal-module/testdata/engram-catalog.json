@@ -28,6 +28,12 @@
       "class": "excluded",
       "reason": "Dry-run output is temporary scratch that can be regenerated and must not be restored.",
       "path": "dry-run"
+    },
+    {
+      "entry_id": "basal/run-log",
+      "class": "excluded",
+      "reason": "The run log holds only runs still in progress and is never restored. After a store restore, basal detects that its log is missing or older and marks those runs as needing reconciliation instead of resuming them, so a stale log could only resume runs from the wrong point.",
+      "path": "run-log"
     }
   ]
 }
