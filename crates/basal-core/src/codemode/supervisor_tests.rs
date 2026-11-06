@@ -101,6 +101,10 @@ struct FakeTransport {
     events: Arc<Mutex<Vec<String>>>,
     registrations: Mutex<Vec<(String, Option<RegisteredScope>)>>,
     catalog_error: AtomicBool,
+    notes_present: AtomicBool,
+    catalog_notices: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
+    catalog: Arc<MockCatalog>,
+    catalog_tools: Mutex<BTreeMap<String, BTreeSet<String>>>,
     broca_opted_in: AtomicBool,
     readiness: Mutex<Option<FlowRefusal>>,
     readiness_clock: Mutex<Option<(Clock, i64)>>,
@@ -167,10 +171,28 @@ impl Transport for FakeTransport {
         if self.catalog_error.load(Ordering::SeqCst) {
             Err(WireError::NeverSent("offline".into()))
         } else {
-            Ok(
-                json!({"modules":[{"module_id":"broca","capabilities":{"provides":if self.broca_opted_in.load(Ordering::SeqCst) {vec!["agent-run-scopes/v1"]} else {vec![]}}}]}),
-            )
+            let mut modules = vec![
+                json!({"module_id":"broca","capabilities":{"provides":if self.broca_opted_in.load(Ordering::SeqCst) {vec!["agent-run-scopes/v1"]} else {vec![]}}}),
+            ];
+            for (module, ops) in self.catalog_tools.lock().unwrap().iter() {
+                if module == "notes" && !self.notes_present.load(Ordering::SeqCst) {
+                    continue;
+                }
+                let tools: Vec<_> = ops
+                    .iter()
+                    .filter(|op| self.catalog.op(module, op).is_some())
+                    .map(|op| json!({"name":op,"execution_mode":"pure","schema":{}}))
+                    .collect();
+                modules.push(json!({"module_id":module,"roles":[{
+                    "role":"tool_provider", "tools":tools, "identity_scope":[],
+                    "concurrency":"serial", "emits_push":false, "sub_supervises":false,
+                }]}));
+            }
+            Ok(json!({"modules":modules}))
         }
+    }
+    fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        self.catalog_notices.lock().unwrap().push(notify);
     }
     fn configure_flow(&self, key: &str, scope: Option<RegisteredScope>) {
         self.registrations
@@ -435,11 +457,16 @@ impl Fixture {
             parent: parent_tx,
             events: events.clone(),
         }))));
+        let catalog = Arc::new(MockCatalog::new());
         let host = Arc::new(FakeTransport {
             attempts: attempt_tx,
             events,
             registrations: Mutex::new(Vec::new()),
             catalog_error: AtomicBool::new(false),
+            notes_present: AtomicBool::new(true),
+            catalog_notices: Mutex::new(Vec::new()),
+            catalog: catalog.clone(),
+            catalog_tools: Mutex::new(BTreeMap::new()),
             broca_opted_in: AtomicBool::new(true),
             readiness: Mutex::new(None),
             readiness_clock: Mutex::new(None),
@@ -451,7 +478,6 @@ impl Fixture {
             custody_count: AtomicUsize::new(0),
             content_results: AtomicBool::new(false),
         });
-        let catalog = Arc::new(MockCatalog::new());
         catalog.set_op(
             "notes",
             "read",
@@ -516,6 +542,15 @@ impl Fixture {
             .unwrap(),
             targets: tools.iter().map(|t| t.1.to_string()).collect(),
         };
+        for (_, module, op, _) in tools {
+            self.host
+                .catalog_tools
+                .lock()
+                .unwrap()
+                .entry((*module).into())
+                .or_default()
+                .insert((*op).into());
+        }
         let tools = tools
             .iter()
             .map(|(name, module, op, schema)| {
@@ -781,6 +816,7 @@ fn rejection(delivery: Delivery, tool: &str, outcome: &str, code: &str) {
     assert_eq!(value["outcome"], outcome);
     assert_eq!(value["code"], code);
     assert!(!value["message"].as_str().unwrap().is_empty());
+    assert_ne!(value["message"], value["code"]);
 }
 
 #[test]
@@ -857,6 +893,310 @@ fn raw_ops_and_all_primitives_are_profile_violations_without_rows_or_sends() {
 }
 
 #[test]
+fn provider_restart_catalog_notice_resumes_once() {
+    let f = Fixture::new();
+    f.start(
+        &[("returning", "notes", "returning", json!({}))],
+        Limits::default(),
+        60_000,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.host.notes_present.store(false, Ordering::SeqCst);
+    f.issue(0, "returning", json!(null));
+    f.console_handshake("waiting for provider");
+    let calls = f.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].outcome, Outcome::Pending, "{calls:?}");
+    assert_eq!(calls[0].intent_at, None);
+    assert_eq!(calls[0].entered_at, None);
+    assert!(f.parent.try_recv().is_err());
+    assert!(f.attempts.try_recv().is_err());
+    f.catalog.set_op(
+        "notes",
+        "returning",
+        OpDecl {
+            kind: Some(OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    f.host.notes_present.store(true, Ordering::SeqCst);
+    for notify in f.host.catalog_notices.lock().unwrap().clone() {
+        notify();
+    }
+    f.attempt().reply.send(Ok(json!("back"))).unwrap();
+    let delivery = f.delivery();
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(delivery.delivery_order, 1);
+    assert_eq!(delivery.value.as_str(), "\"back\"");
+    f.finish("true");
+    assert_eq!(f.terminal()["status"], "completed");
+    assert_eq!(f.calls().len(), 1);
+    assert_eq!(f.calls()[0].outcome, Outcome::Ok);
+    assert!(f.attempts.try_recv().is_err());
+    assert!(f.parent.try_recv().is_err());
+}
+
+impl Fixture {
+    fn provider_restart_wait(&self, deadline: i64) {
+        self.start(
+            &[("read", "notes", "read", json!({}))],
+            Limits::default(),
+            deadline,
+        );
+        self.parent.recv_timeout(TIMEOUT).unwrap();
+        self.host.notes_present.store(false, Ordering::SeqCst);
+        self.issue(0, "read", json!(null));
+        self.console_handshake("waiting for provider");
+        assert_eq!(self.calls()[0].outcome, Outcome::Pending);
+        assert!(self.attempts.try_recv().is_err());
+    }
+
+    fn catalog_notice(&self) {
+        for notify in self.host.catalog_notices.lock().unwrap().clone() {
+            notify();
+        }
+    }
+
+    fn assert_never_sent(&self, position: usize, outcome: Outcome) {
+        let calls = self.calls();
+        let call = &calls[position];
+        assert_eq!(call.outcome, outcome);
+        assert_eq!(call.intent_at, None);
+        assert_eq!(call.entered_at, None);
+        assert_eq!(call.duration_ms, None);
+    }
+}
+
+#[test]
+fn provider_restart_expires_after_fifteen_seconds() {
+    let f = Fixture::new();
+    f.provider_restart_wait(60_000);
+    f.clock.set(15_099);
+    f.console_handshake("still within hold");
+    assert!(f.parent.try_recv().is_err());
+    assert!(f.attempts.try_recv().is_err());
+    f.clock.set(15_100);
+    let delivery = f.delivery();
+    rejection(
+        delivery.clone(),
+        "read",
+        "tool_unavailable",
+        "tool_unavailable",
+    );
+    let value: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+    assert_eq!(
+        value["detail"],
+        json!({"reason":"provider_unavailable", "module":"notes", "retryable":true})
+    );
+    assert!(value["message"].as_str().unwrap().contains("notes"));
+    f.assert_never_sent(0, Outcome::ToolUnavailable);
+    f.finish("true");
+    let result = f.terminal();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["person_wait_ms"], 0);
+    assert_eq!(f.calls().len(), 1);
+    assert!(f.parent.try_recv().is_err());
+    assert!(f.attempts.try_recv().is_err());
+}
+
+#[test]
+fn provider_restart_fallback_timer_resumes_without_notice() {
+    let f = Fixture::new();
+    f.provider_restart_wait(60_000);
+    f.host.notes_present.store(true, Ordering::SeqCst);
+    f.clock.advance(999);
+    f.console_handshake("not due yet");
+    assert!(f.attempts.try_recv().is_err());
+    f.clock.advance(1);
+    f.attempt().reply.send(Ok(json!(true))).unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
+    f.finish("true");
+    assert_eq!(f.terminal()["status"], "completed");
+    assert_eq!(f.calls().len(), 1);
+}
+
+#[test]
+fn provider_restart_wall_budget_ends_without_send_or_person_wait() {
+    let f = Fixture::new();
+    f.provider_restart_wait(1_000);
+    let blocked = f.block_handled();
+    f.worker
+        .send(WorkerMessage::Blocked { awaiting: vec![0] })
+        .unwrap();
+    blocked.recv_timeout(TIMEOUT).unwrap();
+    assert!(f.supervisor.holds("r").is_empty());
+    f.clock.set(1_000);
+    let result = f.terminal();
+    assert_eq!(result["status"], "budget_exhausted:wall");
+    assert_eq!(
+        result["error"]["message"],
+        "run budget exhausted; read (call 1) was not sent while waiting for notes to reconnect"
+    );
+    assert_eq!(result["person_wait_ms"], 0);
+    assert_eq!(result["calls"][0]["outcome"], "tool_unavailable");
+    assert_eq!(result["calls"][0]["code"], "tool_unavailable");
+    f.assert_never_sent(0, Outcome::ToolUnavailable);
+    f.host.notes_present.store(true, Ordering::SeqCst);
+    f.catalog_notice();
+    assert!(f.attempts.try_recv().is_err());
+    assert!(f.parent.try_recv().is_err());
+    f.assert_order();
+}
+
+#[test]
+fn provider_restart_cancel_releases_without_send() {
+    let f = Fixture::new();
+    f.provider_restart_wait(60_000);
+    assert_eq!(
+        f.supervisor.cancel("r").unwrap().unwrap()["status"],
+        "cancelled"
+    );
+    f.assert_never_sent(0, Outcome::Cancelled);
+    f.host.notes_present.store(true, Ordering::SeqCst);
+    f.catalog_notice();
+    assert!(f.attempts.try_recv().is_err());
+    assert!(f.parent.try_recv().is_err());
+    f.assert_order();
+}
+
+#[test]
+fn provider_restart_missing_op_is_removed_immediately() {
+    let f = Fixture::new();
+    f.start(
+        &[("removed", "notes", "gone", json!({}))],
+        Limits::default(),
+        60_000,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.issue(0, "removed", json!(null));
+    let delivery = f.delivery();
+    rejection(
+        delivery.clone(),
+        "removed",
+        "tool_unavailable",
+        "tool_unavailable",
+    );
+    let value: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+    assert_eq!(
+        value["detail"],
+        json!({"reason":"tool_removed", "module":"notes", "retryable":false})
+    );
+    let message = value["message"].as_str().unwrap();
+    assert!(message.contains("removed") && message.contains("notes"));
+    f.assert_never_sent(0, Outcome::ToolUnavailable);
+    assert_eq!(f.clock.now_ms(), 100);
+    assert!(f.attempts.try_recv().is_err());
+    f.finish("true");
+    assert_eq!(f.terminal()["status"], "completed");
+}
+
+#[test]
+fn provider_restart_unreadable_catalog_holds_then_recovers() {
+    let f = Fixture::new();
+    f.start(
+        &[("read", "notes", "read", json!({}))],
+        Limits::default(),
+        60_000,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.host.catalog_error.store(true, Ordering::SeqCst);
+    f.issue(0, "read", json!(null));
+    f.console_handshake("catalog unavailable");
+    f.assert_never_sent(0, Outcome::Pending);
+    assert!(f.parent.try_recv().is_err());
+    f.clock.advance(5_000);
+    f.console_handshake("catalog still unavailable");
+    assert!(f.parent.try_recv().is_err());
+    f.host.catalog_error.store(false, Ordering::SeqCst);
+    f.catalog_notice();
+    f.attempt().reply.send(Ok(json!(true))).unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
+    f.finish("true");
+    assert_eq!(f.terminal()["status"], "completed");
+    assert_eq!(f.calls().len(), 1);
+}
+
+#[test]
+fn provider_restart_queued_call_rechecks_and_holds_at_dispatch() {
+    let f = Fixture::new();
+    f.standard();
+    let mut sent = Vec::new();
+    for position in 0..8 {
+        f.issue(position, "read", json!(null));
+        sent.push(f.attempt());
+    }
+    f.issue(8, "read", json!(null));
+    f.wait_calls(9);
+    f.host.notes_present.store(false, Ordering::SeqCst);
+    sent.pop().unwrap().reply.send(Ok(json!(true))).unwrap();
+    f.delivery();
+    f.console_handshake("queue held at dispatch");
+    f.assert_never_sent(8, Outcome::Pending);
+    assert!(f.attempts.try_recv().is_err());
+    f.host.notes_present.store(true, Ordering::SeqCst);
+    f.catalog_notice();
+    f.attempt().reply.send(Ok(json!(true))).unwrap();
+    assert_eq!(f.delivery().position, 8);
+    for attempt in sent {
+        attempt.reply.send(Ok(json!(true))).unwrap();
+        f.delivery();
+    }
+    f.finish("true");
+    assert_eq!(f.terminal()["status"], "completed");
+    assert_eq!(f.calls().len(), 9);
+    assert!(f.parent.try_recv().is_err());
+    assert!(f.attempts.try_recv().is_err());
+}
+
+#[test]
+fn provider_restart_holds_occupy_all_in_flight_slots() {
+    let f = Fixture::new();
+    f.provider_restart_wait(60_000);
+    for position in 1..9 {
+        f.issue(position, "read", json!(null));
+    }
+    f.console_handshake("eight holds and one queued");
+    f.host.notes_present.store(true, Ordering::SeqCst);
+    f.catalog_notice();
+    let mut sent = Vec::new();
+    for _ in 0..8 {
+        sent.push(f.attempt());
+    }
+    assert!(f.attempts.try_recv().is_err());
+    f.assert_never_sent(8, Outcome::Pending);
+    sent.pop().unwrap().reply.send(Ok(json!(true))).unwrap();
+    f.delivery();
+    f.attempt().reply.send(Ok(json!(true))).unwrap();
+    f.delivery();
+    for attempt in sent {
+        attempt.reply.send(Ok(json!(true))).unwrap();
+        f.delivery();
+    }
+    f.finish("true");
+    assert_eq!(f.terminal()["status"], "completed");
+    assert_eq!(f.calls().len(), 9);
+}
+
+#[test]
+fn provider_restart_catalog_subscription_is_weak_and_once_per_supervisor() {
+    let f = Fixture::new();
+    let host = f.host.clone();
+    let shared = Arc::downgrade(&f.supervisor.0);
+    assert_eq!(host.catalog_notices.lock().unwrap().len(), 1);
+    f.standard();
+    assert_eq!(host.catalog_notices.lock().unwrap().len(), 1);
+    f.supervisor.cancel("r").unwrap();
+    f.assert_order();
+    f.cleanup(true);
+    drop(f);
+    assert!(shared.upgrade().is_none());
+    for notify in host.catalog_notices.lock().unwrap().clone() {
+        notify();
+    }
+}
+
+#[test]
 fn per_call_checks_are_ordered_and_never_write_intent_before_readiness() {
     let f = Fixture::new();
     f.start(
@@ -883,17 +1223,13 @@ fn per_call_checks_are_ordered_and_never_write_intent_before_readiness() {
     for (position, name, input, outcome, code) in [
         (0, "unknown", json!(null), "refused", "unknown_tool"),
         (1, "strict", json!("bad"), "refused", "invalid_input"),
-        (
-            2,
-            "shell",
-            json!(null),
-            "tool_unavailable",
-            "tool_unavailable",
-        ),
     ] {
         f.issue(position, name, input);
         rejection(f.delivery(), name, outcome, code);
     }
+    f.issue(2, "shell", json!(null));
+    f.console_handshake("catalog read failed");
+    f.assert_never_sent(2, Outcome::Pending);
     assert!(
         f.host
             .events
@@ -905,12 +1241,19 @@ fn per_call_checks_are_ordered_and_never_write_intent_before_readiness() {
             == 1
     );
     f.host.catalog_error.store(false, Ordering::SeqCst);
+    f.catalog_notice();
+    rejection(
+        f.delivery(),
+        "shell",
+        "tool_unavailable",
+        "tool_unavailable",
+    );
     for (position, name, code) in [
-        (3, "shell", "not_in_catalog"),
-        (5, "absent", "not_in_catalog"),
+        (3, "shell", "tool_unavailable"),
+        (5, "absent", "tool_unavailable"),
     ] {
         f.issue(position, name, json!(null));
-        rejection(f.delivery(), name, "refused", code);
+        rejection(f.delivery(), name, "tool_unavailable", code);
     }
     f.issue(4, "marked", json!(null));
     f.attempt().reply.send(Ok(json!(true))).unwrap();
