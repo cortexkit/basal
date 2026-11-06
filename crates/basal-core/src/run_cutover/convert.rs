@@ -345,7 +345,9 @@ pub(super) fn state(c: &Connection, run: &Row) -> Result<State> {
             .arrival_seq = seq as u64;
         state.next_arrival_seq = seq as u64 + 1;
     }
-    // Old kv effects are already in SQLite, so the migrated overlay is empty.
+    // A live run's stored-value (kv) writes are normally buffered in its actor
+    // state until the run ends. The legacy path wrote them to SQLite at once, so a
+    // migrated run starts with no buffered kv writes.
     for row in legacy::rows(c, "SELECT * FROM event_body_journal WHERE run_id=?1", [id])? {
         state.event_bodies.push(Body::EventBody {
             digest: optional_text(&row, "digest").unwrap_or_default(),

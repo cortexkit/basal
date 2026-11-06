@@ -1,8 +1,10 @@
 //! Stop-the-world conversion of the SQLite execution model to the run log.
 //!
 //! Startup owns the store lease and calls this before attaching hosts or admitting
-//! traffic. Deployment approval and backup/rollback are operator prerequisites,
-//! not a second runtime mode. A failed post-check never permits startup.
+//! traffic. It runs once per store and leaves no switch behind: there is no
+//! setting that keeps the old execution model. Deployment approval and a store
+//! backup happen before the binary is placed. A failed post-check never permits
+//! startup.
 
 mod audit;
 mod convert;
@@ -115,8 +117,9 @@ impl Migration {
     }
     pub fn run(&self) -> Result<()> {
         // A newly created, still-empty store has no legacy execution state to
-        // sweep or convert. Install the target control plane in one transaction;
-        // the ordinary resumable phases then create its log and finish audits.
+        // sweep or convert. Create the run-log tables (`schema_run_log.sql`) in
+        // one transaction; the ordinary resumable phases then create the log
+        // directory and finish the audits.
         if self.phase()? == Phase::Sweep
             && self.store.is_fresh()
             && self.store.read(|c| {

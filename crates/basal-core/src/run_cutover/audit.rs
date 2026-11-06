@@ -1,3 +1,11 @@
+//! Before/after evidence for the cutover, kept in `meta.migration_audit` so a
+//! resumed migration can still compare against the pre-migration store.
+//!
+//! "Late work" here means a call whose outcome can still arrive or change after
+//! its run ended: an unsettled journal position, an unacknowledged Broca call,
+//! a reserved token or dollar row, a queued refusal notice, or a quarantined
+//! cancellation receipt. Each such source is listed exactly, and the post-check
+//! proves every one survives as an open obligation or a settled receipt.
 use super::legacy::{self, Row, corrupt, integer, text, unsigned};
 use crate::{
     Result,
