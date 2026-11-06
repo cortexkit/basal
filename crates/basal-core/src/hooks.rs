@@ -56,6 +56,9 @@ pub enum Boundary {
     RunLogGcSynced,
     /// A snapshot is copied and appended atomically, before its sync wait.
     MidSnapshot,
+    /// The activation has taken and registered its generation, before its
+    /// first new or recovered dispatch can start.
+    DriverActivated { generation: u64 },
     /// A driver's identity record is appended, before its required sync.
     DriverAppended { position: u64 },
     /// A remote Intent is durable, before the host is called.
@@ -147,7 +150,8 @@ impl Boundary {
         Self::RestoreFinished,
     ];
     pub const HOST: [Self; 1] = [Self::HostArrived { position: 0 }];
-    pub const RUN_DRIVER: [Self; 5] = [
+    pub const RUN_DRIVER: [Self; 6] = [
+        Self::DriverActivated { generation: 0 },
         Self::DriverAppended { position: 0 },
         Self::DriverSynced { position: 0 },
         Self::DriverDispatched { position: 0 },

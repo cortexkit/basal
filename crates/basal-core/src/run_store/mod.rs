@@ -735,6 +735,48 @@ impl<R: RunRecords> RunStore<R> {
         let accounting = accounting.lock();
         store.read(|conn| f(conn, &accounting.runs))
     }
+    /// Hold the requested flows in sorted order through one SQLite snapshot.
+    /// The locks form one accounting rank: callers must not acquire any other
+    /// accounting lock until the entire batch has been released.
+    pub(crate) fn accounting_read_many<T>(
+        &self,
+        flow_ids: &[&str],
+        store: &Store,
+        f: impl FnOnce(
+            &rusqlite::Connection,
+            &BTreeMap<String, &BTreeMap<String, Vec<Reservation>>>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        let accounting: Vec<_> = {
+            let mut flows = self.flows.lock().unwrap();
+            flow_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .map(|flow| {
+                    let lock = flows
+                        .entry(flow.into())
+                        .or_insert_with(|| {
+                            Arc::new(Ordered::new(Accounting::default(), Lock::Accounting))
+                        })
+                        .clone();
+                    (flow.to_owned(), lock)
+                })
+                .collect()
+        };
+        let _order = lock_order::enter(Lock::Accounting);
+        let guards: Vec<_> = accounting
+            .iter()
+            .map(|(_, lock)| lock.raw.lock().unwrap_or_else(|p| p.into_inner()))
+            .collect();
+        let runs = accounting
+            .iter()
+            .zip(&guards)
+            .map(|((flow, _), guard)| (flow.clone(), &guard.runs))
+            .collect();
+        store.read(|conn| f(conn, &runs))
+    }
     pub fn close(
         &self,
         run: &Arc<Run<R>>,

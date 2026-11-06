@@ -51,6 +51,36 @@ pub struct CallState {
 }
 
 impl CallState {
+    /// The first report fixes the charge even when it precedes the outcome.
+    /// Absent counted fields retain the reservation as a conservative floor;
+    /// cached reads are reported but never part of the charged token total.
+    pub(crate) fn token_usage(&self) -> Option<super::Usage> {
+        if let Some(report) = self.usage_report {
+            let input = report
+                .input_tokens
+                .unwrap_or(0)
+                .saturating_add(report.cache_write_tokens.unwrap_or(0));
+            let output = report.output_tokens.unwrap_or(0);
+            let reserved = self
+                .intent
+                .as_ref()
+                .and_then(|i| i.reservation.as_ref())
+                .map_or(0, |r| r.input_tokens.saturating_add(r.output_tokens));
+            let missing = report.input_tokens.is_none()
+                || report.cache_write_tokens.is_none()
+                || report.output_tokens.is_none();
+            Some(super::Usage {
+                input_tokens: if missing {
+                    input.max(reserved.saturating_sub(output))
+                } else {
+                    input
+                },
+                output_tokens: output,
+            })
+        } else {
+            self.arrival.as_ref().and_then(|a| a.usage.clone())
+        }
+    }
     fn resolved_through(&self) -> u64 {
         self.resolutions
             .iter()
@@ -456,7 +486,9 @@ impl State {
                 call.unknown = Some("connection_lost".into());
             }
             Body::MeasuredUsage { position, report } => {
-                self.call_mut(*position)?.usage_report = Some(*report);
+                self.call_mut(*position)?
+                    .usage_report
+                    .get_or_insert(*report);
             }
             Body::ScopeCut { deadline_exempt } => {
                 self.deadline_exempt = *deadline_exempt;

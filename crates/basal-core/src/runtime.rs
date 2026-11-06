@@ -1080,6 +1080,58 @@ impl Runtime {
     /// came. Returns whether this one was applied.
     #[cfg(any(test, feature = "test-support"))]
     pub fn report_usage(&self, send_id: &str, usage: crate::tokens::Usage) -> Result<bool> {
+        let hosts = self
+            .shared
+            .staged_hosts
+            .as_ref()
+            .expect("log-backed runtime");
+        for actor in hosts.registry().snapshot() {
+            let (id, _, _, state) = actor.reader_snapshot();
+            let Some(position) = state.calls.values().find_map(|call| {
+                call.intent
+                    .as_ref()
+                    .filter(|i| i.idempotency_key.as_deref() == Some(send_id))
+                    .map(|_| call.identity.position)
+            }) else {
+                continue;
+            };
+            let Ok(entrant) = actor.enter() else {
+                break;
+            };
+            let budgets = hosts.budgets_for(&id)?;
+            return entrant.account(|records| {
+                records.check_healthy()?;
+                let state = records.state();
+                let call = &state.calls[&position];
+                if call.arrival.is_some()
+                    || call.usage_report.is_some()
+                    || call
+                        .intent
+                        .as_ref()
+                        .and_then(|i| i.reservation.as_ref())
+                        .is_none_or(|r| r.input_tokens.saturating_add(r.output_tokens) == 0)
+                {
+                    return Ok((false, crate::run_driver::accounting::rows(state, &budgets)?));
+                }
+                let lsn = records.append(
+                    state.generation,
+                    crate::run_records::Body::MeasuredUsage {
+                        position,
+                        report: crate::run_records::UsageReport {
+                            input_tokens: Some(usage.input_tokens),
+                            cache_write_tokens: Some(usage.cache_write_tokens),
+                            output_tokens: Some(usage.output_tokens),
+                            cached_input_tokens: Some(usage.cached_input_tokens),
+                        },
+                    },
+                )?;
+                crate::run_store::RunRecords::sync_through(records, lsn)?;
+                Ok((
+                    true,
+                    crate::run_driver::accounting::rows(records.state(), &budgets)?,
+                ))
+            });
+        }
         let now = self.config.clock.now_ms();
         self.write_execution(|tx| {
             crate::tokens::settle(
@@ -1115,26 +1167,15 @@ impl Runtime {
         })
     }
 
-    /// Current token windows for approved flows. The log-backed path reads each
-    /// flow under its accounting lock. Unknown flows and flows without token
-    /// grants are omitted.
+    /// Current token windows for approved flows, read in one SQL statement with
+    /// live accounting merged under sorted flow locks. Unknown flows and flows
+    /// without token grants are omitted.
     pub fn token_usage_many(
         &self,
         flow_ids: &[&str],
         at_ms: i64,
     ) -> Result<std::collections::BTreeMap<String, crate::tokens::WindowUsage>> {
-        if self.uses_run_log() {
-            let mut windows = std::collections::BTreeMap::new();
-            for flow in flow_ids {
-                if let Some(usage) = self.log_token_usage(flow, at_ms)? {
-                    windows.insert((*flow).into(), usage);
-                }
-            }
-            return Ok(windows);
-        }
-        self.shared
-            .store
-            .read(|c| crate::tokens::window_usage_many(c, flow_ids, at_ms))
+        self.log_token_usage_many(flow_ids, at_ms)
     }
 }
 

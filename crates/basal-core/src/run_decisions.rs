@@ -522,15 +522,17 @@ impl RecoveredHosts {
         card: Option<&DecisionRecord>,
         now: i64,
     ) -> Result<RunState> {
-        let Resolution::ObservedResult(outcome) = resolution else {
-            return Err(CoreError::Invalid(
-                "closed runs accept only observed_result".into(),
-            ));
-        };
         let history = self
             .store
             .read(|c| sql::history(c, id))?
             .ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
+        let Resolution::ObservedResult(outcome) = resolution else {
+            return Err(CoreError::WrongState {
+                run_id: id.into(),
+                state: history.state,
+                operation: "reconcile",
+            });
+        };
         self.registry()
             .accounting_write(&history.flow_id, &self.store, |tx| {
                 let row = sql::obligation(tx, id, position)?

@@ -206,16 +206,22 @@ impl Activation {
             self.finish(terminal)?;
             return Ok(ActivationEnd::EngineMismatch { detail });
         }
+        self.driver.at(
+            &self.live.run_id,
+            Boundary::DriverActivated {
+                generation: self.generation,
+            },
+        )?;
         let mut pending = Vec::new();
         let spawn = |dispatch: Dispatch| {
             let (tx, rx) = mpsc::sync_channel(1);
-            std::thread::spawn(move || {
+            self.driver.services.spawn_dispatch(Box::new(move || {
                 let _ = tx.send(dispatch.send());
-            });
-            rx
+            }))?;
+            Ok::<_, CoreError>(rx)
         };
         for dispatch in self.recover_dispatches_for_worker()? {
-            pending.push(spawn(dispatch));
+            pending.push(spawn(dispatch)?);
         }
         let state = self.state()?;
         let unknown: Vec<_> = state
@@ -268,7 +274,7 @@ impl Activation {
                 }
             }
             for dispatch in self.recover_dispatches_for_worker()? {
-                pending.push(spawn(dispatch));
+                pending.push(spawn(dispatch)?);
             }
             let unknown: Vec<_> = self
                 .state()?
@@ -338,7 +344,7 @@ impl Activation {
             };
             match message {
                 WorkerMessage::HostCall(call) => match self.issue_for_worker(call)? {
-                    Issued::Dispatch(dispatch) => pending.push(spawn(*dispatch)),
+                    Issued::Dispatch(dispatch) => pending.push(spawn(*dispatch)?),
                     Issued::Reply(outcome) => {
                         if worker.send(&ParentMessage::Deliver(outcome)).is_err() {
                             self.requeue(true)?;

@@ -31,7 +31,8 @@ fn every_post_port_boundary_has_a_crash_case() {
             Boundary::MidSnapshot => {
                 crate::run_records::tests::mid_snapshot_crash_keeps_durable_invariants_with_or_without_unsynced_tail();
             }
-            Boundary::DriverAppended { .. }
+            Boundary::DriverActivated { .. }
+            | Boundary::DriverAppended { .. }
             | Boundary::DriverSynced { .. }
             | Boundary::DriverDispatched { .. }
             | Boundary::DriverReleased { .. }
@@ -74,7 +75,7 @@ fn every_post_port_boundary_has_a_crash_case() {
         }
         assert!(covered.insert(boundary.clone()), "duplicate {boundary:?}");
     }
-    assert_eq!(covered.len(), 42);
+    assert_eq!(covered.len(), 43);
 }
 
 #[test]

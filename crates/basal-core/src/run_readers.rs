@@ -3,6 +3,7 @@
 
 use basal_proto::{JsonText, RecordedOutcome};
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::BTreeMap;
 
 use crate::{
     CoreError, Result,
@@ -249,73 +250,84 @@ impl crate::Runtime {
         flow: &str,
         at: i64,
     ) -> Result<Option<crate::tokens::WindowUsage>> {
+        Ok(self.log_token_usage_many(&[flow], at)?.remove(flow))
+    }
+
+    pub(crate) fn log_token_usage_many(
+        &self,
+        flow_ids: &[&str],
+        at: i64,
+    ) -> Result<BTreeMap<String, crate::tokens::WindowUsage>> {
+        let flow_ids: Vec<_> = flow_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let states = self.log_states();
         let hosts = self.shared.staged_hosts.as_ref().unwrap();
         hosts
             .registry()
-            .accounting_read(flow, self.store(), |conn, runs| {
-                let Some(approved) = crate::install::approved(conn, flow)? else {
-                    return Ok(None);
-                };
-                let manifest = crate::manifest::Manifest::parse_stored(&approved.manifest)
-                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
-                let Some(ms) = manifest.token_window_ms() else {
-                    return Ok(None);
-                };
-                let start = crate::tokens::window_start(at, ms);
-                let key = format!("token:{ms}:{start}");
-                let mut usage = crate::tokens::window_usage(conn, flow, ms, start)?;
-                for (id, rows) in runs {
-                    for row in rows.iter().filter(|r| r.window.0 == key) {
-                        let call = states.get(id).and_then(|s| s.calls.get(&row.position));
-                        match call.and_then(|c| c.arrival.as_ref()) {
-                            Some(arrival)
-                                if arrival.usage.as_ref().is_some_and(|u| {
-                                    u.input_tokens.saturating_add(u.output_tokens) == row.amount
-                                }) =>
-                            {
-                                let measured = arrival.usage.as_ref().expect("matched usage");
-                                let report = call.and_then(|c| c.usage_report).unwrap_or(
-                                    crate::run_records::UsageReport {
-                                        input_tokens: Some(measured.input_tokens),
-                                        cache_write_tokens: None,
-                                        output_tokens: Some(measured.output_tokens),
-                                        cached_input_tokens: None,
-                                    },
-                                );
-                                usage.input_tokens = usage
-                                    .input_tokens
-                                    .saturating_add(report.input_tokens.unwrap_or(0));
-                                usage.cache_write_tokens = usage
-                                    .cache_write_tokens
-                                    .saturating_add(report.cache_write_tokens.unwrap_or(0));
-                                usage.output_tokens = usage
-                                    .output_tokens
-                                    .saturating_add(report.output_tokens.unwrap_or(0));
-                                usage.cached_input_tokens = usage
-                                    .cached_input_tokens
-                                    .saturating_add(report.cached_input_tokens.unwrap_or(0));
-                                let known = report
-                                    .input_tokens
-                                    .unwrap_or(0)
-                                    .saturating_add(report.cache_write_tokens.unwrap_or(0))
-                                    .saturating_add(report.output_tokens.unwrap_or(0));
-                                usage.unreported_tokens = usage
-                                    .unreported_tokens
-                                    .saturating_add(row.amount.saturating_sub(known));
+            .accounting_read_many(&flow_ids, self.store(), |conn, flows| {
+                let mut windows = crate::tokens::window_usage_many(conn, &flow_ids, at)?;
+                for (flow, usage) in &mut windows {
+                    let key = format!("token:{}:{}", usage.window_ms, usage.window_start);
+                    let Some(runs) = flows.get(flow) else {
+                        continue;
+                    };
+                    for (id, rows) in *runs {
+                        for row in rows.iter().filter(|r| r.window.0 == key) {
+                            let call = states.get(id).and_then(|s| s.calls.get(&row.position));
+                            match call.and_then(|c| c.token_usage()) {
+                                Some(measured)
+                                    if measured
+                                        .input_tokens
+                                        .saturating_add(measured.output_tokens)
+                                        == row.amount =>
+                                {
+                                    let report = call.and_then(|c| c.usage_report).unwrap_or(
+                                        crate::run_records::UsageReport {
+                                            input_tokens: Some(measured.input_tokens),
+                                            cache_write_tokens: None,
+                                            output_tokens: Some(measured.output_tokens),
+                                            cached_input_tokens: None,
+                                        },
+                                    );
+                                    usage.input_tokens = usage
+                                        .input_tokens
+                                        .saturating_add(report.input_tokens.unwrap_or(0));
+                                    usage.cache_write_tokens = usage
+                                        .cache_write_tokens
+                                        .saturating_add(report.cache_write_tokens.unwrap_or(0));
+                                    usage.output_tokens = usage
+                                        .output_tokens
+                                        .saturating_add(report.output_tokens.unwrap_or(0));
+                                    usage.cached_input_tokens = usage
+                                        .cached_input_tokens
+                                        .saturating_add(report.cached_input_tokens.unwrap_or(0));
+                                    let known = report
+                                        .input_tokens
+                                        .unwrap_or(0)
+                                        .saturating_add(report.cache_write_tokens.unwrap_or(0))
+                                        .saturating_add(report.output_tokens.unwrap_or(0));
+                                    usage.unreported_tokens = usage
+                                        .unreported_tokens
+                                        .saturating_add(row.amount.saturating_sub(known));
+                                }
+                                None if call.is_some_and(|c| c.arrival.is_some()) => {
+                                    usage.unreported_tokens =
+                                        usage.unreported_tokens.saturating_add(row.amount)
+                                }
+                                // A callback may have settled after the run state used for
+                                // this accounting read was captured.
+                                // The accounting amount is authoritative; categorize an
+                                // unmatched row as reserved rather than under-counting it.
+                                _ => usage.reserved = usage.reserved.saturating_add(row.amount),
                             }
-                            Some(arrival) if arrival.usage.is_none() => {
-                                usage.unreported_tokens =
-                                    usage.unreported_tokens.saturating_add(row.amount)
-                            }
-                            // A callback may have settled since the actor snapshot.
-                            // The accounting amount is authoritative; categorize an
-                            // unmatched row as reserved rather than under-counting it.
-                            _ => usage.reserved = usage.reserved.saturating_add(row.amount),
                         }
                     }
                 }
-                Ok(Some(usage))
+                Ok(windows)
             })
     }
 

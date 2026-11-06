@@ -127,9 +127,13 @@ fn arrival(position: u64, value: &str) -> Arrival {
     }
 }
 impl Services for Service {
+    fn spawn_dispatch(&self, job: Box<dyn FnOnce() + Send>) -> Result<()> {
+        std::thread::spawn(job);
+        Ok(())
+    }
     fn install(&self, _: &LiveRun) -> Result<Gate> {
         lock_order::assert_lock_free();
-        Ok(*self.gate.lock().unwrap())
+        Ok(self.gate.lock().unwrap().clone())
     }
     fn prepare(&self, _: &LiveRun, call: &HostCall, state: &State) -> Result<Prepared> {
         lock_order::assert_lock_free();
@@ -977,6 +981,7 @@ pub(crate) fn crash_case(boundary: Boundary) {
     // calls. Cut the new authorization at a non-zero position so the hook must
     // carry the actual call's position rather than a constant representative.
     let boundary = match boundary {
+        Boundary::DriverActivated { .. } => Boundary::DriverActivated { generation: 2 },
         Boundary::DriverAppended { .. } => Boundary::DriverAppended { position: 5 },
         Boundary::DriverSynced { .. } => Boundary::DriverSynced { position: 5 },
         Boundary::DriverDispatched { .. } => Boundary::DriverDispatched { position: 5 },
@@ -1017,7 +1022,24 @@ pub(crate) fn crash_case(boundary: Boundary) {
         .idempotency_key
         .clone();
     *f.cut.0.lock().unwrap() = Some(boundary.clone());
-    let result = if boundary == (Boundary::DriverReleased { position: 0 }) {
+    let result = if boundary == (Boundary::DriverActivated { generation: 2 }) {
+        let next = f.claim(a.generation);
+        let sends = f.service.sent.lock().unwrap().len();
+        let result = next
+            .drive(
+                &mut Worker::new(Vec::new()),
+                request(),
+                Arc::new(Effects),
+                Duration::from_secs(5),
+            )
+            .map(|_| ());
+        assert_eq!(
+            f.service.sent.lock().unwrap().len(),
+            sends,
+            "no recovered dispatch before activation cut"
+        );
+        result
+    } else if boundary == (Boundary::DriverReleased { position: 0 }) {
         a.release(&[0]).map(|_| ())
     } else if boundary == Boundary::DriverBeforeClose {
         a.finish(f.terminal(RunState::Cancelled))

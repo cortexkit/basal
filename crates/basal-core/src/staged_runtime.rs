@@ -271,6 +271,12 @@ fn arrival(
 }
 
 impl run_driver::Services for Services {
+    fn spawn_dispatch(&self, job: Box<dyn FnOnce() + Send>) -> Result<()> {
+        // Register the handle without capturing this temporary Runtime in the
+        // job. Its services adapter holds only a weak reference to runtime state.
+        self.runtime()?.spawn(job);
+        Ok(())
+    }
     fn removed(&self, live: &LiveRun) -> Result<bool> {
         let rt = self.runtime()?;
         rt.store().read(|c| crate::run_removal::removed(c, live))
@@ -280,11 +286,14 @@ impl run_driver::Services for Services {
         if self.removed(live)? {
             return Ok(Gate::Removed);
         }
-        let revoked = rt.store().read(|c| {
-            Ok(crate::install::revocation(c, &live.flow_id, live.flow_version)?.is_some())
-        })?;
-        if revoked {
-            return Ok(Gate::Revoked);
+        let revoked = rt
+            .store()
+            .read(|c| crate::install::revocation(c, &live.flow_id, live.flow_version))?;
+        if let Some(detail) = revoked {
+            return Ok(Gate::Revoked {
+                cause: crate::gate::RevokeCause::AlreadyRevoked,
+                detail,
+            });
         }
         if rt.config.install_gate == crate::gate::InstallGate::Off {
             return Ok(Gate::Open);
@@ -310,6 +319,16 @@ impl run_driver::Services for Services {
                 Ok(Gate::Deferred)
             }
             Ok(status) => {
+                let cause = match &status {
+                    InstallStatus::Active { code_hash, .. } => {
+                        crate::gate::RevokeCause::HashMismatch {
+                            core: code_hash.clone(),
+                            run: crate::ids::hex(&identity.code_hash),
+                        }
+                    }
+                    InstallStatus::Unknown => crate::gate::RevokeCause::Unknown,
+                    _ => crate::gate::RevokeCause::Revoked,
+                };
                 let detail = match status {
                     InstallStatus::Active { code_hash, .. } => format!(
                         "core reports code hash {}; pinned code hash {}",
@@ -327,7 +346,7 @@ impl run_driver::Services for Services {
                         rt.config.clock.now_ms(),
                     )
                 })?;
-                Ok(Gate::Revoked)
+                Ok(Gate::Revoked { cause, detail })
             }
         }
     }
@@ -1242,22 +1261,23 @@ impl Runtime {
             }
             other => {
                 self.shared.staged_owners.lock().unwrap().remove(id);
-                let removed = matches!(&other, Ok(run_driver::Claim::Removed));
                 match other {
                     Ok(run_driver::Claim::Deferred) => Ok(Err(ActivationEnd::Deferred {
                         detail: "waiting for core install status".into(),
                         retry_in: self.gate_wait(id).unwrap_or(self.config.install_gate_retry),
                     })),
-                    Ok(run_driver::Claim::Revoked) | Ok(run_driver::Claim::Removed) => {
-                        let detail = if removed {
-                            "the flow instance was removed".to_owned()
-                        } else {
-                            self.store()
-                                .read(|c| {
-                                    crate::install::revocation(c, &live.flow_id, live.flow_version)
-                                })?
-                                .unwrap_or_else(|| "install no longer approved".into())
+                    Ok(
+                        claim @ (run_driver::Claim::Revoked { .. } | run_driver::Claim::Removed),
+                    ) => {
+                        let (cause, detail) = match claim {
+                            run_driver::Claim::Revoked { cause, detail } => (cause, detail),
+                            run_driver::Claim::Removed => (
+                                crate::gate::RevokeCause::Removed,
+                                "the flow instance was removed".to_owned(),
+                            ),
+                            _ => unreachable!(),
                         };
+                        let removed = cause == crate::gate::RevokeCause::Removed;
                         let mut terminal = Terminal::new(
                             live.clone(),
                             RunState::Cancelled,
@@ -1277,11 +1297,7 @@ impl Runtime {
                         self.staged_driver(id)?.cancel(terminal)?;
                         Ok(Err(ActivationEnd::Revoked {
                             version: live.flow_version,
-                            cause: if removed {
-                                crate::gate::RevokeCause::Removed
-                            } else {
-                                crate::gate::RevokeCause::AlreadyRevoked
-                            },
+                            cause,
                             detail,
                         }))
                     }

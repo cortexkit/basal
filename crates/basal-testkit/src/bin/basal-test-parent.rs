@@ -116,6 +116,7 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
         config,
     )
     .expect("runtime startup");
+    rt.retain_detail_for_test().map_err(|e| e.to_string())?;
     rt.recover().map_err(|e| e.to_string())?;
     // A restart finds the version it approved before and admits the same
     // trigger, which deduplicates to the run already in the store.

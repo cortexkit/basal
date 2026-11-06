@@ -148,6 +148,45 @@ fn active_with_another_code_hash_is_revoked() {
     );
 }
 
+#[test]
+fn first_install_rejection_preserves_its_specific_cause_and_detail() {
+    for status in [
+        InstallStatus::Unknown,
+        InstallStatus::Revoked { code_hash: None },
+        InstallStatus::Active {
+            code_hash: "ab".repeat(32),
+            scope: None,
+        },
+    ] {
+        let world = World::new("gate-original-cause");
+        let rt = gated(&world, &Clock::system());
+        let id = admit(&rt, &world, "return 'must not activate';");
+        let pinned = run(&rt, &id);
+        let expected = match &status {
+            InstallStatus::Unknown => RevokeCause::Unknown,
+            InstallStatus::Active { code_hash, .. } => RevokeCause::HashMismatch {
+                core: code_hash.clone(),
+                run: hex(&pinned.code_hash),
+            },
+            _ => RevokeCause::Revoked,
+        };
+        world
+            .mock
+            .set_install_status(&pinned.flow_id, 1, Some(status));
+        let end = rt.resume(&id).unwrap();
+        assert!(
+            matches!(&end, ActivationEnd::Revoked { cause, .. } if *cause == expected),
+            "{end:?}"
+        );
+        let detail = assert_refused(&rt, &world, &id, &end);
+        assert_eq!(
+            rt.run(&id).unwrap().error_detail.as_deref(),
+            Some(detail.as_str())
+        );
+        assert_eq!(activations_sent(&world), 0);
+    }
+}
+
 /// The operator revoked the version in core.
 #[test]
 fn revoked_cancels_the_run_and_disables_the_flow() {

@@ -67,6 +67,7 @@ pub struct State {
     last_key: Option<(String, Vec<String>)>,
     totals: BTreeMap<(String, Vec<String>), Total>,
     wal: PathBuf,
+    page_size: u64,
     salt: [u8; 8],
     previous_frames: u64,
     pending_frames: u64,
@@ -102,6 +103,7 @@ impl<'a> Probe<'a> {
                 last_key: None,
                 totals: BTreeMap::new(),
                 wal,
+                page_size: 0,
                 salt: [0; 8],
                 previous_frames: 0,
                 pending_frames: 0,
@@ -196,7 +198,7 @@ impl<'a> Probe<'a> {
                 json!({"phase": phase, "sql": statements,
                     "kind": transaction_kind(phase, statements),
                     "transactions": total.transactions, "frames": total.frames,
-                    "wal_frame_bytes": total.frames * (4096 + 24),
+                    "wal_frame_bytes": total.frames * (state.page_size + 24),
                     "sqlite_write_bytes": total.sqlite_bytes,
                     "write_bytes": total.bytes})
             })
@@ -327,6 +329,14 @@ unsafe extern "C" fn wal(
         let mut header = [0; 32];
         let mut file = std::fs::File::open(&state.wal).unwrap();
         file.read_exact(&mut header).expect("WAL header");
+        // Frame spacing is defined by the WAL header, not by SQLite's default
+        // page size. One probe observes a fixed page size across WAL resets.
+        let page_size = u64::from(u32::from_be_bytes(header[8..12].try_into().unwrap()));
+        assert!((512..=65_536).contains(&page_size) && page_size.is_power_of_two());
+        if state.page_size != 0 {
+            assert_eq!(state.page_size, page_size);
+        }
+        state.page_size = page_size;
         let salt: [u8; 8] = header[16..24].try_into().unwrap();
         let frames = frames as u64;
         let added = if salt != state.salt {
@@ -357,7 +367,7 @@ unsafe extern "C" fn wal(
         let owners = owners.expect("dbstat page ownership");
         let mut pages = Vec::new();
         for frame in frames - added..frames {
-            file.seek(SeekFrom::Start(32 + frame * (4096 + 24)))
+            file.seek(SeekFrom::Start(32 + frame * (page_size + 24)))
                 .unwrap();
             let mut number = [0; 4];
             file.read_exact(&mut number).unwrap();
@@ -375,7 +385,7 @@ unsafe extern "C" fn wal(
             .clone()
             .unwrap_or_else(|| (state.phase.clone(), state.statements.clone()));
         state.transactions.push(json!({"phase": phase, "kind": transaction_kind(&phase, &statements),
-            "sql": statements, "wal_frames": added, "wal_frame_bytes": added * (4096 + 24), "pages": pages}));
+            "sql": statements, "wal_frames": added, "wal_frame_bytes": added * (page_size + 24), "pages": pages}));
         // SQLite can emit COMMIT's PROFILE event before invoking the WAL hook.
         // Attach frames to that completed transaction, not the following one.
         if let Some(key) = state.last_key.clone() {

@@ -578,11 +578,21 @@ pub fn drive(
             return Ok(run);
         }
         mock.complete_all();
-        rt.wait_for(
-            run_id,
-            deadline.saturating_duration_since(Instant::now()),
-            |s| s != RunState::Suspended,
-        )?;
+        // This fixture has no engine loop. Drive the same retry/deadline timer
+        // as the engine, rather than waiting forever for a host completion that
+        // a deferred transport attempt will never produce.
+        let left = deadline.saturating_duration_since(Instant::now());
+        let wait = rt.next_wake_at(None)?.map_or(left, |at| {
+            Duration::from_millis(at.saturating_sub(rt.config().clock.now_ms()).max(0) as u64)
+                .min(left)
+        });
+        match rt.wait_for(run_id, wait, |s| s != RunState::Suspended) {
+            Ok(_) => {}
+            Err(CoreError::Timeout { .. }) if Instant::now() < deadline => {
+                rt.startable()?;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -626,9 +636,14 @@ pub fn run_with_cuts_under(
         });
         let rt = match world.runtime(probe.clone(), config.clone()) {
             Ok(rt) => rt,
-            // Attaching to the host redelivers completions, so a cut can
-            // land while the runtime is still opening.
-            Err(CoreError::Cut) if probe.fired() => {
+            // Opening can crash while recovering log segments or redelivering
+            // host completions. Log recovery wraps its cut as Store("Cut");
+            // consume either form only when this phase's crash probe fired.
+            Err(error)
+                if probe.fired()
+                    && (matches!(&error, CoreError::Cut)
+                        || matches!(&error, CoreError::Store(detail) if detail == "Cut")) =>
+            {
                 fired.push(true);
                 phases.push(probe.points());
                 world.mock.detach();

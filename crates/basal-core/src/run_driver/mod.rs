@@ -54,6 +54,9 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     fn install(&self, run: &LiveRun) -> Result<Gate>;
     fn prepare(&self, run: &LiveRun, call: &HostCall, state: &State) -> Result<Prepared>;
     fn dispatch(&self, run: &LiveRun, intent: &Intent) -> Result<Reply>;
+    /// Register dispatch work with the runtime's thread owner, including sends
+    /// whose sibling has already ended the activation with a crash or error.
+    fn spawn_dispatch(&self, job: Box<dyn FnOnce() + Send>) -> Result<()>;
     fn dispatch_committed(&self, run: &LiveRun, position: u64, handle: Option<&str>);
     fn refusal_committed(&self, run: &LiveRun, position: u64);
     /// The final zero-write probe runs in a lease-fenced Store::write immediately
@@ -74,11 +77,14 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Gate {
     Open,
     Deferred,
-    Revoked,
+    Revoked {
+        cause: crate::gate::RevokeCause,
+        detail: String,
+    },
     Removed,
 }
 
@@ -141,7 +147,10 @@ pub struct Activation {
 pub enum Claim {
     Active(Box<Activation>),
     Deferred,
-    Revoked,
+    Revoked {
+        cause: crate::gate::RevokeCause,
+        detail: String,
+    },
     Removed,
 }
 
@@ -409,7 +418,7 @@ impl Driver {
             .ok_or_else(|| CoreError::NoSuchRun(live.run_id.clone()))?;
         match self.services.install(&live)? {
             Gate::Deferred => return Ok(Claim::Deferred),
-            Gate::Revoked => return Ok(Claim::Revoked),
+            Gate::Revoked { cause, detail } => return Ok(Claim::Revoked { cause, detail }),
             Gate::Removed => return Ok(Claim::Removed),
             Gate::Open => {}
         }

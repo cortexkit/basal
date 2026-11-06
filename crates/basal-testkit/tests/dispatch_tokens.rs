@@ -186,6 +186,75 @@ fn batched_token_usage_keeps_current_windows_and_omits_unapproved_flows() {
     );
 }
 
+#[test]
+fn batched_token_usage_merges_live_reservations_once_under_sorted_locks() {
+    let world = World::new("tokens-live-batch");
+    let (config, _clock) = manual(T0);
+    let rt = world
+        .runtime(std::sync::Arc::new(basal_core::NoHooks), config)
+        .unwrap();
+    let mut runs = Vec::new();
+    let mut reserved = Vec::new();
+    for id in ["a", "b"] {
+        let mut m = manifest(100_000, "1h", 2_000);
+        m["id"] = json!(id);
+        let run = admit_under(&rt, &world, "return await llm({prompt:'batch'});", &m, id);
+        assert!(matches!(
+            rt.resume(&run).unwrap(),
+            ActivationEnd::Suspended { .. }
+        ));
+        // The durable reservation includes prompt input as well as max output.
+        // Compare the batch with that intent, not with another usage reader.
+        let state = rt.fixture_state(&run).unwrap();
+        let reservation = state.calls[&0]
+            .intent
+            .as_ref()
+            .unwrap()
+            .reservation
+            .as_ref()
+            .unwrap();
+        reserved.push(reservation.input_tokens + reservation.output_tokens);
+        assert!(reserved.last().copied().unwrap() >= 2_000);
+        runs.push(run);
+    }
+    for completed in [false, true] {
+        if completed {
+            let handle = world.mock.handle_for(&runs[0], 0).unwrap();
+            assert!(
+                world
+                    .mock
+                    .complete(&handle, usage_outcome(100, 10, 50, 1_000))
+            );
+            rt.wait_for(&runs[0], std::time::Duration::from_secs(30), |_| {
+                rt.fixture_state(&runs[0])
+                    .is_ok_and(|s| s.calls[&0].arrival.is_some())
+            })
+            .unwrap();
+            rt.quiesce();
+        }
+        // Reverse order and duplicates exercise deterministic multi-flow locking
+        // and ensure a live reservation cannot be merged more than once.
+        let trace = StatementTrace::start(rt.store());
+        let windows = rt
+            .token_usage_many(&["b", "a", "a", "missing"], T0)
+            .unwrap();
+        let statements = trace.count.load(std::sync::atomic::Ordering::SeqCst);
+        drop(trace);
+        assert_eq!(statements, 1);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(
+            windows["a"].reserved,
+            if completed { 0 } else { reserved[0] }
+        );
+        assert_eq!(
+            windows["a"].counted(),
+            if completed { 160 } else { reserved[0] }
+        );
+        assert_eq!(windows["b"].reserved, reserved[1]);
+        assert_eq!(windows["b"].counted(), reserved[1]);
+    }
+}
+
 /// Each call reserves about 1,450 tokens (its envelope's bytes, 256 of
 /// overhead and its 1,000 of output), so one fits under 2,000 and two do
 /// not. Both are issued before either completes; the second must see the
@@ -299,6 +368,72 @@ fn usage_outcome(input: u64, cache_write: u64, output: u64, cached: u64) -> Host
         cached_input_tokens: Some(cached),
     });
     outcome
+}
+
+#[test]
+fn independent_usage_report_survives_recovery_before_the_outcome() {
+    let world = World::new("tokens-report-recovery");
+    let (config, _clock) = manual(T0);
+    let rt = world
+        .runtime(std::sync::Arc::new(basal_core::NoHooks), config.clone())
+        .unwrap();
+    let run = admit_under(
+        &rt,
+        &world,
+        "return (await llm({prompt:'usage'})).text;",
+        &manifest(100_000, "1h", 2_000),
+        "report",
+    );
+    assert!(matches!(
+        rt.resume(&run).unwrap(),
+        ActivationEnd::Suspended { .. }
+    ));
+    let key = rt.calls(&run).unwrap()[0].idempotency_key.clone();
+    let first = Usage {
+        input_tokens: 7,
+        cache_write_tokens: 7,
+        output_tokens: 7,
+        cached_input_tokens: 7,
+    };
+    assert!(rt.report_usage(&key, first).unwrap());
+    world.mock.detach();
+    drop(rt);
+    let rt = world
+        .runtime(std::sync::Arc::new(basal_core::NoHooks), config)
+        .unwrap();
+    assert!(
+        !rt.report_usage(
+            &key,
+            Usage {
+                input_tokens: 999,
+                ..first
+            }
+        )
+        .unwrap()
+    );
+    let usage = rt.token_usage("flow-test", T0).unwrap().unwrap();
+    assert_eq!(
+        (usage.counted(), usage.reserved, usage.cached_input_tokens),
+        (21, 0, 7)
+    );
+    let handle = world.mock.handle_for(&run, 0).unwrap();
+    assert!(
+        world
+            .mock
+            .complete(&handle, usage_outcome(100, 10, 50, 1_000))
+    );
+    assert_eq!(result(&finish(&rt, &world, &run)), json!("hi"));
+    let usage = rt.token_usage("flow-test", T0).unwrap().unwrap();
+    assert_eq!(
+        (
+            usage.counted(),
+            usage.input_tokens,
+            usage.cache_write_tokens,
+            usage.output_tokens,
+            usage.cached_input_tokens
+        ),
+        (21, 7, 7, 7, 7)
+    );
 }
 
 /// Usage is applied once per `send_id`: a report arriving apart from the
