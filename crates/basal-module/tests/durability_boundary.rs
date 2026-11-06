@@ -70,6 +70,8 @@ struct Scan {
 
 impl Scan {
     fn file(&mut self, path: &Path, test: bool) {
+        let canonical = path.canonicalize().unwrap();
+        let path = canonical.as_path();
         let file = syn::parse_file(&std::fs::read_to_string(path).unwrap())
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
         let test = test || test_only(&file.attrs);
@@ -209,6 +211,8 @@ fn source_files(directory: &Path, files: &mut BTreeSet<PathBuf>) {
 }
 
 fn scan(directory: &Path) -> Scan {
+    let canonical = directory.canonicalize().unwrap();
+    let directory = canonical.as_path();
     let mut files = BTreeSet::new();
     source_files(directory, &mut files);
     let mut scan = Scan::default();
@@ -261,10 +265,11 @@ fn fixture(files: &[(&str, &str)]) -> BTreeSet<PathBuf> {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, source).unwrap();
     }
-    let result = scan(&directory)
+    let canonical = directory.canonicalize().unwrap();
+    let result = scan(&canonical)
         .violations
         .into_iter()
-        .map(|path| path.strip_prefix(&directory).unwrap().to_owned())
+        .map(|path| path.strip_prefix(&canonical).unwrap().to_owned())
         .collect();
     std::fs::remove_dir_all(directory).unwrap();
     result
@@ -300,6 +305,7 @@ fn scan_allows_only_test_code_and_ignores_comments_and_strings() {
             const TEXT: &str = "throwaway";
             #[cfg(test)] mod tests { fn fixture() { Durability::throwaway(); } }
             #[cfg(any(test, feature = "test-support"))] mod support;
+            #[cfg(test)] #[path="nested/../moved.rs"] mod moved;
             #[cfg(all(target_os = "macos", test))] fn fixture() { Durability::throwaway(); }
         "#
             ),
@@ -311,6 +317,8 @@ fn scan_allows_only_test_code_and_ignores_comments_and_strings() {
                 "src/support/nested.rs",
                 "fn fixture() { Durability::throwaway(); }"
             ),
+            ("src/nested/anchor.rs", ""),
+            ("src/moved.rs", "fn fixture() { Durability::throwaway(); }"),
         ])
         .is_empty()
     );

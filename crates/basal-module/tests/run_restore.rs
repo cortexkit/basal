@@ -2,98 +2,77 @@ mod common;
 
 use basal_core::{
     NoHooks, Runtime,
-    admission::{Admission, AdmitContext},
-    run_admission::RunAdmission,
+    admission::Admission,
     run_driver::Budgets,
     run_host::RecoveredHosts,
-    run_log::{Config, Identity, Lsn, RunLog, SqliteRegistry},
+    run_log::{Config, Identity, RunLog},
     run_records::Record,
-    run_store_sql::{self as sql, EpochLsn, GcFloor, Meta},
+    run_store_sql as sql,
 };
 use basal_module::caller::Caller;
 use basal_proto::JsonText;
 use common::*;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 const OWNER: &str = "SYNAPSE";
 
 #[test]
 fn restored_runs_appear_in_diagnostics_and_operator_can_cancel_or_retrigger_without_resend() {
     for (resolution, disabled) in [("cancel", false), ("retrigger", false), ("retrigger", true)] {
-        let mut store = None;
-        let mut f = fixture_with_store(
-            &format!("restore-{resolution}"),
-            Options::default(),
-            |opened| {
-                opened
-                    .write(|tx| {
-                        sql::create_test_schema(
-                            tx,
-                            &Meta {
-                                store_id: opened.store_id().into(),
-                                log_epoch: 1,
-                                log_hwm: EpochLsn {
-                                    log_epoch: 1,
-                                    lsn: Lsn::default(),
-                                },
-                                commit_seq: 0,
-                                gc_floor: GcFloor {
-                                    log_epoch: 1,
-                                    first_retained: 0,
-                                    predecessor: None,
-                                    synced_lsn: Lsn::default(),
-                                    live_starts: BTreeMap::new(),
-                                },
-                                migration_phase: "test".into(),
-                            },
-                        )
-                    })
-                    .map_err(|e| e.to_string())?;
-                store = Some(opened);
-                Ok(())
-            },
-        );
-        let store = store.unwrap();
-        let manifest = events_manifest("restore-flow");
-        install_approved(&f, &agent(OWNER), "return 1;", &manifest);
-        let config = Config {
-            directory: f.dir.join("run-log"),
-            identity: Identity {
-                store_id: store.store_id().as_bytes().try_into().unwrap(),
-                log_epoch: 1,
-            },
-            lease_epoch: store.lease_epoch(),
-            target_size: Config::TARGET_SIZE,
-            hooks: Arc::new(NoHooks),
-        };
-        let log = Arc::new(
-            RunLog::<Record>::create(
-                config.clone(),
-                Arc::new(SqliteRegistry::new(store.clone(), 1)),
+        let mut f = fixture(&format!("restore-{resolution}"), Options::default());
+        let store = Arc::new(
+            basal_core::Store::open(
+                f.dir.join("restored/store.db"),
+                basal_core::Durability::throwaway(),
             )
             .unwrap(),
         );
-        let ctx = AdmitContext {
-            now_ms: f.clock.now_ms(),
-            rate: Default::default(),
-            default_deadline_ms: 60_000,
-        };
-        let admission =
-            RunAdmission::new_staged(store.clone(), Arc::new(log.watermark()), Arc::new(NoHooks));
-        let Admission::Admitted { run_id } = admission
+        let runtime = Runtime::new(
+            store.clone(),
+            Arc::new(f.mock.clone()),
+            Arc::new(f.catalog.clone()),
+            Arc::new(NoHooks),
+            None,
+            f.module.rt.config().clone(),
+        )
+        .unwrap();
+        let manifest = events_manifest("restore-flow");
+        let installed = runtime
+            .install(&basal_core::InstallRequest {
+                script: "return 1;".into(),
+                manifest: manifest.to_string(),
+                author: OWNER.into(),
+                loop_override: false,
+            })
+            .unwrap();
+        runtime
+            .approve("restore-flow", 1, &installed.code_hash, "restore fixture")
+            .unwrap();
+        let Admission::Admitted { run_id } = runtime
             .admit_trigger(
                 "restore-flow",
                 "trigger",
                 JsonText::new("{\"private_payload\":\"not-in-diagnostics\"}").unwrap(),
-                &ctx,
             )
             .unwrap()
         else {
             panic!("admitted")
         };
-        drop(admission);
-        drop(log);
+        let meta = store.read(sql::meta).unwrap();
+        let config = Config {
+            directory: f.dir.join("restored/run-log"),
+            identity: Identity {
+                store_id: store.store_id().as_bytes().try_into().unwrap(),
+                log_epoch: meta.log_epoch,
+            },
+            lease_epoch: store.lease_epoch(),
+            target_size: Config::TARGET_SIZE,
+            hooks: Arc::new(NoHooks),
+        };
+        // Drop the runtime that owns this log before simulating backup loss.
+        // The module engine still owns its separate, unused fixture runtime.
+        drop(runtime);
         std::fs::remove_dir_all(&config.directory).unwrap();
         let (log, recovered) = RunLog::<Record>::open_restoring(config, store.clone()).unwrap();
         let log = Arc::new(log);

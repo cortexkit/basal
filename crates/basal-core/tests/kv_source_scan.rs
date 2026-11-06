@@ -697,7 +697,12 @@ fn dropped_table_guard_covers_all_production_sql() {
         "basal-worker",
         "basal-proto",
     ] {
-        let directory = root.join("crates").join(name).join("src");
+        let directory = root
+            .join("crates")
+            .join(name)
+            .join("src")
+            .canonicalize()
+            .unwrap();
         assert!(
             scan.visited
                 .iter()

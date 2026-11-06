@@ -21,6 +21,25 @@ fn keyed_snapshot_lookup_ignores_unrelated_corruption_and_migrates_legacy_params
     }
     let _cleanup = Cleanup(dir.clone());
     let store = Arc::new(Store::open(dir.join("store.db"), Durability::throwaway()).unwrap());
+    let runtime = basal_core::Runtime::new(
+        store.clone(),
+        Arc::new(basal_host::mock::MockHost::new()),
+        Arc::new(basal_host::MockCatalog::standard()),
+        Arc::new(basal_core::NoHooks),
+        None,
+        basal_core::Config::default(),
+    )
+    .unwrap();
+    runtime
+        .fixture_run(
+            "r",
+            "f",
+            1,
+            "return 1;",
+            "{}",
+            basal_core::run_records::State::new(0),
+        )
+        .unwrap();
     let memory = Arc::new(MemoryStore::default());
     let selection = FakeSelector::default()
         .select(&SelectionRequest {
@@ -47,8 +66,8 @@ fn keyed_snapshot_lookup_ignores_unrelated_corruption_and_migrates_legacy_params
     legacy["params"] = json!(call.params);
     legacy["envelope"] = json!(request.args.as_str());
     store.read(|c| {
-        // This fixture exercises the snapshot adapter independently of journal
-        // admission; foreign keys are disabled only on its private connection.
+        // This fixture exercises keyed decoding, including an unrelated corrupt
+        // row. The queried call belongs to run r, which this fixture created above.
         c.pragma_update(None, "foreign_keys", false)?;
         c.execute("INSERT INTO broca_calls VALUES ('key', 'r', 0, ?1)", [legacy.to_string()])?;
         c.execute("INSERT INTO broca_calls VALUES ('unrelated', 'other', 0, '{\"acknowledged\":true}')", [])?;

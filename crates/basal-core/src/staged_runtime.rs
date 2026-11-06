@@ -526,14 +526,14 @@ impl run_driver::Services for Services {
         match class {
             StoredClass::Sync => {
                 let now = matches!(call.kind, CallKind::Primitive(Primitive::Now));
-                let value = if now {
-                    rt.config.clock.now_ms().to_string()
-                } else {
-                    rt.shared.host.random().to_string()
-                };
+                // Script time comes from the host; the configured runtime clock
+                // drives admission, deadlines and maintenance independently.
+                let clock_ms = now.then(|| rt.shared.host.now_ms() as i64);
+                let value = clock_ms
+                    .map_or_else(|| rt.shared.host.random().to_string(), |ms| ms.to_string());
                 Ok(Prepared::Sync {
                     value: JsonText::new(value).map_err(|e| CoreError::Invalid(e.to_string()))?,
-                    clock_ms: now.then(|| rt.config.clock.now_ms()),
+                    clock_ms,
                 })
             }
             StoredClass::Local => {

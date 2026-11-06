@@ -167,6 +167,22 @@ fn migration_47_preserves_populated_history_and_in_progress_replay() {
             .outcome
             .is_none()
     );
+    let blocked = tx
+        .execute(
+            "DELETE FROM journal WHERE run_id='active' AND position=1",
+            [],
+        )
+        .unwrap_err();
+    assert_eq!(
+        blocked.sqlite_error().unwrap().extended_code,
+        787,
+        "the undelivered mailbox arrival must protect its parent"
+    );
+    tx.execute(
+        "DELETE FROM mailbox WHERE run_id='active' AND position=1",
+        [],
+    )
+    .unwrap();
     tx.execute(
         "DELETE FROM journal WHERE run_id='active' AND position=1",
         [],

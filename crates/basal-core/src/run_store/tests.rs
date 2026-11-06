@@ -382,7 +382,6 @@ fn staged_saturation_disables_with_sqlite_only_notice_and_card() {
     rt.approve("flow", 1, &installed.code_hash, "approve-flow")
         .unwrap();
     f.store.write(|tx| {
-        tx.execute_batch(sql::DDL)?;
         tx.execute_batch("INSERT INTO run_snapshots(snapshot_id,flow_id,flow_version,code_hash,script,manifest) VALUES(1,'flow',1,zeroblob(32),'return 1','{}');
             INSERT INTO live_runs(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,attempt,admitted_at,admit_seq,admit_epoch,admit_segment,admit_offset,deadline_ms,self_input,params_input,grant_guards,template_incarnation,end_instance,snapshot_id)
             VALUES('live','flow',1,'fire','schedule','{}',0,100,1,0,0,0,60000,'{}','{}','[]',NULL,0,1);")?;

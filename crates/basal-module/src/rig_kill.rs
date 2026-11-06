@@ -399,7 +399,11 @@ mod actor_reader_tests {
         rt.store()
             .read(|c| {
                 assert_eq!(
-                    c.query_row("SELECT COUNT(*) FROM journal", [], |r| r.get::<_, u64>(0))?,
+                    c.query_row(
+                        "SELECT COUNT(*) FROM sqlite_schema WHERE name='journal'",
+                        [],
+                        |r| r.get::<_, u64>(0)
+                    )?,
                     0
                 );
                 Ok(())

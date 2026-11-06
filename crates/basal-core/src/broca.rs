@@ -187,8 +187,9 @@ impl StateStore for BrocaStore {
         if let Some((_, deadline)) = self.live_identity(run_id)? {
             return Ok(deadline);
         }
-        // Closed flows have no execution deadline; codemode retains its own clock.
-        self.store()?.read(|c|Ok(c.query_row("SELECT NULL FROM run_history WHERE run_id=?1 UNION ALL SELECT MIN(deadline_ms,admitted_at+COALESCE(json_extract(limits,'$.wall_ms'),deadline_ms))+person_wait_ms FROM codemode_runs WHERE run_id=?1",[run_id],|r|r.get::<_,Option<i64>>(0)).optional()?.flatten())).map_err(|e|BrocaError::Store(e.to_string()))
+        // Codemode can run without constructing a flow Runtime. Read its clock
+        // from codemode_runs rather than requiring the flow-run history table.
+        self.store()?.read(|c| Ok(c.query_row("SELECT MIN(deadline_ms,admitted_at+COALESCE(json_extract(limits,'$.wall_ms'),deadline_ms))+person_wait_ms FROM codemode_runs WHERE run_id=?1",[run_id],|r|r.get::<_,Option<i64>>(0)).optional()?.flatten())).map_err(|e|BrocaError::Store(e.to_string()))
     }
     fn run_ended(&self, run_id: &str) -> Result<bool, BrocaError> {
         if self.live_identity(run_id)?.is_some() {
