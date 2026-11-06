@@ -22,6 +22,19 @@ fn module_image(home: &std::path::Path) -> Option<PathBuf> {
     Some(home.parent()?.join("bin").join("ckdev-basal.exe"))
 }
 
+/// Windows can report one file under different spellings: a process started
+/// through a junction (for example a build directory linked to another volume)
+/// has its image reported under the volume's own drive letter. Compare the
+/// final paths the OS resolves, falling back to the raw spelling when a path
+/// cannot be resolved (an image that does not exist).
+fn same_file_name(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let resolve =
+        |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    resolve(a)
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&resolve(b).to_string_lossy())
+}
+
 fn pid_of_image(expected: &std::path::Path) -> Option<String> {
     // SAFETY: snapshot handles are newly owned unless the call returns INVALID_HANDLE_VALUE.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -46,10 +59,7 @@ fn pid_of_image(expected: &std::path::Path) -> Option<String> {
             {
                 use std::os::windows::ffi::OsStringExt;
                 let actual = PathBuf::from(OsString::from_wide(&path[..size as usize]));
-                if actual
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(&expected.to_string_lossy())
-                {
+                if same_file_name(&actual, expected) {
                     return Some(row.th32ProcessID.to_string());
                 }
             }
@@ -114,8 +124,8 @@ mod tests {
     #[test]
     fn process_snapshot_finds_the_current_image_and_refuses_an_absent_image() {
         let module = module_image(std::path::Path::new(r"C:\rig\home")).unwrap();
-        // Path equality normalizes separators, but the native image-name
-        // comparison uses raw spelling, so assert the spelling itself here.
+        // Path equality normalizes separators, so assert the spelling itself:
+        // the rig derives this name, it is not resolved from the filesystem.
         assert_eq!(
             module.as_os_str(),
             std::ffi::OsStr::new(r"C:\rig\bin\ckdev-basal.exe")
@@ -126,5 +136,32 @@ mod tests {
             pid_of_image(&image.with_file_name("absent-rig-image.exe")),
             None
         );
+    }
+
+    #[test]
+    fn a_path_through_a_junction_names_the_same_image() {
+        let base = std::env::temp_dir().join(format!("rig-junction-{}", std::process::id()));
+        let real = base.join("real");
+        let link = base.join("link");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("image.exe"), b"").unwrap();
+        // Junctions need no privilege, unlike directory symlinks.
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        assert!(same_file_name(
+            &link.join("image.exe"),
+            &real.join("image.exe")
+        ));
+        assert!(!same_file_name(
+            &link.join("image.exe"),
+            &real.join("other.exe")
+        ));
+        std::fs::remove_dir(&link).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
