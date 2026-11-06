@@ -3,8 +3,6 @@
 //! Run on Linux with:
 //! `cargo test -p basal-testkit --test write_amplification --locked -- --ignored --nocapture --test-threads=1`
 //! Set BASAL_WRITE_BENCH_OUT to save the complete JSON outside the build tree.
-//! Set BASAL_WRITE_BENCH_PAGE_SIZE to create the benchmark database with a different
-//! SQLite page size; production Store::open defaults are unchanged.
 
 #![cfg(target_os = "linux")]
 
@@ -101,19 +99,6 @@ fn checkpoint(probe: &Probe<'_>, store: &Store) {
         .unwrap();
 }
 
-fn open_benchmark_store(path: &std::path::Path, page_size: Option<u32>) -> Store {
-    if let Some(page_size) = page_size {
-        assert!(page_size.is_power_of_two() && (512..=65_536).contains(&page_size));
-        assert!(!path.exists(), "page size must be set on a fresh database");
-        let conn = rusqlite::Connection::open(path).unwrap();
-        conn.pragma_update(None, "page_size", page_size).unwrap();
-        // Persist the empty database header before Store::open enables WAL and
-        // creates tables. SQLite cannot change page size while in WAL mode.
-        conn.execute_batch("VACUUM").unwrap();
-    }
-    Store::open(path, Durability::default()).unwrap()
-}
-
 #[test]
 #[ignore = "500 durable scheduled runs plus their retention tail; Linux I/O measurement"]
 fn scheduled_small_run_write_amplification() {
@@ -170,10 +155,7 @@ fn measure(
     assert!(!dir.exists(), "benchmark requires a fresh store");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("basal.db");
-    let page_size = std::env::var("BASAL_WRITE_BENCH_PAGE_SIZE")
-        .ok()
-        .map(|value| value.parse::<u32>().expect("SQLite page size in bytes"));
-    let store = Arc::new(open_benchmark_store(&path, page_size));
+    let store = Arc::new(Store::open(&path, Durability::default()).unwrap());
     let clock = Clock::manual(T0);
     let source = Arc::new(ProcessSource::new(worker_binary()));
     let epoch = EpochLsn {
@@ -320,7 +302,7 @@ fn measure(
             )
         })
         .unwrap();
-    assert_eq!(settings["page_size"], page_size.unwrap_or(1024));
+    assert_eq!(settings["page_size"], 1024);
     store
         .read(|conn| {
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
@@ -535,60 +517,6 @@ fn checkpoint_unmeasured(store: &Store) {
             Ok(())
         })
         .unwrap();
-}
-
-#[test]
-fn benchmark_store_and_probe_use_requested_page_size() {
-    let _io = PROCESS_IO.lock().unwrap_or_else(|p| p.into_inner());
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "../../target/scratch/write-page-size-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    for page_size in [1024, 2048, 4096, 8192] {
-        let path = dir.join(format!("{page_size}.db"));
-        let store = open_benchmark_store(&path, Some(page_size));
-        let actual: u32 = store
-            .read(|conn| Ok(conn.query_row("PRAGMA page_size", [], |row| row.get(0))?))
-            .unwrap();
-        assert_eq!(actual, page_size);
-        checkpoint_unmeasured(&store);
-        let probe = Probe::start(&store, path.with_extension("db-wal"), 1000);
-        store
-            .write(|tx| {
-                tx.execute_batch("CREATE TABLE page_size_probe(value); INSERT INTO page_size_probe VALUES('payload');")?;
-                Ok(())
-            })
-            .unwrap();
-        let report = probe.report();
-        let transaction = &report["transactions"][0];
-        let frames = transaction["wal_frames"].as_u64().unwrap();
-        assert!(frames > 0);
-        assert_eq!(
-            transaction["wal_frame_bytes"],
-            frames * (u64::from(page_size) + 24)
-        );
-        assert!(
-            transaction["pages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|page| page["object"] == "page_size_probe")
-        );
-        let kind = report["kinds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|kind| kind["frames"] == frames)
-            .unwrap();
-        assert_eq!(
-            kind["wal_frame_bytes"],
-            frames * (u64::from(page_size) + 24)
-        );
-        drop(probe);
-        drop(store);
-    }
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
