@@ -42,12 +42,15 @@ pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>>
     let mut rows = Vec::new();
     for call in state.calls.values() {
         for intent in call.prior_intents.iter().chain(call.intent.iter()) {
+            if intent.attempts <= call.pre_accounted_attempts {
+                continue;
+            }
             if let Some(count) = &intent.dispatch_count_window {
                 if call
                     .intent
                     .as_ref()
                     .is_some_and(|current| std::ptr::eq(current, intent))
-                    && call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                    && call.deferred.as_ref().is_some_and(|d| d.refund_dispatch)
                 {
                     continue;
                 }
@@ -60,9 +63,10 @@ pub(crate) fn rows(state: &State, budgets: &Budgets) -> Result<Vec<Reservation>>
             }
         }
         if let Some(intent) = &call.intent
+            && !call.pre_accounted_reservation
             && let Some(reservation) = &intent.reservation
         {
-            let usage = call.arrival.as_ref().and_then(|a| a.usage.as_ref());
+            let usage = call.token_usage();
             if reservation
                 .input_tokens
                 .saturating_add(reservation.output_tokens)
@@ -182,7 +186,7 @@ pub(super) fn check(
     Ok(())
 }
 
-pub(super) fn fold(
+pub(crate) fn fold(
     tx: &Transaction<'_>,
     flow: &str,
     id: &str,
@@ -192,12 +196,15 @@ pub(super) fn fold(
 ) -> Result<()> {
     for call in state.calls.values() {
         for intent in call.prior_intents.iter().chain(call.intent.iter()) {
+            if intent.attempts <= call.pre_accounted_attempts {
+                continue;
+            }
             if let Some(count) = &intent.dispatch_count_window {
                 if call
                     .intent
                     .as_ref()
                     .is_some_and(|current| std::ptr::eq(current, intent))
-                    && call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                    && call.deferred.as_ref().is_some_and(|d| d.refund_dispatch)
                 {
                     continue;
                 }
@@ -208,6 +215,51 @@ pub(super) fn fold(
         let Some(intent) = &call.intent else {
             continue;
         };
+        if call.pre_accounted_reservation {
+            if let Some(arrival) = &call.arrival {
+                let outcome = basal_host::HostOutcome {
+                    settlement: arrival.settlement,
+                    value: arrival.value.clone(),
+                    usage: call.usage_report.map(Into::into).or_else(|| {
+                        arrival.usage.as_ref().map(|u| basal_host::TokenUsage {
+                            input_tokens: Some(u.input_tokens),
+                            output_tokens: Some(u.output_tokens),
+                            ..Default::default()
+                        })
+                    }),
+                };
+                crate::tokens::settle_outcome(tx, id, call.identity.position, &outcome, now)?;
+                let value = serde_json::from_str::<serde_json::Value>(arrival.value.as_str())
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                crate::classify_cost::settle(
+                    tx,
+                    "flow",
+                    id,
+                    call.identity.position,
+                    Some(&value),
+                    crate::classify_cost::refusal_code(arrival.settlement, &value),
+                )?;
+            } else if call.deferred.as_ref().is_some_and(|d| d.proven_unsent) {
+                crate::tokens::settle(
+                    tx,
+                    crate::tokens::Key::Call {
+                        run_id: id,
+                        position: call.identity.position,
+                    },
+                    crate::tokens::Report::NoEffect,
+                    now,
+                )?;
+                crate::classify_cost::settle(
+                    tx,
+                    "flow",
+                    id,
+                    call.identity.position,
+                    None,
+                    Some("not_dispatched"),
+                )?;
+            }
+            continue;
+        }
         let Some(reservation) = &intent.reservation else {
             continue;
         };
@@ -217,21 +269,43 @@ pub(super) fn fold(
             .first()
             .map_or(intent.audit_at, |i| i.audit_at);
         let settled = call.arrival.is_some();
-        let usage = call.arrival.as_ref().and_then(|a| a.usage.as_ref());
-        let input = usage.map_or(0, |u| u.input_tokens);
-        let output = usage.map_or(0, |u| u.output_tokens);
-        let unreported = if settled && usage.is_none() {
-            reserved
+        let token_settled = settled || call.usage_report.is_some();
+        let usage = call.token_usage();
+        let report = if token_settled {
+            call.usage_report.or_else(|| {
+                usage.as_ref().map(|u| crate::run_records::UsageReport {
+                    input_tokens: Some(u.input_tokens),
+                    cache_write_tokens: None,
+                    output_tokens: Some(u.output_tokens),
+                    cached_input_tokens: None,
+                })
+            })
+        } else {
+            None
+        };
+        let input = report.and_then(|r| r.input_tokens);
+        let cache_write = report.and_then(|r| r.cache_write_tokens);
+        let output = report.and_then(|r| r.output_tokens);
+        let cached_input = report.and_then(|r| r.cached_input_tokens);
+        let charged = if token_settled {
+            usage
+                .as_ref()
+                .map_or(Ok(reserved), |u| add(u.input_tokens, u.output_tokens))?
         } else {
             0
         };
-        let pending = if settled { 0 } else { reserved };
+        let measured = add(
+            add(input.unwrap_or(0), cache_write.unwrap_or(0))?,
+            output.unwrap_or(0),
+        )?;
+        let unreported = charged.saturating_sub(measured);
+        let pending = if token_settled { 0 } else { reserved };
         let key = crate::ids::idempotency_key(flow, id, call.identity.position);
         if reserved > 0 {
-            tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,input_tokens,output_tokens,unreported_tokens,reserved_at,settled_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-                params![key, flow, id, integer(call.identity.position)?, budgets.token_window_ms, reservation.window_start, integer(reserved)?, if settled {"settled"} else {"reserved"}, integer(input)?, integer(output)?, integer(unreported)?, reserved_at, settled.then_some(now)])?;
-            tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved,input_tokens,output_tokens,unreported_tokens) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(flow_id,window_ms,window_start) DO UPDATE SET reserved=reserved+excluded.reserved,input_tokens=input_tokens+excluded.input_tokens,output_tokens=output_tokens+excluded.output_tokens,unreported_tokens=unreported_tokens+excluded.unreported_tokens",
-            params![flow, budgets.token_window_ms, reservation.window_start, integer(pending)?, integer(input)?, integer(output)?, integer(unreported)?])?;
+            tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,input_tokens,cache_write_tokens,output_tokens,cached_input_tokens,unreported_tokens,reserved_at,settled_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                params![key, flow, id, integer(call.identity.position)?, budgets.token_window_ms, reservation.window_start, integer(reserved)?, if token_settled {"settled"} else {"reserved"}, input.map(integer).transpose()?, cache_write.map(integer).transpose()?, output.map(integer).transpose()?, cached_input.map(integer).transpose()?, integer(unreported)?, reserved_at, token_settled.then_some(now)])?;
+            tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved,input_tokens,cache_write_tokens,output_tokens,cached_input_tokens,unreported_tokens) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(flow_id,window_ms,window_start) DO UPDATE SET reserved=reserved+excluded.reserved,input_tokens=input_tokens+excluded.input_tokens,cache_write_tokens=cache_write_tokens+excluded.cache_write_tokens,output_tokens=output_tokens+excluded.output_tokens,cached_input_tokens=cached_input_tokens+excluded.cached_input_tokens,unreported_tokens=unreported_tokens+excluded.unreported_tokens",
+            params![flow, budgets.token_window_ms, reservation.window_start, integer(pending)?, integer(input.unwrap_or(0))?, integer(cache_write.unwrap_or(0))?, integer(output.unwrap_or(0))?, integer(cached_input.unwrap_or(0))?, integer(unreported)?])?;
         }
         fold_cost(
             tx,

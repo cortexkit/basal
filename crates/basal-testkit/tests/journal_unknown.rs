@@ -40,15 +40,19 @@ fn crash_then_recover(world: &World, script: &str, cut: &str) -> (basal_core::Ru
 fn unknown_unkeyed_mutation_needs_reconcile() {
     let world = World::new("unknown-unkeyed");
     let script = "const r = await ops.call('mock', 'post', { n: 1 }); return r.applied.n;";
-    let (rt, run_id) = crash_then_recover(&world, script, "HostAnswered { position: 0 }#1");
+    let (rt, run_id) = crash_then_recover(&world, script, "DriverDispatched { position: 0 }#1");
     let run = rt
         .run_to_rest(&run_id, Duration::from_secs(30))
         .expect("run");
     assert_eq!(run.state, RunState::NeedsReconcile, "{run:#?}");
-    assert!(
-        run.error_detail.as_deref().unwrap_or("").contains("[0]"),
+    let detail: serde_json::Value =
+        serde_json::from_str(run.error_detail.as_deref().unwrap()).unwrap();
+    assert_eq!(detail["positions"][0]["position"], 0, "{run:#?}");
+    assert_eq!(
+        detail["positions"][0]["code"], "basal_restarted",
         "{run:#?}"
     );
+    assert_eq!(detail["positions"].as_array().unwrap().len(), 1);
     let health = rt.health().expect("health");
     assert_eq!(health.unknown_calls, vec![(run_id.clone(), 0)]);
     assert_eq!(world.mock.effects().len(), 1);
@@ -80,7 +84,7 @@ fn unknown_unkeyed_mutation_needs_reconcile() {
 fn unknown_keyed_mutation_is_reissued_with_the_same_key() {
     let world = World::new("unknown-keyed");
     let script = "const r = await ops.call('mock', 'send', { n: 1 }); return r.applied.n;";
-    let (rt, run_id) = crash_then_recover(&world, script, "HostAnswered { position: 0 }#1");
+    let (rt, run_id) = crash_then_recover(&world, script, "DriverDispatched { position: 0 }#1");
     let run = finish(&rt, &world, &run_id);
     assert_eq!(run.state, RunState::Succeeded, "{run:#?}");
     let key = rt.calls(&run_id).expect("calls")[0].idempotency_key.clone();
@@ -211,10 +215,11 @@ fn reconcile_not_applied_reissues_with_the_same_key() {
     assert_eq!(audited, 1);
 }
 
-/// Reconcile `cancel` ends the run. A completion that arrives later is
-/// refused and logged, which still settles the call's obligation.
+/// Reconcile `cancel` ends the run without discarding an in-flight call's
+/// obligation. A matching late completion settles that obligation but cannot
+/// reopen the run.
 #[test]
-fn reconcile_cancel_ends_the_run_and_refuses_later_completions() {
+fn reconcile_cancel_keeps_the_run_cancelled_while_late_completions_settle() {
     let world = World::new("cancel");
     world.mock.inject(
         "mock",
@@ -242,17 +247,29 @@ fn reconcile_cancel_ends_the_run_and_refuses_later_completions() {
         RunState::Cancelled
     );
     let handle = world.mock.handle_for(&run_id, 0).expect("accepted");
-    let ack = rt
-        .complete(&Completion {
-            run_id: run_id.clone(),
-            position: 0,
-            handle,
-            outcome: HostOutcome::fulfilled(text(json!({"done": true}))),
-        })
-        .expect("complete");
-    assert_eq!(ack, CompletionAck::Refused);
+    let completion = Completion {
+        run_id: run_id.clone(),
+        position: 0,
+        handle,
+        outcome: HostOutcome::fulfilled(text(json!({"done": true}))),
+    };
+    let sends = world.mock.total_sends();
+    // An in-flight call keeps an open obligation even after cancellation.
+    // Its late reply is Accepted without reopening the cancelled run; a matching
+    // redelivery is acknowledged as Duplicate and never dispatches another call.
+    assert_eq!(
+        rt.complete(&completion).expect("complete"),
+        CompletionAck::Accepted
+    );
+    assert_eq!(rt.run(&run_id).unwrap().state, RunState::Cancelled);
+    assert_eq!(
+        rt.complete(&completion).expect("duplicate"),
+        CompletionAck::Duplicate
+    );
+    assert_eq!(rt.run(&run_id).unwrap().state, RunState::Cancelled);
+    assert_eq!(world.mock.total_sends(), sends);
     assert_eq!(rt.run(&run_id).expect("run").state, RunState::Cancelled);
-    // The refused completion settled position 0; the unknown mutation at 1
+    // The accepted completion settled position 0; the unknown mutation at 1
     // is still an open obligation.
     let open = rt.health().expect("health").open_obligations;
     assert_eq!(open, vec![(run_id.clone(), 1)]);
@@ -316,4 +333,38 @@ fn redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined() {
         CompletionAck::Quarantined
     );
     assert_eq!(rt.health().expect("health").quarantined, 3);
+}
+
+#[test]
+fn the_engine_less_harness_drives_deferred_retry_timers() {
+    let world = World::new("deferred-retry-timer");
+    world.mock.inject(
+        "mock",
+        "send",
+        &[Fault {
+            proven_unsent: false,
+            effect_applied: true,
+        }],
+    );
+    let rt = world
+        .runtime(
+            std::sync::Arc::new(basal_core::NoHooks),
+            basal_core::Config {
+                retry_backoff: Duration::from_millis(250),
+                ..common::config()
+            },
+        )
+        .unwrap();
+    let id = admit(
+        &rt,
+        &world,
+        "return (await ops.call('mock','send',{n:1})).applied.n;",
+    );
+    let run = basal_testkit::harness::drive(&rt, &world.mock, &id, Duration::from_secs(5))
+        .expect("retry timer must make progress without an engine");
+    rt.quiesce();
+    assert_eq!(run.state, RunState::Succeeded, "{run:#?}");
+    let key = rt.calls(&id).unwrap()[0].idempotency_key.clone();
+    assert_eq!(world.mock.send_count(&key), 2);
+    assert_eq!(world.mock.effect_count(&key), 1);
 }

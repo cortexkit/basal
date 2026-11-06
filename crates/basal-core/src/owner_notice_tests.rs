@@ -58,6 +58,9 @@ impl WorkerChannel for Worker {
     fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
         panic!("flow driver uses timed receives")
     }
+    fn fixture_inline_recv(&self) -> bool {
+        true
+    }
     fn kill(&mut self) {}
 }
 
@@ -136,7 +139,8 @@ fn restart(f: &mut Fixture) {
         Arc::new(crate::NoHooks),
         None,
         f.rt.config().clone(),
-    );
+    )
+    .expect("runtime startup");
 }
 
 #[test]
@@ -185,16 +189,7 @@ fn transient_body_deferrals_preserve_the_failure_streak_until_recovery() {
         drain(&f);
         assert!(sends(&f).is_empty());
         assert_eq!(worker.starts, 0);
-        let retry_at: i64 =
-            f.rt.store()
-                .read(|c| {
-                    Ok(c.query_row(
-                        "SELECT retry_at FROM event_body_journal WHERE run_id=?1",
-                        [&id],
-                        |r| r.get(0),
-                    )?)
-                })
-                .unwrap();
+        let retry_at = f.rt.saved_event_body(&id).unwrap().unwrap().2.unwrap();
         f.rt.config.clock.set(retry_at);
     }
     let mut body = reply();
@@ -441,7 +436,7 @@ fn auto_disabled_without_an_admitted_run_is_not_enqueued() {
     let logs = CapturedLogs::default();
     let _guard = tracing::subscriber::set_default(logs.clone());
     f.rt.store()
-        .write(|tx| crate::owner_notice::auto_disabled_legacy(tx, "flow", 1000))
+        .write(|tx| crate::owner_notice::auto_disabled_committed(tx, "flow", 1000))
         .unwrap();
     assert!(f.rt.outbox().unwrap().is_empty());
     assert!(
@@ -696,12 +691,50 @@ fn typed_rejection_deadline_is_exempt_at_the_real_driver_boundary() {
     f.rt.admit_events(&[notice(3)]).unwrap();
     let id = f.rt.startable().unwrap()[0].0.clone();
     let refusal = FlowRefusal::new(RefusalReason::NoFlowScope, "plexus", "events_get");
-    let value = refusal.outcome().value.as_str().to_owned();
-    f.rt.store().write(|tx| {
-        tx.execute("INSERT INTO journal(run_id,position,kind_code,module,op,args_bytes,args_digest,idempotency_key,class,dispatch,settlement,value_bytes,payload_hash,delivery_order,issued_generation) VALUES (?1,0,0,'plexus','events_get',2,zeroblob(32),?1,'query','none','rejected',?2,zeroblob(32),0,0)",rusqlite::params![id,value.len() as i64])?;
-        tx.execute("INSERT INTO journal_payloads(run_id,position,args,value) VALUES (?1,0,'{}',?2)",rusqlite::params![id,value])?;
-        Ok(())
-    }).unwrap();
+    let value = refusal.outcome().value;
+    use crate::run_records::{Arrival, ArrivalDurability, Body, CallIdentity};
+    f.rt.fixture_append(
+        &id,
+        Body::Issued(CallIdentity::new(
+            basal_proto::HostCall {
+                position: 0,
+                kind: CallKind::Op {
+                    module: "plexus".into(),
+                    op: "events_get".into(),
+                },
+                args: JsonText::new("{}").unwrap(),
+            },
+            crate::StoredClass::Query,
+        )),
+    )
+    .unwrap();
+    f.rt.fixture_append(
+        &id,
+        Body::Arrived(Arrival {
+            position: 0,
+            arrival_seq: 0,
+            outcome: "rejected".into(),
+            settlement: Settlement::Rejected,
+            value_hash: crate::ids::payload_hash(Settlement::Rejected, &value),
+            value,
+            handle: None,
+            usage: None,
+            cost_micros: None,
+            kv_effect: None,
+            durability: ArrivalDurability {
+                refusal_committed: true,
+                ..Default::default()
+            },
+        }),
+    )
+    .unwrap();
+    f.rt.fixture_append(
+        &id,
+        Body::ScopeCut {
+            deadline_exempt: true,
+        },
+    )
+    .unwrap();
     f.reply(json!({"error":{"code":"deadline"}}), Settlement::Rejected);
     let mut worker = Worker::new(false);
     f.rt.activate(&id, &mut worker).unwrap();

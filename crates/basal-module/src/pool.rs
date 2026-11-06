@@ -1129,6 +1129,10 @@ impl WorkerChannel for Lease {
         if let Some(p) = self.process.as_mut() {
             p.kill();
         }
+        // The activation may still be draining a host entrant while Closing.
+        // Its dead worker must not keep capacity until that unrelated I/O ends.
+        let pool = self.pool.clone();
+        pool.release(self);
     }
 }
 

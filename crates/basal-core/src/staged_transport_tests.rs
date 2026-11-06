@@ -22,15 +22,28 @@ fn keyed_transport_retries_keep_the_key_and_acknowledge_the_actual_attempt() {
             JsonText::new("7").unwrap(),
         ))),
     ]);
-    let mut worker = ScriptedWorker::new(vec![
-        op(0, "keyed", json!({})),
-        WorkerMessage::Blocked { awaiting: vec![0] },
-        finished(),
-    ]);
-    assert!(matches!(
-        f.rt.activate(&id, &mut worker).unwrap(),
-        ActivationEnd::Succeeded { .. }
-    ));
+    for attempt in 1..=3 {
+        assert!(f.rt.startable().unwrap().iter().any(|(run, _)| run == &id));
+        let mut messages = Vec::new();
+        if attempt == 1 {
+            messages.push(op(0, "keyed", json!({})));
+        }
+        messages.push(WorkerMessage::Blocked { awaiting: vec![0] });
+        messages.push(if attempt == 3 {
+            finished()
+        } else {
+            suspended(vec![0])
+        });
+        let mut worker = ScriptedWorker::new(messages);
+        let end = f.rt.activate(&id, &mut worker).unwrap();
+        if attempt < 3 {
+            assert_eq!(end, ActivationEnd::Suspended { awaited: vec![0] });
+            let deferred = f.rt.fixture_call_state(&id, 0).unwrap().deferred.unwrap();
+            f.clock.set(deferred.retry_not_before);
+        } else {
+            assert!(matches!(end, ActivationEnd::Succeeded { .. }), "{end:?}");
+        }
+    }
     let sent = f.host.sent.lock().unwrap();
     assert_eq!(
         sent.iter().map(|r| r.attempt).collect::<Vec<_>>(),
@@ -95,15 +108,30 @@ fn exhausted_query_transport_is_a_typed_rejection_not_an_unknown_write() {
                 detail: "route timed out".into(),
             }));
     }
-    let mut worker = ScriptedWorker::new(vec![
-        op(0, "query", json!({})),
-        WorkerMessage::Blocked { awaiting: vec![0] },
-        finished(),
-    ]);
-    assert!(matches!(
-        f.rt.activate(&id, &mut worker).unwrap(),
-        ActivationEnd::Succeeded { .. }
-    ));
+    for attempt in 0..=f.rt.config.unavailable_retries {
+        assert!(f.rt.startable().unwrap().iter().any(|(run, _)| run == &id));
+        let last = attempt == f.rt.config.unavailable_retries;
+        let mut messages = Vec::new();
+        if attempt == 0 {
+            messages.push(op(0, "query", json!({})));
+        }
+        messages.push(WorkerMessage::Blocked { awaiting: vec![0] });
+        messages.push(if last { finished() } else { suspended(vec![0]) });
+        let mut worker = ScriptedWorker::new(messages);
+        let end = f.rt.activate(&id, &mut worker).unwrap();
+        if !last {
+            assert_eq!(end, ActivationEnd::Suspended { awaited: vec![0] });
+            f.clock.set(
+                f.rt.fixture_call_state(&id, 0)
+                    .unwrap()
+                    .deferred
+                    .unwrap()
+                    .retry_not_before,
+            );
+        } else {
+            assert!(matches!(end, ActivationEnd::Succeeded { .. }), "{end:?}");
+        }
+    }
     let calls = f.rt.calls(&id).unwrap();
     let outcome = calls[0].outcome.as_ref().unwrap();
     assert_eq!(outcome.settlement, Settlement::Rejected);
@@ -215,6 +243,9 @@ fn owner_failure_streak_uses_history_and_its_deadline_exemption_flag() {
         }
         fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
             self.inner.receiver()
+        }
+        fn fixture_inline_recv(&self) -> bool {
+            true
         }
         fn kill(&mut self) {
             self.inner.kill();

@@ -80,6 +80,7 @@ pub struct Store {
     cut: AtomicBool,
     store_id: String,
     clock: Mutex<crate::clock::Clock>,
+    fresh: bool,
 }
 
 fn backend(e: StoreError) -> CoreError {
@@ -123,19 +124,34 @@ impl Store {
                 c.pragma_update(None, "checkpoint_fullfsync", durability.fullfsync)
             })
             .map_err(backend)?;
-        let outcome = inner.migrate(NAMESPACE, MIGRATIONS).map_err(backend)?;
+        let mut store = Self {
+            inner,
+            cut: AtomicBool::new(false),
+            store_id: String::new(),
+            clock: Mutex::new(crate::clock::Clock::system()),
+            fresh: false,
+        };
+        let fresh = store.read(|c| {
+            Ok(c.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='meta')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })?;
+        store.fresh = fresh;
+        if fresh {
+            crate::run_cutover::initialize_pages(&store)?;
+        }
+        let outcome = store
+            .inner
+            .migrate(NAMESPACE, MIGRATIONS)
+            .map_err(backend)?;
         if outcome.store_ahead() {
             return Err(CoreError::Store(format!(
                 "the store's schema is at version {} but this build knows only up to {}",
                 outcome.recorded, outcome.chain_max
             )));
         }
-        let mut store = Self {
-            inner,
-            cut: AtomicBool::new(false),
-            store_id: String::new(),
-            clock: Mutex::new(crate::clock::Clock::system()),
-        };
         store.store_id = store.write(|tx| {
             let existing: Option<String> = tx
                 .query_row("SELECT value FROM meta WHERE key = 'store_id'", [], |r| {
@@ -168,6 +184,10 @@ impl Store {
         &self.store_id
     }
 
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.fresh
+    }
+
     /// The held SQLite writer lease, also carried by run-log segment headers.
     pub fn lease_epoch(&self) -> u64 {
         self.inner.epoch()
@@ -183,7 +203,7 @@ impl Store {
             let synchronous: i64 = c.query_row("PRAGMA synchronous", [], |r| r.get(0))?;
             let fullfsync: i64 = c.query_row("PRAGMA fullfsync", [], |r| r.get(0))?;
             let checkpoint: i64 = c.query_row("PRAGMA checkpoint_fullfsync", [], |r| r.get(0))?;
-            let mode: String = c.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+            let mode: String = c.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
             Ok(Pragmas {
                 synchronous,
                 fullfsync: fullfsync != 0,

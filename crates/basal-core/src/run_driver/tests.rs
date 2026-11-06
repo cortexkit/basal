@@ -127,9 +127,13 @@ fn arrival(position: u64, value: &str) -> Arrival {
     }
 }
 impl Services for Service {
+    fn spawn_dispatch(&self, job: Box<dyn FnOnce() + Send>) -> Result<()> {
+        std::thread::spawn(job);
+        Ok(())
+    }
     fn install(&self, _: &LiveRun) -> Result<Gate> {
         lock_order::assert_lock_free();
-        Ok(*self.gate.lock().unwrap())
+        Ok(self.gate.lock().unwrap().clone())
     }
     fn prepare(&self, _: &LiveRun, call: &HostCall, state: &State) -> Result<Prepared> {
         lock_order::assert_lock_free();
@@ -349,6 +353,9 @@ impl crate::channel::WorkerChannel for Worker {
     }
     fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
         panic!("driver uses timed receives")
+    }
+    fn fixture_inline_recv(&self) -> bool {
+        true
     }
     fn kill(&mut self) {
         self.killed = true;
@@ -577,7 +584,7 @@ fn closing_counts_dispatch_before_its_append_to_sync_gap() {
     impl Hooks for Pause {
         fn at(&self, _: &str, boundary: &Boundary) -> Step {
             lock_order::assert_lock_free();
-            if boundary == &Boundary::DriverAppended {
+            if boundary == &(Boundary::DriverAppended { position: 0 }) {
                 self.arrived.send(()).unwrap();
                 self.resume
                     .lock()
@@ -948,6 +955,8 @@ fn retry_consumes_unsent_proof_before_another_possible_send() {
             cause: "not sent".into(),
             audit_at: 20,
             proven_unsent: true,
+            refund_dispatch: true,
+            attempt: None,
         }));
     f.send(&a, 0, "write");
     let mut retries = a.recover_dispatches().unwrap();
@@ -968,6 +977,16 @@ fn each_driver_boundary_preserves_every_causal_recovery_clause() {
 }
 
 pub(crate) fn crash_case(boundary: Boundary) {
+    // Boundary::ALL uses position zero, but this scenario has earlier durable
+    // calls. Cut the new authorization at a non-zero position so the hook must
+    // carry the actual call's position rather than a constant representative.
+    let boundary = match boundary {
+        Boundary::DriverActivated { .. } => Boundary::DriverActivated { generation: 2 },
+        Boundary::DriverAppended { .. } => Boundary::DriverAppended { position: 5 },
+        Boundary::DriverSynced { .. } => Boundary::DriverSynced { position: 5 },
+        Boundary::DriverDispatched { .. } => Boundary::DriverDispatched { position: 5 },
+        other => other,
+    };
     let f = Fixture::new();
     let a = f.claim(0);
     a.requeue(true).unwrap();
@@ -1003,8 +1022,27 @@ pub(crate) fn crash_case(boundary: Boundary) {
         .idempotency_key
         .clone();
     *f.cut.0.lock().unwrap() = Some(boundary.clone());
-    let result = if boundary == Boundary::DriverReleased {
+    let result = if boundary == (Boundary::DriverActivated { generation: 2 }) {
+        let next = f.claim(a.generation);
+        let sends = f.service.sent.lock().unwrap().len();
+        let result = next
+            .drive(
+                &mut Worker::new(Vec::new()),
+                request(),
+                Arc::new(Effects),
+                Duration::from_secs(5),
+            )
+            .map(|_| ());
+        assert_eq!(
+            f.service.sent.lock().unwrap().len(),
+            sends,
+            "no recovered dispatch before activation cut"
+        );
+        result
+    } else if boundary == (Boundary::DriverReleased { position: 0 }) {
         a.release(&[0]).map(|_| ())
+    } else if boundary == Boundary::DriverBeforeClose {
+        a.finish(f.terminal(RunState::Cancelled))
     } else {
         match a.issue(call(5, "keyed")) {
             Ok(Issued::Dispatch(d)) => d.send(),
@@ -1198,4 +1236,31 @@ fn not_applied_authorizes_only_one_unkeyed_retry_and_retains_its_key() {
     assert!(a.recover_dispatches().unwrap().is_empty());
     assert!(a.state().unwrap().calls[&0].unknown.is_some());
     assert!(f.service.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn successful_remote_receipt_keeps_hash_metadata_without_call_payloads() {
+    let f = Fixture::new();
+    let a = f.claim(0);
+    let private = serde_json::to_string(&"PRIVATE-RECEIPT-VALUE".repeat(4096)).unwrap();
+    f.service
+        .replies
+        .lock()
+        .unwrap()
+        .push_back(Reply::Completed(arrival(0, &private)));
+    f.send(&a, 0, "query");
+    a.release(&[0]).unwrap().unwrap();
+    a.finish(f.terminal(RunState::Succeeded)).unwrap();
+    f.store.read(|c| {
+        let (receipts,calls):(String,u64)=c.query_row("SELECT receipts,(SELECT COUNT(*) FROM run_calls WHERE run_id=run_history.run_id) FROM run_history WHERE run_id=?1",[&f.live.run_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        assert_eq!(calls,0);
+        assert!(!receipts.contains("PRIVATE-RECEIPT-VALUE"));
+        assert!(!receipts.contains("frozen"));
+        let value:serde_json::Value=serde_json::from_str(&receipts).unwrap();
+        let keys:std::collections::BTreeSet<_>=value["0"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys,std::collections::BTreeSet::from(["handle","audit_at","settled_at","value_hash"]));
+        assert!(receipts.len()<512,"receipt grew with the result: {}",receipts.len());
+        assert!(crate::run_store_sql::obligation(c,&f.live.run_id,0)?.unwrap().detail.is_null());
+        Ok(())
+    }).unwrap();
 }

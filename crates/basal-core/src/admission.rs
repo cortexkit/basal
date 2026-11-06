@@ -7,14 +7,13 @@
 //! each admission counts against the flow's run rate limit.
 
 use basal_proto::JsonText;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction};
 
 use crate::error::{CoreError, Result};
 use crate::ids::code_hash;
 use crate::install;
 use crate::manifest::Manifest;
-use crate::rate::{self, RateLimits, Take};
-use crate::runs;
+use crate::rate::{RateLimits, Take};
 
 /// What admission needs besides the trigger: the time on the runtime's
 /// clock, the rate limits, and the deadline of a run whose manifest sets
@@ -91,28 +90,6 @@ fn draining(tx: &Transaction) -> Result<bool> {
     Ok(v.as_deref() == Some("1"))
 }
 
-/// A new run id and the run's place in admission order.
-fn next_run_id(tx: &Transaction, store_id: &str) -> Result<(String, i64)> {
-    let current: Option<String> = tx
-        .query_row("SELECT value FROM meta WHERE key = 'next_run'", [], |r| {
-            r.get(0)
-        })
-        .optional()?;
-    let n: u64 = match current {
-        Some(v) => v
-            .parse()
-            .map_err(|_| CoreError::Corrupt(format!("run counter {v:?}")))?,
-        None => 1,
-    };
-    tx.execute(
-        "INSERT INTO meta (key, value) VALUES ('next_run', ?1) \
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        [(n + 1).to_string()],
-    )?;
-    let seq = i64::try_from(n).map_err(|_| CoreError::Corrupt(format!("run counter {n}")))?;
-    Ok((format!("run-{store_id}-{n}"), seq))
-}
-
 /// What the gate found the trigger may be admitted under.
 pub(crate) struct Grant {
     pub(crate) version: u32,
@@ -144,35 +121,6 @@ fn approved_deadline(text: &str, default_ms: i64) -> Result<i64> {
     }
     cache.push_back((text.to_owned(), default_ms, deadline));
     Ok(deadline)
-}
-
-/// Everything that can stop an admission besides deduplication: drain, a
-/// disabled flow, code that is not the approved version, and the run rate
-/// limit (checked last, so a refusal for any other reason does not count
-/// towards saturation).
-fn gate(
-    tx: &Transaction,
-    spec: &TriggerSpec,
-    ctx: &AdmitContext,
-    supplied: Option<&install::Approved>,
-) -> Result<std::result::Result<Grant, Admission>> {
-    gate_with_slots(
-        tx,
-        spec,
-        ctx,
-        supplied,
-        || {
-            Ok(tx.query_row(
-                &format!(
-                    "SELECT EXISTS(SELECT 1 FROM runs WHERE flow_id=?1 AND state IN {})",
-                    runs::HOLDS_SLOT
-                ),
-                [&spec.flow_id],
-                |r| r.get::<_, bool>(0),
-            )?)
-        },
-        || rate::take(tx, &spec.flow_id, rate::Kind::Run, ctx.now_ms, &ctx.rate),
-    )
 }
 
 /// Both storage models share approval and rate policy; adapters select the
@@ -227,174 +175,6 @@ pub(crate) fn gate_with_slots(
         deadline_ms,
         code_hash: approved.code_hash,
     }))
-}
-
-fn insert_run(
-    tx: &Transaction,
-    store_id: &str,
-    spec: &TriggerSpec,
-    attempt: u32,
-    grant: &Grant,
-    // The runtime's clock, like run deadlines and rate windows, so a run's
-    // age (how long it has waited since admission) is measured on one clock.
-    now: i64,
-) -> Result<String> {
-    // Admission may queue runs of the same epoch, but an epoch change is
-    // gated until all older runs are terminal. Reset and run creation commit
-    // together, before any worker can read or write the new epoch's values.
-    crate::state_epoch::reset(tx, &spec.flow_id, &spec.manifest, now)?;
-    let (run_id, seq) = next_run_id(tx, store_id)?;
-    let snapshot = runs::snapshot(
-        tx,
-        &spec.flow_id,
-        Some(grant.version),
-        &grant.code_hash,
-        &spec.script,
-        &spec.manifest,
-    )?;
-    tx.execute(
-        "INSERT INTO runs (run_id, flow_id, trigger_id, attempt, trigger, snapshot_id, \
-         code_hash, state, admitted_at, flow_version, admit_seq, deadline_ms) \
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)",
-        params![
-            run_id,
-            spec.flow_id,
-            spec.trigger_id,
-            attempt,
-            spec.trigger.as_str(),
-            snapshot,
-            grant.code_hash.as_slice(),
-            now,
-            i64::from(grant.version),
-            seq,
-            grant.deadline_ms
-        ],
-    )?;
-    tx.execute(
-        "UPDATE runs SET self_input=(SELECT json_object('agent_id',owner) FROM flows WHERE flow_id=?2 AND package IS NOT NULL) WHERE run_id=?1",
-        params![run_id, spec.flow_id],
-    )?;
-    tx.execute("UPDATE runs SET params_input=(SELECT params FROM template_instances WHERE flow_id=?2),grant_guards=(SELECT grant_guards FROM template_instances WHERE flow_id=?2),template_incarnation=(SELECT incarnation FROM template_instances WHERE flow_id=?2),end_instance=CASE WHEN EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?2) AND json_type(?3,'$.trigger.schedule.at')='text' THEN 1 ELSE 0 END WHERE run_id=?1", params![run_id,spec.flow_id,spec.manifest])?;
-    tx.execute(
-        "INSERT INTO trigger_inbox (flow_id, trigger_id, attempt, run_id, admitted_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![spec.flow_id, spec.trigger_id, attempt, run_id, now],
-    )?;
-    Ok(run_id)
-}
-
-/// Admits a trigger once. The same trigger offered again gets its existing
-/// run; after its run was pruned, its tombstone refuses it.
-pub fn admit(
-    tx: &Transaction,
-    store_id: &str,
-    spec: &TriggerSpec,
-    ctx: &AdmitContext,
-) -> Result<Admission> {
-    admit_with_approved(tx, store_id, spec, ctx, None)
-}
-
-fn admit_with_approved(
-    tx: &Transaction,
-    store_id: &str,
-    spec: &TriggerSpec,
-    ctx: &AdmitContext,
-    approved: Option<&install::Approved>,
-) -> Result<Admission> {
-    let tomb: Option<String> = tx
-        .query_row(
-            "SELECT run_id FROM tombstones WHERE kind = 'trigger' AND key = ?1",
-            [trigger_key(&spec.flow_id, &spec.trigger_id)],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(run_id) = tomb {
-        return Ok(Admission::Tombstoned { run_id });
-    }
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT run_id FROM trigger_inbox WHERE flow_id = ?1 AND trigger_id = ?2 \
-             ORDER BY attempt LIMIT 1",
-            params![spec.flow_id, spec.trigger_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(run_id) = existing {
-        return Ok(Admission::Duplicate { run_id });
-    }
-    let grant = match gate(tx, spec, ctx, approved)? {
-        Ok(grant) => grant,
-        Err(refused) => return Ok(refused),
-    };
-    Ok(Admission::Admitted {
-        run_id: insert_run(tx, store_id, spec, 1, &grant, ctx.now_ms)?,
-    })
-}
-
-/// Admits a trigger under the flow's version approved now: the one rule
-/// every trigger source follows, so a trigger always runs the code that is
-/// approved and enabled at the moment it is admitted. A flow with no
-/// approved version is offered an empty spec, which still goes through
-/// deduplication and tombstones and is then refused as
-/// [`Admission::NotApproved`].
-pub fn admit_current(
-    tx: &Transaction,
-    store_id: &str,
-    flow_id: &str,
-    trigger_id: &str,
-    trigger: JsonText,
-    ctx: &AdmitContext,
-) -> Result<Admission> {
-    let approved = install::approved(tx, flow_id)?;
-    let (script, manifest) = match &approved {
-        Some(approved) => (approved.script.clone(), approved.manifest.clone()),
-        None => (String::new(), String::new()),
-    };
-    let spec = TriggerSpec {
-        flow_id: flow_id.to_owned(),
-        trigger_id: trigger_id.to_owned(),
-        trigger,
-        script,
-        manifest,
-    };
-    admit_with_approved(tx, store_id, &spec, ctx, approved.as_ref())
-}
-
-/// Admits the run's trigger again as new work: a new run with a new id, so
-/// every call gets a new idempotency key. Only an explicit retrigger does
-/// this; nothing in recovery ever does. The new run is newly admitted
-/// work, so it runs the flow's approved version as of now.
-pub fn retrigger(
-    tx: &Transaction,
-    store_id: &str,
-    run_id: &str,
-    ctx: &AdmitContext,
-) -> Result<Admission> {
-    let run = runs::load(tx, run_id)?;
-    let Some(approved) = install::approved(tx, &run.flow_id)? else {
-        return Ok(Admission::NotApproved);
-    };
-    let attempt: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(attempt), 0) + 1 FROM trigger_inbox WHERE flow_id = ?1 AND trigger_id = ?2",
-        params![run.flow_id, run.trigger_id],
-        |r| r.get(0),
-    )?;
-    let attempt =
-        u32::try_from(attempt).map_err(|_| CoreError::Corrupt(format!("attempt {attempt}")))?;
-    let spec = TriggerSpec {
-        flow_id: run.flow_id,
-        trigger_id: run.trigger_id,
-        trigger: run.trigger,
-        script: approved.script,
-        manifest: approved.manifest,
-    };
-    let grant = match gate(tx, &spec, ctx, None)? {
-        Ok(grant) => grant,
-        Err(refused) => return Ok(refused),
-    };
-    Ok(Admission::Admitted {
-        run_id: insert_run(tx, store_id, &spec, attempt, &grant, ctx.now_ms)?,
-    })
 }
 
 pub fn set_draining(tx: &Transaction, on: bool) -> Result<()> {

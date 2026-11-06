@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use basal_core::{ActivationEnd, Boundary, Hooks, RunState, Step};
+use basal_core::{ActivationEnd, Boundary, Hooks, RunState};
 use basal_host::HostOutcome;
-use basal_proto::JsonText;
+use basal_proto::{ActivationResult, JsonText, ParentMessage, WorkerMessage};
 use basal_testkit::harness::{FnHooks, Point, Probe, World, run_with_cuts};
-use common::{admit, config, finish, query_i64, result, runtime, runtime_with, sql};
+use common::{ObserveWorker, admit, config, finish, result, runtime, runtime_with};
 use serde_json::json;
 
 fn done_value() -> HostOutcome {
@@ -37,7 +37,7 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
         const next = await ops.call('mock', 'echo', { after: w.tag });
         return { winner: w.tag, next: next.after };
     "#;
-    let cut = Point::parse("OrderCommitted { position: 1 }#1").expect("point");
+    let cut = Point::parse("DriverReleased { position: 1 }#1").expect("point");
     let probe = Arc::new(Probe::crash_at(cut));
     let cut_probe = probe.clone();
     let mock = world.mock.clone();
@@ -55,13 +55,13 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     let (accepted, acceptance) = mpsc::channel();
     let acceptance = Mutex::new(acceptance);
     let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
-        if matches!(b, Boundary::AcceptedCommitted { position: 0 }) {
+        if matches!(b, Boundary::HostArrived { position: 0 }) {
             accepted.send(()).expect("acceptance receiver");
         }
         // Force the echo to answer before the long call reaches the mock,
         // then hold its outcome until the long call's acceptance is durable.
         // The recovery completion needs an accepted call, not an unsent row.
-        if matches!(b, Boundary::HostAnswered { position: 1 }) {
+        if matches!(b, Boundary::DriverDispatched { position: 1 }) {
             // A late answer can arrive after the watchdog's deadline; report
             // that failure on the test thread, not inside the dispatch hook.
             let _ = answered.send(());
@@ -96,22 +96,28 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     let mock = world.mock.clone();
     let completed = Arc::new(AtomicBool::new(false));
     let flag = completed.clone();
-    let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
-        if matches!(b, Boundary::Claimed { .. }) && !flag.swap(true, Ordering::SeqCst) {
-            let handle = mock.handle_for(run_id, 0).expect("position 0 was accepted");
-            assert!(mock.complete(
-                &handle,
-                HostOutcome::fulfilled(JsonText::new("{\"tag\":\"slow\"}").expect("small"))
-            ));
-        }
-        Step::Continue
-    });
-    let rt = runtime_with(&world, Arc::new(hooks));
+    let rt = runtime(&world);
     let calls = rt.calls(&run_id).expect("calls");
     assert_eq!(calls.len(), 2, "the cut left positions 0 and 1 only");
     assert!(calls[0].outcome.is_none());
     assert_eq!(calls[1].outcome.as_ref().map(|o| o.delivery_order), Some(0));
 
+    let mut worker = world.source.spawn().expect("worker");
+    rt.activate(
+        &run_id,
+        &mut ObserveWorker::new(&mut worker).welcoming(|| {
+            if !flag.swap(true, Ordering::SeqCst) {
+                let handle = mock
+                    .handle_for(&run_id, 0)
+                    .expect("position 0 was accepted");
+                assert!(mock.complete(
+                    &handle,
+                    HostOutcome::fulfilled(JsonText::new("{\"tag\":\"slow\"}").expect("small"))
+                ));
+            }
+        }),
+    )
+    .expect("recovery activation");
     let run = finish(&rt, &world, &run_id);
     assert!(completed.load(Ordering::SeqCst));
     assert_eq!(run.state, RunState::Succeeded, "{run:#?}");
@@ -136,20 +142,32 @@ fn completion_after_suspended_report_is_not_lost() {
     let mock = world.mock.clone();
     let once = Arc::new(AtomicBool::new(false));
     let flag = once.clone();
-    let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
-        if matches!(b, Boundary::EndingReceived) && !flag.swap(true, Ordering::SeqCst) {
-            let handle = mock.handle_for(run_id, 0).expect("accepted");
-            assert!(mock.complete(&handle, done_value()));
-        }
-        Step::Continue
-    });
-    let rt = runtime_with(&world, Arc::new(hooks));
+    let rt = runtime(&world);
     let run_id = admit(
         &rt,
         &world,
         "const x = await llm({ prompt: 'p' }); return x.done;",
     );
-    let end = rt.resume(&run_id).expect("activation");
+    let mut worker = world.source.spawn().expect("worker");
+    let observed_run = run_id.clone();
+    let end = rt
+        .activate(
+            &run_id,
+            &mut ObserveWorker::new(&mut worker).receiving(move |message| {
+                if matches!(
+                    message,
+                    WorkerMessage::Finished {
+                        result: ActivationResult::Suspended { .. },
+                        ..
+                    }
+                ) && !flag.swap(true, Ordering::SeqCst)
+                {
+                    let handle = mock.handle_for(&observed_run, 0).expect("accepted");
+                    assert!(mock.complete(&handle, done_value()));
+                }
+            }),
+        )
+        .expect("activation");
     assert!(
         once.load(Ordering::SeqCst),
         "the worker never reported an ending"
@@ -180,24 +198,36 @@ fn completion_during_replay_is_released_after_the_prefix() {
     "#;
     let mock = world.mock.clone();
     let activations = Arc::new(AtomicUsize::new(0));
-    let count = activations.clone();
-    let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
-        if matches!(b, Boundary::ActivateSent { .. }) && count.fetch_add(1, Ordering::SeqCst) == 1 {
-            let handle = mock.handle_for(run_id, 0).expect("a accepted");
+    let rt = runtime(&world);
+    let run_id = admit(&rt, &world, script);
+    let on_send = |message: &ParentMessage| {
+        if matches!(message, ParentMessage::Activate(_))
+            && activations.fetch_add(1, Ordering::SeqCst) == 1
+        {
+            let handle = mock.handle_for(&run_id, 0).expect("a accepted");
             assert!(mock.complete(&handle, done_value()));
         }
-        Step::Continue
-    });
-    let rt = runtime_with(&world, Arc::new(hooks));
-    let run_id = admit(&rt, &world, script);
-    let first = rt.resume(&run_id).expect("first activation");
+    };
+    let mut worker = world.source.spawn().expect("worker");
+    let first = rt
+        .activate(
+            &run_id,
+            &mut ObserveWorker::new(&mut worker).sending(on_send),
+        )
+        .expect("first activation");
     assert!(
         matches!(first, ActivationEnd::Suspended { .. }),
         "{first:?}"
     );
     let b = world.mock.handle_for(&run_id, 1).expect("b accepted");
     assert!(world.mock.complete(&b, done_value()));
-    let second = rt.resume(&run_id).expect("second activation");
+    let mut worker = world.source.spawn().expect("worker");
+    let second = rt
+        .activate(
+            &run_id,
+            &mut ObserveWorker::new(&mut worker).sending(on_send),
+        )
+        .expect("second activation");
     assert_eq!(activations.load(Ordering::SeqCst), 2);
     assert!(
         matches!(second, ActivationEnd::Succeeded { .. }),
@@ -315,7 +345,7 @@ fn local_effect_behind_unresolved_call_applies_once() {
         const lv = await l;
         return { v, lv: lv.done };
     "#;
-    let cut = Point::parse("LocalCommitted { position: 1 }#1").expect("point");
+    let cut = Point::parse("DriverReleased { position: 1 }#1").expect("point");
     let run = run_with_cuts(&world, script, &[cut], &config()).expect("runs");
     assert_eq!(run.fired, vec![true]);
     assert_eq!(run.summary.state, "succeeded", "{run:#?}");
@@ -327,43 +357,6 @@ fn local_effect_behind_unresolved_call_applies_once() {
         "{run:#?}"
     );
     assert!(run.summary.audit_complete(), "{run:#?}");
-}
-
-/// A synchronous call journaled without its value (its row committed, its
-/// value not) is asked for again by the worker at the same position, and
-/// the parent answers it then, committing the value before the reply.
-#[test]
-fn sync_call_journaled_without_value_is_answered_again() {
-    let world = World::new("sync-reask");
-    let rt = runtime(&world);
-    let run_id = admit(
-        &rt,
-        &world,
-        "const t = Date.now(); await llm({ prompt: 'p' }); return { t: typeof t, later: Date.now() >= t };",
-    );
-    let first = rt.resume(&run_id).expect("activation");
-    assert!(
-        matches!(first, ActivationEnd::Suspended { .. }),
-        "{first:?}"
-    );
-    sql(
-        &rt,
-        &format!(
-            "UPDATE journal SET settlement = NULL, value_bytes = NULL, payload_hash = NULL, \
-             delivery_order = NULL, clock_ms = NULL WHERE run_id = '{run_id}' AND position = 0; \
-             UPDATE journal_payloads SET value=NULL WHERE run_id='{run_id}' AND position=0"
-        ),
-    );
-    let run = finish(&rt, &world, &run_id);
-    assert_eq!(run.state, RunState::Succeeded, "{run:#?}");
-    assert_eq!(result(&run), json!({"t": "number", "later": true}));
-    let has_value = query_i64(
-        &rt,
-        &format!(
-            "SELECT COUNT(*) FROM journal WHERE run_id = '{run_id}' AND position = 0 AND settlement IS NOT NULL"
-        ),
-    );
-    assert_eq!(has_value, 1);
 }
 
 /// The parent keeps clock reads monotonic within a run, from the last

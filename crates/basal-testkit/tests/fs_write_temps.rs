@@ -15,7 +15,7 @@ mod common;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use basal_core::{Config, NoHooks, RunState, Runtime, Store};
 use basal_host::builtins::fs::{self, TempHold, TempLease, TempLedger, TempRemoval};
@@ -24,7 +24,7 @@ use basal_host::{
     CallClass, CallRequest, CompletionSink, Dispatched, Host, InstallStatus, TransportError,
 };
 use basal_proto::CallKind;
-use basal_testkit::harness::{World, scratch, test_manifest};
+use basal_testkit::harness::{World, scratch, test_manifest, wait_until};
 use common::{config, finish};
 use serde_json::{Value, json};
 
@@ -132,17 +132,22 @@ impl Host for TempHost {
 
 fn open(world: &World, host: Arc<TempHost>) -> (Runtime, Arc<Store>) {
     let store = Arc::new(Store::open(world.store_path(), world.durability).expect("store"));
-    let rt = Runtime::new(
-        store.clone(),
-        host,
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        Config {
-            selector: world.selector.clone(),
-            ..config()
-        },
-    );
+    let rt = {
+        let runtime = Runtime::new(
+            store.clone(),
+            host,
+            Arc::new(world.catalog.clone()),
+            Arc::new(NoHooks),
+            Some(world.source.clone()),
+            Config {
+                selector: world.selector.clone(),
+                ..config()
+            },
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
+    };
     rt.recover().expect("recover");
     (rt, store)
 }
@@ -298,16 +303,39 @@ fn a_cancelled_runs_write_that_dies_mid_flight_is_cleaned_up() {
     assert!(temp.is_file(), "{temp:?}");
     assert_eq!(records(&store), 1);
 
-    rt.cancel(&run_id, "test").expect("cancel");
-    rt.enforce_deadlines().expect("maintenance");
-    assert!(
-        temp.is_file(),
-        "a pass removed a file its write still holds"
+    let cancel = {
+        let rt = rt.clone();
+        let run_id = run_id.clone();
+        std::thread::spawn(move || rt.cancel(&run_id, "test"))
+    };
+    // Cancellation seals the run immediately, but must wait for the host write
+    // to drain before returning. Maintenance must not race that write.
+    let sealed = wait_until(
+        Instant::now() + Duration::from_secs(10),
+        "cancel to seal the run",
+        || rt.fixture_routing(&run_id) == Some(basal_core::run_store::Routing::Closing),
     );
-    assert_eq!(records(&store), 1, "a pass dropped a record a write holds");
+    rt.enforce_deadlines().expect("maintenance");
+    let kept_file = temp.is_file();
+    let kept_records = records(&store);
+    let draining = !cancel.is_finished();
 
     release_tx.send(()).expect("release the write");
-    let _ = driver.join();
+    wait_until(
+        Instant::now() + Duration::from_secs(60),
+        "cancelled write to drain",
+        || cancel.is_finished() && driver.is_finished(),
+    )
+    .expect("bounded cancellation drain");
+    cancel.join().expect("cancel thread").expect("cancel");
+    driver
+        .join()
+        .expect("activation thread")
+        .expect("cancelled run");
+    sealed.expect("cancellation did not seal the run");
+    assert!(draining, "cancel returned while the host write was held");
+    assert!(kept_file, "a pass removed a file its write still holds");
+    assert_eq!(kept_records, 1, "a pass dropped a record a write holds");
     rt.quiesce();
     assert_eq!(rt.run(&run_id).expect("run").state, RunState::Cancelled);
     assert!(temp.is_file(), "the dead write took its file with it");
@@ -514,6 +542,9 @@ fn legacy_temporary_files_are_removed_once_from_written_directories() {
     std::fs::write(files.root.join(".basal-7-8.tmp"), "unwritten dir").expect("root stray");
     std::fs::write(files.outside.join(".basal-9-9.tmp"), "outside").expect("outside");
 
+    // Legacy names are swept at cutover, before the old journal is dropped.
+    // Seed the old write before constructing any runtime, not after startup.
+    seed_legacy_write(&world, &files);
     let (rt, store) = open(&world, TempHost::new(&world));
     let run_id = admit(&rt, &world, &files.script(), &files.manifest());
     let run = finish(&rt, &world, &run_id);
@@ -547,6 +578,30 @@ fn legacy_temporary_files_are_removed_once_from_written_directories() {
     let (rt, _store) = open(&world, TempHost::new(&world));
     rt.enforce_deadlines().expect("maintenance");
     assert!(sub.join(".basal-123-5.tmp").is_file());
+}
+
+fn seed_legacy_write(world: &World, files: &Files) {
+    use basal_proto::{ArgsDigest, JsonText, Primitive, Settlement};
+    use rusqlite::params;
+
+    let store = Store::open(world.store_path(), world.durability).unwrap();
+    let script = files.script();
+    let manifest = files.manifest().to_string();
+    let hash = basal_core::ids::code_hash(&script, &manifest);
+    let args =
+        JsonText::new(json!({"path": files.out(), "data": "the digest"}).to_string()).unwrap();
+    let request = json!({"args": serde_json::from_str::<Value>(args.as_str()).unwrap(), "grant": {"roots": [files.root]}}).to_string();
+    let value = JsonText::new("true").unwrap();
+    let digest = ArgsDigest::of(&args);
+    let payload = basal_core::ids::payload_hash(Settlement::Fulfilled, &value);
+    store.write(|tx| {
+        tx.execute("INSERT INTO run_snapshots(snapshot_id,flow_id,flow_version,code_hash,script,manifest) VALUES(1,'flow-test',1,?1,?2,?3)", params![hash.as_slice(), script, manifest])?;
+        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,ended_at,flow_version,admit_seq,generation) VALUES('legacy-fs-write','flow-test','legacy-write',0,'{}',1,?1,'succeeded',1,2,1,1,1)", [hash.as_slice()])?;
+        tx.execute("INSERT INTO trigger_inbox VALUES('flow-test','legacy-write',0,'legacy-fs-write',1)", [])?;
+        tx.execute("INSERT INTO journal(run_id,position,kind_code,args_digest,idempotency_key,class,dispatch,attempts,settlement,payload_hash,delivery_order,issued_generation,args_bytes,request_bytes,value_bytes) VALUES('legacy-fs-write',0,?1,?2,'legacy-fs-key','keyed_mutation','sent',1,'fulfilled',?3,0,1,?4,?5,4)", params![Primitive::FsWrite.code(), digest.0.as_slice(), payload.as_slice(), args.len(), request.len()])?;
+        tx.execute("INSERT INTO journal_payloads VALUES('legacy-fs-write',0,?1,?2,'true')", params![args.as_str(), request])?;
+        Ok(())
+    }).unwrap();
 }
 
 /// [`fs::remove_temp`] on its own: it removes only a regular file under a

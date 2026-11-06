@@ -89,8 +89,12 @@ across a global audience.
 
 ## Size limits for one run
 
-Every host call's arguments, request and result are journaled, so a run can
-replay after a crash without repeating a call. That journal sets the limits:
+Active runs record calls in an append-only run log. Remote intent is durable
+before dispatch; acknowledgements and terminal results are backed by a durable
+log prefix or a committed SQLite transaction. After a crash, execution resumes
+from that prefix. Clock values, random values and kv reads beyond it may differ
+when re-executed; no external effect depended on those unsynced values. The log
+sets the limits:
 
 - **One call's arguments:** at most 256 KiB. A larger argument is refused as
   a journaled rejection before it is parsed.
@@ -101,17 +105,15 @@ replay after a crash without repeating a call. That journal sets the limits:
   pass it fails the run.
 - **Calls:** at most 10,000 per run.
 
-Run summaries and call metadata are kept for 90 days. Successful runs keep
-their full call arguments, prepared requests, replies and cached event bodies
-for 24 hours after ending; older call inspection shows "payload pruned".
-Only successful runs have their payloads pruned early. Failed runs keep their
-payloads until the run itself ages out, and runs that are still in progress or
-awaiting reconciliation are never pruned. Any open call, reservation, decision
-or unacknowledged completion also protects its run from pruning. After
-those obligations clear, terminal runs can age out normally. Code snapshots
-are shared across runs and freed with their last retained run. These limits
-apply to every flow and template on this basal; codemode keeps its separate
-24-hour run retention.
+Run summaries are kept for 90 days. Successful runs keep a summary and result
+only, not call arguments, prepared requests, replies or cached event bodies.
+Failed, engine-mismatch and cancelled runs keep full call detail until the run
+itself ages out. Runs still in progress or awaiting reconciliation are never
+pruned. Any open call, reservation, decision or unacknowledged completion also
+protects its run from pruning. After those obligations clear, terminal runs can
+age out normally. Code snapshots are shared across runs and freed with their
+last retained run. These limits apply to every flow and template on this basal;
+codemode keeps its separate 24-hour run retention.
 
 ## Install and dry-run warnings
 

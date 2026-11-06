@@ -206,6 +206,7 @@ fn runtime_with_catalog(path: &std::path::Path, catalog: MockCatalog) -> Runtime
             ..Default::default()
         },
     )
+    .expect("runtime startup")
 }
 
 const DELIVERED_SUBJECT: &str = "ck.account.event.prefrontal-core.digest_delivered.v1";
@@ -269,7 +270,7 @@ async fn delivered_notice_targets_only_named_flow_and_acks_no_match() {
     let flows: Vec<String> = rt
         .store()
         .read(|c| {
-            Ok(c.prepare("SELECT flow_id FROM runs")?
+            Ok(c.prepare("SELECT flow_id FROM live_runs")?
                 .query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?)
         })
@@ -337,7 +338,7 @@ fn approve(rt: &Runtime, id: &str) {
 }
 fn run_count(rt: &Runtime) -> i64 {
     rt.store()
-        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))?))
+        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM run_identities", [], |r| r.get(0))?))
         .unwrap()
 }
 
@@ -471,7 +472,7 @@ async fn per_flow_fanout_rolls_back_before_ack_on_commit_failure() {
     approve(&rt, "a");
     approve(&rt, "b");
     server.publish(0, SUBJECT).await;
-    rt.store().write(|tx|{tx.execute_batch("CREATE TRIGGER refuse_second BEFORE INSERT ON runs WHEN NEW.flow_id='b' BEGIN SELECT RAISE(ABORT,'second flow failed'); END;")?;Ok(())}).unwrap();
+    rt.store().write(|tx|{tx.execute_batch("CREATE TRIGGER refuse_second BEFORE INSERT ON live_runs WHEN NEW.flow_id='b' BEGIN SELECT RAISE(ABORT,'second flow failed'); END;")?;Ok(())}).unwrap();
     let mut consumer = bind(&server.bus, STREAM).await.unwrap();
     let messages = pull(&consumer).await.unwrap();
     assert!(commit_batch(rt.clone(), &messages, true).await.is_err());
@@ -657,7 +658,13 @@ async fn newer_version_keeps_first_approval_cutoff() {
     assert_eq!(report.skipped_before_install, 0);
     let script: String = rt
         .store()
-        .read(|c| Ok(c.query_row("SELECT script FROM runs_with_snapshots", [], |r| r.get(0))?))
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT s.script FROM live_runs r JOIN run_snapshots s USING(snapshot_id)",
+                [],
+                |r| r.get(0),
+            )?)
+        })
         .unwrap();
     assert_eq!(
         script, "return 2;",

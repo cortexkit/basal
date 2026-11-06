@@ -83,7 +83,12 @@ fn assert_revoked(f: &common::Fixture, run: &str) {
     assert_eq!(stored.error_kind.as_deref(), Some("version_revoked"));
     let calls = f.module.rt.calls(run).unwrap();
     assert_eq!(calls.len(), 2, "{calls:?}");
-    let refused = calls[1].outcome.as_ref().expect("typed refusal");
+    assert!(
+        calls[1].outcome.is_none(),
+        "revocation seals the worker before releasing its refusal"
+    );
+    let call = f.module.rt.fixture_call_state(run, 1).unwrap();
+    let refused = call.arrival.as_ref().expect("durable typed refusal");
     assert_eq!(refused.settlement, Settlement::Rejected);
     assert_eq!(
         serde_json::from_str::<Value>(refused.value.as_str()).unwrap()["code"],
@@ -107,10 +112,7 @@ fn an_unrevoked_run_dispatches_local_and_remote_calls() {
 
 #[test]
 fn push_mid_script_stops_the_next_call_and_health_does_not_count_a_failure() {
-    let (f, hook) = fixture(
-        "push-mid-script",
-        Boundary::HostCallReceived { position: 1 },
-    );
+    let (f, hook) = fixture("push-mid-script", Boundary::DriverReleased { position: 0 });
     let script = "await ops.call('mock','echo',{}); try { await ops.call('mock','echo',{}); } catch (_) {} return await ops.call('mock','echo',{});";
     let m = manifest("push-flow");
     common::install_approved(&f, &Caller::Operator, script, &m);
@@ -131,7 +133,7 @@ fn push_mid_script_stops_the_next_call_and_health_does_not_count_a_failure() {
 
 #[test]
 fn sent_call_settles_before_the_next_call_is_refused() {
-    let (f, hook) = fixture("push-sent-call", Boundary::HostAnswered { position: 0 });
+    let (f, hook) = fixture("push-sent-call", Boundary::DriverDispatched { position: 0 });
     let script =
         "await ops.call('mock','send',{value:7}); return await ops.call('mock','echo',{});";
     let m = manifest("sent-flow");
@@ -157,7 +159,7 @@ fn sent_call_settles_before_the_next_call_is_refused() {
 
 #[test]
 fn push_between_journal_and_send_refuses_the_dispatch_attempt() {
-    let (f, hook) = fixture("push-before-send", Boundary::CallCommitted { position: 0 });
+    let (f, hook) = fixture("push-before-send", Boundary::DriverSynced { position: 0 });
     let script = "return await ops.call('mock','echo',{});";
     let m = manifest("unsent-flow");
     common::install_approved(&f, &Caller::Operator, script, &m);
@@ -176,8 +178,20 @@ fn push_between_journal_and_send_refuses_the_dispatch_attempt() {
     );
     assert_eq!(f.mock.total_sends(), sends);
     let calls = f.module.rt.calls(&run).unwrap();
+    assert!(calls[0].outcome.is_none());
     assert_eq!(
-        serde_json::from_str::<Value>(calls[0].outcome.as_ref().unwrap().value.as_str()).unwrap()["code"],
+        serde_json::from_str::<Value>(
+            f.module
+                .rt
+                .fixture_call_state(&run, 0)
+                .unwrap()
+                .arrival
+                .as_ref()
+                .unwrap()
+                .value
+                .as_str()
+        )
+        .unwrap()["code"],
         "version_revoked"
     );
 }
@@ -202,7 +216,7 @@ fn template_and_package_instances_stop_every_call_family_without_changing_enable
         for template in [false, true] {
             let (f, hook) = fixture(
                 &format!("push-instance-{n}-{template}"),
-                Boundary::HostCallReceived { position: 1 },
+                Boundary::DriverReleased { position: 0 },
             );
             f.catalog.add_named_agent(OWNER, "Owner");
             let script = format!(

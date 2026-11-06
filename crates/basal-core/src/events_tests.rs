@@ -172,7 +172,8 @@ impl Fixture {
                 },
                 ..Default::default()
             },
-        );
+        )
+        .expect("runtime startup");
         Self {
             rt,
             source,
@@ -225,7 +226,7 @@ impl Fixture {
         let id: String = self
             .rt
             .store()
-            .read(|c| Ok(c.query_row("SELECT run_id FROM runs", [], |r| r.get(0))?))
+            .read(|c| Ok(c.query_row("SELECT run_id FROM live_runs", [], |r| r.get(0))?))
             .unwrap();
         self.rt.run(&id).unwrap()
     }
@@ -427,7 +428,7 @@ fn template_header_filter_binds_before_admission_and_keeps_redelivery_idempotent
     );
     f.rt.store()
         .read(|c| {
-            let flow: String = c.query_row("SELECT flow_id FROM runs", [], |r| r.get(0))?;
+            let flow: String = c.query_row("SELECT flow_id FROM live_runs", [], |r| r.get(0))?;
             assert_eq!(flow, id);
             let receipts: i64 =
                 c.query_row("SELECT COUNT(*) FROM event_receipts", [], |r| r.get(0))?;
@@ -481,7 +482,12 @@ fn header_filters_skip_before_receipts_runs_backlog_and_rate() {
     }
     f.rt.store()
         .read(|c| {
-            for table in ["event_receipts", "runs", "trigger_inbox", "rate_windows"] {
+            for table in [
+                "event_receipts",
+                "live_runs",
+                "trigger_inbox",
+                "rate_windows",
+            ] {
                 let count: i64 =
                     c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
                 assert_eq!(count, 0, "{table}");
@@ -567,7 +573,7 @@ fn stale_backlog_never_charges_rate_windows_or_trips_the_breaker() {
         .read(|c| {
             for table in [
                 "event_receipts",
-                "runs",
+                "live_runs",
                 "trigger_inbox",
                 "rate_windows",
                 "token_windows",
@@ -594,7 +600,7 @@ fn stale_backlog_never_charges_rate_windows_or_trips_the_breaker() {
     f.rt.store()
         .read(|c| {
             let runs: Vec<String> = c
-                .prepare("SELECT trigger_id FROM runs")?
+                .prepare("SELECT trigger_id FROM live_runs")?
                 .query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             assert_eq!(runs, [fresh.trigger_id()]);
@@ -635,7 +641,7 @@ fn missing_publish_time_uses_first_approval_cutoff_not_stale_counter() {
     );
     f.rt.store()
         .read(|c| {
-            for table in ["runs", "rate_windows", "event_receipts"] {
+            for table in ["live_runs", "rate_windows", "event_receipts"] {
                 let count: i64 =
                     c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
                 assert_eq!(count, 0, "{table}");
@@ -719,17 +725,16 @@ fn v2_body_digest_is_checked_before_journaling() {
     let manifest = Manifest::parse(&run.manifest).unwrap();
     assert!(matches!(f.rt.event_preamble(&run, &manifest).unwrap(),
         Preamble::Failed { kind, .. } if kind == "event_body_mismatch"));
-    let body: Option<Vec<u8>> =
-        f.rt.store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT body FROM event_body_journal WHERE run_id=?1",
-                    [&run.run_id],
-                    |r| r.get(0),
-                )?)
-            })
-            .unwrap();
-    assert!(body.is_none());
+    assert!(
+        f.rt.fixture_state(&run.run_id)
+            .unwrap()
+            .event_bodies
+            .iter()
+            .all(|record| matches!(
+                record,
+                crate::run_records::Body::EventBody { body: None, .. }
+            ))
+    );
 }
 
 #[test]
@@ -740,11 +745,11 @@ fn fanout_commits_atomically_and_only_matches_enabled_approved_flows() {
     f.approve("disabled");
     f.rt.disable_flow("disabled", &crate::Actor::Runtime, "test")
         .unwrap();
-    f.rt.store().write(|tx| { tx.execute_batch("CREATE TRIGGER refuse_second BEFORE INSERT ON runs WHEN NEW.flow_id='b' BEGIN SELECT RAISE(ABORT,'second flow failed'); END;")?; Ok(()) }).unwrap();
+    f.rt.store().write(|tx| { tx.execute_batch("CREATE TRIGGER refuse_second BEFORE INSERT ON live_runs WHEN NEW.flow_id='b' BEGIN SELECT RAISE(ABORT,'second flow failed'); END;")?; Ok(()) }).unwrap();
     assert!(f.rt.admit_events(&[notice(0)]).is_err());
     let count: i64 =
         f.rt.store()
-            .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))?))
+            .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM live_runs", [], |r| r.get(0))?))
             .unwrap();
     assert_eq!(count, 0, "fan-out cannot partially commit");
     f.rt.store()
@@ -782,7 +787,7 @@ fn backlog_is_bounded_overflow_is_reported_and_oldest_runs_first() {
         f.rt.store()
             .read(|c| {
                 Ok(c.query_row(
-                    "SELECT trigger_id FROM runs ORDER BY admit_seq DESC LIMIT 1",
+                    "SELECT trigger_id FROM live_runs ORDER BY admit_seq DESC LIMIT 1",
                     [],
                     |r| r.get(0),
                 )?)
@@ -804,7 +809,7 @@ fn receipts_keep_eight_days_and_prune_by_index_with_tombstone_dedup() {
     f.rt.admit_events(&[notice(0)]).unwrap();
     let id: String =
         f.rt.store()
-            .read(|c| Ok(c.query_row("SELECT run_id FROM runs", [], |r| r.get(0))?))
+            .read(|c| Ok(c.query_row("SELECT run_id FROM live_runs", [], |r| r.get(0))?))
             .unwrap();
     f.rt.cancel(&id, "test").unwrap();
     f.rt.prune(2_000, 0).unwrap();
@@ -911,17 +916,10 @@ fn body_is_journaled_before_script_and_replay_never_calls_live() {
     let Preamble::Ready(first) = f.rt.event_preamble(&run, &manifest).unwrap() else {
         panic!("body preamble not ready")
     };
-    let bytes: Vec<u8> =
-        f.rt.store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT body FROM event_body_journal WHERE run_id=?1",
-                    [&run.run_id],
-                    |r| r.get(0),
-                )?)
-            })
-            .unwrap();
-    assert_eq!(bytes, BODY.as_bytes());
+    let state = f.rt.fixture_state(&run.run_id).unwrap();
+    assert!(
+        matches!(state.event_bodies.last(), Some(crate::run_records::Body::EventBody { body: Some(body), .. }) if body.as_bytes() == BODY.as_bytes())
+    );
     let Preamble::Ready(replay) = f.rt.event_preamble(&run, &manifest).unwrap() else {
         panic!("replay not ready")
     };
@@ -1078,8 +1076,10 @@ fn transient_provider_refusal_retries_then_delivers_the_body() {
     ));
     assert!(f.rt.startable().unwrap().is_empty());
     let retry_at: i64 =
-        f.rt.store()
-            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
+        f.rt.saved_event_body(&run.run_id)
+            .unwrap()
+            .unwrap()
+            .2
             .unwrap();
     f.reply(reply(), Settlement::Fulfilled);
     assert!(matches!(
@@ -1114,11 +1114,12 @@ fn provider_retry_after_is_a_floor_but_never_outlasts_the_deadline() {
                 .unwrap(),
             Preamble::Retry
         ));
-        let retry_at: i64 = f
-            .rt
-            .store()
-            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
-            .unwrap();
+        let retry_at: i64 =
+            f.rt.saved_event_body(&run.run_id)
+                .unwrap()
+                .unwrap()
+                .2
+                .unwrap();
         assert_eq!(retry_at, expected);
     }
 }
@@ -1135,11 +1136,12 @@ fn provider_body_retries_preserve_the_last_code_at_the_deadline() {
             f.rt.event_preamble(&run, &manifest).unwrap(),
             Preamble::Retry
         ));
-        let retry_at: i64 = f
-            .rt
-            .store()
-            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
-            .unwrap();
+        let retry_at: i64 =
+            f.rt.saved_event_body(&run.run_id)
+                .unwrap()
+                .unwrap()
+                .2
+                .unwrap();
         f.rt.config.clock.set(retry_at);
     }
     f.source
@@ -1152,8 +1154,10 @@ fn provider_body_retries_preserve_the_last_code_at_the_deadline() {
         Preamble::Retry
     ));
     let retry_at: i64 =
-        f.rt.store()
-            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
+        f.rt.saved_event_body(&run.run_id)
+            .unwrap()
+            .unwrap()
+            .2
             .unwrap();
     assert_eq!(retry_at, 4_500);
     f.rt.config.clock.set(retry_at);
@@ -1229,13 +1233,12 @@ fn transient_provider_warning_is_logged_once_across_retries() {
                 f.rt.event_preamble(&run, &manifest).unwrap(),
                 Preamble::Retry
             ));
-            let retry_at: i64 = f
-                .rt
-                .store()
-                .read(|c| {
-                    Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?)
-                })
-                .unwrap();
+            let retry_at: i64 =
+                f.rt.saved_event_body(&run.run_id)
+                    .unwrap()
+                    .unwrap()
+                    .2
+                    .unwrap();
             f.rt.config.clock.set(retry_at);
         }
     }
@@ -1274,8 +1277,10 @@ fn unavailable_body_is_deferred_with_backoff_until_deadline() {
     ));
     assert!(f.rt.startable().unwrap().is_empty());
     let first: i64 =
-        f.rt.store()
-            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
+        f.rt.saved_event_body(&run.run_id)
+            .unwrap()
+            .unwrap()
+            .2
             .unwrap();
     f.rt.config.clock.set(first);
     f.source
@@ -1288,8 +1293,10 @@ fn unavailable_body_is_deferred_with_backoff_until_deadline() {
         Preamble::Retry
     ));
     let second: i64 =
-        f.rt.store()
-            .read(|c| Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?))
+        f.rt.saved_event_body(&run.run_id)
+            .unwrap()
+            .unwrap()
+            .2
             .unwrap();
     assert!(second - first > first - 1_000);
     f.rt.config.clock.set(10_000);
@@ -1321,13 +1328,12 @@ fn no_flow_scope_warning_is_logged_once_across_retries() {
                 f.rt.event_preamble(&run, &manifest).unwrap(),
                 Preamble::Retry
             ));
-            let retry_at: i64 = f
-                .rt
-                .store()
-                .read(|c| {
-                    Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?)
-                })
-                .unwrap();
+            let retry_at: i64 =
+                f.rt.saved_event_body(&run.run_id)
+                    .unwrap()
+                    .unwrap()
+                    .2
+                    .unwrap();
             f.rt.config.clock.set(retry_at);
         }
     }
@@ -1434,17 +1440,11 @@ fn body_returning_after_deadline_is_not_delivered_to_script() {
     assert!(
         matches!(f.rt.event_preamble(&run,&Manifest::parse(&run.manifest).unwrap()).unwrap(), Preamble::Failed {kind,..} if kind == "deadline")
     );
-    let bodies: i64 =
-        f.rt.store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT COUNT(*) FROM event_body_journal WHERE body IS NOT NULL",
-                    [],
-                    |r| r.get(0),
-                )?)
-            })
-            .unwrap();
-    assert_eq!(bodies, 0);
+    assert!(
+        f.rt.saved_event_body(&run.run_id)
+            .unwrap()
+            .is_none_or(|saved| saved.0.is_none())
+    );
 }
 
 #[test]
@@ -1571,7 +1571,7 @@ fn queued_history_before_approval_is_refused_without_a_run() {
     );
     let runs: i64 =
         f.rt.store()
-            .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))?))
+            .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM live_runs", [], |r| r.get(0))?))
             .unwrap();
     assert_eq!(runs, 0);
 }
@@ -1627,11 +1627,17 @@ fn journaled_flow_targeted_body_is_checked_against_run() {
     let run = f.rt.run(&id).unwrap();
     let manifest = Manifest::parse(&request.manifest).unwrap();
     for flow in ["other", "flow"] {
-        let body = json!({"flow_id":flow}).to_string().into_bytes();
-        f.rt.store().write(|tx| {
-            tx.execute("INSERT INTO event_body_journal(run_id,attempt,body) VALUES (?1,1,?2) ON CONFLICT(run_id) DO UPDATE SET body=excluded.body", params![id, body])?;
-            Ok(())
-        }).unwrap();
+        let body = json!({"flow_id":flow}).to_string();
+        f.rt.fixture_update_state(&id, |state| {
+            state.event_bodies = vec![crate::run_records::Body::EventBody {
+                digest: String::new(),
+                body: Some(body),
+                attempt: 1,
+                retry_at: None,
+                refusal: None,
+            }];
+        })
+        .unwrap();
         match f.rt.event_preamble(&run, &manifest).unwrap() {
             Preamble::Failed { kind, .. } if flow == "other" => {
                 assert_eq!(kind, "event_body_mismatch")

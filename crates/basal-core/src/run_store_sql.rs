@@ -142,13 +142,12 @@ pub enum Receipt {
     Unknown,
 }
 
-// Settled calls share their history row's storage, but retain the handle,
-// timestamps and full call detail needed by readers and redelivery checks.
+// Settled calls keep only duplicate/conflict classification metadata. Their
+// position is the map key; open/unknown obligations retain full call detail.
 #[derive(Serialize, Deserialize)]
 struct SavedReceipt {
     handle: Option<String>,
     audit_at: i64,
-    detail: Value,
     value_hash: Option<[u8; 32]>,
     settled_at: i64,
 }
@@ -183,7 +182,6 @@ fn save_receipt(tx: &Transaction<'_>, row: &Obligation) -> Result<()> {
         SavedReceipt {
             handle: row.handle.clone(),
             audit_at: row.audit_at,
-            detail: row.detail.clone(),
             value_hash,
             settled_at,
         },
@@ -611,7 +609,7 @@ pub fn obligation(conn: &Connection, run_id: &str, position: u64) -> Result<Opti
             handle: receipt.handle,
             state: ObligationState::Settled,
             audit_at: receipt.audit_at,
-            detail: receipt.detail,
+            detail: Value::Null,
             receipt: Some(receipt.value_hash.map_or(Receipt::Unknown, Receipt::Value)),
             settled_at: Some(receipt.settled_at),
         }))
@@ -894,10 +892,19 @@ pub fn next_commit_seq(tx: &Transaction<'_>) -> Result<u64> {
     Ok(next)
 }
 
-/// Only disposable test stores may install the staged schema before cutover.
+/// Disposable test stores may select explicit metadata. A raw SQLite fixture
+/// also needs the control-plane schema; Store::open already installs it.
 #[cfg(any(test, feature = "test-support"))]
 pub fn create_test_schema(tx: &Transaction<'_>, state: &Meta) -> Result<()> {
-    tx.execute_batch(DDL)?;
+    let installed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='live_runs')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !installed {
+        tx.execute_batch(DDL)?;
+        crate::run_cutover::initialize_broca_fixture(tx)?;
+    }
     write_meta(tx, state)?;
     set_restore_pending(tx, false)
 }

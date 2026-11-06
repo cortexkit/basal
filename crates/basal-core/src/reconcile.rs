@@ -4,10 +4,10 @@
 use basal_host::HostOutcome;
 use rusqlite::{Transaction, params};
 
-use crate::error::{CoreError, Result};
-use crate::journal::{self, Source};
+use crate::error::Result;
+
 use crate::model::RunState;
-use crate::runs;
+
 use crate::runtime::Runtime;
 use crate::store::now_ms;
 
@@ -85,106 +85,8 @@ pub(crate) fn audit_answer(
     Ok(())
 }
 
-/// Records a resolution of an unknown call inside `tx`, audited, and
-/// returns the run's state after it. `elicitation_id` names the decision
-/// card the resolution was answered through, if any. On a run in
-/// `needs_reconcile`, once no unknown call remains the run becomes
-/// `pending`; the caller wakes it after the commit.
-pub(crate) fn resolve(
-    tx: &Transaction,
-    run_id: &str,
-    position: u64,
-    resolution: &Resolution,
-    actor: &str,
-    elicitation_id: Option<&str>,
-) -> Result<RunState> {
-    let state = runs::state(tx, run_id)?;
-    let wrong = |operation| CoreError::WrongState {
-        run_id: run_id.to_owned(),
-        state,
-        operation,
-    };
-    let open = journal::unsettled_positions(tx, run_id)?;
-    if !open.contains(&position) {
-        return Err(CoreError::Invalid(format!(
-            "position {position} of run {run_id} has no open obligation"
-        )));
-    }
-    let audit = |action: &str, detail: &str| {
-        audit_answer(
-            tx,
-            actor,
-            action,
-            Some(run_id),
-            Some(position),
-            detail,
-            elicitation_id,
-        )
-    };
-    match resolution {
-        Resolution::ObservedResult(outcome) => {
-            if state != RunState::NeedsReconcile && !state.is_terminal() {
-                return Err(wrong("record an observed result"));
-            }
-            journal::accept_outcome(tx, run_id, position, None, outcome, Source::Reconcile)?;
-            audit("reconcile.observed_result", outcome.value.as_str())?;
-        }
-        Resolution::ReconciledAsApplied => {
-            if state != RunState::NeedsReconcile {
-                return Err(wrong("reconcile a call as applied"));
-            }
-            journal::accept_outcome(
-                tx,
-                run_id,
-                position,
-                None,
-                &reconciled_as_applied(),
-                Source::Reconcile,
-            )?;
-            audit("reconcile.applied", "")?;
-        }
-        Resolution::NotApplied => {
-            if state != RunState::NeedsReconcile {
-                return Err(wrong("mark a call not applied"));
-            }
-            tx.execute(
-                "UPDATE journal SET dispatch = 'not_applied' WHERE run_id = ?1 \
-                 AND position = ?2 AND settlement IS NULL",
-                params![run_id, crate::model::position_i64(position)?],
-            )?;
-            audit("reconcile.not_applied", "")?;
-        }
-        Resolution::Cancel => {
-            if state != RunState::NeedsReconcile {
-                return Err(wrong("cancel through reconcile"));
-            }
-            runs::cancel(
-                tx,
-                run_id,
-                &format!("cancelled by {actor} while reconciling"),
-            )?;
-            audit("reconcile.cancel", "")?;
-            return Ok(RunState::Cancelled);
-        }
-    }
-    if state == RunState::NeedsReconcile && journal::unknown_positions(tx, run_id)?.is_empty() {
-        tx.execute(
-            "UPDATE runs SET state = 'pending', error_kind = NULL, error_detail = NULL \
-             WHERE run_id = ?1 AND state = 'needs_reconcile'",
-            [run_id],
-        )?;
-        return Ok(RunState::Pending);
-    }
-    Ok(state)
-}
-
 impl Runtime {
-    /// Records an operator's resolution of an unknown call, audited.
-    ///
-    /// On a run in `needs_reconcile`, once no unknown call remains the run
-    /// becomes runnable. On a run that has already ended, only an observed
-    /// result is accepted: it settles the call's obligation without
-    /// resuming anything.
+    /// Records an operator resolution against the recovered run registry.
     pub fn reconcile(
         &self,
         run_id: &str,
@@ -192,8 +94,12 @@ impl Runtime {
         resolution: Resolution,
         actor: &str,
     ) -> Result<RunState> {
-        if let Some(hosts) = &self.shared.staged_hosts {
-            let state = hosts.resolve(
+        let state = self
+            .shared
+            .staged_hosts
+            .as_ref()
+            .expect("recovered run registry")
+            .resolve(
                 run_id,
                 position,
                 resolution,
@@ -201,24 +107,7 @@ impl Runtime {
                 None,
                 self.config().clock.now_ms(),
             )?;
-            self.shared.signal.bump();
-            return Ok(state);
-        }
-        let state = self
-            .store()
-            .write(|tx| resolve(tx, run_id, position, &resolution, actor, None))?;
-        if state.is_terminal() {
-            self.clear_event_scope_warning(run_id);
-        }
-        self.flush_refusals()?;
         self.shared.signal.bump();
-        if state == RunState::Pending {
-            self.wake(run_id);
-        } else if state.is_terminal() {
-            let run = self.run(run_id)?;
-            self.release_unused_flow_routes_for(&run.flow_id)?;
-            self.wake_flow(&run.flow_id);
-        }
         Ok(state)
     }
 }

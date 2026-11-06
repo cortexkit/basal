@@ -693,15 +693,9 @@ fn room_store_refusal_defers_and_reuses_the_frozen_receipt() {
     let retry: i64 = f
         .module
         .rt
-        .store()
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT retry_not_before FROM journal WHERE run_id=?1",
-                [&run],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
+        .fixture_deferral(&run, 0)
+        .unwrap()
+        .retry_not_before;
     f.clock.set(retry);
     f.module.engine.run_until_idle(50).unwrap();
     assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
@@ -860,8 +854,8 @@ fn room_journals_before_send_and_replays_the_identical_intent_after_a_cut() {
     };
     use basal_testkit::harness::{Point, Probe};
     for (point, sent_before_cut) in [
-        ("CallCommitted { position: 0 }#1", 0),
-        ("HostAnswered { position: 0 }#1", 1),
+        ("DriverSynced { position: 0 }#1", 0),
+        ("DriverDispatched { position: 0 }#1", 1),
     ] {
         let dir = common::scratch("room-cut");
         let clock = Clock::manual(common::T0);
@@ -888,12 +882,19 @@ fn room_journals_before_send_and_replays_the_identical_intent_after_a_cut() {
         let probe = Arc::new(Probe::crash_at(Point::parse(point).unwrap()));
         let mut dependencies = hosts(fake.clone(), consent.clone());
         dependencies.hooks = probe.clone();
-        let module = Module::start(
-            config.clone(),
-            dependencies,
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config.clone(),
+                dependencies,
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         module
             .handle(
                 &Caller::Operator,
@@ -931,12 +932,19 @@ fn room_journals_before_send_and_replays_the_identical_intent_after_a_cut() {
         consent.attach(Arc::new(Decisions::default()));
         drop(module);
         clock.set(common::T0 + 10_000);
-        let module = Module::start(
-            config,
-            hosts(fake.clone(), consent),
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config,
+                hosts(fake.clone(), consent),
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         let row = module.rt.calls(&run).unwrap().remove(0);
         let frozen = row
             .request

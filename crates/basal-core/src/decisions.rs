@@ -38,9 +38,8 @@ use serde_json::{Value, json};
 
 use crate::error::{CoreError, Result};
 use crate::install;
-use crate::journal;
-use crate::model::RunState;
-use crate::reconcile::{self, Resolution};
+
+use crate::reconcile;
 use crate::runtime::Runtime;
 
 pub use crate::reconcile::RECONCILED_AS_APPLIED;
@@ -545,118 +544,6 @@ pub fn all(conn: &Connection) -> Result<Vec<DecisionRecord>> {
     select(conn, "ORDER BY seq", [])
 }
 
-use basal_proto::util::hex;
-
-use crate::model::position_i64 as pos;
-
-/// Writes or updates the reconcile card intent of every unknown call of
-/// every run in `needs_reconcile`. Cheap when nothing changed: it reads the
-/// few runs waiting for the operator and writes only what differs.
-pub fn refresh(tx: &Transaction, now_ms: i64) -> Result<()> {
-    let runs: Vec<String> = {
-        let mut stmt =
-            tx.prepare("SELECT run_id FROM runs WHERE state = 'needs_reconcile' ORDER BY run_id")?;
-        stmt.query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    for run_id in runs {
-        refresh_run(tx, &run_id, now_ms)?;
-    }
-    Ok(())
-}
-
-/// The reconcile card intents of one run: one per unknown call. A call's
-/// open card is updated when its context changed (another send of the call
-/// ended unknown, for its own reason); a decision already made for this
-/// send of the call is never asked again.
-pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
-    let (state, flow_id, version, admitted_at): (String, String, Option<u32>, i64) = tx
-        .query_row(
-            "SELECT state, flow_id, flow_version, admitted_at FROM runs WHERE run_id=?1",
-            [run_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()?
-        .ok_or_else(|| CoreError::NoSuchRun(run_id.to_owned()))?;
-    if state != RunState::NeedsReconcile.as_str() {
-        return Ok(());
-    }
-    let version = version.unwrap_or(0);
-    for position in journal::unknown_positions(tx, run_id)? {
-        let Some(row) = journal::row(tx, run_id, position)? else {
-            continue;
-        };
-        let reason: String = tx.query_row(
-            "SELECT unknown_reason FROM journal WHERE run_id = ?1 AND position = ?2",
-            params![run_id, pos(position)?],
-            |r| r.get(0),
-        )?;
-        let unknown_reason = UnknownReason::parse(&reason)
-            .ok_or_else(|| CoreError::Corrupt(format!("unknown reason {reason:?}")))?;
-        let context = DecisionContext::Reconcile {
-            run_id: run_id.to_owned(),
-            run_admitted_at_ms: admitted_at,
-            step: None,
-            call_key: row.idempotency_key.clone(),
-            op: basal_host::op_label(&row.kind),
-            attempts: row.attempts,
-            unknown_reason,
-        };
-        let mut stored = context_json(&context);
-        stored["args_digest"] = json!(hex(&row.args_digest.0));
-        let card = stored.to_string();
-        let key = reconcile_key(&flow_id, run_id, position);
-        let instance = i64::from(row.attempts);
-        let decided: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM decision_cards WHERE dedup_key = ?1 AND instance = ?2 \
-             AND state <> 'open')",
-            params![key, instance],
-            |r| r.get(0),
-        )?;
-        if decided {
-            continue;
-        }
-        let open: Option<(i64, i64, String)> = tx
-            .query_row(
-                "SELECT seq, instance, card FROM decision_cards WHERE dedup_key = ?1 \
-                 AND state = 'open'",
-                [&key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        match open {
-            Some((_, open_instance, open_card))
-                if open_instance == instance && open_card == card => {}
-            Some((seq, _, _)) => {
-                tx.execute(
-                    "UPDATE decision_cards SET instance = ?2, card = ?3, revision = revision + 1 \
-                     WHERE seq = ?1",
-                    params![seq, instance, card],
-                )?;
-            }
-            None => {
-                tx.execute(
-                    "INSERT INTO decision_cards (dedup_key, kind, flow_id, version, run_id, \
-                     position, call_key, instance, card, state, created_at) \
-                     VALUES (?1, 'reconcile', ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', ?9)",
-                    params![
-                        key,
-                        flow_id,
-                        i64::from(version),
-                        run_id,
-                        pos(position)?,
-                        row.idempotency_key,
-                        instance,
-                        card,
-                        now_ms
-                    ],
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Writes the re-enable card intent for a flow the runtime has just
 /// disabled, in the transaction that disabled it, so the rule's numbers as
 /// they were when it tripped are kept with the disable. Each auto-disable
@@ -724,27 +611,9 @@ pub fn stands(conn: &Connection, card: &DecisionRecord) -> Result<bool> {
                 None => Ok(false),
             }
         }
-        (DecisionKind::Reconcile, Some(run_id), Some(position)) => {
-            let state: Option<String> = conn
-                .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id], |r| {
-                    r.get(0)
-                })
-                .optional()?;
-            if state.as_deref() != Some(RunState::NeedsReconcile.as_str()) {
-                return Ok(false);
-            }
-            let attempts: Option<i64> = conn
-                .query_row(
-                    "SELECT attempts FROM journal WHERE run_id = ?1 AND position = ?2",
-                    params![run_id, pos(position)?],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            Ok(
-                journal::unknown_positions(conn, run_id)?.contains(&position)
-                    && attempts.and_then(|a| u64::try_from(a).ok()) == Some(card.instance),
-            )
-        }
+        (DecisionKind::Reconcile, Some(_), Some(_)) => Err(CoreError::Invalid(
+            "reconciliation requires the recovered run registry".into(),
+        )),
         (DecisionKind::Reenable, None, None) => {
             let disabled_by_runtime: bool = conn.query_row(
                 "SELECT EXISTS (SELECT 1 FROM flows WHERE flow_id = ?1 AND state = 'disabled' \
@@ -765,24 +634,6 @@ pub fn stands(conn: &Connection, card: &DecisionRecord) -> Result<bool> {
             card.seq
         ))),
     }
-}
-
-/// Open cards whose latest revision core has not accepted and whose
-/// decision still stands: what the raiser sends.
-pub fn due(conn: &Connection) -> Result<Vec<DecisionRecord>> {
-    let open = select(
-        conn,
-        "WHERE state = 'open' AND (raised_revision IS NULL OR raised_revision < revision) \
-         ORDER BY seq",
-        [],
-    )?;
-    let mut due = Vec::new();
-    for card in open {
-        if stands(conn, &card)? {
-            due.push(card);
-        }
-    }
-    Ok(due)
 }
 
 /// Records that core accepted `revision` of a card under `elicitation_id`.
@@ -926,7 +777,7 @@ pub fn answer_on(
         .find(|o| o.decline)
         .map(|o| o.id.as_str())
         .unwrap_or_default();
-    let mut woke = None;
+    let woke = None;
     let state = match answer.choice.as_deref() {
         None => {
             audit("decision.expired", &card.dedup_key)?;
@@ -961,7 +812,7 @@ pub fn answer_on(
             audit("decision.stale", &card.dedup_key)?;
             CardState::Stale
         }
-        Some(choice) => {
+        Some(_) => {
             match (card.kind, &card.run_id, card.position) {
                 (DecisionKind::GrantLost, _, None) => {
                     let DecisionContext::GrantLost {
@@ -973,23 +824,10 @@ pub fn answer_on(
                     crate::grant_loss::check_now(tx, &card.flow_id, &provider, &grant, now_ms)?;
                     audit("grant.check_now", &card.dedup_key)?;
                 }
-                (DecisionKind::Reconcile, Some(run_id), Some(position)) => {
-                    let resolution = match choice {
-                        NOT_APPLIED => Resolution::NotApplied,
-                        APPLIED => Resolution::ReconciledAsApplied,
-                        _ => Resolution::Cancel,
-                    };
-                    let after = reconcile::resolve(
-                        tx,
-                        run_id,
-                        position,
-                        &resolution,
-                        OPERATOR_ACTOR,
-                        Some(&answer.elicitation_id),
-                    )?;
-                    if after == RunState::Pending {
-                        woke = Some(run_id.clone());
-                    }
+                (DecisionKind::Reconcile, Some(_), Some(_)) => {
+                    return Err(CoreError::Invalid(
+                        "reconciliation requires the recovered run registry".into(),
+                    ));
                 }
                 _ => {
                     install::enable(tx, &card.flow_id, now_ms).map_err(|e| match e {
@@ -1163,17 +1001,13 @@ impl Runtime {
         })
     }
 
-    /// Brings the reconcile card intents up to date and returns the cards
-    /// to raise, in one transaction.
+    /// Returns current registry-backed decision cards after durable refresh.
     pub fn decisions_due(&self) -> Result<Vec<DecisionRecord>> {
-        let now = self.config().clock.now_ms();
-        if let Some(hosts) = &self.shared.staged_hosts {
-            return hosts.decisions_due(now);
-        }
-        self.store().write(|tx| {
-            refresh(tx, now)?;
-            due(tx)
-        })
+        self.shared
+            .staged_hosts
+            .as_ref()
+            .expect("recovered run registry")
+            .decisions_due(self.config().clock.now_ms())
     }
 
     /// Records that core accepted a card's revision.
@@ -1191,12 +1025,12 @@ impl Runtime {
         decision: &DecisionAnswer,
     ) -> Result<Answered> {
         let now = self.config().clock.now_ms();
-        let (answered, woke) = if let Some(hosts) = &self.shared.staged_hosts {
-            hosts.answer_decision(path, decision, now)?
-        } else {
-            self.store()
-                .write(|tx| answer_on(tx, path, decision, now))?
-        };
+        let (answered, woke) = self
+            .shared
+            .staged_hosts
+            .as_ref()
+            .expect("recovered run registry")
+            .answer_decision(path, decision, now)?;
         self.shared.signal.bump();
         if let Some(run_id) = woke {
             self.wake(&run_id);

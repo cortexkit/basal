@@ -4,10 +4,10 @@ use crate::error::Result;
 use basal_host::flow_refusal::FlowRefusal;
 use rusqlite::{Transaction, params};
 
-const LIVE_RUN_VERSIONS_SQL: &str = "SELECT DISTINCT flow_version FROM runs WHERE flow_id=?1 AND state IN ('pending','running','suspended','needs_reconcile') AND flow_version IS NOT NULL";
-// CROSS JOIN keeps runs on the left: SQLite first restricts work to this flow,
-// then looks up its Broca calls by run_id instead of scanning all pending calls.
-const PENDING_MODEL_VERSIONS_SQL: &str = "SELECT DISTINCT r.flow_version FROM runs r CROSS JOIN broca_calls b WHERE r.flow_id=?1 AND b.run_id=r.run_id AND r.flow_version IS NOT NULL AND json_extract(b.snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(b.snapshot,'$.deferred'),0)=0";
+const LIVE_RUN_VERSIONS_SQL: &str = "SELECT DISTINCT flow_version FROM live_runs WHERE flow_id=?1";
+// CROSS JOIN restricts identities to the flow before looking up saved calls.
+const PENDING_MODEL_VERSIONS_SQL: &str = "SELECT DISTINCT r.flow_version FROM run_identities r CROSS JOIN broca_calls b WHERE r.flow_id=?1 AND b.run_id=r.run_id AND json_extract(b.snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(b.snapshot,'$.deferred'),0)=0";
+const OPEN_OBLIGATION_VERSIONS_SQL: &str = "SELECT DISTINCT h.flow_version FROM run_history h JOIN obligations o USING(run_id) WHERE h.flow_id=?1 AND o.state<>'settled'";
 
 impl crate::runtime::Runtime {
     pub(crate) fn configure_flow_version(
@@ -45,7 +45,7 @@ impl crate::runtime::Runtime {
             .flow_routes
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let mut live = self.store().read(|c| {
+        let live = self.store().read(|c| {
             let mut live = std::collections::HashSet::new();
             let installed = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM flows WHERE flow_id=?1 AND removed=0)",
@@ -61,9 +61,11 @@ impl crate::runtime::Runtime {
                     approved.version,
                 ));
             }
-            let versions = if self.uses_run_log() {
-                ["SELECT DISTINCT flow_version FROM live_runs WHERE flow_id=?1", "SELECT DISTINCT r.flow_version FROM run_identities r CROSS JOIN broca_calls b WHERE r.flow_id=?1 AND b.run_id=r.run_id AND json_extract(b.snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(b.snapshot,'$.deferred'),0)=0"]
-            } else { [LIVE_RUN_VERSIONS_SQL,PENDING_MODEL_VERSIONS_SQL] };
+            let versions = [
+                LIVE_RUN_VERSIONS_SQL,
+                PENDING_MODEL_VERSIONS_SQL,
+                OPEN_OBLIGATION_VERSIONS_SQL,
+            ];
             for sql in versions {
                 for version in c.prepare(sql)?.query_map([flow], |r| r.get::<_, u32>(0))? {
                     live.insert(basal_host::flow_scope::flow_route_key(flow, version?));
@@ -71,25 +73,10 @@ impl crate::runtime::Runtime {
             }
             Ok(live)
         })?;
-        // Read dispatch ownership after durable liveness. A cancellation may
-        // have ended a run while its provider thread still owns the route.
-        // Registration can run under the store writer, so the in-flight mutex
-        // must not be held while querying SQLite.
-        for route in self
-            .shared
-            .inflight
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-        {
-            if route.flow_id == flow
-                && let Some(version) = route.version
-            {
-                live.insert(basal_host::flow_scope::flow_route_key(flow, version));
-            }
-        }
-        // Configuration is serialized with retirement, but daemon closes hold
-        // neither the store nor the dispatch mutex.
+        // RunStore::close_impl drains every dispatch entrant before the terminal
+        // transaction removes live_runs. No entrant can outlive its live row.
+        // After close, obligations and unacknowledged Broca calls retain routes.
+        // Route configuration is serialized here; host calls hold no SQLite lock.
         self.shared.host.retain_flow_routes(flow, &live);
         Ok(())
     }

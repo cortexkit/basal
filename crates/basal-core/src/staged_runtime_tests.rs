@@ -275,11 +275,19 @@ fn staged_runtime_admits_executes_and_reads_without_execution_rows() {
     f.rt.store()
         .read(|c| {
             assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get::<_, u64>(0))?,
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name='runs'",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?,
                 0
             );
             assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM journal", [], |r| r.get::<_, u64>(0))?,
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name='journal'",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?,
                 0
             );
             assert_eq!(
@@ -431,7 +439,7 @@ fn retained_projection_does_not_count_an_install_gate_deferral_as_an_activation(
 }
 
 #[test]
-fn ordinary_constructor_creates_neither_run_log_nor_rig_projection() {
+fn ordinary_constructor_recovers_run_log_without_rig_projection() {
     let root = crate::test_support::timestamp_scratch("staged-runtime", "ordinary");
     let store = Arc::new(Store::open(root.join("store.db"), Durability::throwaway()).unwrap());
     let rt = Runtime::new(
@@ -441,10 +449,119 @@ fn ordinary_constructor_creates_neither_run_log_nor_rig_projection() {
         Arc::new(NoHooks),
         None,
         Config::default(),
+    )
+    .expect("runtime startup");
+    assert!(rt.uses_run_log());
+    assert!(root.join("run-log").exists());
+    rt.store()
+        .read(|c| {
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'rig_%'",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn owner_lost_worker_is_reaped_before_close_can_drain() {
+    use crate::channel::{ChannelError, WorkerReceiver};
+    use std::sync::mpsc;
+
+    struct HeldKill {
+        peer: ScriptedWorker,
+        killing: mpsc::Sender<()>,
+        release: Option<mpsc::Receiver<()>>,
+    }
+    impl WorkerChannel for HeldKill {
+        fn welcome(&self) -> &basal_proto::Welcome {
+            self.peer.welcome()
+        }
+        fn send(&mut self, _: &ParentMessage) -> std::result::Result<(), ChannelError> {
+            panic!("a stale lease must not start an activation")
+        }
+        fn recv(&mut self, _: Duration) -> std::result::Result<WorkerMessage, ChannelError> {
+            panic!("a stale lease must not read worker messages")
+        }
+        fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
+            panic!("a stale lease must not start a receiver")
+        }
+        fn kill(&mut self) {
+            if let Some(release) = self.release.take() {
+                self.killing.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(30)).unwrap();
+            }
+            self.peer.kill();
+        }
+    }
+
+    let f = Fixture::new(true);
+    f.install("kill-order", 1, json!({}));
+    let id = f.admit("kill-order", "first");
+    let lease = f.rt.staged_claim(&id).unwrap().unwrap();
+    f.rt.take_over(&id, lease.generation).unwrap();
+    let (killing, kill_began) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let driver = {
+        let rt = f.rt.clone();
+        std::thread::spawn(move || {
+            rt.staged_drive(
+                lease,
+                &mut HeldKill {
+                    peer: ScriptedWorker::new(vec![]),
+                    killing,
+                    release: Some(released),
+                },
+            )
+        })
+    };
+    kill_began.recv_timeout(Duration::from_secs(30)).unwrap();
+    // Hold kill before the worker has stopped. The map is the close driver's
+    // gate to entrant draining, not just a list of activation threads.
+    let registered =
+        f.rt.shared
+            .staged_workers
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(run, _)| run == &id);
+    let (stopped, stop_finished) = mpsc::channel();
+    let stopper = {
+        let rt = f.rt.clone();
+        let id = id.clone();
+        std::thread::spawn(move || {
+            let services = Services {
+                shared: Arc::downgrade(&rt.shared),
+                config: rt.config.clone(),
+                acknowledgements: Default::default(),
+                audit_actor: None,
+            };
+            stopped.send(services.stop_worker(&id)).unwrap();
+        })
+    };
+    let before_reap = stop_finished.recv_timeout(Duration::from_millis(100));
+    release.send(()).unwrap();
+    assert_eq!(driver.join().unwrap(), ActivationEnd::OwnerLost);
+    if before_reap.is_err() {
+        stop_finished
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+    }
+    stopper.join().unwrap();
+    assert!(
+        registered,
+        "close could begin draining while worker.kill was still in progress"
     );
-    assert!(!rt.uses_run_log());
-    assert!(!root.join("run-log").exists());
-    rt.store().read(|c| { assert_eq!(c.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'rig_%' OR name='run_history'",[],|r|r.get::<_,u64>(0))?,0); Ok(()) }).unwrap();
+    assert!(
+        before_reap.is_err(),
+        "stop_worker returned before the worker was reaped"
+    );
 }
 
 fn target(position: u64) -> WorkerMessage {
@@ -987,14 +1104,8 @@ fn event_body_retry_deadline_and_engine_timers_read_registry_records() {
         f.rt.run(&id).unwrap().error_kind.as_deref(),
         Some("flow_audience_unavailable")
     );
-    f.rt.store()
-        .read(|c| {
-            assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM event_body_journal", [], |r| r
-                    .get::<_, u64>(0))?,
-                0
-            );
-            Ok(())
-        })
-        .unwrap();
+    assert!(
+        f.rt.fixture_state(&id).is_err(),
+        "closed runs retain no event-body actor"
+    );
 }

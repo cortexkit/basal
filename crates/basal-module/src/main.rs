@@ -108,16 +108,19 @@ fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Readiness callbacks must not keep a failed attempt's leased store alive.
     struct Models {
-        store: Arc<basal_core::broca::BrocaStore>,
-        host: Arc<basal_host::broca::BrocaHost>,
+        store: std::sync::Weak<basal_core::broca::BrocaStore>,
+        host: std::sync::Weak<basal_host::broca::BrocaHost>,
         wake: Arc<basal_host::broca::subc::PollWake>,
-        selector: Arc<dyn basal_host::selector::ModelSelector>,
     }
     let models = Arc::new(Mutex::new(None::<Models>));
     let scope_connection = basal_module::scope_connection::ScopeConnection::default();
     let host_scope_connection = scope_connection.clone();
-    let configured_models = models.clone();
+    let selector = Arc::new(basal_host::selector::RoutingSelector::new(
+        transport.clone(),
+    ));
+    let configured_selector = selector.clone();
     let built_models = models.clone();
     let initialized_models = models.clone();
     let ready_models = models;
@@ -129,18 +132,14 @@ fn serve() -> ExitCode {
     tracing::info!("basal module starting");
     let daemon_capabilities = Arc::new(basal_host::subc_catalog::DaemonCapabilities::default());
     let catalog_capabilities = daemon_capabilities.clone();
+    let startup_store_path_cell = store_path_cell.clone();
     let handler = BasalHandler::new(
         Box::new(move |store_path| {
             let _ = configured_store.set(store_path.clone());
             production_config(
                 store_path,
                 Config {
-                    selector: configured_models
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .as_ref()
-                        .map(|m| m.selector.clone())
-                        .unwrap_or_else(|| Arc::new(basal_host::selector::UnconfiguredSelector)),
+                    selector: configured_selector.clone(),
                     ..Config::default()
                 },
                 pool.clone(),
@@ -156,9 +155,7 @@ fn serve() -> ExitCode {
                 SubcCatalog::new(transport.clone())
                     .with_daemon_capabilities(catalog_capabilities.clone()),
             );
-            let selector = Arc::new(basal_host::selector::RoutingSelector::new(
-                transport.clone(),
-            ));
+            let selector = selector.clone();
             let store = Arc::new(basal_core::broca::BrocaStore::default());
             let wake = basal_host::broca::subc::PollWake::new();
             let broca_transport =
@@ -177,10 +174,9 @@ fn serve() -> ExitCode {
                 selector.clone(),
             ));
             *built_models.lock().unwrap_or_else(|p| p.into_inner()) = Some(Models {
-                store,
-                host: model_host.clone(),
+                store: Arc::downgrade(&store),
+                host: Arc::downgrade(&model_host),
                 wake,
-                selector,
             });
             Hosts {
                 transport: transport.clone(),
@@ -191,12 +187,13 @@ fn serve() -> ExitCode {
                 )),
                 catalog,
                 consent: Arc::new(CingulateConsent::new(transport).with_polling()),
-                hooks: runtime_hooks(&store_path_cell),
+                hooks: Arc::new(NoHooks),
             }
         }),
     )
     .with_daemon_capabilities(daemon_capabilities)
-    .with_store_initializer(Box::new(move |shared| {
+    .with_startup_hooks(Box::new(move || runtime_hooks(&startup_store_path_cell)))
+    .with_store_initializer(Box::new(move |_shared, recovered| {
         // Store::open has created the private data directory by this point. Write the
         // catalog before the handler becomes ready.
         if let Some(store_path) = initialized_store_path.get() {
@@ -212,7 +209,12 @@ fn serve() -> ExitCode {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
         {
-            models.store.bind(shared).map_err(|e| e.to_string())?;
+            models
+                .store
+                .upgrade()
+                .ok_or_else(|| "model store was dropped before binding".to_owned())?
+                .bind_recovered(&recovered)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }))
@@ -222,8 +224,9 @@ fn serve() -> ExitCode {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
+            && let Some(host) = models.host.upgrade()
         {
-            models.wake.start(&models.host);
+            models.wake.start(&host);
         }
     }));
     match run(handler, scope_connection) {

@@ -188,6 +188,15 @@ impl<R: RunRecords> Run<R> {
             },
         )
     }
+    pub(crate) fn close_busy(&self) -> Result<bool> {
+        match self.closer.try_lock() {
+            Ok(_) => Ok(false),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(true),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                Err(CoreError::Corrupt("run closer lock poisoned".into()))
+            }
+        }
+    }
     pub fn routing(&self) -> Routing {
         match self.routing.load(Ordering::Acquire) {
             0 => Routing::Open,
@@ -523,6 +532,8 @@ impl<R: RunRecords> Activation<'_, R> {
 
 pub struct RunStore<R> {
     retain_detail: std::sync::atomic::AtomicBool,
+    #[cfg(any(test, feature = "test-support"))]
+    rig_projection: std::sync::atomic::AtomicBool,
     registry: Mutex<BTreeMap<String, Arc<Run<R>>>>,
     flows: Mutex<BTreeMap<String, Arc<Ordered<Accounting>>>>,
     committer: committer::Committer,
@@ -530,9 +541,15 @@ pub struct RunStore<R> {
 }
 
 impl RunStore<crate::run_records::Records> {
+    /// Ephemeral dry-run inspection keeps closed actor snapshots in memory.
+    /// It never enables the test-only SQLite rig projection.
+    pub(crate) fn retain_for_scratch(&self) {
+        self.retain_detail.store(true, Ordering::Release);
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn retain_detail_for_test(&self, store: Arc<Store>) -> Result<()> {
         crate::rig_projection::create(&store)?;
+        self.rig_projection.store(true, Ordering::Release);
         self.retain_detail.store(true, Ordering::Release);
         for run in self.snapshot() {
             run.actor.lock().records.retain_detail(store.clone())?;
@@ -542,7 +559,7 @@ impl RunStore<crate::run_records::Records> {
 
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn retains_detail(&self) -> bool {
-        self.retain_detail.load(Ordering::Acquire)
+        self.rig_projection.load(Ordering::Acquire)
     }
     /// Copy replay anchors without holding an actor while the writer enters
     /// SQLite. A concurrent snapshot can only advance an anchor, so the earlier
@@ -591,6 +608,8 @@ impl<R: RunRecords> RunStore<R> {
     ) -> Self {
         Self {
             retain_detail: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            rig_projection: std::sync::atomic::AtomicBool::new(false),
             registry: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
             committer: committer::Committer::with_log(store, hooks, Some(log.clone())),
@@ -601,6 +620,8 @@ impl<R: RunRecords> RunStore<R> {
     pub fn new_staged(store: Arc<Store>, hooks: Arc<dyn Hooks>) -> Self {
         Self {
             retain_detail: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            rig_projection: std::sync::atomic::AtomicBool::new(false),
             registry: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
             committer: committer::Committer::new(store, hooks),
@@ -713,6 +734,48 @@ impl<R: RunRecords> RunStore<R> {
             .clone();
         let accounting = accounting.lock();
         store.read(|conn| f(conn, &accounting.runs))
+    }
+    /// Hold the requested flows in sorted order through one SQLite snapshot.
+    /// The locks form one accounting rank: callers must not acquire any other
+    /// accounting lock until the entire batch has been released.
+    pub(crate) fn accounting_read_many<T>(
+        &self,
+        flow_ids: &[&str],
+        store: &Store,
+        f: impl FnOnce(
+            &rusqlite::Connection,
+            &BTreeMap<String, &BTreeMap<String, Vec<Reservation>>>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        let accounting: Vec<_> = {
+            let mut flows = self.flows.lock().unwrap();
+            flow_ids
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .map(|flow| {
+                    let lock = flows
+                        .entry(flow.into())
+                        .or_insert_with(|| {
+                            Arc::new(Ordered::new(Accounting::default(), Lock::Accounting))
+                        })
+                        .clone();
+                    (flow.to_owned(), lock)
+                })
+                .collect()
+        };
+        let _order = lock_order::enter(Lock::Accounting);
+        let guards: Vec<_> = accounting
+            .iter()
+            .map(|(_, lock)| lock.raw.lock().unwrap_or_else(|p| p.into_inner()))
+            .collect();
+        let runs = accounting
+            .iter()
+            .zip(&guards)
+            .map(|((flow, _), guard)| (flow.clone(), &guard.runs))
+            .collect();
+        store.read(|conn| f(conn, &runs))
     }
     pub fn close(
         &self,

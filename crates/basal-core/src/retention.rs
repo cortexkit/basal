@@ -21,7 +21,7 @@
 //! retention interval: every maintenance pass removes the ones whose write
 //! is no longer running in this process ([`Runtime::sweep_fs_temps`]).
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::params;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
@@ -31,7 +31,6 @@ use std::time::Duration;
 
 use basal_host::builtins::fs::{self as host_fs, TempHold, TempLease, TempLedger};
 
-use crate::admission::trigger_key;
 use crate::error::Result;
 use crate::runtime::{Runtime, Shared};
 
@@ -69,235 +68,14 @@ fn millis(duration: Duration) -> i64 {
     i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
-// Kept in SQL so permanently unsettled old runs do not consume every slot
-// of the bounded candidate batch and starve later, prunable runs.
-pub(crate) const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM journal j WHERE j.run_id=r.run_id AND j.settlement IS NULL \
-    AND NOT EXISTS (SELECT 1 FROM mailbox m WHERE m.run_id=j.run_id AND m.position=j.position) \
-    AND NOT EXISTS (SELECT 1 FROM quarantine q WHERE q.run_id=j.run_id AND q.position=j.position AND q.reason='run_cancelled')) \
-    OR EXISTS (SELECT 1 FROM token_ledger t WHERE t.run_id=r.run_id AND t.state='reserved') \
-    OR EXISTS (SELECT 1 FROM decision_cards d WHERE d.run_id=r.run_id AND d.state='open') \
-    OR EXISTS (SELECT 1 FROM broca_calls b WHERE b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0) \
-    OR EXISTS (SELECT 1 FROM outbox o WHERE o.kind='refusal_committed' AND CAST(json_extract(o.body,'$.run_id') AS TEXT)=r.run_id)";
-
-// Unary + leaves the ordering unchanged, but prevents SQLite from choosing an
-// ordered full-table scan just to satisfy LIMIT. Search the age range first.
-// The templates are public constants so the query-plan tests check the exact
-// SQL this module runs, and fail if the two drift apart.
-macro_rules! candidates_sql {
-    () => {
-        "SELECT r.run_id FROM runs r WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \
-         AND r.ended_at<=?1 AND {predicate} ({OBLIGATIONS}) ORDER BY +r.run_id LIMIT {BATCH}"
-    };
-}
-/// Run candidate query template; substitutes `predicate`, `OBLIGATIONS` and `BATCH`.
-pub const CANDIDATES_SQL: &str = candidates_sql!();
-
-macro_rules! history_batch_sql {
-    () => {
-        "DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {predicate} ORDER BY +rowid LIMIT {BATCH})"
-    };
-}
-/// Bounded history deletion template; substitutes `table`, `predicate` and `BATCH`.
-pub const HISTORY_BATCH_SQL: &str = history_batch_sql!();
-
-pub(crate) const HISTORY_PREDICATES: &[(&str, &str)] = &[
-    (
-        "quarantine",
-        "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=quarantine.run_id)",
-    ),
-    (
-        "call_audit",
-        "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=call_audit.run_id)",
-    ),
-    (
-        "audit",
-        "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=audit.run_id) AND NOT EXISTS (SELECT 1 FROM decision_cards d WHERE d.elicitation_id=audit.elicitation_id AND d.state='open')",
-    ),
-    ("outbox", "delivered_at<=?1 AND kind<>'refusal_committed'"),
-    ("schedule_dropped", "at<=?1"),
-    (
-        "token_ledger",
-        "state='settled' AND settled_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=token_ledger.run_id)",
-    ),
-    (
-        "token_windows",
-        "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM token_ledger t WHERE t.flow_id=token_windows.flow_id AND t.window_ms=token_windows.window_ms AND t.window_start=token_windows.window_start AND (t.state='reserved' OR EXISTS (SELECT 1 FROM runs r WHERE r.run_id=t.run_id)))",
-    ),
-    (
-        "decision_cards",
-        "state<>'open' AND answered_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=decision_cards.run_id) AND (kind<>'reenable' OR EXISTS (SELECT 1 FROM decision_cards newer WHERE newer.kind='reenable' AND newer.flow_id=decision_cards.flow_id AND newer.instance>decision_cards.instance))",
-    ),
-];
-
-pub(crate) const RATE_WINDOWS_PREDICATE: &str = "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM call_audit a JOIN runs r USING(run_id) WHERE a.flow_id=rate_windows.flow_id AND a.at>=rate_windows.window_start AND a.at<rate_windows.window_start+rate_windows.window_ms)";
-
-fn candidates(conn: &Connection, cutoff: i64, unsettled: bool) -> Result<Vec<String>> {
-    let predicate = if unsettled { "" } else { "NOT" };
-    let mut stmt = conn.prepare(&format!(
-        candidates_sql!(),
-        predicate = predicate,
-        OBLIGATIONS = OBLIGATIONS,
-        BATCH = BATCH,
-    ))?;
-    Ok(stmt
-        .query_map([cutoff], |r| r.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-macro_rules! payload_candidates_sql {
-    () => {
-        "SELECT r.run_id FROM runs r WHERE r.state='succeeded' AND r.ended_at<=?1 \
-         AND r.payloads_pruned_at IS NULL AND NOT ({OBLIGATIONS}) ORDER BY +r.run_id LIMIT {BATCH}"
-    };
-}
-
-fn payload_candidates(conn: &Connection, cutoff: i64) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(&format!(
-        payload_candidates_sql!(),
-        OBLIGATIONS = OBLIGATIONS,
-        BATCH = BATCH,
-    ))?;
-    Ok(stmt
-        .query_map([cutoff], |r| r.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-fn tombstone_calls(tx: &Transaction, run_id: &str, now: i64) -> Result<()> {
-    tx.execute(
-        "INSERT OR IGNORE INTO tombstones (kind, key, run_id, pruned_at) \
-         SELECT 'idempotency_key', idempotency_key, run_id, ?2 FROM journal \
-         WHERE run_id = ?1 AND class IN ('mutation', 'keyed_mutation')",
-        params![run_id, now],
-    )?;
-    Ok(())
-}
-
-fn prune_payloads_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<bool> {
-    // Recheck the same obligation fence while holding the writer transaction.
-    // Only succeeded runs are pruned early. Failed runs keep their payloads
-    // until the run itself is pruned, and nonterminal runs (needs_reconcile
-    // included) are never pruned while they stay nonterminal.
-    let changed = tx.execute(
-        &format!(
-            "UPDATE runs AS r SET payloads_pruned_at=?3 WHERE r.run_id=?1 AND r.state='succeeded' \
-         AND r.ended_at<=?2 AND r.payloads_pruned_at IS NULL AND NOT ({OBLIGATIONS})"
-        ),
-        params![run_id, cutoff, now],
-    )?;
-    if changed == 0 {
-        return Ok(false);
-    }
-    tombstone_calls(tx, run_id, now)?;
-    tx.execute("DELETE FROM mailbox WHERE run_id=?1", [run_id])?;
-    tx.execute("DELETE FROM journal_payloads WHERE run_id=?1", [run_id])?;
-    tx.execute("DELETE FROM event_body_journal WHERE run_id=?1", [run_id])?;
-    // Only acknowledged snapshots can pass the fence. Deleting them also
-    // invokes the existing Broca wait/wake cleanup trigger.
-    tx.execute("DELETE FROM broca_calls WHERE run_id=?1", [run_id])?;
-    tx.execute(
-        "UPDATE meta SET value='0' WHERE key=?1",
-        [format!("journal_bytes:{run_id}")],
-    )?;
-    Ok(true)
-}
-
-fn prune_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<PruneReport> {
-    // Recheck under the write transaction: an acknowledgement or a decision
-    // card may have changed since the candidate scan released the connection.
-    let candidate = tx
-        .query_row(
-            &format!(
-                "SELECT r.flow_id,r.trigger_id,({OBLIGATIONS}),r.snapshot_id FROM runs r \
-         WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \
-         AND r.ended_at<=?1 AND r.run_id=?2"
-            ),
-            params![cutoff, run_id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, bool>(2)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((flow_id, trigger_id, unsettled, snapshot_id)) = candidate else {
-        return Ok(PruneReport::default());
-    };
-    if unsettled {
-        return Ok(PruneReport {
-            kept_unsettled: vec![run_id.to_owned()],
-            ..PruneReport::default()
-        });
-    }
-    // Tombstones outlive the run: a redelivered trigger is refused, and
-    // the run's idempotency keys stay reserved.
-    tx.execute(
-        "INSERT OR IGNORE INTO tombstones (kind, key, run_id, pruned_at) VALUES ('trigger', ?1, ?2, ?3)",
-        params![trigger_key(&flow_id, &trigger_id), run_id, now],
-    )?;
-    tombstone_calls(tx, run_id, now)?;
-    tx.execute("DELETE FROM mailbox WHERE run_id = ?1", [run_id])?;
-    tx.execute("DELETE FROM journal WHERE run_id = ?1", [run_id])?;
-    tx.execute("DELETE FROM activations WHERE run_id = ?1", [run_id])?;
-    tx.execute("DELETE FROM trigger_inbox WHERE run_id = ?1", [run_id])?;
-    tx.execute("DELETE FROM runs WHERE run_id = ?1", [run_id])?;
-    tx.execute("DELETE FROM run_snapshots WHERE snapshot_id=?1 AND NOT EXISTS(SELECT 1 FROM runs WHERE snapshot_id=?1)", [snapshot_id])?;
-    tx.execute(
-        "DELETE FROM meta WHERE key IN (?1,?2)",
-        params![
-            format!("journal_calls:{run_id}"),
-            format!("journal_bytes:{run_id}")
-        ],
-    )?;
-    Ok(PruneReport {
-        pruned: vec![run_id.to_owned()],
-        ..PruneReport::default()
-    })
-}
-
 impl Runtime {
-    /// Remove successful payloads without removing summaries or call metadata.
-    /// The age is measured from the run's end, not its admission or last call.
-    pub fn prune_payloads(&self, now_ms: i64, retention_ms: i64) -> Result<usize> {
-        if self.uses_run_log() {
-            // Successful log-backed runs have summaries only from terminal commit.
-            return Ok(0);
-        }
-        let cutoff = now_ms.saturating_sub(retention_ms);
-        let ids = self.store().read(|c| payload_candidates(c, cutoff))?;
-        let mut pruned = 0;
-        for id in ids {
-            pruned += usize::from(
-                self.store()
-                    .write(|tx| prune_payloads_in(tx, cutoff, now_ms, &id))?,
-            );
-        }
-        Ok(pruned)
+    /// Successful runs retain summaries only; no payload-pruning pass is needed.
+    pub fn prune_payloads(&self, _now_ms: i64, _retention_ms: i64) -> Result<usize> {
+        Ok(0)
     }
 
-    /// Prunes terminal runs that ended at least `retention_ms` before
-    /// `now_ms` and have no open obligation. Never touches a run that is
-    /// not terminal (`needs_reconcile` included).
     pub fn prune(&self, now_ms: i64, retention_ms: i64) -> Result<PruneReport> {
-        if self.uses_run_log() {
-            return crate::run_retention::prune(self.store(), now_ms, retention_ms);
-        }
-        let cutoff = now_ms.saturating_sub(retention_ms);
-        let ids = self.store().read(|c| candidates(c, cutoff, false))?;
-        let mut report = PruneReport {
-            kept_unsettled: self.store().read(|c| candidates(c, cutoff, true))?,
-            ..PruneReport::default()
-        };
-        for id in ids {
-            // Release the single connection between runs; a batch can never
-            // monopolize it for the whole retained history.
-            let pruned = self.store().write(|tx| prune_in(tx, cutoff, now_ms, &id))?;
-            report.pruned.extend(pruned.pruned);
-            report.kept_unsettled.extend(pruned.kept_unsettled);
-        }
-        Ok(report)
+        crate::run_retention::prune(self.store(), now_ms, retention_ms)
     }
 
     pub(crate) fn retention_due(&self, now: i64) -> Result<()> {
@@ -316,13 +94,23 @@ impl Runtime {
         }
         // Before pruning, while the journal still names the directories
         // earlier writes went to.
-        if !self.uses_run_log() {
-            self.sweep_legacy_fs_temps()?;
-        }
+        {}
         let config = &self.config.retention;
         let payloads = self.prune_payloads(now, millis(config.payloads))?;
         let runs = self.prune(now, millis(config.runs))?;
-        let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;
+        let history_full = crate::run_retention::prune_history(
+            self.store(),
+            now.saturating_sub(millis(config.history)),
+            now.saturating_sub(millis(self.config.rate.window)),
+            |flow| {
+                self.shared
+                    .staged_hosts
+                    .as_ref()
+                    .expect("recovered run registry")
+                    .registry()
+                    .audit_at(flow)
+            },
+        )?;
         let events_full = self
             .store()
             .write(|tx| crate::events::prune_receipts(tx, now))?
@@ -336,48 +124,6 @@ impl Runtime {
         };
         *next = Some(now.saturating_add(millis(interval).max(1)));
         Ok(())
-    }
-
-    fn prune_history(&self, now: i64, cutoff: i64) -> Result<bool> {
-        if let Some(hosts) = &self.shared.staged_hosts {
-            let streak = millis(self.config.rate.window).saturating_mul(i64::from(
-                self.config.rate.saturated_windows_to_disable.max(1),
-            ));
-            return crate::run_retention::prune_history(
-                self.store(),
-                cutoff,
-                cutoff.min(now.saturating_sub(streak)),
-                |flow| hosts.registry().audit_at(flow),
-            );
-        }
-        let mut full = false;
-        for &(table, predicate) in HISTORY_PREDICATES {
-            full |= self.delete_history_batch(table, predicate, cutoff)? == BATCH;
-        }
-        let streak = millis(self.config.rate.window).saturating_mul(i64::from(
-            self.config.rate.saturated_windows_to_disable.max(1),
-        ));
-        full |= self.delete_history_batch(
-            "rate_windows",
-            RATE_WINDOWS_PREDICATE,
-            cutoff.min(now.saturating_sub(streak)),
-        )? == BATCH;
-        Ok(full)
-    }
-
-    fn delete_history_batch(&self, table: &str, predicate: &str, cutoff: i64) -> Result<usize> {
-        // The names/predicates are private constants, never caller input.
-        self.store().write(|tx| {
-            Ok(tx.execute(
-                &format!(
-                    history_batch_sql!(),
-                    table = table,
-                    predicate = predicate,
-                    BATCH = BATCH
-                ),
-                [cutoff],
-            )?)
-        })
     }
 }
 
@@ -511,10 +257,6 @@ impl Drop for FsTempHold {
     }
 }
 
-/// Marks that every `fs.write` call's journaled directory has been checked
-/// once for temporary files named the way earlier versions named them.
-const LEGACY_FS_TEMPS_SWEPT: &str = "fs_temps_legacy_swept";
-
 impl Runtime {
     /// Removes every recorded `fs.write` temporary file that no write in
     /// this process holds, and its record: what a cancelled, failed or
@@ -606,58 +348,6 @@ impl Runtime {
         }
         Ok((settled, done))
     }
-
-    /// Once per store: removes temporary files earlier versions of basal
-    /// left, named `.basal-<process id>-<sequence>.tmp`, which no record
-    /// describes. Only the directories journaled `fs.write` calls wrote to
-    /// are examined, each opened and checked against the call's own roots,
-    /// and only regular files with exactly that name shape are removed.
-    /// Best effort: a directory that cannot be opened is skipped.
-    fn sweep_legacy_fs_temps(&self) -> Result<()> {
-        let done: bool = self.store().read(|c| {
-            Ok(c.query_row(
-                "SELECT EXISTS (SELECT 1 FROM meta WHERE key = ?1)",
-                [LEGACY_FS_TEMPS_SWEPT],
-                |r| r.get(0),
-            )?)
-        })?;
-        if done {
-            return Ok(());
-        }
-        let writes: Vec<(String, String)> = self.store().read(|c| {
-            let mut stmt = c.prepare(
-                "SELECT DISTINCT json_extract(request, '$.args.path'), \
-                 json_extract(request, '$.grant.roots') FROM journal_with_payloads \
-                 WHERE kind_code = ?1 AND request IS NOT NULL AND json_valid(request)",
-            )?;
-            Ok(stmt
-                .query_map([i64::from(basal_proto::Primitive::FsWrite.code())], |r| {
-                    Ok((
-                        r.get::<_, Option<String>>(0)?,
-                        r.get::<_, Option<String>>(1)?,
-                    ))
-                })?
-                .filter_map(|row| match row {
-                    Ok((Some(path), Some(roots))) => Some(Ok((path, roots))),
-                    Ok(_) => None,
-                    Err(e) => Some(Err(e)),
-                })
-                .collect::<rusqlite::Result<Vec<_>>>()?)
-        })?;
-        for (path, roots) in writes {
-            let Ok(roots) = serde_json::from_str::<Vec<String>>(&roots) else {
-                continue;
-            };
-            let _ = host_fs::remove_legacy_temps(&path, &roots);
-        }
-        self.store().write(|tx| {
-            tx.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')",
-                [LEGACY_FS_TEMPS_SWEPT],
-            )?;
-            Ok(())
-        })
-    }
 }
 
 /// A path or file name as stored in an `fs_temps` record. On Unix these are
@@ -728,97 +418,5 @@ mod os_bytes_tests {
         assert_eq!(os_bytes(&value), [0x00, 0xd8, b'a', 0x00]);
         assert_eq!(os_from_bytes(os_bytes(&value)), Some(value));
         assert_eq!(os_from_bytes(vec![b'a']), None);
-    }
-}
-
-#[cfg(test)]
-mod payload_tests {
-    use super::*;
-    use crate::{journal, model::StoredClass, runs};
-    use basal_proto::{CallKind, JsonText, Primitive, Settlement};
-
-    #[test]
-    fn payload_pruning_candidates_search_only_unpruned_age_ranges() {
-        let conn = Connection::open_in_memory().unwrap();
-        for m in crate::schema::MIGRATIONS {
-            conn.execute_batch(m.statements).unwrap();
-        }
-        let sql = format!(
-            payload_candidates_sql!(),
-            OBLIGATIONS = OBLIGATIONS,
-            BATCH = BATCH
-        );
-        let plan = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-            .unwrap()
-            .query_map([0], |r| r.get::<_, String>(3))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        assert!(
-            plan.iter()
-                .any(|line| line.contains("runs_payload_retention") && line.contains("ended_at<?")),
-            "{plan:?}"
-        );
-    }
-
-    #[test]
-    fn payload_pruning_rechecks_obligations_in_the_write_transaction() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        for m in crate::schema::MIGRATIONS {
-            conn.execute_batch(m.statements).unwrap();
-        }
-        let tx = conn.transaction().unwrap();
-        let snapshot = runs::snapshot(&tx, "f", None, &[0; 32], "return 1", "{}").unwrap();
-        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,owner,generation,admitted_at) VALUES ('r','f','t',1,'{}',?1,zeroblob(32),'running','owner',1,0)",[snapshot]).unwrap();
-        let lease = runs::Lease {
-            run_id: "r".into(),
-            owner: "owner".into(),
-            generation: 1,
-        };
-        journal::insert_call(
-            &tx,
-            &lease,
-            "f",
-            &journal::NewCall {
-                position: 0,
-                kind: &CallKind::Primitive(Primitive::Now),
-                args: &JsonText::null(),
-                class: StoredClass::Sync,
-                request: None,
-            },
-        )
-        .unwrap();
-        journal::record_sync(
-            &tx,
-            &lease,
-            0,
-            Settlement::Fulfilled,
-            &JsonText::null(),
-            None,
-        )
-        .unwrap();
-        tx.execute(
-            "UPDATE runs SET state='succeeded',owner=NULL,ended_at=0",
-            [],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-        assert_eq!(payload_candidates(&conn, 0).unwrap(), vec!["r"]);
-        let tx = conn.transaction().unwrap();
-        tx.execute("INSERT INTO outbox(at,kind,flow_id,body) VALUES (0,'refusal_committed','f','{\"run_id\":\"r\"}')",[]).unwrap();
-        assert!(!prune_payloads_in(&tx, 0, 1, "r").unwrap());
-        assert!(!journal::row(&tx, "r", 0).unwrap().unwrap().payload_pruned);
-        assert_eq!(
-            tx.query_row("SELECT count(*) FROM journal_payloads", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        tx.execute("DELETE FROM outbox", []).unwrap();
-        assert!(prune_payloads_in(&tx, 0, 1, "r").unwrap());
-        assert!(!prune_payloads_in(&tx, 0, 1, "r").unwrap());
-        tx.commit().unwrap();
     }
 }

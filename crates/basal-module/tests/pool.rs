@@ -412,7 +412,7 @@ struct KillWorkerOnFirstCall {
 
 impl Hooks for KillWorkerOnFirstCall {
     fn at(&self, run_id: &str, boundary: &Boundary) -> Step {
-        if *boundary == (Boundary::CallCommitted { position: 0 })
+        if *boundary == (Boundary::DriverSynced { position: 0 })
             && !self.done.swap(true, Ordering::SeqCst)
         {
             let killed = self.pool.get().is_some_and(|p| p.kill_for_run(run_id));
@@ -582,7 +582,8 @@ fn the_run_deadline_starts_after_the_worker_answers_its_handshake() {
     // only once the worker has answered.
     let state = f.module.rt.run(&run).expect("run");
     assert_eq!(state.state, RunState::Succeeded, "{state:#?}");
-    assert_eq!(state.deadline_at, Some(T0 + HOUR + 10_000));
+    let claim = f.module.rt.fixture_state(&run).unwrap().claim.unwrap();
+    assert_eq!(claim.deadline_at, T0 + HOUR + 10_000);
 }
 
 struct RecordedSpawner {
@@ -704,4 +705,38 @@ fn a_wait_deadline_stops_and_reaps_its_workers() {
         error,
         "timed out waiting for a deliberately stalled pool fixture"
     );
+}
+
+#[test]
+fn killed_worker_releases_pool_capacity_while_its_activation_lease_is_still_held() {
+    use basal_core::WorkerChannel;
+    let mut config = pool_config(&Options::default());
+    config.warm_spares = 0;
+    config.max_workers = 1;
+    let clock = basal_core::Clock::manual(T0);
+    let pool = Pool::new(
+        config.clone(),
+        Arc::new(ProcessSpawner::new(&config)),
+        clock,
+        Arc::default(),
+    );
+    let mut first = pool.acquire(Binding::Flow("closing".into())).unwrap();
+    assert_eq!(pool.stats().busy, 1);
+    first.kill();
+    assert_eq!(
+        pool.stats().busy,
+        0,
+        "a closing activation must not retain its dead worker's slot"
+    );
+    let second = pool.acquire(Binding::Flow("independent".into())).unwrap();
+    assert_eq!(pool.stats().busy, 1);
+    drop(first);
+    assert_eq!(
+        pool.stats().busy,
+        1,
+        "dropping the old lease must not release another worker"
+    );
+    drop(second);
+    assert_eq!(pool.stats().busy, 0);
+    pool.stop();
 }

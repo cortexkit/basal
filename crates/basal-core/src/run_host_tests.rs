@@ -78,7 +78,9 @@ struct Cut(AtomicBool);
 impl Hooks for Cut {
     fn at(&self, _: &str, boundary: &Boundary) -> Step {
         lock_order::assert_lock_free();
-        if boundary == &Boundary::HostArrived && self.0.swap(false, Ordering::SeqCst) {
+        if boundary == &(Boundary::HostArrived { position: 0 })
+            && self.0.swap(false, Ordering::SeqCst)
+        {
             Step::Crash
         } else {
             Step::Continue
@@ -324,9 +326,16 @@ fn live_matching_adopts_a_handle_without_using_activation_generation() {
     assert_eq!(arrival.cost_micros, Some(1));
     let frames = f.log.recovered();
     assert!(matches!(
-        frames[frames.len() - 2].record.body,
+        frames[frames.len() - 3].record.body,
         Body::Accepted { .. }
     ));
+    assert!(matches!(
+        frames[frames.len() - 2].record.body,
+        Body::MeasuredUsage { position: 0, .. }
+    ));
+    let report = state.calls[&0].usage_report.unwrap();
+    assert_eq!(report.input_tokens, Some(3));
+    assert_eq!(report.cache_write_tokens, Some(1));
     assert!(matches!(
         frames.last().unwrap().record.body,
         Body::Arrived(_)
@@ -576,7 +585,7 @@ pub(crate) fn closing_and_missing_obligations_are_retryable_q5_e() {
 #[test]
 pub(crate) fn arrival_before_acknowledgement_crash_recovers_the_same_outcome() {
     for boundary in Boundary::HOST {
-        assert_eq!(boundary, Boundary::HostArrived);
+        assert_eq!(boundary, Boundary::HostArrived { position: 0 });
         for closed in [false, true] {
             let f = Fixture::with_hooks(Arc::new(Cut(AtomicBool::new(true))));
             f.seed(true, closed);
@@ -654,7 +663,7 @@ pub(crate) fn arrival_before_acknowledgement_crash_recovers_the_same_outcome() {
 }
 
 #[test]
-fn broca_reads_live_registry_then_finished_history_and_leaves_the_live_fk_alone() {
+fn broca_reads_live_registry_then_finished_history_without_a_single_parent_fk() {
     let f = Fixture::new();
     f.seed(true, true);
     let broca = BrocaStore::new_staged(&f.hosts);
@@ -689,7 +698,10 @@ fn broca_reads_live_registry_then_finished_history_and_leaves_the_live_fk_alone(
             let tables = stmt
                 .query_map([], |r| r.get::<_, String>(2))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            assert!(tables.iter().any(|t| t == "journal"));
+            assert!(
+                tables.is_empty(),
+                "Broca ownership spans live and historical runs"
+            );
             Ok(())
         })
         .unwrap();

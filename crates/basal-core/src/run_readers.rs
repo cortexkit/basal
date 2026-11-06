@@ -3,6 +3,7 @@
 
 use basal_proto::{JsonText, RecordedOutcome};
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::BTreeMap;
 
 use crate::{
     CoreError, Result,
@@ -57,6 +58,11 @@ pub(crate) fn load(
     let state = snapshot
         .cloned()
         .unwrap_or_else(|| State::new(live.as_ref().map_or(0, |l| l.admitted_at)));
+    let unknown: Vec<_> = state.calls.values().filter(|c| c.arrival.is_none() && c.unknown.is_some()).take(5).map(|call| {
+        let reason = call.unknown.as_deref().and_then(crate::run_records::parse_unknown_reason);
+        let code = if reason == Some(basal_host::UnknownReason::ProviderLostRun) { "unknown_run" } else { reason.map_or("unknown", |r| r.as_str()) };
+        serde_json::json!({"position":call.identity.position,"code":code,"reason":reason.map(|r| r.as_str()),"handle":call.accepted.as_ref().map(|h| h.chars().take(256).collect::<String>())})
+    }).collect();
     let (trigger_id, trigger, admitted_at, admit_seq) = if let Some(h) = &history {
         (
             h.trigger_id.clone(),
@@ -131,8 +137,14 @@ pub(crate) fn load(
         error_kind: history
             .as_ref()
             .and_then(|h| h.error_kind.clone())
-            .or_else(|| history_lost.then(|| "history_lost".into())),
-        error_detail: history.as_ref().and_then(|h| h.error_detail.clone()),
+            .or_else(|| history_lost.then(|| "history_lost".into()))
+            .or_else(|| (!unknown.is_empty()).then(|| "unknown_outcome".into())),
+        error_detail: history
+            .as_ref()
+            .and_then(|h| h.error_detail.clone())
+            .or_else(|| {
+                (!unknown.is_empty()).then(|| serde_json::json!({"positions":unknown}).to_string())
+            }),
         broken: history
             .as_ref()
             .map_or(u32::try_from(state.broken).unwrap_or(u32::MAX), |h| {
@@ -192,27 +204,40 @@ pub(crate) fn call(call: &CallState) -> Result<CallRow> {
         handle: call.accepted.clone(),
         outcome,
         request: intent.map(|i| i.frozen_request.clone()),
-        scope_cut: false,
+        scope_cut: call.scope_cut,
         payload_pruned: false,
     })
 }
 
 pub(crate) fn calls(conn: &Connection, id: &str, snapshot: Option<&State>) -> Result<Vec<CallRow>> {
-    if let Some(state) = snapshot {
-        return state.calls.values().map(call).collect();
+    let mut calls: Vec<CallRow> = if let Some(state) = snapshot {
+        state.calls.values().map(call).collect::<Result<_>>()?
+    } else {
+        let mut stmt =
+            conn.prepare("SELECT detail FROM run_calls WHERE run_id=?1 ORDER BY position")?;
+        let rows = stmt
+            .query_map([id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|text| {
+                let state: CallState =
+                    serde_json::from_str(&text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                call(&state)
+            })
+            .collect::<Result<_>>()?
+    };
+    if calls.iter().any(|c| c.idempotency_key.is_empty()) {
+        let identity = sql::identity(conn, id)?.ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
+        for call in &mut calls {
+            if call.idempotency_key.is_empty() {
+                // Preparation may not have authorized an Intent yet. Its public
+                // key is still determined by the durable run identity/position.
+                call.idempotency_key =
+                    crate::ids::idempotency_key(&identity.flow_id, id, call.position);
+            }
+        }
     }
-    let mut stmt =
-        conn.prepare("SELECT detail FROM run_calls WHERE run_id=?1 ORDER BY position")?;
-    let rows = stmt
-        .query_map([id], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    rows.into_iter()
-        .map(|text| {
-            let state: CallState =
-                serde_json::from_str(&text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
-            call(&state)
-        })
-        .collect()
+    Ok(calls)
 }
 
 pub(crate) fn json(value: &serde_json::Value) -> Result<JsonText> {
@@ -225,58 +250,89 @@ impl crate::Runtime {
         flow: &str,
         at: i64,
     ) -> Result<Option<crate::tokens::WindowUsage>> {
+        Ok(self.log_token_usage_many(&[flow], at)?.remove(flow))
+    }
+
+    pub(crate) fn log_token_usage_many(
+        &self,
+        flow_ids: &[&str],
+        at: i64,
+    ) -> Result<BTreeMap<String, crate::tokens::WindowUsage>> {
+        let flow_ids: Vec<_> = flow_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         let states = self.log_states();
         let hosts = self.shared.staged_hosts.as_ref().unwrap();
         hosts
             .registry()
-            .accounting_read(flow, self.store(), |conn, runs| {
-                let Some(approved) = crate::install::approved(conn, flow)? else {
-                    return Ok(None);
-                };
-                let manifest = crate::manifest::Manifest::parse_stored(&approved.manifest)
-                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
-                let Some(ms) = manifest.token_window_ms() else {
-                    return Ok(None);
-                };
-                let start = crate::tokens::window_start(at, ms);
-                let key = format!("token:{ms}:{start}");
-                let mut usage = crate::tokens::window_usage(conn, flow, ms, start)?;
-                for (id, rows) in runs {
-                    for row in rows.iter().filter(|r| r.window.0 == key) {
-                        let call = states.get(id).and_then(|s| s.calls.get(&row.position));
-                        match call.and_then(|c| c.arrival.as_ref()) {
-                            Some(arrival)
-                                if arrival.usage.as_ref().is_some_and(|u| {
-                                    u.input_tokens.saturating_add(u.output_tokens) == row.amount
-                                }) =>
-                            {
-                                let measured = arrival.usage.as_ref().expect("matched usage");
-                                usage.input_tokens =
-                                    usage.input_tokens.saturating_add(measured.input_tokens);
-                                usage.output_tokens =
-                                    usage.output_tokens.saturating_add(measured.output_tokens);
+            .accounting_read_many(&flow_ids, self.store(), |conn, flows| {
+                let mut windows = crate::tokens::window_usage_many(conn, &flow_ids, at)?;
+                for (flow, usage) in &mut windows {
+                    let key = format!("token:{}:{}", usage.window_ms, usage.window_start);
+                    let Some(runs) = flows.get(flow) else {
+                        continue;
+                    };
+                    for (id, rows) in *runs {
+                        for row in rows.iter().filter(|r| r.window.0 == key) {
+                            let call = states.get(id).and_then(|s| s.calls.get(&row.position));
+                            match call.and_then(|c| c.token_usage()) {
+                                Some(measured)
+                                    if measured
+                                        .input_tokens
+                                        .saturating_add(measured.output_tokens)
+                                        == row.amount =>
+                                {
+                                    let report = call.and_then(|c| c.usage_report).unwrap_or(
+                                        crate::run_records::UsageReport {
+                                            input_tokens: Some(measured.input_tokens),
+                                            cache_write_tokens: None,
+                                            output_tokens: Some(measured.output_tokens),
+                                            cached_input_tokens: None,
+                                        },
+                                    );
+                                    usage.input_tokens = usage
+                                        .input_tokens
+                                        .saturating_add(report.input_tokens.unwrap_or(0));
+                                    usage.cache_write_tokens = usage
+                                        .cache_write_tokens
+                                        .saturating_add(report.cache_write_tokens.unwrap_or(0));
+                                    usage.output_tokens = usage
+                                        .output_tokens
+                                        .saturating_add(report.output_tokens.unwrap_or(0));
+                                    usage.cached_input_tokens = usage
+                                        .cached_input_tokens
+                                        .saturating_add(report.cached_input_tokens.unwrap_or(0));
+                                    let known = report
+                                        .input_tokens
+                                        .unwrap_or(0)
+                                        .saturating_add(report.cache_write_tokens.unwrap_or(0))
+                                        .saturating_add(report.output_tokens.unwrap_or(0));
+                                    usage.unreported_tokens = usage
+                                        .unreported_tokens
+                                        .saturating_add(row.amount.saturating_sub(known));
+                                }
+                                None if call.is_some_and(|c| c.arrival.is_some()) => {
+                                    usage.unreported_tokens =
+                                        usage.unreported_tokens.saturating_add(row.amount)
+                                }
+                                // A callback may have settled after the run state used for
+                                // this accounting read was captured.
+                                // The accounting amount is authoritative; categorize an
+                                // unmatched row as reserved rather than under-counting it.
+                                _ => usage.reserved = usage.reserved.saturating_add(row.amount),
                             }
-                            Some(arrival) if arrival.usage.is_none() => {
-                                usage.unreported_tokens =
-                                    usage.unreported_tokens.saturating_add(row.amount)
-                            }
-                            // A callback may have settled since the actor snapshot.
-                            // The accounting amount is authoritative; categorize an
-                            // unmatched row as reserved rather than under-counting it.
-                            _ => usage.reserved = usage.reserved.saturating_add(row.amount),
                         }
                     }
                 }
-                Ok(Some(usage))
+                Ok(windows)
             })
     }
 
     pub fn open_reservations(&self, id: &str) -> Result<u64> {
-        if !self.uses_run_log() {
-            return self
-                .store()
-                .read(|c| crate::tokens::open_reservations(c, id));
-        }
+        {}
         let state = self.staged_snapshot(id);
         let identity = self
             .store()
@@ -306,11 +362,7 @@ impl crate::Runtime {
     }
 
     pub fn classify_cost_spent(&self, id: &str) -> Result<f64> {
-        if !self.uses_run_log() {
-            return self
-                .store()
-                .read(|c| crate::classify_cost::spent(c, "flow", id));
-        }
+        {}
         let identity = self
             .store()
             .read(|c| sql::identity(c, id))?
@@ -333,9 +385,7 @@ impl crate::Runtime {
     }
 
     pub fn deferred_calls(&self) -> Result<Vec<(String, String, u64, i64)>> {
-        if !self.uses_run_log() {
-            return self.store().read(crate::journal::deferred_calls);
-        }
+        {}
         let mut calls = Vec::new();
         for run in self
             .shared
@@ -366,9 +416,7 @@ impl crate::Runtime {
     /// Ordered run projection for module readers. Finished triggers come from
     /// history; live execution fields come only from the registry.
     pub fn runs_for_flow(&self, flow: &str) -> Result<Vec<Run>> {
-        if !self.uses_run_log() {
-            return self.store().read(|c| crate::runs::for_flow(c, flow));
-        }
+        {}
         self.log_runs(Some(flow))
     }
 
@@ -400,10 +448,7 @@ impl crate::Runtime {
     }
 
     pub fn replay_size(&self, id: &str) -> Result<u64> {
-        if self.uses_run_log() {
-            return Ok(self.staged_snapshot(id).map_or(0, |s| s.calls.len() as u64));
-        }
-        self.store().read(|c| crate::journal::replay_size(c, id))
+        Ok(self.staged_snapshot(id).map_or(0, |s| s.calls.len() as u64))
     }
 
     pub(crate) fn log_health(&self) -> Result<crate::ops::Health> {

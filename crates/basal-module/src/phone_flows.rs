@@ -39,7 +39,7 @@ impl Module {
         let entries = self
             .rt
             .store()
-            .read(|c| entries(c, None, p.include_removed, log_reconcile.as_ref()))
+            .read(|c| entries(c, None, p.include_removed, &log_reconcile))
             .map_err(|e| self.core_error(e))?;
         let mut names = BTreeMap::new();
         let mut flows = Vec::new();
@@ -104,27 +104,21 @@ impl Module {
             return Err(invalid_params("runs must be from 1 to 50"));
         }
         let log_reconcile = self.log_reconcile_flows()?;
-        let log_runs = if self.rt.uses_run_log() {
-            Some(
-                self.rt
-                    .runs_for_flow(&p.flow_id)
-                    .map_err(|e| self.core_error(e))?,
-            )
-        } else {
-            None
-        };
+        let log_runs = self
+            .rt
+            .runs_for_flow(&p.flow_id)
+            .map_err(|e| self.core_error(e))?;
         let result = self
             .rt
             .store()
             .read(|c| {
-                let Some(mut entry) =
-                    entries(c, Some(&p.flow_id), true, log_reconcile.as_ref())?.pop()
+                let Some(mut entry) = entries(c, Some(&p.flow_id), true, &log_reconcile)?.pop()
                 else {
                     return Ok(None);
                 };
                 entry.value["manifest"] = entry.raw_manifest.clone();
                 entry.value["installs"] = json!(installs(c, &p.flow_id)?);
-                entry.value["runs"] = json!(runs(c, &p.flow_id, limit, log_runs.as_deref())?);
+                entry.value["runs"] = json!(runs(limit, &log_runs)?);
                 Ok(Some(entry))
             })
             .map_err(|e| self.core_error(e))?;
@@ -135,19 +129,15 @@ impl Module {
         Ok(entry.value)
     }
 
-    fn log_reconcile_flows(&self) -> Result<Option<std::collections::BTreeSet<String>>, OpError> {
-        if !self.rt.uses_run_log() {
-            return Ok(None);
-        }
-        Ok(Some(
-            self.rt
-                .flow_health()
-                .map_err(|e| self.core_error(e))?
-                .into_iter()
-                .filter(|f| !f.needs_reconcile.is_empty())
-                .map(|f| f.flow_id)
-                .collect(),
-        ))
+    fn log_reconcile_flows(&self) -> Result<std::collections::BTreeSet<String>, OpError> {
+        Ok(self
+            .rt
+            .flow_health()
+            .map_err(|e| self.core_error(e))?
+            .into_iter()
+            .filter(|f| !f.needs_reconcile.is_empty())
+            .map(|f| f.flow_id)
+            .collect())
     }
 
     pub(super) fn op_uninstall(&self, caller: &Caller, params: Value) -> OpResult {
@@ -220,13 +210,9 @@ fn entries(
     c: &rusqlite::Connection,
     flow_id: Option<&str>,
     include_removed: bool,
-    log_reconcile: Option<&std::collections::BTreeSet<String>>,
+    log_reconcile: &std::collections::BTreeSet<String>,
 ) -> basal_core::Result<Vec<Entry>> {
-    let reconcile_sql = if log_reconcile.is_some() {
-        "0"
-    } else {
-        "EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile')"
-    };
+    let reconcile_sql = { "0" };
     let mut statement = c.prepare(&format!(
         "SELECT f.flow_id,f.approved_version,f.state,f.removed,f.owner,f.disabled_by,f.disabled_reason,
             COALESCE(i.manifest,p.manifest),i.author,COALESCE(i.version,f.approved_version),f.package,t.params,t.expires_at,
@@ -247,7 +233,7 @@ fn entries(
         let owner = author.filter(|a| a != "operator" && a != LOCAL_AUTHOR);
         let disabled_by: Option<String> = r.get(5)?;
         let disabled_reason: Option<String> = r.get(6)?;
-        let reconcile: bool = if let Some(flows) = log_reconcile { flows.contains(&flow_id) } else { r.get(13)? };
+        let reconcile: bool = log_reconcile.contains(&flow_id);
         let state = if removed { "removed" } else if approved.is_none() { "pending_approval" } else if state == "disabled" { "disabled" } else if reconcile { "needs_reconcile" } else { "enabled" };
         Ok((json!({
             "flow_id":flow_id,"owner":owner,"version":r.get::<_,Option<u32>>(9)?,"state":state,
@@ -294,7 +280,7 @@ fn entries(
             value["trigger"] = Value::Null;
         }
         value["last_run"] = c.query_row(
-            if log_reconcile.is_some() { "SELECT ended_at,state FROM run_history WHERE flow_id=?1 ORDER BY ended_at DESC,admit_seq DESC,run_id DESC LIMIT 1" } else { "SELECT ended_at,state FROM runs WHERE flow_id=?1 AND ended_at IS NOT NULL AND state IN ('succeeded','failed','engine_mismatch','cancelled') ORDER BY ended_at DESC,admit_seq DESC,run_id DESC LIMIT 1" },
+            "SELECT ended_at,state FROM run_history WHERE flow_id=?1 ORDER BY ended_at DESC,admit_seq DESC,run_id DESC LIMIT 1",
             [&flow_id], |r| Ok(json!({"at_ms":r.get::<_,i64>(0)?,"outcome":r.get::<_,String>(1)?})),
         ).optional()?.unwrap_or(Value::Null);
         entries.push(Entry {
@@ -338,62 +324,12 @@ fn installs(c: &rusqlite::Connection, flow_id: &str) -> basal_core::Result<Vec<V
     })?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn runs(
-    c: &rusqlite::Connection,
-    flow_id: &str,
-    limit: u32,
-    log_runs: Option<&[basal_core::Run]>,
-) -> basal_core::Result<Vec<Value>> {
-    let rows = if let Some(runs) = log_runs {
-        runs.iter()
-            .rev()
-            .take(limit as usize)
-            .map(|r| {
-                (
-                    r.run_id.clone(),
-                    r.trigger.as_str().to_owned(),
-                    r.admitted_at,
-                    r.ended_at,
-                    r.state.as_str().into(),
-                    r.error_kind.clone(),
-                    r.error_detail.clone(),
-                )
-            })
-            .collect()
-    } else {
-        let mut statement = c.prepare("SELECT run_id,trigger,admitted_at,ended_at,state,error_kind,error_detail FROM runs WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC LIMIT ?2")?;
-        statement
-            .query_map(rusqlite::params![flow_id, limit], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, Option<String>>(6)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    rows.into_iter()
-        .map(|(id, trigger, at, end, outcome, kind, detail)| {
-            let trigger = parse_json(&trigger)?;
-            let label = if trigger["kind"] == "schedule" {
-                "schedule".to_owned()
-            } else if let Some(subject) = trigger["event_notice"]["subject"].as_str() {
-                basal_core::events::parse_subject_identity(subject)?
-                    .1
-                    .to_owned()
-            } else {
-                "manual".to_owned()
-            };
-            Ok(
-                json!({"run_id":id,"trigger":label,"admitted_at_ms":at,"ended_at_ms":end,
-            "outcome":outcome,"error_kind":kind,"error":detail.map(|d|one_line(&d,200))}),
-            )
-        })
-        .collect()
+fn runs(limit: u32, log_runs: &[basal_core::Run]) -> basal_core::Result<Vec<Value>> {
+    log_runs.iter().rev().take(limit as usize).map(|run| {
+        let trigger=parse_json(run.trigger.as_str())?;
+        let label=if trigger["kind"]=="schedule" {"schedule".to_owned()} else if let Some(subject)=trigger["event_notice"]["subject"].as_str(){basal_core::events::parse_subject_identity(subject)?.1.to_owned()}else{"manual".to_owned()};
+        Ok(json!({"run_id":run.run_id,"trigger":label,"admitted_at_ms":run.admitted_at,"ended_at_ms":run.ended_at,"outcome":run.state.as_str(),"error_kind":run.error_kind,"error":run.error_detail.as_ref().map(|d|one_line(d,200))}))
+    }).collect()
 }
 
 /// The longest failure line `flow.list` shows, in characters, ellipsis included.

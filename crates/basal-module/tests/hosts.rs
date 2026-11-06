@@ -969,7 +969,7 @@ fn transport_failures_reach_journal_with_safe_retries_only() {
         approve(&fake, &f.module);
         fake.enqueue(op, vec![Err(failure)]);
         let run = common::admit(&f, "host-flow", "one");
-        f.module.engine.run_until_idle(50).unwrap();
+        drive_transport_retries(&f, &run);
         assert_eq!(f.module.rt.run(&run).unwrap().state, state);
         assert_eq!(fake.calls(op).len(), sends);
         if op == "send" {
@@ -1001,7 +1001,7 @@ fn transport_failures_reach_journal_with_safe_retries_only() {
         })],
     );
     let run = common::admit(&f, "host-flow", "one");
-    f.module.engine.run_until_idle(50).unwrap();
+    drive_transport_retries(&f, &run);
     let done = f.module.rt.run(&run).unwrap();
     assert_eq!(done.state, RunState::Succeeded);
     assert_eq!(done.result.as_deref(), Some("\"provider_denied\""));
@@ -1080,22 +1080,26 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             set_core_digest_replace_key_capability(&fake, true);
         }
         let consent = Arc::new(CoreConsent::new(fake.clone()));
-        let probe = Arc::new(Probe::crash_at(
-            Point::parse(if pending_registry {
-                "CallCommitted { position: 0 }#1"
-            } else {
-                "HostAnswered { position: 0 }#1"
-            })
-            .unwrap(),
-        ));
+        let probe = Arc::new(if pending_registry {
+            Probe::recording()
+        } else {
+            Probe::crash_at(Point::parse("DriverDispatched { position: 0 }#1").unwrap())
+        });
         let mut dependencies = hosts(fake.clone(), consent.clone());
         dependencies.hooks = probe.clone();
-        let module = Module::start(
-            config.clone(),
-            dependencies,
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config.clone(),
+                dependencies,
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         let mut test_manifest = manifest();
         test_manifest["board"] = json!([{"agent":"SYNAPSE","title":"Work"}]);
         module
@@ -1124,10 +1128,20 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
                 vec![Err(WireError::NeverSent("offline".into()))],
             );
         }
-        assert!(module.engine.run_until_idle(50).is_err());
+        let initial = module.engine.run_until_idle(50);
+        if pending_registry {
+            initial.unwrap();
+            assert_eq!(module.rt.run(&run).unwrap().state, RunState::Suspended);
+            assert!(module.rt.calls(&run).unwrap()[0].request.is_none());
+            // This pre-authorization deferral is durable but has no Intent yet.
+            // Cut the store after parking; there is no Intent sync to interrupt.
+            module.rt.store().cut();
+        } else {
+            assert!(initial.is_err());
+            assert!(probe.fired());
+        }
         module.rt.quiesce();
         module.pool.stop();
-        assert!(probe.fired());
         if pending_registry {
             assert!(fake.calls("sink.board").is_empty());
             fake.enqueue(
@@ -1141,12 +1155,19 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
         consent.attach(Arc::new(Decisions::default()));
         drop(module);
         clock.set(common::T0 + 10000);
-        let module = Module::start(
-            config,
-            hosts(fake.clone(), consent.clone()),
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config,
+                hosts(fake.clone(), consent.clone()),
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         if pending_registry {
             assert!(module.rt.calls(&run).unwrap()[0].request.is_none());
         }
@@ -1159,15 +1180,9 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             let reads = fake.calls("agent.list").len();
             let retry: i64 = module
                 .rt
-                .store()
-                .read(|c| {
-                    Ok(c.query_row(
-                        "SELECT retry_not_before FROM journal WHERE run_id=?1",
-                        [&run],
-                        |r| r.get(0),
-                    )?)
-                })
-                .unwrap();
+                .fixture_deferral(&run, 0)
+                .unwrap()
+                .retry_not_before;
             clock.set(retry);
             module.engine.run_until_idle(50).unwrap();
             assert_eq!(fake.calls("agent.list").len(), reads);
@@ -1444,7 +1459,7 @@ fn operator_keyed_tools_retry_but_unfenceable_tools_do_not() {
     approve(&fake, &f.module);
     fake.enqueue("send", vec![Err(WireError::Unknown("reply lost".into()))]);
     let run = common::admit(&f, "host-flow", "one");
-    f.module.engine.run_until_idle(50).unwrap();
+    drive_transport_retries(&f, &run);
     assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
     let sent = fake.calls("send");
     assert_eq!(sent.len(), 2);
@@ -1502,7 +1517,7 @@ fn consent_refusal_codes_and_unknown_transport_are_typed() {
 struct ChangeCatalogAfterIntent(Arc<Fake>);
 impl basal_core::Hooks for ChangeCatalogAfterIntent {
     fn at(&self, _: &str, boundary: &basal_core::Boundary) -> basal_core::Step {
-        if *boundary == (basal_core::Boundary::CallCommitted { position: 0 }) {
+        if *boundary == (basal_core::Boundary::DriverSynced { position: 0 }) {
             self.0.catalog.lock().unwrap()["modules"][0]["roles"][0]["operations"][0]["kind"] =
                 json!("mutate");
         }
@@ -1610,14 +1625,18 @@ fn model_fixture(
         consent,
         hooks,
     };
-    let f = common::fixture_with_store(
+    let f = common::fixture_with_recovered(
         tag,
         common::Options {
             hosts: Some(dependencies),
             selector,
             ..common::Options::with_worker()
         },
-        |shared| snapshots.bind(shared).map_err(|e| e.to_string()),
+        |_shared, recovered| {
+            snapshots
+                .bind_recovered(&recovered)
+                .map_err(|e| e.to_string())
+        },
     );
     (f, model, fake, snapshots)
 }
@@ -1962,7 +1981,9 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
         fake::FakeBroca,
         wire::{ModelParams, RunFinishReason},
     };
-    use basal_host::selector::{FakeSelector, ModelSelection};
+    use basal_host::selector::{
+        FakeSelector, ModelOutcome, ModelSelection, ModelSelector, SelectionError, SelectionRequest,
+    };
     use basal_module::{
         dryrun::DryRunConfig,
         engine::EngineConfig,
@@ -1970,13 +1991,48 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
         pool::{PoolConfig, ProcessSpawner},
     };
     use basal_testkit::harness::{Point, Probe};
+    struct BeforeIntent {
+        inner: Arc<FakeSelector>,
+        store: Mutex<Option<Arc<basal_core::Store>>>,
+        fired: std::sync::atomic::AtomicBool,
+    }
+    impl std::fmt::Debug for BeforeIntent {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("selector before-intent cut")
+        }
+    }
+    impl ModelSelector for BeforeIntent {
+        fn select(&self, request: &SelectionRequest) -> Result<ModelSelection, SelectionError> {
+            let result = self.inner.select(request);
+            if result.is_ok()
+                && let Some(store) = self.store.lock().unwrap().take()
+            {
+                self.fired.store(true, std::sync::atomic::Ordering::SeqCst);
+                store.cut();
+            }
+            result
+        }
+        fn report_outcome(
+            &self,
+            decision: &str,
+            outcome: ModelOutcome,
+        ) -> Result<(), SelectionError> {
+            self.inner.report_outcome(decision, outcome)
+        }
+    }
     for boundary in [
-        "ModelSelected { position: 0 }#1",
-        "CallCommitted { position: 0 }#1",
-        "HostAnswered { position: 0 }#1",
+        None,
+        Some("DriverSynced { position: 0 }#1"),
+        Some("DriverDispatched { position: 0 }#1"),
     ] {
+        let before_commit = boundary.is_none();
         let dir = common::scratch("selection-cut");
         let selector = Arc::new(FakeSelector::default());
+        let selecting = Arc::new(BeforeIntent {
+            inner: selector.clone(),
+            store: Mutex::new(None),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
         let wire = Fake::new();
         let fake = Arc::new(FakeBroca::default());
         let choice = |id: &str| ModelSelection {
@@ -2004,7 +2060,7 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
             durability: Durability::throwaway(),
             runtime: Config {
                 clock: Clock::manual(common::T0),
-                selector: selector.clone(),
+                selector: selecting.clone(),
                 retry_backoff: std::time::Duration::ZERO,
                 install_gate: basal_core::InstallGate::Off,
                 ..Default::default()
@@ -2038,12 +2094,24 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
                 config.clone(),
                 dependencies,
                 Arc::new(ProcessSpawner::new(&pool)),
-                |shared| snapshots.bind(shared).map_err(|e| e.to_string()),
+                |shared, _recovered| {
+                    // The selector fixture cuts after its delegate selects but
+                    // before authorization can append an Intent. It is not a
+                    // production crash boundary or a second execution path.
+                    if before_commit && !selecting.fired.load(std::sync::atomic::Ordering::SeqCst) {
+                        *selecting.store.lock().unwrap() = Some(shared);
+                    }
+                    snapshots
+                        .bind_recovered(&_recovered)
+                        .map_err(|e| e.to_string())
+                },
             )
             .unwrap();
             (module, model, snapshots)
         };
-        let probe = Arc::new(Probe::crash_at(Point::parse(boundary).unwrap()));
+        let probe = Arc::new(boundary.map_or_else(Probe::recording, |boundary| {
+            Probe::crash_at(Point::parse(boundary).unwrap())
+        }));
         let (module, model, snapshots) = start(probe.clone());
         module.handle(&Caller::Operator,"flow.install",json!({"script":"return await llm({prompt:'x'});","manifest":model_manifest().to_string()})).unwrap();
         let card = module.rt.cards("host-flow").unwrap()[0].card_id.clone();
@@ -2059,11 +2127,14 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
             .unwrap()
             .to_owned();
         assert!(module.engine.run_until_idle(50).is_err());
-        assert!(probe.fired());
+        if before_commit {
+            assert!(selecting.fired.load(std::sync::atomic::Ordering::SeqCst));
+        } else {
+            assert!(probe.fired());
+        }
         module.rt.quiesce();
         module.pool.stop();
         assert_eq!(selector.requests.lock().unwrap().len(), 1);
-        let before_commit = boundary.starts_with("ModelSelected");
         if before_commit {
             assert!(fake.sends().is_empty());
         }
@@ -2183,4 +2254,20 @@ fn runtime_owner_notice_uses_the_core_management_carrier() {
     );
     set_core_capability(&fake, capability, false);
     assert!(!host.supports_core_capability(capability));
+}
+
+// Transport retries now return to the actor between sends. Advance only their
+// manual-clock wake times; provider-policy deferrals remain under each test.
+fn drive_transport_retries(f: &common::Fixture, run: &str) {
+    for _ in 0..=f.module.rt.config().unavailable_retries {
+        f.module.engine.run_until_idle(50).unwrap();
+        if f.module.rt.run(run).unwrap().state != RunState::Suspended {
+            return;
+        }
+        let deferred = f.module.rt.fixture_deferral(run, 0).unwrap();
+        if deferred.refund_dispatch {
+            return;
+        }
+        f.clock.set(deferred.retry_not_before);
+    }
 }

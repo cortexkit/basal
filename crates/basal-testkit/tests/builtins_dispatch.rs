@@ -118,17 +118,22 @@ impl Host for Split {
 
 fn open(world: &World, host: Arc<Split>, hooks: Arc<dyn basal_core::Hooks>) -> Runtime {
     let store = Arc::new(Store::open(world.store_path(), world.durability).expect("store"));
-    let rt = Runtime::new(
-        store,
-        host,
-        Arc::new(world.catalog.clone()),
-        hooks,
-        Some(world.source.clone()),
-        Config {
-            selector: world.selector.clone(),
-            ..config()
-        },
-    );
+    let rt = {
+        let runtime = Runtime::new(
+            store,
+            host,
+            Arc::new(world.catalog.clone()),
+            hooks,
+            Some(world.source.clone()),
+            Config {
+                selector: world.selector.clone(),
+                ..config()
+            },
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
+    };
     rt.recover().expect("recover");
     rt
 }
@@ -265,10 +270,7 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
 
     // Audit rows name the built-in and carry a digest of its arguments,
     // never the file's text.
-    let audit = rt
-        .store()
-        .read(|c| basal_core::audit::rows(c, &run_id))
-        .expect("audit");
+    let audit = rt.fixture_call_identities(&run_id).expect("audit");
     let rows: Vec<(&str, &str)> = audit
         .iter()
         .map(|r| (r.op.as_str(), r.outcome.as_str()))
@@ -285,18 +287,13 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
             ("net.fetch", "allowed"),
         ]
     );
-    let dump: String = rt
-        .store()
-        .read(|c| {
-            let mut stmt = c.prepare(
-                "SELECT quote(op) || quote(args_digest) || quote(outcome) FROM call_audit",
-            )?;
-            let all = stmt
-                .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(all.join("\n"))
-        })
-        .expect("dump");
+    let dump = rt
+        .fixture_call_identities(&run_id)
+        .unwrap()
+        .into_iter()
+        .map(|row| format!("{} {:?} {}", row.op, row.args_digest, row.outcome))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(!dump.contains("PRIVATE-FILE-TEXT"), "{dump}");
 }
 
@@ -418,7 +415,7 @@ fn recovery_reissues_queries_and_writes_and_reconciles_a_post() {
         let world = World::new("builtins-recover");
         let host = Split::new(&world);
         let probe = Arc::new(Probe::crash_at(
-            Point::parse("HostAnswered { position: 0 }#1").expect("point"),
+            Point::parse("DriverDispatched { position: 0 }#1").expect("point"),
         ));
         let rt = open(&world, host.clone(), probe.clone());
         let run_id = admit_with(&rt, &world, &script, &files.manifest());

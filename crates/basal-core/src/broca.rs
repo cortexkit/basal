@@ -19,27 +19,63 @@ pub const PENDING_IDS_SQL: &str = "SELECT send_id FROM broca_calls WHERE json_ex
 #[derive(Default)]
 pub struct BrocaStore {
     store: Mutex<Option<Arc<Store>>>,
-    registry: Option<Arc<crate::run_store::RunStore<crate::run_records::Records>>>,
+    registry: Mutex<Option<Arc<crate::run_store::RunStore<crate::run_records::Records>>>>,
 }
 impl BrocaStore {
     pub fn new(store: Arc<Store>) -> Self {
         Self {
             store: Mutex::new(Some(store)),
-            registry: None,
+            registry: Mutex::new(None),
         }
     }
     /// Use only after log recovery; attaching Broca may deliver immediately.
     pub fn new_staged(hosts: &crate::run_host::RecoveredHosts) -> Self {
         Self {
             store: Mutex::new(Some(hosts.store.clone())),
-            registry: Some(hosts.registry().clone()),
+            registry: Mutex::new(Some(hosts.registry().clone())),
         }
+    }
+    /// Bind the recovered registry before any host attaches its completion sink.
+    pub fn bind_recovered(
+        &self,
+        hosts: &crate::run_host::RecoveredHosts,
+    ) -> Result<(), BrocaError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|e| BrocaError::Store(e.to_string()))?;
+        if store
+            .as_ref()
+            .is_some_and(|s| !Arc::ptr_eq(s, &hosts.store))
+        {
+            return Err(BrocaError::Store(
+                "Broca store bound to a different writer".into(),
+            ));
+        }
+        let mut registry = self
+            .registry
+            .lock()
+            .map_err(|e| BrocaError::Store(e.to_string()))?;
+        if registry
+            .as_ref()
+            .is_some_and(|r| !Arc::ptr_eq(r, hosts.registry()))
+        {
+            return Err(BrocaError::Store("Broca registry is already bound".into()));
+        }
+        *store = Some(hosts.store.clone());
+        *registry = Some(hosts.registry().clone());
+        Ok(())
     }
     fn live_identity(
         &self,
         run_id: &str,
     ) -> Result<Option<(crate::run_store_sql::RunIdentity, Option<i64>)>, BrocaError> {
-        let Some(run) = self.registry.as_ref().and_then(|r| r.get(run_id)) else {
+        let registry = self
+            .registry
+            .lock()
+            .map_err(|e| BrocaError::Store(e.to_string()))?
+            .clone();
+        let Some(run) = registry.as_ref().and_then(|r| r.get(run_id)) else {
             return Ok(None);
         };
         match run.enter() {
@@ -128,83 +164,41 @@ impl StateStore for BrocaStore {
         &self,
         run_id: &str,
     ) -> Result<Option<basal_host::broca::FlowIdentity>, BrocaError> {
-        if self.registry.is_some() {
-            let identity = if let Some((identity, _)) = self.live_identity(run_id)? {
-                Some(identity)
-            } else {
-                self.store()?
-                    .read(|c| {
-                        if crate::run_store_sql::history(c, run_id)?.is_some() {
-                            crate::run_store_sql::identity(c, run_id)
-                        } else {
-                            Ok(None)
-                        }
-                    })
-                    .map_err(|e| BrocaError::Store(e.to_string()))?
-            };
-            return Ok(identity.map(|i| basal_host::broca::FlowIdentity {
-                flow_id: i.flow_id,
-                version: i.flow_version,
-                code_hash: crate::ids::hex(&i.code_hash),
-            }));
-        }
-        self.store()?
-            .read(|c| {
-                let run = crate::runs::load(c, run_id)?;
-                let version = run
-                    .flow_version
-                    .ok_or_else(|| CoreError::Corrupt("model run has no install version".into()))?;
-                Ok(Some(basal_host::broca::FlowIdentity {
-                    flow_id: run.flow_id.clone(),
-                    version,
-                    code_hash: crate::ids::hex(&run.code_hash),
-                }))
-            })
-            .map_err(|e| BrocaError::Store(e.to_string()))
+        let identity = if let Some((identity, _)) = self.live_identity(run_id)? {
+            Some(identity)
+        } else {
+            self.store()?
+                .read(|c| {
+                    if crate::run_store_sql::history(c, run_id)?.is_some() {
+                        crate::run_store_sql::identity(c, run_id)
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .map_err(|e| BrocaError::Store(e.to_string()))?
+        };
+        Ok(identity.map(|i| basal_host::broca::FlowIdentity {
+            flow_id: i.flow_id,
+            version: i.flow_version,
+            code_hash: crate::ids::hex(&i.code_hash),
+        }))
     }
     fn deadline(&self, run_id: &str) -> Result<Option<i64>, BrocaError> {
-        if self.registry.is_some() {
-            if let Some((_, deadline)) = self.live_identity(run_id)? {
-                return Ok(deadline);
-            }
-            // Finished flow runs have no remaining execution deadline. Broca
-            // polls them on its ended-run schedule; codemode keeps its own clock.
-            return self.store()?.read(|c| Ok(c.query_row(
-                "SELECT NULL FROM run_history h JOIN run_identities i USING(run_id) WHERE h.run_id=?1
-                 UNION ALL SELECT MIN(deadline_ms, admitted_at + COALESCE(json_extract(limits, '$.wall_ms'), deadline_ms)) + person_wait_ms FROM codemode_runs WHERE run_id=?1",
-                [run_id], |r| r.get::<_, Option<i64>>(0)).optional()?.flatten()))
-                .map_err(|e| BrocaError::Store(e.to_string()));
+        if let Some((_, deadline)) = self.live_identity(run_id)? {
+            return Ok(deadline);
         }
-        // A codemode run's deadline is its wall deadline (the scope deadline,
-        // or admission plus its wall limit if sooner) extended by the time
-        // it spent waiting on a person, as the supervisor computes it.
-        self.store()?
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT deadline_at FROM runs WHERE run_id = ?1 \
-                     UNION ALL SELECT MIN(deadline_ms, admitted_at + COALESCE(json_extract(limits, '$.wall_ms'), deadline_ms)) + person_wait_ms \
-                     FROM codemode_runs WHERE run_id = ?1",
-                    [run_id],
-                    |r| r.get::<_, Option<i64>>(0),
-                )
-                .optional()?
-                .flatten())
-            })
-            .map_err(|e| BrocaError::Store(e.to_string()))
+        // Codemode can run without constructing a flow Runtime. Read its clock
+        // from codemode_runs rather than requiring the flow-run history table.
+        self.store()?.read(|c| Ok(c.query_row("SELECT MIN(deadline_ms,admitted_at+COALESCE(json_extract(limits,'$.wall_ms'),deadline_ms))+person_wait_ms FROM codemode_runs WHERE run_id=?1",[run_id],|r|r.get::<_,Option<i64>>(0)).optional()?.flatten())).map_err(|e|BrocaError::Store(e.to_string()))
     }
     fn run_ended(&self, run_id: &str) -> Result<bool, BrocaError> {
-        if self.registry.is_some() {
-            if self.live_identity(run_id)?.is_some() {
-                return Ok(false);
-            }
-            return self.store()?.read(|c| Ok(c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM run_history h JOIN run_identities i USING(run_id) WHERE h.run_id=?1)",
-                [run_id], |r| r.get(0))?)).map_err(|e| BrocaError::Store(e.to_string()));
+        if self.live_identity(run_id)?.is_some() {
+            return Ok(false);
         }
         self.store()?
             .read(|c| {
                 Ok(c.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM runs WHERE run_id = ?1 AND state IN ('succeeded', 'failed', 'cancelled', 'engine_mismatch'))",
+                    "SELECT EXISTS(SELECT 1 FROM run_history WHERE run_id=?1)",
                     [run_id],
                     |r| r.get(0),
                 )?)
@@ -316,7 +310,8 @@ impl StateStore for BrocaStore {
                 let sql = if call.route.flow_id.as_deref() == Some(&format!("codemode:{}", call.basal_run_id)) {
                     "INSERT INTO codemode_broca_calls (send_id, run_id, position, snapshot) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(send_id) DO UPDATE SET snapshot = excluded.snapshot"
                 } else {
-                    "INSERT INTO broca_calls (send_id, run_id, position, snapshot) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(send_id) DO UPDATE SET snapshot = excluded.snapshot"
+                    { if crate::run_store_sql::identity(tx,&call.basal_run_id)?.is_none() {return Err(CoreError::NoSuchRun(call.basal_run_id.clone()));}
+                    "INSERT INTO broca_calls (send_id, run_id, position, snapshot) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(send_id) DO UPDATE SET snapshot = excluded.snapshot" }
                 };
                 tx.execute(
                     sql,

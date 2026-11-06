@@ -60,8 +60,9 @@ fn runs(rt: &Runtime) -> Vec<(String, String)> {
     rt.store()
         .read(|c| {
             let mut stmt = c.prepare(
-                "SELECT trigger_id, run_id FROM trigger_inbox WHERE flow_id = 'flow-test' \
-                 ORDER BY rowid",
+                "SELECT i.trigger_id, i.run_id FROM trigger_inbox i JOIN \
+                 (SELECT run_id,admit_seq FROM live_runs UNION ALL SELECT run_id,admit_seq FROM run_history) r USING(run_id) \
+                 WHERE i.flow_id = 'flow-test' ORDER BY r.admit_seq",
             )?;
             let rows = stmt
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?

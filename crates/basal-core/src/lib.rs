@@ -34,7 +34,7 @@
 //! supplies real processes.
 
 pub mod admission;
-pub mod audit;
+
 pub mod authorize;
 pub mod broca;
 pub mod cards;
@@ -43,7 +43,10 @@ pub mod classify_cost;
 pub mod clock;
 pub mod codemode;
 pub mod decisions;
-pub mod driver;
+mod dry_run_runtime;
+mod preparation;
+pub use dry_run_runtime::ScratchRuntime;
+mod driver;
 pub mod dry_run_text;
 pub mod error;
 pub mod events;
@@ -58,7 +61,6 @@ pub mod hooks;
 pub mod ids;
 pub mod install;
 pub mod install_policy;
-pub mod journal;
 pub mod kv;
 pub mod maintenance;
 pub mod manifest;
@@ -68,26 +70,32 @@ pub mod owner_notice;
 pub mod packages;
 pub mod rate;
 pub mod reconcile;
+mod refusal_receipt;
 pub mod retention;
 mod revocation;
 #[cfg(any(test, feature = "test-support"))]
 mod rig_projection;
 pub mod run_admission;
+pub mod run_cutover;
 pub mod run_decisions;
 pub mod run_driver;
 pub mod run_host;
 pub mod run_log;
 mod run_readers;
 pub mod run_records;
+mod run_removal;
 mod run_retention;
 pub mod run_store;
 pub mod run_store_sql;
 pub mod runs;
 pub mod runtime;
 pub mod schedule;
+#[path = "run_cutover/schema.rs"]
 pub mod schema;
 mod secret_revocation;
 mod staged_runtime;
+#[cfg(any(test, feature = "test-support"))]
+pub use staged_runtime::fixtures::CallInspection;
 pub mod state_epoch;
 pub mod store;
 mod stored_secret;

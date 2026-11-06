@@ -208,14 +208,15 @@ impl Scan {
         let path = path
             .canonicalize()
             .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        if self.dropped_tables && migration_path(&path) {
-            return;
-        }
+
         if !self.visited.insert((path.clone(), test)) {
             return;
         }
         let source = fs::read_to_string(&path).unwrap();
-        if self.dropped_tables && path.extension().is_some_and(|ext| ext == "sql") {
+        if path.extension().is_some_and(|ext| ext == "sql") {
+            if test {
+                return;
+            }
             self.sql(
                 &path,
                 &source,
@@ -335,29 +336,37 @@ impl Scan {
                 index = item_end + 1;
                 continue;
             }
+            if !test
+                && self.dropped_tables
+                && !migration_path(path)
+                && token.text == "pragma_update"
+                && let Some(args) = tokens.get(index + 1).filter(|t| t.group == Some('('))
+            {
+                for name in args
+                    .inner
+                    .iter()
+                    .filter(|t| t.string && matches!(t.text.as_str(), "journal_mode" | "page_size"))
+                {
+                    self.report(
+                        path,
+                        source,
+                        name,
+                        "SQLite layout maintenance outside cutover/fresh initialization",
+                    );
+                }
+            }
             if !test && token.string {
                 self.sql(path, source, token, function);
             }
-            if !test
-                && self.dropped_tables
-                && token.text == "include_str"
+            if token.text == "include_str"
                 && tokens.get(index + 1).is_some_and(|t| t.text == "!")
                 && let Some(args) = tokens.get(index + 2).filter(|t| t.group == Some('('))
                 && let Some(file) = args.inner.first().filter(|t| t.string)
             {
-                self.file(&path.parent().unwrap().join(&file.text), false);
+                self.file(&path.parent().unwrap().join(&file.text), test);
             }
             if !test && !self.dropped_tables {
-                if token.text == "use"
-                    && import_contains_kv(header)
-                    && !(path.ends_with("basal-core/src/driver.rs")
-                        && function.is_empty()
-                        && header
-                            .iter()
-                            .map(|t| t.text.as_str())
-                            .eq(["use", "crate", ":", ":", "kv"]))
-                    && !safe_kv_import(header)
-                {
+                if token.text == "use" && import_contains_kv(header) && !safe_kv_import(header) {
                     self.report(
                         path,
                         source,
@@ -382,19 +391,12 @@ impl Scan {
                 {
                     let member = tokens.get(index + 3).map(|t| t.text.as_str());
                     if !matches!(member, Some("KvLimits" | "is_kv" | "rejection")) {
-                        if member == Some("apply")
-                            && path.ends_with("basal-core/src/driver.rs")
-                            && matches!(function, "recover_calls" | "commit_local_call")
-                        {
-                            self.run_calls += 1;
-                        } else {
-                            self.report(
-                                path,
-                                source,
-                                token,
-                                "kv reader path outside the audited run driver",
-                            );
-                        }
+                        self.report(
+                            path,
+                            source,
+                            token,
+                            "kv reader path outside the audited log-backed driver",
+                        );
                     }
                 }
             }
@@ -407,28 +409,47 @@ impl Scan {
 
     fn sql(&mut self, path: &Path, source: &str, token: &Token, function: &str) {
         if self.dropped_tables {
+            if migration_path(path) {
+                return;
+            }
             let words = sql_words(&token.text);
-            let sql = words.len() == 1
-                || words.iter().any(|w| {
-                    matches!(
-                        w.as_str(),
-                        "select"
-                            | "from"
-                            | "join"
-                            | "insert"
-                            | "update"
-                            | "delete"
-                            | "table"
-                            | "view"
-                            | "trigger"
-                    )
-                });
+            let sql = words.first().is_some_and(|w| {
+                matches!(
+                    w.as_str(),
+                    "select"
+                        | "from"
+                        | "join"
+                        | "insert"
+                        | "update"
+                        | "delete"
+                        | "create"
+                        | "drop"
+                        | "alter"
+                        | "with"
+                        | "pragma"
+                        | "vacuum"
+                        | "exists"
+                        | "where"
+                        | "union"
+                        | "order"
+                        | "returning"
+                )
+            });
             if sql {
                 self.checked_sql += 1;
-                if let Some(table) = words
-                    .iter()
-                    .find(|word| DROPPED_TABLES.contains(&word.as_str()))
+                if words.iter().any(|w| w == "vacuum")
+                    || words.windows(2).any(|p| {
+                        p[0] == "pragma" && matches!(p[1].as_str(), "page_size" | "journal_mode")
+                    })
                 {
+                    self.report(
+                        path,
+                        source,
+                        token,
+                        "SQLite layout maintenance outside cutover/fresh initialization",
+                    );
+                }
+                if let Some(table) = dropped_relation(&words) {
                     self.report(
                         path,
                         source,
@@ -461,10 +482,7 @@ impl Scan {
         if !sql && words != ["kv"] {
             return;
         }
-        if path.ends_with("basal-core/src/kv.rs") && function == "apply" {
-            self.sql_reads += 1;
-            return;
-        }
+
         // The flow's single-run slot excludes other runs while the owner reads its own kv.
         if path.ends_with("basal-core/src/run_driver/local.rs") && function == "prepare" {
             self.run_local_reads += 1;
@@ -480,7 +498,7 @@ impl Scan {
         if (path.ends_with("basal-core/src/state_epoch.rs")
             && function == "reset"
             && words == ["delete", "from", "kv", "where", "flow_id", "1"])
-            || (path.ends_with("basal-core/src/schema.rs")
+            || (path.ends_with("basal-core/src/run_cutover/schema.rs")
                 && token.text.contains("CREATE TABLE kv (")
                 && words.iter().filter(|word| word.as_str() == "kv").count() == 1)
         {
@@ -512,8 +530,8 @@ fn safe_kv_import(tokens: &[Token]) -> bool {
     })
 }
 
-// Before cutover, only these log-backed modules are guarded. Cutover widens the
-// roots to all runtime SQL; legacy execution must remain usable until then.
+// The runtime scan covers every production crate. Keep this inventory only
+// to assert that the owning execution modules and their included SQL are visited.
 const NEW_PATH_ROOTS: &[&str] = &[
     "run_admission.rs",
     "run_decisions.rs",
@@ -539,13 +557,62 @@ const DROPPED_TABLES: &[&str] = &[
     "runs_with_snapshots",
 ];
 
+fn dropped_relation(words: &[String]) -> Option<&str> {
+    for (i, word) in words.iter().enumerate() {
+        let trigger_on = word == "on"
+            && words[..i]
+                .iter()
+                .rposition(|w| w == "trigger")
+                .is_some_and(|at| {
+                    words[..i]
+                        .iter()
+                        .rposition(|w| w == "begin")
+                        .is_none_or(|begin| begin < at)
+                });
+        if !trigger_on
+            && !matches!(
+                word.as_str(),
+                "from" | "join" | "into" | "update" | "references" | "table" | "view" | "trigger"
+            )
+        {
+            continue;
+        }
+        let mut next = i + 1;
+        while words.get(next).is_some_and(|w| {
+            matches!(
+                w.as_str(),
+                "if" | "not" | "exists" | "only" | "main" | "temp"
+            )
+        }) {
+            next += 1;
+        }
+        if let Some(name) = words
+            .get(next)
+            .filter(|w| DROPPED_TABLES.contains(&w.as_str()))
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
 fn migration_path(path: &Path) -> bool {
     let name = path.file_name().unwrap().to_str().unwrap();
-    (name.starts_with("schema_") && name.ends_with(".sql"))
-        || name == "run_cutover.rs"
-        || path
-            .components()
-            .any(|part| part.as_os_str() == "run_cutover")
+    (name.starts_with("schema_")
+        && name.ends_with(".sql")
+        && path
+            .parent()
+            .is_some_and(|p| p.ends_with("crates/basal-core/src")))
+        || path.ends_with("crates/basal-core/src/run_cutover.rs")
+        || [
+            "audit.rs",
+            "convert.rs",
+            "legacy.rs",
+            "pages.rs",
+            "schema.rs",
+        ]
+        .iter()
+        .any(|name| path.ends_with(format!("crates/basal-core/src/run_cutover/{name}")))
 }
 
 // SQL string values and comments are not identifiers. Double-quoted, backtick
@@ -604,22 +671,12 @@ fn sql_words(sql: &str) -> Vec<String> {
     words
 }
 
-fn scan_new_path(root: &Path) -> Scan {
-    let mut scan = Scan {
-        dropped_tables: true,
-        ..Scan::default()
-    };
-    for module in NEW_PATH_ROOTS {
-        let path = root.join("crates/basal-core/src").join(module);
-        if path.exists() {
-            scan.file(&path, false);
-        }
-    }
-    scan
+fn scan_runtime(root: &Path) -> Scan {
+    scan_sources(root, true)
 }
 
 #[test]
-fn dropped_table_guard_covers_new_path_production_sql() {
+fn dropped_table_guard_covers_all_production_sql() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -631,7 +688,28 @@ fn dropped_table_guard_covers_new_path_production_sql() {
             "missing guarded root {module}"
         );
     }
-    let scan = scan_new_path(root);
+    let scan = scan_runtime(root);
+    for name in [
+        "basal-core",
+        "basal-host",
+        "basal-module",
+        "basal-launch",
+        "basal-worker",
+        "basal-proto",
+    ] {
+        let directory = root
+            .join("crates")
+            .join(name)
+            .join("src")
+            .canonicalize()
+            .unwrap();
+        assert!(
+            scan.visited
+                .iter()
+                .any(|(path, test)| !test && path.starts_with(&directory)),
+            "missing production crate {name}"
+        );
+    }
     assert!(
         scan.checked_sql > 100,
         "unexpectedly empty SQL scan: {scan:?}"
@@ -646,7 +724,21 @@ fn dropped_table_guard_covers_new_path_production_sql() {
 
 #[test]
 fn dropped_table_guard_planted_runtime_violations_fail() {
-    for module in NEW_PATH_ROOTS {
+    let mut paths: Vec<String> = NEW_PATH_ROOTS
+        .iter()
+        .map(|m| format!("basal-core/src/{m}"))
+        .collect();
+    paths.extend(
+        [
+            "basal-host",
+            "basal-module",
+            "basal-worker",
+            "basal-launch",
+            "basal-proto",
+        ]
+        .map(|name| format!("{name}/src/runtime.rs")),
+    );
+    for path in paths {
         for table in DROPPED_TABLES {
             for quoted in [
                 format!("\"{table}\""),
@@ -656,9 +748,8 @@ fn dropped_table_guard_planted_runtime_violations_fail() {
             ] {
                 let sql = format!("SELECT * FROM main.{quoted}");
                 let source = format!("pub fn planted() {{ query({sql:?}); }}");
-                let path = format!("basal-core/src/{module}");
                 let fixture = Fixture::new(&[(&path, &source)]);
-                let scan = scan_new_path(&fixture.0);
+                let scan = scan_runtime(&fixture.0);
                 assert_eq!(
                     scan.violations.len(),
                     1,
@@ -671,35 +762,72 @@ fn dropped_table_guard_planted_runtime_violations_fail() {
 }
 
 #[test]
+fn dropped_names_as_columns_and_non_sql_metadata_are_not_table_references() {
+    let fixture = Fixture::new(&[(
+        "basal-module/src/reader.rs",
+        r#"fn read(){query("SELECT runs FROM rate_windows");query("SELECT 1 AS journal FROM run_history");json!({"runs":[]});}"#,
+    )]);
+    assert!(scan_runtime(&fixture.0).violations.is_empty());
+}
+
+#[test]
 fn dropped_table_guard_migration_negative_control_passes() {
     let fixture = Fixture::new(&[
         (
-            "basal-core/src/run_retention.rs",
-            r#"mod run_cutover; const SQL: &str = include_str!("schema_cutover.sql");"#,
+            "basal-core/src/lib.rs",
+            r#"mod run_cutover; const SQL:&str=include_str!("schema_cutover.sql");"#,
         ),
         (
-            "basal-core/src/run_retention/run_cutover.rs",
-            r#"fn migrate() { execute("INSERT INTO run_history SELECT * FROM runs"); }"#,
+            "basal-core/src/run_cutover.rs",
+            r#"fn migrate(){execute("INSERT INTO run_history SELECT * FROM runs");}"#,
         ),
         (
             "basal-core/src/schema_cutover.sql",
             "DROP VIEW journal_with_payloads; DROP TABLE journal;",
         ),
     ]);
-    let scan = scan_new_path(&fixture.0);
-    assert!(scan.violations.is_empty(), "{scan:?}");
-    // A .sql suffix alone does not exempt runtime SQL.
+    assert!(scan_runtime(&fixture.0).violations.is_empty());
     fs::write(
         fixture.0.join("crates/basal-core/src/runtime_query.sql"),
         "SELECT * FROM mailbox",
     )
     .unwrap();
     fs::write(
-        fixture.0.join("crates/basal-core/src/run_retention.rs"),
-        r#"const SQL: &str = include_str!("runtime_query.sql");"#,
+        fixture.0.join("crates/basal-core/src/lib.rs"),
+        r#"const SQL:&str=include_str!("runtime_query.sql");"#,
     )
     .unwrap();
-    assert_eq!(scan_new_path(&fixture.0).violations.len(), 1);
+    assert_eq!(scan_runtime(&fixture.0).violations.len(), 1);
+}
+
+#[test]
+fn layout_maintenance_is_confined_to_cutover_and_used_by_fresh_initialization() {
+    for statement in [
+        r#"execute("VACUUM")"#,
+        r#"execute("PRAGMA page_size=1024")"#,
+        r#"execute("PRAGMA journal_mode=DELETE")"#,
+        r#"c.pragma_update(None,"page_size",1024)"#,
+        r#"c.pragma_update(None,"journal_mode","DELETE")"#,
+    ] {
+        let source = format!("pub fn maintenance(){{{statement};}}");
+        for path in [
+            "basal-core/src/reader.rs",
+            "basal-module/src/reader.rs",
+            "basal-core/src/run_cutover/accidental_runtime.rs",
+        ] {
+            let fixture = Fixture::new(&[(path, &source)]);
+            assert_eq!(
+                scan_runtime(&fixture.0).violations.len(),
+                1,
+                "{path}: {statement}"
+            );
+        }
+        let fixture = Fixture::new(&[("basal-core/src/run_cutover/pages.rs", &source)]);
+        assert!(
+            scan_runtime(&fixture.0).violations.is_empty(),
+            "{statement}"
+        );
+    }
 }
 
 #[test]
@@ -723,7 +851,7 @@ fn dropped_table_guard_follows_modules_and_only_exempts_test_cfgs() {
             "fn helper() { query(\"SELECT * FROM runs\"); }",
         ),
     ]);
-    let scan = scan_new_path(&fixture.0);
+    let scan = scan_runtime(&fixture.0);
     assert_eq!(scan.violations.len(), 4, "{scan:?}");
 }
 
@@ -742,17 +870,37 @@ fn source_files(directory: &Path, files: &mut BTreeSet<PathBuf>) {
 }
 
 fn scan(root: &Path) -> Scan {
+    scan_sources(root, false)
+}
+
+fn scan_sources(root: &Path, dropped_tables: bool) -> Scan {
     let mut files = BTreeSet::new();
-    let mut scan = Scan::default();
-    for name in ["basal-core", "basal-host", "basal-module"] {
+    let mut scan = Scan {
+        dropped_tables,
+        ..Scan::default()
+    };
+    for name in [
+        "basal-core",
+        "basal-host",
+        "basal-module",
+        "basal-launch",
+        "basal-worker",
+        "basal-proto",
+    ] {
         let directory = root.join("crates").join(name).join("src");
+        if !directory.exists() {
+            continue;
+        }
         source_files(&directory, &mut files);
-        scan.file(&directory.join("lib.rs"), false);
+        if directory.join("lib.rs").exists() {
+            scan.file(&directory.join("lib.rs"), false);
+        }
     }
     // Unlinked files and binary entry points are not silently exempt. A file
     // visited through both a test and production module is checked as production.
     for path in files {
-        if path.extension().unwrap() == "sql" {
+        if path.extension().unwrap() == "sql" && !scan.visited.iter().any(|(seen, _)| seen == &path)
+        {
             let source = fs::read_to_string(&path).unwrap();
             scan.sql(
                 &path,
@@ -785,7 +933,10 @@ fn production_kv_reads_are_run_local() {
         scan.visited.iter().filter(|(_, test)| !test).count() > 100,
         "scan did not cover the production source trees"
     );
-    assert_eq!(scan.sql_reads, 4, "the audited kv apply SQL changed");
+    assert_eq!(
+        scan.sql_reads, 0,
+        "the retired eager kv SQL reader returned"
+    );
     assert_eq!(
         scan.run_local_reads, 1,
         "the audited run-local kv read changed"
@@ -794,10 +945,7 @@ fn production_kv_reads_are_run_local() {
         scan.terminal_overlay_writes, 3,
         "the audited terminal-overlay kv writes changed"
     );
-    assert_eq!(
-        scan.run_calls, 2,
-        "the audited run-driver reader calls changed"
-    );
+    assert_eq!(scan.run_calls, 0, "retired eager kv calls returned");
     assert!(
         scan.violations.is_empty(),
         "production kv reader found outside a run; stop and ask before continuing:\n{}",
@@ -1030,36 +1178,37 @@ fn scan_checks_files_reachable_from_both_tests_and_production() {
 }
 
 #[test]
-fn scan_allows_the_audited_run_reader_and_write_only_reset_and_schema() {
+fn scan_allows_write_only_reset_and_migration_schema() {
     let fixture = Fixture::new(&[
         (
-            "basal-core/src/kv.rs",
-            r#"
-            fn apply() { query("SELECT value FROM kv"); }
-            fn rejection() { "not a kv call"; }
-        "#,
-        ),
-        (
-            "basal-core/src/driver.rs",
-            r#"
-            use crate::kv;
-            fn recover_calls() { kv::apply(); }
-            fn commit_local_call() { kv::apply(); }
-        "#,
-        ),
-        (
             "basal-core/src/state_epoch.rs",
-            r#"
-            fn reset() { execute("DELETE FROM kv WHERE flow_id=?1"); }
-        "#,
+            r#"fn reset() { execute("DELETE FROM kv WHERE flow_id=?1"); }"#,
         ),
         (
-            "basal-core/src/schema.rs",
-            "const SQL: &str = \"CREATE TABLE kv (key TEXT);\";",
+            "basal-core/src/run_cutover/schema.rs",
+            r#"const SQL:&str="CREATE TABLE kv (key TEXT);";"#,
         ),
     ]);
     let scan = scan(&fixture.0);
     assert!(scan.violations.is_empty(), "{scan:?}");
-    assert_eq!(scan.sql_reads, 1);
-    assert_eq!(scan.run_calls, 2);
+    assert_eq!(scan.sql_reads, 0);
+    assert_eq!(scan.run_calls, 0);
+}
+
+#[test]
+fn scan_rejects_retired_eager_kv_reader_and_former_driver_allowances() {
+    let fixture = Fixture::new(&[
+        (
+            "basal-core/src/kv.rs",
+            r#"fn apply(){query("SELECT value FROM kv");}"#,
+        ),
+        (
+            "basal-core/src/driver.rs",
+            r#"use crate::kv; fn recover_calls(){kv::apply();} fn commit_local_call(){kv::apply();}"#,
+        ),
+    ]);
+    let scan = scan(&fixture.0);
+    assert_eq!(scan.violations.len(), 4, "{scan:?}");
+    assert_eq!(scan.sql_reads, 0);
+    assert_eq!(scan.run_calls, 0);
 }

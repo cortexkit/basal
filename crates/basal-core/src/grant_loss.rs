@@ -26,27 +26,13 @@ pub struct Retirement {
 fn retirement_owner(
     conn: &Connection,
     request: &basal_host::CallRequest,
-    staged: bool,
+    _staged: bool,
 ) -> Result<Option<String>> {
-    let run_author: Option<String> = conn.query_row(
-        if staged { "SELECT i.author FROM installs i JOIN run_identities r ON r.flow_id=i.flow_id AND r.flow_version=i.version WHERE r.run_id=?1" } else { "SELECT i.author FROM installs i JOIN runs r ON r.flow_id=i.flow_id AND r.flow_version=i.version WHERE r.run_id=?1" },
-        [&request.run_id], |r| r.get(0),
-    ).optional()?;
+    let run_author: Option<String> = conn.query_row("SELECT i.author FROM installs i JOIN run_identities r ON r.flow_id=i.flow_id AND r.flow_version=i.version WHERE r.run_id=?1", [&request.run_id], |r| r.get(0),).optional()?;
     let flow = install::flow(conn, &request.flow_id)?;
     Ok(run_author
         .or_else(|| flow.and_then(|f| f.owner))
         .filter(|o| o != crate::decisions::OPERATOR_ACTOR && o != "local:unverified"))
-}
-
-/// The agent reference that labelling an agent_retired refusal would look up
-/// in the registry: the call's `agent` argument, needed only when the flow
-/// has no agent owner. Read-only, so it runs before the write transaction
-/// that records the retirement.
-pub(crate) fn retirement_lookup(
-    conn: &Connection,
-    request: &basal_host::CallRequest,
-) -> Result<Option<String>> {
-    retirement_lookup_for(conn, request, false)
 }
 
 fn retirement_lookup_for(
@@ -74,20 +60,6 @@ pub(crate) fn retirement_label(
         Ok(Some(id)) => Some(id),
         Ok(None) | Err(_) => None,
     }
-}
-
-/// Records an agent_retired refusal. `target_id` is the stable id resolved
-/// for the call's `agent` argument before this transaction began (see
-/// [`retirement_lookup`] and [`retirement_label`]), or `None` when it was not
-/// resolved.
-pub(crate) fn record_retirement(
-    tx: &Transaction,
-    request: &basal_host::CallRequest,
-    refusal: &FlowRefusal,
-    now: i64,
-    target_id: Option<&str>,
-) -> Result<()> {
-    record_retirement_for(tx, request, refusal, now, target_id, false)
 }
 
 pub(crate) fn record_retirement_staged(
@@ -308,21 +280,6 @@ pub fn grant_key(grant: &Value) -> Result<(String, bool)> {
     }
 }
 
-pub(crate) fn record(
-    tx: &Transaction,
-    flow_id: &str,
-    run_id: &str,
-    refusal: &FlowRefusal,
-    now: i64,
-) -> Result<()> {
-    let version: u32 = tx.query_row(
-        "SELECT flow_version FROM runs WHERE run_id=?1",
-        [run_id],
-        |r| r.get(0),
-    )?;
-    record_version(tx, flow_id, run_id, refusal, now, version)
-}
-
 pub(crate) fn record_staged(
     tx: &Transaction,
     flow_id: &str,
@@ -392,8 +349,8 @@ pub fn losses(conn: &Connection, flow_id: Option<&str>) -> Result<Vec<GrantLoss>
 
 pub(crate) fn clear(tx: &Transaction, flow_id: &str, now: i64) -> Result<()> {
     tx.execute("UPDATE flow_grant_losses SET state='cleared',revision=revision+1 WHERE flow_id=?1 AND state IN ('polling','stopped')", [flow_id])?;
-    tx.execute("UPDATE journal SET retry_not_before=?2 WHERE dispatch='deferred' AND refusal IN ('module_grant_absent','agent_grant_absent') \
-        AND run_id IN (SELECT run_id FROM runs WHERE flow_id=?1)", params![flow_id, now])?;
+    // Deferred calls belong to actors. staged_startable observes the enabled
+    // flow and advances grant-absence retry times outside the SQLite lock.
     crate::decisions::close_stale_grants(tx, flow_id, now)?;
     Ok(())
 }
@@ -449,13 +406,7 @@ impl Runtime {
     pub(crate) fn retirement_target_id(&self, request: &basal_host::CallRequest) -> Option<String> {
         let target = self
             .store()
-            .read(|c| {
-                if self.uses_run_log() {
-                    retirement_lookup_for(c, request, true)
-                } else {
-                    retirement_lookup(c, request)
-                }
-            })
+            .read(|c| retirement_lookup_for(c, request, true))
             .ok()
             .flatten();
         retirement_label(self.shared.catalog.as_ref(), target.as_deref())

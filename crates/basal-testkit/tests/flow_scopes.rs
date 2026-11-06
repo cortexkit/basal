@@ -310,21 +310,26 @@ impl Fixture {
             Arc::new(CoreHost::new(wire.clone())),
             Arc::new(world.mock.clone()),
         ));
-        let rt = Runtime::new(
-            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-            host,
-            Arc::new(world.catalog.clone()),
-            hooks,
-            Some(world.source.clone()),
-            Config {
-                activation_deadline,
-                install_gate: InstallGate::Core,
-                clock: clock.clone(),
-                deferral_retry: Duration::from_millis(100),
-                auto_resume: false,
-                ..Config::default()
-            },
-        );
+        let rt = {
+            let runtime = Runtime::new(
+                Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+                host,
+                Arc::new(world.catalog.clone()),
+                hooks,
+                Some(world.source.clone()),
+                Config {
+                    activation_deadline,
+                    install_gate: InstallGate::Core,
+                    clock: clock.clone(),
+                    deferral_retry: Duration::from_millis(100),
+                    auto_resume: false,
+                    ..Config::default()
+                },
+            )
+            .expect("runtime startup");
+            runtime.retain_detail_for_test().expect("rig inspection");
+            runtime
+        };
         let mut manifest = test_manifest();
         manifest.as_object_mut().unwrap().remove("llm");
         manifest["ops"] = json!([{"module":"mock","op":"send"}]);
@@ -376,19 +381,24 @@ impl Fixture {
             Arc::new(CoreHost::new(wire.clone())),
             Arc::new(world.mock.clone()),
         ));
-        let rt = Runtime::new(
-            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-            host,
-            Arc::new(world.catalog.clone()),
-            Arc::new(NoHooks),
-            Some(world.source.clone()),
-            Config {
-                install_gate: InstallGate::Core,
-                clock: clock.clone(),
-                auto_resume: false,
-                ..Config::default()
-            },
-        );
+        let rt = {
+            let runtime = Runtime::new(
+                Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+                host,
+                Arc::new(world.catalog.clone()),
+                Arc::new(NoHooks),
+                Some(world.source.clone()),
+                Config {
+                    install_gate: InstallGate::Core,
+                    clock: clock.clone(),
+                    auto_resume: false,
+                    ..Config::default()
+                },
+            )
+            .expect("runtime startup");
+            runtime.retain_detail_for_test().expect("rig inspection");
+            runtime
+        };
         Self {
             world,
             wire,
@@ -397,6 +407,7 @@ impl Fixture {
         }
     }
     fn activate(&self, run: &str) {
+        self.rt.startable().unwrap();
         self.rt.resume(run).unwrap();
         self.rt.quiesce();
     }
@@ -422,15 +433,12 @@ impl Fixture {
         run
     }
     fn retry_at(&self, run: &str) -> i64 {
-        self.rt
-            .store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT retry_not_before FROM journal WHERE run_id = ?1",
-                    [run],
-                    |r| r.get(0),
-                )?)
-            })
+        self.rt.fixture_deferral(run, 0).unwrap().retry_not_before
+    }
+    fn target_deadline(&self, run: &str) -> i64 {
+        let intent = self.rt.fixture_call_state(run, 0).unwrap().intent.unwrap();
+        serde_json::from_str::<Value>(intent.frozen_request.as_str()).unwrap()["expires_at_ms"]
+            .as_i64()
             .unwrap()
     }
     fn sends(&self) -> usize {
@@ -452,7 +460,7 @@ struct LiveCallRetirementProbe {
 }
 impl basal_core::hooks::Hooks for LiveCallRetirementProbe {
     fn at(&self, run: &str, boundary: &basal_core::hooks::Boundary) -> basal_core::hooks::Step {
-        if *boundary == basal_core::hooks::Boundary::EndingReceived {
+        if *boundary == basal_core::hooks::Boundary::DriverBeforeClose {
             let (rt, wire) = self.context.lock().unwrap().clone().unwrap();
             // Drain the dispatch threads before ending the run, so the counter
             // observes every unregister while the run is still live.
@@ -529,7 +537,7 @@ fn approve_second_version(f: &Fixture, shared: bool) {
 }
 
 #[test]
-fn cancelled_v1_dispatch_keeps_its_route_after_v2_activates() {
+fn v1_closing_dispatch_keeps_its_route_while_v2_scope_registers() {
     for shared in [false, true] {
         let f = Fixture::new("version-overlap", SCRIPT, true, true);
         let (entered, waiting) = mpsc::channel();
@@ -550,11 +558,23 @@ fn cancelled_v1_dispatch_keeps_its_route_after_v2_activates() {
             Some(scope(if shared { 1 } else { 2 })),
         );
         assert!(f.wire.closed.lock().unwrap().is_empty());
-        f.rt.cancel(&first, "operator").unwrap();
+        let cancel = {
+            let rt = f.rt.clone();
+            let first = first.clone();
+            std::thread::spawn(move || rt.cancel(&first, "operator"))
+        };
+        wait_until(
+            Instant::now() + ACTIVATION_WAIT,
+            "v1 to seal Closing",
+            || f.rt.fixture_routing(&first) == Some(basal_core::run_store::Routing::Closing),
+        )
+        .unwrap();
+        // A second version may register its scope, but the same flow's slot
+        // stays held until the first version's authorized entrant has drained.
         let second = f.admit("v2");
-        f.rt.resume(&second).unwrap();
-        assert_eq!(f.rt.run(&second).unwrap().state, RunState::Succeeded);
-        assert_eq!(f.rt.run(&first).unwrap().state, RunState::Cancelled);
+        assert!(
+            matches!(f.rt.resume(&second).unwrap(),basal_core::ActivationEnd::Waiting {holder} if holder == first)
+        );
         assert!(f.wire.closed.lock().unwrap().is_empty());
         let target = RouteTarget::ManagementSurface {
             module_id: "mock".into(),
@@ -573,7 +593,11 @@ fn cancelled_v1_dispatch_keeps_its_route_after_v2_activates() {
         );
         release.send(()).unwrap();
         activation.join().unwrap();
+        cancel.join().unwrap().unwrap();
         f.rt.quiesce();
+        assert_eq!(f.rt.run(&first).unwrap().state, RunState::Cancelled);
+        f.rt.resume(&second).unwrap();
+        assert_eq!(f.rt.run(&second).unwrap().state, RunState::Succeeded);
         assert!(matches!(
             f.wire.route(&flow_route_key("flow-test", 1), &target),
             Err(WireError::Typed(_))
@@ -620,7 +644,23 @@ fn needs_reconcile_v1_keeps_its_route_when_v2_scope_registers() {
     );
     assert!(f.wire.closed.lock().unwrap().is_empty());
     f.rt.cancel(&first, "operator").unwrap();
-    assert_eq!(*f.wire.closed.lock().unwrap(), vec![1]);
+    // Terminal close does not erase the ambiguous send. Its open obligation
+    // retains the old authority until an outcome or reconciliation settles it.
+    assert!(f.wire.closed.lock().unwrap().is_empty());
+    assert_eq!(
+        f.wire
+            .route(&flow_route_key("flow-test", 1), &target)
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        f.rt.store()
+            .read(|c| Ok(basal_core::run_store_sql::obligation(c, &first, 0)?
+                .unwrap()
+                .state))
+            .unwrap(),
+        basal_core::run_store_sql::ObligationState::Unknown
+    );
 }
 
 #[test]
@@ -957,23 +997,21 @@ fn resource_busy_wait_uses_relative_hint_and_counts_against_expiry() {
         Some("deadline")
     );
     assert_eq!(f.sends(), 1);
-    assert!(
-        f.rt.store()
-            .read(|c| basal_core::journal::unsettled_positions(c, &run))
-            .unwrap()
-            .is_empty()
-    );
-    let code: String =
+    let open: i64 =
         f.rt.store()
             .read(|c| {
                 Ok(c.query_row(
-                    "SELECT json_extract(value,'$.code') FROM mailbox WHERE run_id=?1",
+                    "SELECT COUNT(*) FROM obligations WHERE run_id=?1 AND state<>'settled'",
                     [&run],
                     |r| r.get(0),
                 )?)
             })
             .unwrap();
-    assert_eq!(code, "resource_busy");
+    assert_eq!(open, 0);
+    let call = f.rt.fixture_call_state(&run, 0).unwrap();
+    let outcome: Value =
+        serde_json::from_str(call.arrival.as_ref().unwrap().value.as_str()).unwrap();
+    assert_eq!(outcome["code"], "resource_busy");
     f.rt.recover().unwrap();
     assert!(f.rt.startable().unwrap().is_empty());
     assert_eq!(f.sends(), 1);
@@ -1116,69 +1154,123 @@ fn carrier_core_payload_and_route_remain_unchanged() {
 
 #[test]
 fn a_stalled_scope_activation_deadline_reaps_its_worker() {
-    let f = Fixture::with_activation_deadline(
-        "scope-activation-wait",
-        SCRIPT,
-        true,
-        true,
-        STALLED_ACTIVATION_WAIT,
-    );
-    let run = f.admit("one");
-    let mut worker = f.world.source.spawn().expect("worker");
-    // Only provider dispatch reads this queue. Holding it withholds a reply
-    // without blocking the install gate or the runtime's deadline checks.
-    let held_reply = f.wire.refusals.lock().unwrap();
-    let (tx, rx) = mpsc::channel();
-    let driver = {
-        let rt = f.rt.clone();
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            let end = rt.activate(&run, &mut worker);
-            let took = started.elapsed();
-            tx.send(()).expect("deadline observer still exists");
-            (end, took, worker)
-        })
-    };
-    // The provider reply is held forever, so the activation can only end by
-    // its own STALLED_ACTIVATION_WAIT firing; the outcome check below proves it
-    // was the deadline. This receive bound only stops a hang if the deadline
-    // never fires, so it is generous: a short bound fails on a loaded machine
-    // where the deadline fires late but correctly. Release the held provider
-    // reply whatever the result, then join the driver and reap its worker
-    // before asserting, so a failure never leaves a worker behind.
-    let waited = rx.recv_timeout(ACTIVATION_WAIT);
-    drop(held_reply);
-    wait_until(
-        Instant::now() + ACTIVATION_WAIT,
-        "the released scope activation driver to exit",
-        || driver.is_finished(),
-    )
-    .expect("driver cleanup");
-    let (end, took, mut worker) = driver.join().expect("driver thread");
-    let reaped = worker.exited(ACTIVATION_WAIT);
-    worker.kill();
-    f.rt.quiesce();
-    // A deadline failure alone cannot say which deadline fired: a fixture that
-    // kept the production activation deadline would also end this activation
-    // with a deadline failure, just later. That deadline is measured from
-    // inside `activate`, so such an activation can never end before it, while
-    // the fixture's short deadline ends it long before. The bound is the same
-    // generous one the hang check relies on, so a loaded machine that fires the
-    // short deadline late still passes. It is checked first because a deadline
-    // as long as the hang bound may lose the race to it, and the hang message
-    // would then hide which deadline was configured.
-    let production_deadline = Config::default().activation_deadline;
-    assert!(
-        took < production_deadline,
-        "the stalled activation took {took:?}, at least the production activation deadline of {production_deadline:?}, so the fixture's own deadline did not end it"
-    );
-    waited.expect("the stalled scope activation never ended");
-    let end = end.expect("activation");
-    assert!(
-        matches!(&end, basal_core::ActivationEnd::Failed { kind, .. } if kind == "deadline"),
-        "{end:?}"
-    );
-    assert!(reaped, "the activation deadline did not reap its worker");
+    for route_timeout in [false, true] {
+        let f = Fixture::with_activation_deadline(
+            "scope-activation-wait",
+            "await ops.call('mock','send',{n:7}); return await ops.call('mock','send',{n:8});",
+            true,
+            true,
+            STALLED_ACTIVATION_WAIT,
+        );
+        let run = f.admit("one");
+        let mut worker = f.world.source.spawn().expect("worker");
+        // Only provider dispatch reads this queue. Hold its reply without blocking
+        // the install gate, deadline checks, SQLite or another flow's actor.
+        let mut held_reply = f.wire.refusals.lock().unwrap();
+        if route_timeout {
+            held_reply.push_back(WireError::TimedOut(
+                "synthetic provider route timeout".into(),
+            ));
+        }
+        let (began, beginning) = mpsc::channel();
+        let driver = {
+            let rt = f.rt.clone();
+            let run = run.clone();
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                began.send(started).unwrap();
+                let end = rt.activate(&run, &mut worker);
+                (end, worker)
+            })
+        };
+        let started = beginning.recv_timeout(ACTIVATION_WAIT).unwrap();
+        let killed = wait_until(
+            started + ACTIVATION_WAIT,
+            "deadline to reap the worker",
+            || {
+                f.world
+                    .source
+                    .counts
+                    .live_pid
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == 0
+            },
+        );
+        let kill_time = started.elapsed();
+        let closing = wait_until(
+            Instant::now() + ACTIVATION_WAIT,
+            "deadline to seal the run Closing",
+            || f.rt.fixture_routing(&run) == Some(basal_core::run_store::Routing::Closing),
+        );
+        let still_draining = !driver.is_finished();
+        let queued =
+            f.rt.admit_trigger("flow-test", "while-closing", JsonText::null())
+                .unwrap()
+                .run_id()
+                .unwrap()
+                .to_owned();
+        let held_slot = f.rt.resume(&queued).unwrap();
+
+        let mut manifest = test_manifest();
+        manifest["id"] = json!("independent-flow");
+        let spec = f.world.spec_with(&f.rt, "return 2;", &manifest).unwrap();
+        *f.wire.hash.lock().unwrap() =
+            basal_core::ids::hex(&basal_core::ids::code_hash(&spec.script, &spec.manifest));
+        let other = f.rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+        let mut other_worker = f.world.source.spawn().expect("independent worker");
+        let (finished, finish) = mpsc::channel();
+        let independent = {
+            let rt = f.rt.clone();
+            std::thread::spawn(move || {
+                let result = rt.activate(&other, &mut other_worker);
+                finished.send(result).unwrap();
+            })
+        };
+        let independent_result = finish.recv_timeout(ACTIVATION_WAIT);
+        // Returning a terminal result before the reply is no longer the contract:
+        // Closing retains the flow slot until its already-authorized entrant drains.
+        // The child and independent flows must nevertheless make progress on time.
+        drop(held_reply);
+        wait_until(
+            Instant::now() + ACTIVATION_WAIT,
+            "close to finish after the held reply",
+            || driver.is_finished(),
+        )
+        .expect("bounded drain");
+        let (end, mut worker) = driver.join().unwrap();
+        independent.join().unwrap();
+        let reaped = worker.exited(ACTIVATION_WAIT);
+        worker.kill();
+        f.rt.quiesce();
+        killed.expect("deadline did not reap its worker");
+        closing.expect("deadline did not seal the run");
+        assert!(
+            kill_time < Config::default().activation_deadline,
+            "deadline reap took {kill_time:?}"
+        );
+        assert!(still_draining, "close did not retain the in-flight entrant");
+        assert!(matches!(held_slot,basal_core::ActivationEnd::Waiting {holder} if holder == run));
+        let independent_end = independent_result
+            .expect("another flow was blocked")
+            .unwrap();
+        assert!(
+            matches!(&independent_end, basal_core::ActivationEnd::Succeeded {value} if value == "2"),
+            "{independent_end:?}"
+        );
+        assert!(
+            matches!(end.unwrap(), basal_core::ActivationEnd::Failed {kind,..} if kind == "deadline")
+        );
+        assert_eq!(
+            f.rt.run(&run).unwrap().error_kind.as_deref(),
+            Some("deadline")
+        );
+        assert_eq!(
+            f.sends(),
+            1,
+            "the sealed run must execute no later script call"
+        );
+        assert!(reaped);
+    }
 }
 
 #[test]
@@ -1276,20 +1368,17 @@ fn board_read_uses_basal_route_with_journaled_approved_stamp() {
     );
     assert!(f.wire.opens.lock().unwrap().is_empty());
     assert!(f.wire.target_asks.lock().unwrap().is_empty());
-    let (class, request, original): (String, String, String) =
-        f.rt.store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT class, request, args FROM journal_with_payloads WHERE run_id=?1 AND position=0",
-                    [&run],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )?)
-            })
-            .unwrap();
+    let call = f.rt.fixture_call_state(&run, 0).unwrap();
+    let class = call.identity.class.as_str();
+    let request = call.intent.unwrap().frozen_request;
+    let original = call.identity.args;
     assert_eq!(class, "query");
-    assert_eq!(serde_json::from_str::<Value>(&request).unwrap(), expected);
     assert_eq!(
-        serde_json::from_str::<Value>(&original).unwrap(),
+        serde_json::from_str::<Value>(request.as_str()).unwrap(),
+        expected
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(original.as_str()).unwrap(),
         json!({"limit":3,"cursor":"agent_0"})
     );
 }
@@ -1438,15 +1527,11 @@ fn work_unsettled_requests_match_core_vectors_on_basal_route() {
     assert!(f.wire.opens.lock().unwrap().is_empty());
     assert!(f.wire.target_asks.lock().unwrap().is_empty());
     let classes: Vec<String> =
-        f.rt.store()
-            .read(|c| {
-                let mut stmt =
-                    c.prepare("SELECT class FROM journal WHERE run_id=?1 ORDER BY position")?;
-                Ok(stmt
-                    .query_map([&run], |row| row.get(0))?
-                    .collect::<Result<_, _>>()?)
-            })
-            .unwrap();
+        f.rt.fixture_calls(&run)
+            .unwrap()
+            .iter()
+            .map(|call| call.class.as_str().to_owned())
+            .collect();
     assert_eq!(classes, ["query", "query"]);
 }
 
@@ -1624,7 +1709,7 @@ fn targeted_call_opens_target_scope_and_ordinary_call_keeps_flow_scope() {
     assert_eq!(asks.len(), 1);
     assert_eq!(
         asks[0],
-        json!({"flow_id":"flow-test","version":2,"agent":"agent_alice","expires_at_ms":f.rt.run(&run).unwrap().deadline_at.unwrap()})
+        json!({"flow_id":"flow-test","version":2,"agent":"agent_alice","expires_at_ms":f.target_deadline(&run)})
     );
     let opens = f.wire.opens.lock().unwrap();
     assert_eq!(opens.len(), 2);
@@ -1776,7 +1861,7 @@ fn target_scope_is_shared_across_runs_while_it_covers_both_deadlines() {
     let b = f.admit("b");
     f.activate(&b);
     run_result(&f, &b);
-    assert!(f.rt.run(&b).unwrap().deadline_at > f.rt.run(&a).unwrap().deadline_at);
+    assert!(f.target_deadline(&b) > f.target_deadline(&a));
     assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
     assert_eq!(f.wire.opens.lock().unwrap().len(), 1);
 }
@@ -1939,7 +2024,7 @@ fn changed_target_epoch_drops_old_routes_and_invalidates_old_run_pins() {
 fn replay_reasks_core_and_outside_audience_call_fails_unsent() {
     let script = "const codes=[]; for(let i=0;i<2;i++) { try { await ops.call('mock','echo',{}, {for:'Alice'}); codes.push(null); } catch(e) { codes.push(e.data.code); } } return codes;";
     let probe = Arc::new(basal_testkit::harness::Probe::crash_at(
-        basal_testkit::harness::Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+        basal_testkit::harness::Point::parse("DriverDispatched { position: 0 }#1").unwrap(),
     ));
     let f = Fixture::with_hooks(
         "target-replay",
@@ -1972,6 +2057,21 @@ fn replay_reasks_core_and_outside_audience_call_fails_unsent() {
         json!(["sink_target_not_in_audience", "sink_target_not_in_audience"])
     );
     assert_eq!(f.wire.target_asks.lock().unwrap().len(), 3);
+    let call = f.rt.fixture_call_state(&run, 0).unwrap();
+    let original = &call.prior_intents[0];
+    let retry = call.intent.as_ref().unwrap();
+    let mut before: Value = serde_json::from_str(original.frozen_request.as_str()).unwrap();
+    let mut after: Value = serde_json::from_str(retry.frozen_request.as_str()).unwrap();
+    assert_eq!(before.get("replay"), None);
+    assert_eq!(after["replay"], true);
+    before.as_object_mut().unwrap().remove("replay");
+    after.as_object_mut().unwrap().remove("replay");
+    assert_eq!(
+        before.to_string(),
+        after.to_string(),
+        "only the replay transport control may change"
+    );
+    assert_eq!(original.idempotency_key, retry.idempotency_key);
     assert_eq!(
         f.wire
             .calls
@@ -2077,7 +2177,7 @@ fn delegation_refusals_do_not_penalize_uncaught_runs() {
 #[test]
 fn midcall_target_scope_cut_survives_restart_without_resending_keyed_mutation() {
     let probe = Arc::new(basal_testkit::harness::Probe::crash_at(
-        basal_testkit::harness::Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+        basal_testkit::harness::Point::parse("DriverDispatched { position: 0 }#1").unwrap(),
     ));
     let f = Fixture::with_host_options(
         "target-cut-restart",
@@ -2151,15 +2251,13 @@ fn transient_target_audience_unavailability_defers_until_recovery_or_run_deadlin
     f.rt.enforce_deadlines().unwrap();
     assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
     let refused: String =
-        f.rt.store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT value FROM mailbox WHERE run_id=?1 AND position=0",
-                    [&run],
-                    |r| r.get(0),
-                )?)
-            })
-            .unwrap();
+        f.rt.fixture_call_state(&run, 0)
+            .unwrap()
+            .arrival
+            .unwrap()
+            .value
+            .as_str()
+            .to_owned();
     let value: Value = serde_json::from_str(&refused).unwrap();
     assert_eq!(value["code"], "sink_audience_unavailable");
     assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
@@ -2190,16 +2288,12 @@ fn target_agent_registry_failure_defers_unsent_until_recovery_or_run_deadline() 
         assert_eq!(row.dispatch, basal_core::DispatchState::Deferred);
         assert!(row.request.is_none(), "nothing is frozen before resolution");
         assert!(row.outcome.is_none());
-        let reason: String =
-            f.rt.store()
-                .read(|c| {
-                    Ok(c.query_row(
-                        "SELECT refusal FROM journal WHERE run_id=?1 AND position=0",
-                        [&run],
-                        |r| r.get(0),
-                    )?)
-                })
-                .unwrap();
+        let reason =
+            f.rt.fixture_refusal(&run, 0)
+                .unwrap()
+                .reason
+                .as_str()
+                .to_owned();
         assert_eq!(reason, "sink_audience_unavailable");
         assert!(f.wire.target_asks.lock().unwrap().is_empty());
         assert!(f.wire.opens.lock().unwrap().is_empty());
@@ -2231,15 +2325,13 @@ fn target_agent_registry_failure_defers_unsent_until_recovery_or_run_deadline() 
     f.rt.enforce_deadlines().unwrap();
     assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
     let refused: String =
-        f.rt.store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT value FROM mailbox WHERE run_id=?1 AND position=0",
-                    [&run],
-                    |r| r.get(0),
-                )?)
-            })
-            .unwrap();
+        f.rt.fixture_call_state(&run, 0)
+            .unwrap()
+            .arrival
+            .unwrap()
+            .value
+            .as_str()
+            .to_owned();
     let value: Value = serde_json::from_str(&refused).unwrap();
     assert_eq!(value["code"], "sink_audience_unavailable");
     assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);

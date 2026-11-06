@@ -74,8 +74,48 @@ pub(super) struct DirectoryLock {
     _file: File,
 }
 
+#[cfg(all(test, unix))]
+#[path = "directory_lock_tests.rs"]
+mod directory_lock_tests;
+
 impl DirectoryLock {
     pub(super) fn acquire(path: &Path) -> io::Result<Self> {
+        #[cfg(test)]
+        {
+            Self::acquire_inner(path, &mut || {})
+        }
+        #[cfg(not(test))]
+        {
+            Self::acquire_inner(path)
+        }
+    }
+
+    fn acquire_inner(path: &Path, #[cfg(test)] blocked: &mut dyn FnMut()) -> io::Result<Self> {
+        let started = std::time::Instant::now();
+        loop {
+            match Self::try_acquire(path) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    #[cfg(test)]
+                    blocked();
+                    if started.elapsed() >= DIRECTORY_LOCK_WAIT {
+                        return Err(error);
+                    }
+                    // A concurrent spawn can inherit this flock between fork
+                    // and exec even with FD_CLOEXEC. The deterministic
+                    // fork_to_exec_child_temporarily_inherits_the_directory_flock
+                    // test demonstrates that window. Never bypass exclusivity;
+                    // a real live holder still refuses after this short bound.
+                    std::thread::sleep(
+                        std::time::Duration::from_millis(10)
+                            .min(DIRECTORY_LOCK_WAIT.saturating_sub(started.elapsed())),
+                    );
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn try_acquire(path: &Path) -> io::Result<Self> {
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
         #[cfg(unix)]
@@ -122,3 +162,5 @@ impl DirectoryLock {
         Ok(Self { _file: file })
     }
 }
+
+const DIRECTORY_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);

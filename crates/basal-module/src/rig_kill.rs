@@ -11,7 +11,7 @@
 //!
 //! The file at `$BASAL_RIG_KILL_FILE` arms it with one flow and one of the
 //! runtime's [`Boundary`] values, as JSON:
-//! `{"flow_id": "rig-crash-…", "boundary": "HostAnswered { position: 0 }"}`,
+//! `{"flow_id": "rig-crash-…", "boundary": "DriverSynced { position: 0 }"}`,
 //! the boundary in its `Debug` text (position 0 is a run's first call). The
 //! first runtime thread to reach that boundary in a run of that flow deletes
 //! the file and kills the process; runs of every other flow pass untouched.
@@ -151,48 +151,6 @@ impl RigKillHook {
         crate::fatal::kill_self();
     }
 
-    /// Capture the journal at the crash boundary, before the supervisor can
-    /// restart basal. This distinguishes a selected-but-unsent call from an
-    /// accepted call whose result has not reached the journal.
-    fn evidence(&self, run_id: &str, boundary: &Boundary) -> Option<String> {
-        let position = match boundary {
-            Boundary::ResendAuthorized { position }
-            | Boundary::HostCallReceived { position }
-            | Boundary::ModelSelected { position }
-            | Boundary::CallCommitted { position }
-            | Boundary::SyncCommitted { position }
-            | Boundary::SyncReplied { position }
-            | Boundary::LocalCommitted { position }
-            | Boundary::RefusalCommitted { position }
-            | Boundary::HostAnswered { position }
-            | Boundary::OutcomeCommitted { position }
-            | Boundary::AcceptedCommitted { position }
-            | Boundary::OrderCommitted { position, .. }
-            | Boundary::Delivered { position } => *position,
-            _ => return None,
-        };
-        let c = Connection::open_with_flags(self.store.get()?, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .ok()?;
-        let row = c.query_row(
-            "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal_with_payloads WHERE run_id = ?1 AND position = ?2",
-            rusqlite::params![run_id, position], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?)),
-        ).ok()?;
-        let snapshots: i64 = c
-            .query_row(
-                "SELECT COUNT(*) FROM broca_calls WHERE run_id = ?1",
-                [run_id],
-                |r| r.get(0),
-            )
-            .ok()?;
-        Some(
-            serde_json::json!({"run_id": run_id, "boundary": format!("{boundary:?}"),
-            "args": serde_json::from_str::<serde_json::Value>(&row.0).ok()?,
-            "dispatch": row.1, "attempts": row.2, "settlement": row.3,
-            "broca_snapshots": snapshots})
-            .to_string(),
-        )
-    }
-
     /// The hook armed by the file `$BASAL_RIG_KILL_FILE` names, or `None`
     /// when the variable is unset or empty. `store` is filled with the
     /// store's path when the module learns it.
@@ -204,27 +162,16 @@ impl RigKillHook {
         })
     }
 
-    /// The flow `run_id` belongs to, read through a read-only connection.
+    /// Resolve full run identity through the live/history union projection.
     fn flow_of(&self, run_id: &str) -> Option<String> {
         let connection = Connection::open_with_flags(
             self.store.get()?,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .ok()?;
-        let staged: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='run_identities')",
-                [],
-                |r| r.get(0),
-            )
-            .ok()?;
         connection
             .query_row(
-                if staged {
-                    "SELECT flow_id FROM run_identities WHERE run_id=?1"
-                } else {
-                    "SELECT flow_id FROM runs WHERE run_id = ?1"
-                },
+                "SELECT flow_id FROM run_identities WHERE run_id=?1",
                 [run_id],
                 |r| r.get(0),
             )
@@ -267,14 +214,14 @@ impl Hooks for RigKillHook {
     fn at(&self, run_id: &str, boundary: &Boundary) -> Step {
         if matches!(
             boundary,
-            Boundary::DriverAppended
-                | Boundary::DriverSynced
-                | Boundary::DriverDispatched
-                | Boundary::DriverReleased
+            Boundary::DriverAppended { .. }
+                | Boundary::DriverSynced { .. }
+                | Boundary::DriverDispatched { .. }
+                | Boundary::DriverReleased { .. }
         ) {
             return Step::Continue;
         }
-        if matches!(boundary, Boundary::HostArrived)
+        if matches!(boundary, Boundary::HostArrived { .. })
             && let Some(path) = self.store.get()
             && let Ok(c) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             && c.query_row(
@@ -300,7 +247,7 @@ impl Hooks for RigKillHook {
         if self.flow_of(run_id).as_deref() != Some(armed.flow_id.as_str()) {
             return Step::Continue;
         }
-        self.fire(&armed, self.evidence(run_id, boundary))
+        self.fire(&armed, None)
     }
 }
 
@@ -330,7 +277,10 @@ mod actor_reader_tests {
             position: Option<u64>,
             state: &basal_core::run_records::State,
         ) -> Step {
-            if matches!(boundary, Boundary::DriverSynced | Boundary::DriverReleased) {
+            if matches!(
+                boundary,
+                Boundary::DriverSynced { .. } | Boundary::DriverReleased { .. }
+            ) {
                 self.evidence.lock().unwrap().push(
                     serde_json::from_str(
                         &self
@@ -449,7 +399,11 @@ mod actor_reader_tests {
         rt.store()
             .read(|c| {
                 assert_eq!(
-                    c.query_row("SELECT COUNT(*) FROM journal", [], |r| r.get::<_, u64>(0))?,
+                    c.query_row(
+                        "SELECT COUNT(*) FROM sqlite_schema WHERE name='journal'",
+                        [],
+                        |r| r.get::<_, u64>(0)
+                    )?,
                     0
                 );
                 Ok(())
@@ -499,13 +453,13 @@ mod tests {
     }
 
     fn armed() -> Armed {
-        serde_json::from_str(r#"{"flow_id":"rig-crash","boundary":"HostAnswered { position: 0 }"}"#)
+        serde_json::from_str(r#"{"flow_id":"rig-crash","boundary":"DriverSynced { position: 0 }"}"#)
             .unwrap()
     }
 
     #[test]
     fn only_the_armed_flow_at_the_armed_boundary_matches() {
-        let at = Boundary::HostAnswered { position: 0 };
+        let at = Boundary::DriverSynced { position: 0 };
         assert!(matches(&armed(), Some("rig-crash"), &at));
         assert!(
             !matches(&armed(), Some("rig-sinks"), &at),
@@ -515,7 +469,7 @@ mod tests {
         assert!(!matches(
             &armed(),
             Some("rig-crash"),
-            &Boundary::HostAnswered { position: 1 }
+            &Boundary::DriverDispatched { position: 0 }
         ));
     }
 
@@ -524,73 +478,6 @@ mod tests {
         assert!(
             serde_json::from_str::<Armed>(r#"{"flow_id":"f","boundary":"b","extra":1}"#).is_err()
         );
-        assert!(serde_json::from_str::<Armed>("HostAnswered { position: 0 }").is_err());
-    }
-
-    #[test]
-    fn crash_evidence_records_the_unsent_journal_not_a_later_outcome() {
-        let path =
-            std::env::temp_dir().join(format!("basal-rig-evidence-{}.db", std::process::id()));
-        let c = Connection::open(&path).unwrap();
-        c.pragma_update(None, "synchronous", "OFF").unwrap();
-        c.execute_batch("CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT,
-            dispatch TEXT, attempts INTEGER, settlement TEXT);
-            CREATE TABLE broca_calls (run_id TEXT);
-            CREATE VIEW journal_with_payloads AS SELECT * FROM journal;
-            INSERT INTO journal VALUES ('r', 0, '{\"prompt\":\"authored\"}', '{\"selection\":{\"decisionID\":\"d1\"}}', 'sent', 1, NULL);").unwrap();
-        let store = Arc::new(OnceLock::new());
-        store.set(path.clone()).unwrap();
-        let hook = RigKillHook {
-            path: path.with_extension("arm"),
-            store,
-        };
-        let at = Boundary::CallCommitted { position: 0 };
-        let evidence: serde_json::Value =
-            serde_json::from_str(&hook.evidence("r", &at).unwrap()).unwrap();
-        assert_eq!(evidence["run_id"], "r");
-        assert_eq!(evidence["boundary"], "CallCommitted { position: 0 }");
-        assert_eq!(evidence["args"]["selection"]["decisionID"], "d1");
-        assert_eq!(evidence["attempts"], 1);
-        assert_eq!(evidence["dispatch"], "sent");
-        assert_eq!(evidence["broca_snapshots"], 0);
-        assert!(evidence["settlement"].is_null());
-        assert!(hook.evidence("other", &at).is_none());
-        drop(c);
-        std::fs::remove_file(path).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod position_tests {
-    use super::*;
-
-    #[test]
-    fn evidence_reads_the_position_named_by_the_boundary() {
-        let dir =
-            std::env::temp_dir().join(format!("basal-position-evidence-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("store.db");
-        let c = Connection::open(&path).unwrap();
-        c.pragma_update(None, "synchronous", "OFF").unwrap();
-        c.execute_batch("CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT, dispatch TEXT, attempts INTEGER, settlement TEXT);
-            CREATE TABLE broca_calls (run_id TEXT);
-            CREATE VIEW journal_with_payloads AS SELECT * FROM journal;
-            INSERT INTO journal VALUES ('r',0,'0',NULL,'sent',1,NULL), ('r',3,'3',NULL,'answered',2,'fulfilled');").unwrap();
-        let store = Arc::new(OnceLock::new());
-        store.set(path).unwrap();
-        let hook = RigKillHook {
-            path: dir.join("arm"),
-            store,
-        };
-        let evidence: serde_json::Value = serde_json::from_str(
-            &hook
-                .evidence("r", &Boundary::HostAnswered { position: 3 })
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(evidence["args"], 3);
-        assert_eq!(evidence["attempts"], 2);
-        drop(c);
-        std::fs::remove_dir_all(dir).unwrap();
+        assert!(serde_json::from_str::<Armed>("DriverSynced").is_err());
     }
 }

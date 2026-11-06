@@ -70,7 +70,8 @@ fn fixture(now: i64) -> Fixture {
             },
             ..Config::default()
         },
-    );
+    )
+    .expect("runtime startup");
     Fixture { rt, clock, dir }
 }
 
@@ -301,6 +302,6 @@ fn flow_paths_never_see_codemode_rows() {
         before
     );
     assert!(matches!(lookup_in(&f, "cm"), Lookup::Found(_)));
-    assert_eq!(count(&f, "SELECT COUNT(*) FROM runs"), 0);
-    assert_eq!(count(&f, "SELECT COUNT(*) FROM journal"), 0);
+    assert_eq!(count(&f, "SELECT COUNT(*) FROM run_identities"), 0);
+    assert_eq!(count(&f, "SELECT COUNT(*) FROM run_calls"), 0);
 }

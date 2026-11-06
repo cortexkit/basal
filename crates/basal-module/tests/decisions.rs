@@ -167,6 +167,10 @@ impl Rig {
             Arc::new(ProcessSpawner::new(&self.pool)),
         )
         .expect("module starts");
+        module
+            .rt
+            .retain_detail_for_test()
+            .expect("decision replay inspection");
         self.module = Some(module);
     }
 
@@ -185,7 +189,26 @@ impl Rig {
     }
 
     fn pass(&self) {
-        self.m().engine.run_until_idle(50).expect("passes");
+        for _ in 0..=self.m().rt.config().unavailable_retries {
+            self.m().engine.run_until_idle(50).expect("passes");
+            let next = self
+                .m()
+                .rt
+                .deferred_calls()
+                .unwrap()
+                .iter()
+                .filter_map(|(run, _, position, at)| {
+                    self.m()
+                        .rt
+                        .fixture_deferral(run, *position)
+                        .ok()
+                        .filter(|d| !d.refund_dispatch)
+                        .map(|_| *at)
+                })
+                .min();
+            let Some(at) = next else { return };
+            self.m().rt.config().clock.set(at);
+        }
     }
 
     /// Installs `script` as the operator and approves its install card.
@@ -513,10 +536,9 @@ fn each_unknown_site_records_its_reason_and_the_card_shows_it() {
         .decision_cards(&decisions::reconcile_key(FLOW, &run, 0))[0]
         .1[0];
     assert_eq!(body(request, "op"), "prefrontal-core.sink.digest");
-    // `attempts` counts the journal's sends of the call (the first, and
-    // each resend after a restart or a not-applied reconcile); retries
-    // inside one send are not counted.
-    assert_eq!(body(request, "attempts"), 1);
+    // Every transport send needs its own durable authorization record and
+    // increments the attempt count.
+    assert_eq!(body(request, "attempts"), retries + 1);
 
     // basal stops after sending and before saving the reply: the restart
     // finds the call sent with nothing recorded.
@@ -524,7 +546,7 @@ fn each_unknown_site_records_its_reason_and_the_card_shows_it() {
     rig.install(POST);
     rig.crash();
     let probe = Arc::new(Probe::crash_at(
-        Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+        Point::parse("DriverDispatched { position: 0 }#1").unwrap(),
     ));
     rig.start(probe.clone());
     let run = rig.admit("one").unwrap();
@@ -839,7 +861,7 @@ fn reconciled_as_applied_is_journaled_and_replays_the_same_rejection() {
     // run from the top over the recorded rejection.
     rig.crash();
     let probe = Arc::new(Probe::crash_at(
-        Point::parse("HostAnswered { position: 1 }#1").unwrap(),
+        Point::parse("DriverDispatched { position: 1 }#1").unwrap(),
     ));
     rig.start(probe.clone());
     rig.fake.answer_decision(&key, Some("applied"));
@@ -1165,7 +1187,8 @@ fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
     use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
     use sha2::{Digest, Sha256};
 
-    const STORE_ID: &str = "phone-decision-fixture-v1";
+    const STORE_ID: &str = "0123456789abcdef";
+    const SAMPLE_RUN: &str = "run-0123456789abcdef-1-0000000000000001";
     const GRANT: &str = "grant:github:read:cortexkit/basal";
     const GRANT_LABEL: &str = "Read GitHub for cortexkit/basal";
     const DIRECTORY: &str = concat!(
@@ -1175,7 +1198,11 @@ fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
 
     let reconcile = Rig::with_store_id("phone-decision-reconcile", None, Some(STORE_ID));
     let run = reconcile.lost_post(POST);
-    assert_eq!(run, format!("run-{STORE_ID}-1"));
+    let entropy = run
+        .strip_prefix(&format!("run-{STORE_ID}-1-"))
+        .expect("full run ID");
+    assert_eq!(entropy.len(), 16);
+    assert!(entropy.bytes().all(|b| b.is_ascii_hexdigit()));
     let reconcile_record = reconcile.card(&decisions::reconcile_key(FLOW, &run, 0));
     assert_eq!(reconcile_record.kind, DecisionKind::Reconcile);
     assert_eq!(reconcile_record.version, 1);
@@ -1270,7 +1297,17 @@ fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
         ("decision-grant-lost-request.json", grant_record),
     ];
     let mut generated = Vec::new();
-    for (file, record) in records {
+    for (file, mut record) in records {
+        if record.kind == DecisionKind::Reconcile {
+            let key = basal_core::ids::idempotency_key(FLOW, SAMPLE_RUN, 0);
+            record.run_id = Some(SAMPLE_RUN.into());
+            record.call_key = Some(key.clone());
+            record.dedup_key = decisions::reconcile_key(FLOW, SAMPLE_RUN, 0);
+            let mut context: Value = serde_json::from_str(&record.card).unwrap();
+            context["run_id"] = json!(SAMPLE_RUN);
+            context["call_key"] = json!(key);
+            record.card = context.to_string();
+        }
         let card = record.to_card().expect("production decision card");
         let request = decision_request(&card).expect("production consent request");
         assert_eq!(request["title"], card.title);

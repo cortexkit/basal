@@ -73,7 +73,7 @@ struct CutAtSecondCall;
 
 impl Hooks for CutAtSecondCall {
     fn at(&self, _run_id: &str, boundary: &Boundary) -> Step {
-        if *boundary == (Boundary::CallCommitted { position: 1 }) {
+        if *boundary == (Boundary::DriverSynced { position: 1 }) {
             Step::Crash
         } else {
             Step::Continue
@@ -158,7 +158,19 @@ fn the_unconfigured_host_refuses_every_dispatch_as_never_sent() {
         .run_id()
         .expect("admitted")
         .to_owned();
-    module.engine.run_until_idle(50).expect("idle");
+    module.rt.retain_detail_for_test().unwrap();
+    for _ in 0..=module.rt.config().unavailable_retries {
+        module.engine.run_until_idle(50).expect("idle");
+        if module.rt.run(&run).unwrap().state.is_terminal() {
+            break;
+        }
+        let deferred = module.rt.fixture_deferral(&run, 0).unwrap();
+        assert!(
+            !deferred.refund_dispatch,
+            "this is a transport retry, not a policy hold"
+        );
+        module.rt.config().clock.set(deferred.retry_not_before);
+    }
     let done = module.rt.run(&run).expect("run");
     // A mutation that cannot be proven unsent would stop in
     // needs_reconcile; this one is proven unsent, so the script sees a

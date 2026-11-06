@@ -278,19 +278,6 @@ pub(crate) fn after_first_approval(
     Ok(false)
 }
 
-fn offer(
-    tx: &Transaction,
-    store_id: &str,
-    flow: &str,
-    notice: &Notice,
-    ctx: &admission::AdmitContext,
-    report: &mut Report,
-) -> Result<()> {
-    offer_with(tx, flow, notice, ctx, report, |trigger| {
-        admission::admit_current(tx, store_id, flow, &notice.trigger_id(), trigger, ctx)
-    })
-}
-
 pub(crate) fn offer_with(
     tx: &Transaction,
     flow: &str,
@@ -372,116 +359,14 @@ impl Runtime {
         })
     }
 
-    /// The entire fan-out commits before the caller acknowledges any notice.
-    /// A failed transaction leaves every notice eligible for redelivery.
+    /// Fan-out admission commits before broker acknowledgement.
     pub fn admit_events(&self, notices: &[Notice]) -> Result<Report> {
-        if self.uses_run_log() {
-            return self.staged_admit_events(notices);
-        }
-        let ctx = self.admit_context()?;
-        let store_id = self.store().store_id().to_owned();
-        let report = self.store().write(|tx| {
-            let flows: Vec<(String, Option<i64>)> = tx
-                .prepare("SELECT flow_id,first_approved_at FROM flows WHERE state='enabled' ORDER BY flow_id")?
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            let approved = flows
-                .iter()
-                .map(|(flow, first_approved)| {
-                    let manifest = install::approved(tx, flow)?
-                        .map(|approved| effective_manifest(tx, &approved.manifest, flow))
-                        .transpose()?;
-                    Ok((flow, first_approved, manifest))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let mut report = Report::default();
-            for notice in notices {
-                notice.target_flow()?;
-                report.model_wakes += broca_wakes(tx, notice, ctx.now_ms)?;
-                for (flow, first_approved, approved) in &approved {
-                    if let Some(manifest) = approved {
-                        match matches(manifest, notice, flow)? {
-                            HeaderMatch::Unrelated => continue,
-                            HeaderMatch::Filtered => {
-                                tx.execute("INSERT INTO event_flow_health(flow_id,filtered_out) VALUES (?1,1) ON CONFLICT(flow_id) DO UPDATE SET filtered_out=filtered_out+1", [flow])?;
-                                report.filtered_out += 1;
-                                continue;
-                            }
-                            HeaderMatch::Accepted => {}
-                        }
-                        // Upgrades retain the first approval point, so events
-                        // during an upgrade remain eligible for the current code.
-                        if !after_first_approval(tx, flow, notice, **first_approved)? {
-                            report.skipped_before_install += 1;
-                            continue;
-                        }
-                        if stale(manifest, notice, ctx.now_ms)? {
-                            count_stale_drop(tx, flow)?;
-                            report.stale_dropped += 1;
-                            continue;
-                        }
-                        offer(tx, &store_id, flow, notice, &ctx, &mut report)?;
-                    }
-                }
-            }
-            Ok(report)
-        })?;
-        self.shared.signal.bump();
-        if report.model_wakes > 0 {
-            self.shared.host.model_events_committed();
-        }
-        Ok(report)
+        self.staged_admit_events(notices)
     }
 
-    /// Drain a bounded batch, preserving arrival order within each flow and
-    /// rechecking approval, enablement and rate policy at admission time.
+    /// Drain a bounded batch through the log-backed admission gate.
     pub fn drain_event_backlog(&self) -> Result<usize> {
-        if self.uses_run_log() {
-            return self.staged_drain_event_backlog();
-        }
-        let ctx = self.admit_context()?;
-        let store_id = self.store().store_id().to_owned();
-        let admitted = self.store().write(|tx| {
-            let pending: Vec<(i64, String, String, Option<i64>)> = tx.prepare("SELECT e.rowid,e.flow_id,e.notice,f.first_approved_at FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled' ORDER BY e.received_at,e.rowid LIMIT 128")?
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
-            let mut blocked = std::collections::BTreeSet::new();
-            let mut admitted = 0;
-            for (rowid, flow, encoded, first_approved) in pending {
-                if blocked.contains(&flow) { continue; }
-                let notice: Notice = serde_json::from_str(&encoded).map_err(|e| CoreError::Corrupt(e.to_string()))?;
-                if !after_first_approval(tx, &flow, &notice, first_approved)? {
-                    tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;
-                    continue;
-                }
-                let approved = install::approved(tx, &flow)?;
-                let manifest = approved.as_ref().map(|a| effective_manifest(tx, &a.manifest, &flow)).transpose()?;
-                let eligible = manifest.as_ref().map(|m| matches(m, &notice, &flow)).transpose()?;
-                if eligible != Some(HeaderMatch::Accepted) {
-                    tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;
-                    continue;
-                }
-                if manifest.as_ref().map(|m| stale(m, &notice, ctx.now_ms)).transpose()?.unwrap_or(false) {
-                    count_stale_drop(tx, &flow)?;
-                    tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;
-                    continue;
-                }
-                match admission::admit_current(tx, &store_id, &flow, &notice.trigger_id(), notice.trigger()?, &ctx)? {
-                    Admission::Admitted { .. } => {
-                        tx.execute("UPDATE event_receipts SET state='admitted' WHERE rowid=?1", [rowid])?;
-                        admitted += 1;
-                    }
-                    Admission::Duplicate { .. } | Admission::Tombstoned { .. } => {
-                        tx.execute("UPDATE event_receipts SET state='admitted' WHERE rowid=?1", [rowid])?;
-                    }
-                    _ => { blocked.insert(flow); }
-                }
-            }
-            Ok(admitted)
-        })?;
-        if admitted > 0 {
-            self.shared.signal.bump();
-        }
-        Ok(admitted)
+        self.staged_drain_event_backlog()
     }
 }
 
@@ -706,27 +591,6 @@ fn transient_body_refusal(reply: &serde_json::Value) -> bool {
         || message.contains("timed out")
 }
 
-pub(crate) fn body_deadline_failure(
-    conn: &rusqlite::Connection,
-    run_id: &str,
-) -> Result<Option<(String, String)>> {
-    use rusqlite::OptionalExtension;
-    let last: Option<String> = conn
-        .query_row(
-            "SELECT last_provider_refusal FROM event_body_journal WHERE run_id=?1 AND body IS NULL",
-            [run_id],
-            |r| r.get(0),
-        )
-        .optional()?
-        .flatten();
-    last.map(|detail| {
-        let reply: serde_json::Value =
-            serde_json::from_str(&detail).map_err(|e| CoreError::Corrupt(e.to_string()))?;
-        Ok((provider_refusal_code(&reply).into(), detail))
-    })
-    .transpose()
-}
-
 fn mismatch(detail: impl Into<String>) -> Preamble {
     Preamble::Failed {
         kind: "event_body_mismatch".into(),
@@ -800,32 +664,25 @@ fn body_targets_run(notice: &Notice, body: &[u8], flow_id: &str) -> bool {
 
 impl Runtime {
     fn saved_event_body(&self, id: &str) -> Result<Option<SavedBody>> {
-        if self.shared.staged_hosts.is_some() {
-            return self
-                .staged_snapshot(id)
-                .map(|s| {
-                    Ok(s.event_bodies.iter().rev().find_map(|b| match b {
-                        crate::run_records::Body::EventBody {
-                            body,
-                            attempt,
-                            retry_at,
-                            refusal,
-                            ..
-                        } => Some((
-                            body.as_ref().map(|b| b.as_bytes().to_vec()),
-                            i64::try_from(*attempt).unwrap_or(i64::MAX),
-                            *retry_at,
-                            refusal.clone(),
-                        )),
-                        _ => None,
-                    }))
-                })
-                .unwrap_or(Ok(None));
-        }
-        self.store().read(|c| {
-            use rusqlite::OptionalExtension;
-            Ok(c.query_row("SELECT body,attempt,retry_at,last_provider_refusal FROM event_body_journal WHERE run_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?)
-        })
+        self.staged_snapshot(id)
+            .map(|s| {
+                Ok(s.event_bodies.iter().rev().find_map(|b| match b {
+                    crate::run_records::Body::EventBody {
+                        body,
+                        attempt,
+                        retry_at,
+                        refusal,
+                        ..
+                    } => Some((
+                        body.as_ref().map(|b| b.as_bytes().to_vec()),
+                        i64::try_from(*attempt).unwrap_or(i64::MAX),
+                        *retry_at,
+                        refusal.clone(),
+                    )),
+                    _ => None,
+                }))
+            })
+            .unwrap_or(Ok(None))
     }
 
     fn save_staged_event_body(
@@ -860,9 +717,7 @@ impl Runtime {
     }
 
     pub(crate) fn event_body_deadline_failure(&self, id: &str) -> Result<Option<(String, String)>> {
-        if self.shared.staged_hosts.is_none() {
-            return self.store().read(|c| body_deadline_failure(c, id));
-        }
+        {}
         let last = self
             .saved_event_body(id)?
             .and_then(|(body, _, _, refusal)| if body.is_none() { refusal } else { None });
@@ -930,17 +785,12 @@ impl Runtime {
         let attempt = saved.map_or(1, |(_, attempt, _, _)| attempt.saturating_add(1));
         // A durable query intent precedes the send; a crash may repeat the
         // read, but a committed body is always replayed without another call.
-        if self.shared.staged_hosts.is_some() {
+        {
             self.save_staged_event_body(
                 run,
                 &notice.digest,
                 (None, attempt, None, last_refusal.clone()),
             )?;
-        } else {
-            self.store().write(|tx| {
-            tx.execute("INSERT INTO event_body_journal(run_id,attempt) VALUES (?1,?2) ON CONFLICT(run_id) DO UPDATE SET attempt=excluded.attempt,retry_at=NULL", params![run.run_id, attempt])?;
-            Ok(())
-        })?;
         }
         let request = CallRequest {
             flow_version: run.flow_version,
@@ -1008,17 +858,12 @@ impl Runtime {
                         return Ok(mismatch("flow-targeted body does not name the run's flow"));
                     }
                     let trigger = script_trigger(&notice, &body)?;
-                    if self.shared.staged_hosts.is_some() {
+                    {
                         self.save_staged_event_body(
                             run,
                             &notice.digest,
                             (Some(body.clone()), attempt, None, last_refusal.clone()),
                         )?;
-                    } else {
-                        self.store().write(|tx| {
-                    tx.execute("UPDATE event_body_journal SET body=?2,digest=?3,retry_at=NULL WHERE run_id=?1", params![run.run_id, body, notice.digest])?;
-                    Ok(())
-                })?;
                     }
                     return Ok(Preamble::Ready(trigger));
                 }
@@ -1057,7 +902,7 @@ impl Runtime {
             .now_ms()
             .saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX))
             .min(run.deadline_at.unwrap_or(i64::MAX));
-        if self.shared.staged_hosts.is_some() {
+        {
             self.save_staged_event_body(
                 run,
                 &notice.digest,
@@ -1071,14 +916,6 @@ impl Runtime {
                         .or(last_refusal),
                 ),
             )?;
-        } else {
-            self.store().write(|tx| {
-                    tx.execute(
-                        "UPDATE event_body_journal SET retry_at=?2,last_provider_refusal=COALESCE(?3,last_provider_refusal) WHERE run_id=?1",
-                        params![run.run_id, retry, provider_refusal.as_ref().map(|(_, detail)| detail)],
-                    )?;
-                    Ok(())
-                })?;
         }
         if first_provider_refusal && let Some((code, _)) = provider_refusal {
             tracing::warn!(

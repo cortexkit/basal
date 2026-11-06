@@ -990,3 +990,72 @@ owner differs from the retired agent and its manifest no longer names that
 agent. For an operator-installed flow, removal of the retired target from all
 manifest agent fields is sufficient. Changing code while retaining the retired
 owner or target does not clear retirement.
+
+## Run-log recovery and cutover
+
+Live flow execution uses an append-only `run-log/` beside the SQLite store.
+SQLite retains admission, accounting, control-plane state and finished-run
+summaries. A remote dispatch always has durable intent. Anything leaving basal,
+including a host acknowledgement or a terminal result, is backed by a durable
+log prefix or a committed SQLite transaction containing the values it depended
+on. Outcomes and delivery order need not be synced before the worker sees them:
+after a crash, execution resumes from the durable prefix, and clock, random and
+kv values beyond that prefix may differ on re-execution.
+
+Successful runs retain a summary and result only. Failed, engine-mismatch and
+cancelled runs retain their call detail with the history row. Open obligations
+protect history from retention; settled host receipts survive until that history
+is pruned, so a redelivery does not cause another send.
+
+### Backup and restore
+
+**Do not back up or restore `run-log/`.** Restoring that directory by any tool is
+unsupported. Exclude it from OS-level backups and the ENGRAM backup catalog.
+Back up the SQLite store using its supported backup procedure instead. A SQLite
+restore can leave the log missing, foreign, older or newer than the store. Basal
+then reinitializes the log once and marks previously live runs `history_lost`.
+A repeated boot must not advance the epoch again. A corrupt retained segment or
+broken link chain is a startup failure, not permission to discard evidence:
+preserve the files and investigate the operator diagnostic.
+
+### Resolving history_lost
+
+A `history_lost` run is non-terminal and continues to hold its flow's slot. It
+appears in `diagnostics.findings`; it is not automatically resent. Inspect the
+run, the restore event and downstream effects before choosing a resolution.
+The operator operation is:
+
+```json
+{"op":"flow.reconcile","run_id":"<full run id>","resolution":"cancel"}
+```
+
+Use `resolution: "retrigger"` instead only when a new execution is wanted.
+`cancel` records a cancelled history row with unavailable call detail, preserves
+late Broca completions as obligations and releases the slot. `retrigger` first
+cancels, then admits a new run under the normal gate with a fresh run ID and
+idempotency keys. Neither choice reconstructs lost call detail or automatically
+resends an unknown unkeyed write. Reconcile any such external effect manually
+before retriggering. Accounting lost with the log can under-count once; the
+history row records that limitation. This operation applies only to
+`history_lost`, not ordinary unknown-write decision cards.
+
+### Cutover hold point
+
+Cutover is a stop-the-world deploy under the store lease. A committed
+`migration_phase` makes restart resume migration rather than start traffic. Each
+phase is idempotent. Admission and activation remain held until the migration's
+post-checks. Before any production-shaped rehearsal or production migration,
+the release operator must obtain the project maintainer's recorded approval and
+a pre-migration backup and rollback plan, retained with the deployment's change
+record. The supervising release operator owns the live-store-copy crash
+rehearsal and production deploy; synthetic-fixture tests do not authorize them.
+Startup serves only after all persisted post-checks pass. A failed post-check
+refuses startup and names the check; there is no separate runtime release CLI.
+
+Compare finished/live and identity counts, first-segment snapshots, failed call
+detail, broken/activation counts, accounting windows and reservations, late-work
+obligations, Broca waits/wakes and tombstones. Audit retained foreign keys and
+`sqlite_schema` views and triggers for references to removed tables. Rollback
+using the backup and previous binaries is valid only before new traffic starts;
+after traffic begins, rollback requires a reverse migration. Keep the hold if
+any check fails.

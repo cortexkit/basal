@@ -62,20 +62,25 @@ impl Host for Provider {
     }
 }
 fn open(world: &World, provider: Arc<Provider>, clock: &Clock) -> Runtime {
-    Runtime::new(
-        Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-        provider,
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        Config {
-            clock: clock.clone(),
-            install_gate: InstallGate::Core,
-            deferral_retry: Duration::from_millis(100),
-            auto_resume: false,
-            ..Config::default()
-        },
-    )
+    {
+        let runtime = Runtime::new(
+            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+            provider,
+            Arc::new(world.catalog.clone()),
+            Arc::new(NoHooks),
+            Some(world.source.clone()),
+            Config {
+                clock: clock.clone(),
+                install_gate: InstallGate::Core,
+                deferral_retry: Duration::from_millis(100),
+                auto_resume: false,
+                ..Config::default()
+            },
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
+    }
 }
 
 #[test]
@@ -108,15 +113,7 @@ fn reopening_store_never_resends_early_and_keeps_position_and_call_key() {
     let key = rt.calls(&run).unwrap()[0].idempotency_key.clone();
     // A cut can leave an activation pending as well as suspended. Neither
     // representation authorizes an early send when the issue row is deferred.
-    rt.store()
-        .write(|tx| {
-            tx.execute(
-                "UPDATE runs SET state='pending',awaited=NULL WHERE run_id=?1",
-                [&run],
-            )?;
-            Ok(())
-        })
-        .unwrap();
+    rt.fixture_requeue(&run).unwrap();
     drop(rt);
     let rt = open(&world, provider.clone(), &clock);
     rt.recover().unwrap();
@@ -125,6 +122,7 @@ fn reopening_store_never_resends_early_and_keeps_position_and_call_key() {
     assert_eq!(provider.calls.lock().unwrap().len(), 1);
     assert_eq!(rt.run(&run).unwrap().state, RunState::Suspended);
     clock.set(1100);
+    assert!(rt.startable().unwrap().iter().any(|(id, _)| id == &run));
     rt.resume(&run).unwrap();
     rt.quiesce();
     assert_eq!(rt.run(&run).unwrap().state, RunState::Succeeded);
@@ -133,5 +131,7 @@ fn reopening_store_never_resends_early_and_keeps_position_and_call_key() {
     assert_eq!(calls[1].position, 0);
     assert_eq!(calls[1].idempotency_key, key);
     assert_eq!(rt.calls(&run).unwrap().len(), 1);
-    assert_eq!(*provider.queries.lock().unwrap(), 3);
+    // The early activation must not repeat preparation while its deferral is
+    // still in the future. Each actual send gets one readiness query.
+    assert_eq!(*provider.queries.lock().unwrap(), 2);
 }

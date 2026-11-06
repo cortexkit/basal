@@ -5,26 +5,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{CoreError, Result, Runtime, install};
 
-/// Every effect path uses the run's pinned version, not today's approved pointer.
-/// Reading under the store lock linearizes authorization with `install::revoke`.
-pub(crate) fn dispatch_check(conn: &Connection, run_id: &str) -> Result<Option<String>> {
-    let (flow, version): (String, Option<u32>) = conn.query_row(
-        "SELECT flow_id,flow_version FROM runs WHERE run_id=?1",
-        [run_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    match version {
-        Some(version) => install::revocation(conn, &flow, version),
-        None => Ok(None),
-    }
-}
-
 fn approved_hash(conn: &Connection, flow: &str, version: u32) -> Result<Option<String>> {
     let hash: Option<Vec<u8>> = conn.query_row(
         "SELECT code_hash FROM installs WHERE flow_id=?1 AND version=?2 AND approval_ref IS NOT NULL \
          UNION ALL SELECT p.code_hash FROM flows f JOIN package_versions p ON p.package=f.package \
          WHERE f.flow_id=?1 AND p.version=?2 AND (f.approved_version=?2 OR EXISTS \
-         (SELECT 1 FROM runs r WHERE r.flow_id=f.flow_id AND r.flow_version=?2)) LIMIT 1",
+         (SELECT 1 FROM run_identities r WHERE r.flow_id=f.flow_id AND r.flow_version=?2)) LIMIT 1",
         params![flow, version],
         |r| r.get(0),
     ).optional()?;

@@ -38,8 +38,7 @@ use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
 use basal_core::manifest::{DigestAction, Manifest};
 use basal_core::schedule::{self, fire_trigger_id};
 use basal_core::{
-    ActivationEnd, Admission, CallRow, Config, Durability, InstallRequest, NoHooks, RunState,
-    Runtime, Store,
+    ActivationEnd, Admission, CallRow, Config, InstallRequest, NoHooks, RunState, Runtime,
 };
 use basal_host::{
     CallClass, CallRequest, Catalog, CompletionSink, Dispatched, Host, HostOutcome, OpKind,
@@ -180,8 +179,6 @@ fn failed(e: impl std::fmt::Display) -> DryRunError {
 
 /// Runs dry runs.
 pub struct DryRunner {
-    #[cfg(any(test, feature = "test-support"))]
-    staged: bool,
     catalog: Arc<dyn Catalog>,
     live_host: Arc<dyn Host>,
     pool: Pool,
@@ -201,8 +198,6 @@ impl DryRunner {
         metrics: Arc<Metrics>,
     ) -> Self {
         Self {
-            #[cfg(any(test, feature = "test-support"))]
-            staged: false,
             catalog,
             live_host,
             pool,
@@ -222,14 +217,6 @@ impl DryRunner {
             loop_override: request.loop_override,
         };
         self.run_install(&install, request.mode, &request.trigger, request.now_ms)
-    }
-
-    /// Exercise a dry run with its own scratch run log and retained call detail.
-    /// Ordinary production dry runs keep using Runtime::new.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn staged_for_test(mut self) -> Self {
-        self.staged = true;
-        self
     }
 
     /// Replays immutable installed bytes without applying new intake policy.
@@ -452,7 +439,6 @@ impl DryRunner {
         request: &BorrowedRequest<'_>,
         fires: &[(String, Value)],
     ) -> Result<(Vec<Value>, Vec<basal_core::Warning>), DryRunError> {
-        let store = Store::open(dir.join("scratch.db"), Durability::default()).map_err(failed)?;
         let clock = basal_core::Clock::manual(request.now_ms);
         let host = Arc::new(CaptureHost {
             mode: request.mode,
@@ -477,39 +463,16 @@ impl DryRunner {
             install_gate: basal_core::InstallGate::Off,
             ..self.base.clone()
         };
-        let store = Arc::new(store);
-        #[cfg(any(test, feature = "test-support"))]
-        let staged = self.staged;
-        #[cfg(not(any(test, feature = "test-support")))]
-        let staged = false;
-        let rt = if staged {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                Runtime::new_staged_scratch(
-                    store,
-                    host.clone(),
-                    self.catalog.clone(),
-                    Arc::new(NoHooks),
-                    None,
-                    config,
-                    true,
-                )
-                .map_err(failed)?
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            {
-                unreachable!("production dry runs use the ordinary runtime")
-            }
-        } else {
-            Runtime::new(
-                store,
-                host.clone(),
-                self.catalog.clone(),
-                Arc::new(NoHooks),
-                None,
-                config,
-            )
-        };
+        let scratch = Runtime::scratch_for_dry_run(
+            dir,
+            host.clone(),
+            self.catalog.clone(),
+            Arc::new(NoHooks),
+            None,
+            config,
+        )
+        .map_err(failed)?;
+        let rt = &*scratch;
         let install_result = if request.template.is_some() {
             let validation = basal_core::install::Validation {
                 warnings: Vec::new(),
@@ -648,7 +611,7 @@ impl DryRunner {
                 // limits, including protection against later symlink changes.
                 rt.store().write(|tx| {
                     tx.execute(
-                        if rt.uses_run_log() { "UPDATE live_runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1" } else { "UPDATE runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1" },
+                        "UPDATE live_runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1",
                         rusqlite::params![run_id,
                             json!({"agent_id":template.agent_id}).to_string(),
                             template.params.to_string(), serde_json::to_string(&template.guards).map_err(|e|basal_core::CoreError::Corrupt(e.to_string()))?],
@@ -656,7 +619,7 @@ impl DryRunner {
                     Ok(())
                 }).map_err(failed)?;
             }
-            let mut events = Vec::new();
+            let events = Arc::new(Mutex::new(Vec::new()));
             let mut ending = None;
             for _ in 0..self.config.attempts_per_fire {
                 let mut lease = self
@@ -669,7 +632,7 @@ impl DryRunner {
                 let end = {
                     let mut recording = Recording {
                         inner: &mut lease,
-                        events: &mut events,
+                        events: events.clone(),
                     };
                     rt.activate(&run_id, &mut recording).map_err(failed)?
                 };
@@ -683,7 +646,14 @@ impl DryRunner {
             rt.quiesce();
             let run = rt.run(&run_id).map_err(failed)?;
             let calls = rt.calls(&run_id).map_err(failed)?;
-            runs.push(self.describe_run(manifest, &run, &calls, &events, ending.as_ref(), &host));
+            runs.push(self.describe_run(
+                manifest,
+                &run,
+                &calls,
+                &events.lock().unwrap_or_else(|p| p.into_inner()),
+                ending.as_ref(),
+                &host,
+            ));
         }
         Ok((runs, warnings))
     }
@@ -708,7 +678,7 @@ impl DryRunner {
         let mut partial_calls = BTreeSet::new();
         for event in events {
             match event {
-                Event::Delivered(p) if captured.contains(p) => tainted = true,
+                Event::DriverReleased(p) if captured.contains(p) => tainted = true,
                 Event::Prefix(ps) if ps.iter().any(|p| captured.contains(p)) => tainted = true,
                 Event::Issued(p) if tainted => {
                     partial_calls.insert(*p);
@@ -842,7 +812,7 @@ enum Event {
     /// a broken worker): the script sees them before anything new.
     Prefix(Vec<u64>),
     /// An outcome delivered to the script.
-    Delivered(u64),
+    DriverReleased(u64),
     /// A call the script issued.
     Issued(u64),
 }
@@ -850,7 +820,7 @@ enum Event {
 /// A worker channel that notes the order of deliveries and calls.
 struct Recording<'a> {
     inner: &'a mut Lease,
-    events: &'a mut Vec<Event>,
+    events: Arc<Mutex<Vec<Event>>>,
 }
 
 impl WorkerChannel for Recording<'_> {
@@ -860,15 +830,23 @@ impl WorkerChannel for Recording<'_> {
 
     fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
         match message {
-            ParentMessage::Activate(request) => self.events.push(Event::Prefix(
-                request
-                    .prefix
-                    .iter()
-                    .filter(|c| c.outcome.is_some())
-                    .map(|c| c.position)
-                    .collect(),
-            )),
-            ParentMessage::Deliver(outcome) => self.events.push(Event::Delivered(outcome.position)),
+            ParentMessage::Activate(request) => self
+                .events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Event::Prefix(
+                    request
+                        .prefix
+                        .iter()
+                        .filter(|c| c.outcome.is_some())
+                        .map(|c| c.position)
+                        .collect(),
+                )),
+            ParentMessage::Deliver(outcome) => self
+                .events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Event::DriverReleased(outcome.position)),
             _ => {}
         }
         self.inner.send(message)
@@ -877,19 +855,42 @@ impl WorkerChannel for Recording<'_> {
     fn recv(&mut self, timeout: Duration) -> Result<WorkerMessage, ChannelError> {
         let message = self.inner.recv(timeout)?;
         if let WorkerMessage::HostCall(call) = &message {
-            self.events.push(Event::Issued(call.position));
+            self.events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Event::Issued(call.position));
         }
         Ok(message)
     }
 
-    /// Frames read through a split-off receiver bypass the recording. The
-    /// flow driver that runs dry-run activations reads only through `recv`.
+    /// Split receiving must record the same issuance order as timed recv; dry
+    /// run partialness depends on whether a call followed a captured reply.
     fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
-        self.inner.receiver()
+        Box::new(RecordingReceiver {
+            inner: self.inner.receiver(),
+            events: self.events.clone(),
+        })
     }
 
     fn kill(&mut self) {
         self.inner.kill();
+    }
+}
+
+struct RecordingReceiver {
+    inner: Box<dyn WorkerReceiver>,
+    events: Arc<Mutex<Vec<Event>>>,
+}
+impl WorkerReceiver for RecordingReceiver {
+    fn recv(&mut self) -> Result<WorkerMessage, ChannelError> {
+        let message = self.inner.recv()?;
+        if let WorkerMessage::HostCall(call) = &message {
+            self.events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Event::Issued(call.position));
+        }
+        Ok(message)
     }
 }
 

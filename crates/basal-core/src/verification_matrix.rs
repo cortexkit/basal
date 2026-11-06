@@ -10,9 +10,7 @@ fn every_post_port_boundary_has_a_crash_case() {
     };
     let mut covered = std::collections::BTreeSet::new();
     for boundary in Boundary::ALL {
-        // No wildcard: a new variant must select a crash scenario. The legacy
-        // journal points remain live until cutover, but cannot silently exempt
-        // a new log-backed boundary from this matrix.
+        // No wildcard: every declared production boundary requires a crash scenario.
         match boundary {
             Boundary::AdmissionWritten | Boundary::AdmissionCommitted => {
                 crate::run_admission::tests::crash_case(boundary.clone());
@@ -33,13 +31,15 @@ fn every_post_port_boundary_has_a_crash_case() {
             Boundary::MidSnapshot => {
                 crate::run_records::tests::mid_snapshot_crash_keeps_durable_invariants_with_or_without_unsynced_tail();
             }
-            Boundary::DriverAppended
-            | Boundary::DriverSynced
-            | Boundary::DriverDispatched
-            | Boundary::DriverReleased => {
+            Boundary::DriverActivated { .. }
+            | Boundary::DriverAppended { .. }
+            | Boundary::DriverSynced { .. }
+            | Boundary::DriverDispatched { .. }
+            | Boundary::DriverReleased { .. }
+            | Boundary::DriverBeforeClose => {
                 crate::run_driver::tests::crash_case(boundary.clone());
             }
-            Boundary::HostArrived => {
+            Boundary::HostArrived { .. } => {
                 crate::run_host::tests::arrival_before_acknowledgement_crash_recovers_the_same_outcome();
             }
             Boundary::RestoreMarked
@@ -49,30 +49,33 @@ fn every_post_port_boundary_has_a_crash_case() {
                 crate::run_log::tests::sqlite::restore::crash_case(boundary.clone());
                 crate::staged_runtime::tests::verification_matrix::crash_case(boundary.clone());
             }
-            Boundary::Claimed { .. }
-            | Boundary::FingerprintRecorded
-            | Boundary::ResendAuthorized { .. }
-            | Boundary::ActivateSent { .. }
-            | Boundary::HostCallReceived { .. }
-            | Boundary::BlockedReceived
-            | Boundary::ModelSelected { .. }
-            | Boundary::CallCommitted { .. }
-            | Boundary::SyncCommitted { .. }
-            | Boundary::SyncReplied { .. }
-            | Boundary::LocalCommitted { .. }
-            | Boundary::RefusalCommitted { .. }
-            | Boundary::HostAnswered { .. }
-            | Boundary::OutcomeCommitted { .. }
-            | Boundary::AcceptedCommitted { .. }
-            | Boundary::OrderCommitted { .. }
-            | Boundary::Delivered { .. }
-            | Boundary::LongRunningSent
-            | Boundary::EndingReceived
-            | Boundary::Exited => continue,
+            Boundary::RemovalCaptured => {
+                crate::run_removal::tests::crash_case(boundary.clone());
+            }
+            Boundary::MigrationSweepReady
+            | Boundary::MigrationSweepCommitted
+            | Boundary::MigrationCreateReady
+            | Boundary::MigrationCreateCommitted
+            | Boundary::MigrationFinishedReady
+            | Boundary::MigrationFinishedCommitted
+            | Boundary::MigrationLiveReady
+            | Boundary::MigrationLiveCommitted
+            | Boundary::MigrationBrocaReady
+            | Boundary::MigrationBrocaCommitted
+            | Boundary::MigrationDropReady
+            | Boundary::MigrationDropCommitted
+            | Boundary::MigrationPagesReady
+            | Boundary::MigrationPagesCommitted
+            | Boundary::MigrationBeforeVacuum
+            | Boundary::MigrationAfterVacuum
+            | Boundary::MigrationFinishReady
+            | Boundary::MigrationFinishCommitted => {
+                crate::run_cutover::tests::migration_case(boundary.clone());
+            }
         }
         assert!(covered.insert(boundary.clone()), "duplicate {boundary:?}");
     }
-    assert_eq!(covered.len(), 22);
+    assert_eq!(covered.len(), 43);
 }
 
 #[test]

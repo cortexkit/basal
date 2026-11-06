@@ -17,9 +17,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use basal_host::CallRequest;
 use basal_host::{
-    CallRequest, Catalog, Completion, CompletionAck, CompletionSink, Dispatched, Host, HostOutcome,
-    Sent, SinkError, TransportError, UnknownOutcome, UnknownReason,
+    Catalog, Completion, CompletionAck, CompletionSink, Host, HostOutcome, SinkError,
+    UnknownOutcome, UnknownReason,
 };
 use basal_proto::{Budgets, CallKind, JsonText};
 use serde_json::json;
@@ -29,21 +31,17 @@ use crate::authorize::ShellDenylist;
 use crate::channel::WorkerSource;
 use crate::clock::Clock;
 use crate::error::{CoreError, Result};
-use crate::hooks::{Boundary, Hooks, Step};
-use crate::journal::{self, Source};
+use crate::hooks::Hooks;
+
 use crate::kv::KvLimits;
 use crate::model::{CallRow, Run, RunState, StoredClass};
 use crate::rate::RateLimits;
-use crate::runs::{self, Lease};
+use crate::runs::Lease;
 use crate::store::Store;
 
 #[cfg(test)]
 #[path = "runtime_regressions.rs"]
 mod regressions;
-
-#[path = "dispatch_cause.rs"]
-mod dispatch_cause;
-use dispatch_cause::DispatchCause;
 
 /// Per-run limits, besides the per-activation budgets the worker enforces.
 /// The JS heap limit does not cover the parent's buffers or the store, so
@@ -248,22 +246,21 @@ pub(crate) struct Shared {
     pub(crate) staged_owners: Mutex<HashMap<String, (u64, String)>>,
     pub(crate) staged_workers: Mutex<HashMap<(String, u64), std::thread::ThreadId>>,
     pub(crate) staged_stopped: Condvar,
+    pub(crate) ready: AtomicBool,
+    pub(crate) removal_drain: Mutex<()>,
     stopping: AtomicBool,
     pub(crate) store: Arc<Store>,
     pub(crate) host: Arc<dyn Host>,
     pub(crate) catalog: Arc<dyn Catalog>,
     pub(crate) hooks: Arc<dyn Hooks>,
     pub(crate) source: Option<Arc<dyn WorkerSource>>,
-    /// Calls being dispatched by a thread of this process. A recovering
-    /// activation never sends these again: their thread will record the
-    /// outcome.
-    pub(crate) inflight: Mutex<HashMap<(String, u64), InflightRoute>>,
+
     pub(crate) flow_routes: Mutex<()>,
     /// Runs whose install gate got no answer from core, with when they may
     /// be checked again. In memory: a restart checks every run at once.
     pub(crate) gate_backoff: Mutex<HashMap<String, crate::gate::Backoff>>,
     event_scope_warnings: Mutex<EventScopeWarnings>,
-    dispatch_warnings: Mutex<HashMap<(String, u64), String>>,
+
     pub(crate) signal: Signal,
     threads: Mutex<Vec<JoinHandle<()>>>,
     pub(crate) retention_next: Mutex<Option<i64>>,
@@ -271,11 +268,6 @@ pub(crate) struct Shared {
     pub(crate) owner_notice_drain: Mutex<()>,
     /// The `fs.write` temporary files this process is writing now.
     pub(crate) fs_temps: crate::retention::FsTemps,
-}
-
-pub(crate) struct InflightRoute {
-    pub(crate) flow_id: String,
-    pub(crate) version: Option<u32>,
 }
 
 const EVENT_SCOPE_WARNING_HISTORY: usize = 4096;
@@ -326,10 +318,6 @@ struct Sink {
 impl CompletionSink for Sink {
     fn route_released(&self, run_id: &str) {
         if let Some(shared) = self.shared.upgrade() {
-            if shared.staged_hosts.is_some() {
-                shared.signal.bump();
-                return;
-            }
             let rt = Runtime {
                 shared,
                 config: self.config.clone(),
@@ -339,6 +327,7 @@ impl CompletionSink for Sink {
             {
                 let _ = rt.release_unused_flow_routes_for(&run.flow_id);
             }
+            rt.shared.signal.bump();
         }
     }
     fn complete(&self, c: &Completion) -> std::result::Result<CompletionAck, SinkError> {
@@ -383,6 +372,7 @@ pub(crate) fn unavailable_rejection(detail: &str) -> HostOutcome {
 }
 
 impl Runtime {
+    /// Migrate and recover the log before constructing or attaching a runtime.
     pub fn new(
         store: Arc<Store>,
         host: Arc<dyn Host>,
@@ -390,12 +380,74 @@ impl Runtime {
         hooks: Arc<dyn Hooks>,
         source: Option<Arc<dyn WorkerSource>>,
         config: Config,
-    ) -> Self {
-        Self::new_inner(store, host, catalog, hooks, source, config, None)
+    ) -> Result<Self> {
+        let recovered = Self::recover_hosts(store, hooks.clone(), &config)?;
+        let rt = Self::new_staged(recovered, host, catalog, hooks, source, config)?;
+        rt.recover()?;
+        Ok(rt)
+    }
+
+    /// Startup preparation has no host, runtime or worker side effects. The
+    /// returned registry is complete before decision adapters or sinks attach.
+    pub fn recover_hosts(
+        store: Arc<Store>,
+        hooks: Arc<dyn Hooks>,
+        config: &Config,
+    ) -> Result<Arc<crate::run_host::RecoveredHosts>> {
+        let path: String = store.read(|c| {
+            Ok(c.query_row(
+                "SELECT file FROM pragma_database_list WHERE name='main'",
+                [],
+                |r| r.get(0),
+            )?)
+        })?;
+        let directory = std::path::Path::new(&path)
+            .parent()
+            .ok_or_else(|| CoreError::Invalid("store needs a directory".into()))?
+            .join("run-log");
+        crate::run_cutover::Migration::new(store.clone(), &directory, hooks.clone()).run()?;
+        let meta = store.read(crate::run_store_sql::meta)?;
+        let (writer, recovered) =
+            crate::run_log::RunLog::<crate::run_records::Record>::open_restoring(
+                crate::run_log::Config {
+                    directory,
+                    identity: crate::run_log::Identity {
+                        store_id: meta.store_id.as_bytes().try_into().map_err(|_| {
+                            CoreError::Corrupt("store identity must contain 16 bytes".into())
+                        })?,
+                        log_epoch: meta.log_epoch,
+                    },
+                    lease_epoch: store.lease_epoch(),
+                    target_size: crate::run_log::Config::TARGET_SIZE,
+                    hooks: hooks.clone(),
+                },
+                store.clone(),
+            )
+            .map_err(|e| CoreError::Store(e.to_string()))?;
+        let log = Arc::new(writer);
+        let budgets = crate::run_driver::Budgets {
+            dispatch_window_ms: i64::try_from(config.rate.window.as_millis())
+                .map_err(|_| CoreError::Invalid("invalid rate window".into()))?,
+            token_window_ms: 86_400_000,
+            dispatches: u64::from(config.rate.max_dispatches),
+            tokens: u64::MAX,
+            cost_micros: u64::MAX,
+            cost_window: None,
+        };
+        Ok(Arc::new(crate::run_host::RecoveredHosts::recover(
+            store,
+            log.clone(),
+            Arc::new(log.watermark()),
+            &recovered.records,
+            budgets,
+            hooks,
+            config.clock.clone(),
+        )?))
     }
 
     /// Staged construction requires completed registry recovery before attach
-    /// can poll saved host work. Production keeps using `new` until cutover.
+    /// can poll saved host work. The production host bundle is built between
+    /// recovery and this constructor so its adapters see the complete registry.
     pub fn new_staged(
         hosts: Arc<crate::run_host::RecoveredHosts>,
         host: Arc<dyn Host>,
@@ -414,9 +466,17 @@ impl Runtime {
             Some(hosts),
         );
         rt.configure_staged_decisions()?;
+        rt.capture_existing_removals()?;
+        rt.resume_run_removals()?;
+        if !rt.removals_complete()? {
+            return Err(CoreError::Unavailable(
+                "removed runs are still closing during startup".into(),
+            ));
+        }
         rt.attach_host();
         rt.flush_staged_live_refusals()?;
         rt.flush_refusals()?;
+        rt.shared.ready.store(true, Ordering::Release);
         Ok(rt)
     }
 
@@ -435,17 +495,19 @@ impl Runtime {
             staged_owners: Mutex::new(HashMap::new()),
             staged_workers: Mutex::new(HashMap::new()),
             staged_stopped: Condvar::new(),
+            ready: AtomicBool::new(false),
+            removal_drain: Mutex::new(()),
             stopping: AtomicBool::new(false),
             store,
             host,
             catalog,
             hooks,
             source,
-            inflight: Mutex::new(HashMap::new()),
+
             flow_routes: Mutex::new(()),
             gate_backoff: Mutex::new(HashMap::new()),
             event_scope_warnings: Mutex::new(EventScopeWarnings::default()),
-            dispatch_warnings: Mutex::new(HashMap::new()),
+
             signal: Signal {
                 epoch: Mutex::new(0),
                 cond: Condvar::new(),
@@ -468,9 +530,7 @@ impl Runtime {
             .host
             .scope_checks(config.install_gate == crate::gate::InstallGate::Core);
         let rt = Self { shared, config };
-        if rt.shared.staged_hosts.is_none() {
-            rt.attach_host();
-        }
+        {}
         rt
     }
 
@@ -500,10 +560,9 @@ impl Runtime {
         &self.shared.store
     }
 
-    /// Readers use the runtime's construction, never a schema probe, to choose
-    /// their execution-state source during the pre-cutover staging period.
+    /// All runtime construction is log-backed.
     pub fn uses_run_log(&self) -> bool {
-        self.shared.staged_hosts.is_some()
+        true
     }
 
     /// Stop this runtime's execution writes before closing hosts or workers.
@@ -544,17 +603,6 @@ impl Runtime {
         *lock(&self.shared.signal.listener) = Some(notify);
     }
 
-    /// Calls `hooks` at a boundary; a crash cuts the store.
-    pub(crate) fn at(&self, run_id: &str, boundary: Boundary) -> Result<()> {
-        match self.shared.hooks.at(run_id, &boundary) {
-            Step::Continue => Ok(()),
-            Step::Crash => {
-                self.shared.store.cut();
-                Err(CoreError::Cut)
-            }
-        }
-    }
-
     // ---- Admission ---------------------------------------------------------
 
     pub(crate) fn admit_context(&self) -> Result<AdmitContext> {
@@ -569,14 +617,7 @@ impl Runtime {
     /// Admits a trigger whose spec carries the flow's approved script and
     /// manifest. Anything else is refused as [`Admission::NotApproved`].
     pub fn admit(&self, spec: &TriggerSpec) -> Result<Admission> {
-        if self.shared.staged_hosts.is_some() {
-            return self.staged_admit(spec);
-        }
-        let store_id = self.shared.store.store_id().to_owned();
-        let ctx = self.admit_context()?;
-        let admitted = self.write_execution(|tx| admission::admit(tx, &store_id, spec, &ctx))?;
-        self.shared.signal.bump();
-        Ok(admitted)
+        self.staged_admit(spec)
     }
 
     /// Admits a trigger under the flow's currently approved version.
@@ -586,100 +627,65 @@ impl Runtime {
         trigger_id: &str,
         trigger: JsonText,
     ) -> Result<Admission> {
-        if self.shared.staged_hosts.is_some() {
-            return self.staged_admit_trigger(flow_id, trigger_id, trigger);
-        }
-        let store_id = self.shared.store.store_id().to_owned();
-        let ctx = self.admit_context()?;
-        let admitted = self.write_execution(|tx| {
-            admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
-        })?;
-        self.shared.signal.bump();
-        Ok(admitted)
+        self.staged_admit_trigger(flow_id, trigger_id, trigger)
     }
 
-    /// A scheduler over this runtime's store that reads this runtime's
-    /// clock and admits fires under its admission limits.
+    /// A scheduler sharing this runtime's clock and admission limits.
     pub fn scheduler(&self) -> Result<crate::schedule::Scheduler> {
         let ctx = self.admit_context()?;
-        let scheduler = crate::schedule::Scheduler::new(
-            self.shared.store.clone(),
+        Ok(crate::schedule::Scheduler::new(
+            self.clone(),
             Arc::new(self.config.clock.clone()),
             self.config.schedule.clone(),
         )
         .with_limits(crate::schedule::AdmitLimits {
             rate: ctx.rate,
             default_deadline_ms: ctx.default_deadline_ms,
-        });
-        Ok(if self.uses_run_log() {
-            scheduler.with_staged_runtime(self.clone())
-        } else {
-            scheduler
-        })
+        }))
     }
 
     pub fn retrigger(&self, run_id: &str) -> Result<Admission> {
-        if self.shared.staged_hosts.is_some() {
-            return self.staged_retrigger(run_id);
-        }
-        let store_id = self.shared.store.store_id().to_owned();
-        let ctx = self.admit_context()?;
-        let admitted =
-            self.write_execution(|tx| admission::retrigger(tx, &store_id, run_id, &ctx))?;
-        self.shared.signal.bump();
-        Ok(admitted)
+        self.staged_retrigger(run_id)
     }
 
     // ---- Reading -----------------------------------------------------------
 
     pub fn run(&self, run_id: &str) -> Result<Run> {
-        if self.shared.staged_hosts.is_some() {
-            return self.staged_run(run_id);
-        }
-        self.shared.store.read(|c| runs::load(c, run_id))
+        self.staged_run(run_id)
     }
 
     pub fn calls(&self, run_id: &str) -> Result<Vec<CallRow>> {
-        if self.shared.staged_hosts.is_some() {
-            return self.staged_calls(run_id);
-        }
-        self.shared.store.read(|c| journal::rows(c, run_id))
+        self.staged_calls(run_id)
     }
 
     /// Why a call was last recorded unknown, if it ever was.
     pub fn unknown_reason(&self, run_id: &str, position: u64) -> Result<Option<UnknownReason>> {
-        if self.uses_run_log() {
-            if let Some(s) = self.staged_snapshot(run_id) {
-                return Ok(s
-                    .calls
-                    .get(&position)
-                    .and_then(|c| c.unknown.as_deref())
-                    .and_then(UnknownReason::parse));
-            }
-            return self.store().read(|c| {
-                let call = crate::run_store_sql::call(c, run_id, position)?;
-                Ok(call.and_then(|c| c.detail["unknown"].as_str().and_then(UnknownReason::parse)))
-            });
+        if let Some(s) = self.staged_snapshot(run_id) {
+            return Ok(s
+                .calls
+                .get(&position)
+                .and_then(|c| c.unknown.as_deref())
+                .and_then(crate::run_records::parse_unknown_reason));
         }
-        self.shared
-            .store
-            .read(|c| journal::unknown_reason(c, run_id, position))
+        self.store().read(|c| {
+            let call = crate::run_store_sql::call(c, run_id, position)?;
+            Ok(call.and_then(|c| {
+                c.detail["unknown"]
+                    .as_str()
+                    .and_then(crate::run_records::parse_unknown_reason)
+            }))
+        })
     }
 
     pub fn activation_count(&self, run_id: &str) -> Result<u64> {
-        if self.uses_run_log() {
-            if let Some(s) = self.staged_snapshot(run_id) {
-                return Ok(s.activation_count);
-            }
-            return self.store().read(|c| {
-                crate::run_store_sql::history(c, run_id)?
-                    .map(|h| h.activation_count)
-                    .ok_or_else(|| CoreError::NoSuchRun(run_id.into()))
-            });
+        if let Some(s) = self.staged_snapshot(run_id) {
+            return Ok(s.activation_count);
         }
-        self.shared
-            .store
-            .read(|c| runs::activation_count(c, run_id))
+        self.store().read(|c| {
+            crate::run_store_sql::history(c, run_id)?
+                .map(|h| h.activation_count)
+                .ok_or_else(|| CoreError::NoSuchRun(run_id.into()))
+        })
     }
 
     // ---- Ownership ---------------------------------------------------------
@@ -687,43 +693,16 @@ impl Runtime {
     /// Moves every `running` run back to `pending`. Called once when the
     /// process starts: the store's lease proves their owners are gone.
     pub fn recover(&self) -> Result<Vec<String>> {
-        if self.uses_run_log() {
-            return self.staged_recover();
-        }
-        let ids = self.write_execution(runs::requeue_orphans)?;
-        self.flush_refusals()?;
-        self.release_unused_flow_routes()?;
-        self.shared.signal.bump();
-        Ok(ids)
+        self.staged_recover()
     }
 
     /// Takes a running run from the activation holding `generation`.
     pub fn take_over(&self, run_id: &str, generation: u64) -> Result<Lease> {
-        if self.uses_run_log() {
-            return self.staged_take_over(run_id, generation);
-        }
-        let owner = self.config.owner.clone();
-        let lease = self.write_execution(|tx| runs::take_over(tx, run_id, &owner, generation))?;
-        self.shared.signal.bump();
-        Ok(lease)
+        self.staged_take_over(run_id, generation)
     }
 
     pub fn cancel(&self, run_id: &str, actor: &str) -> Result<()> {
-        if self.uses_run_log() {
-            return self.staged_cancel(run_id, actor);
-        }
-        self.write_execution(|tx| {
-            runs::cancel(tx, run_id, &format!("cancelled by {actor}"))?;
-            crate::reconcile::audit(tx, actor, "cancel", Some(run_id), None, "")
-        })?;
-        self.clear_event_scope_warning(run_id);
-        self.flush_refusals()?;
-        self.shared.signal.bump();
-        if let Ok(run) = self.run(run_id) {
-            self.release_unused_flow_routes_for(&run.flow_id)?;
-            self.wake_flow(&run.flow_id);
-        }
-        Ok(())
+        self.staged_cancel(run_id, actor)
     }
 
     // ---- Waiting -----------------------------------------------------------
@@ -738,11 +717,7 @@ impl Runtime {
         let deadline = Instant::now() + timeout;
         loop {
             let seen = self.shared.signal.current();
-            let state = if self.uses_run_log() {
-                self.run(run_id)?.state
-            } else {
-                self.shared.store.read(|c| runs::state(c, run_id))?
-            };
+            let state = { self.run(run_id)?.state };
             let now = Instant::now();
             if done(state) {
                 return Ok(state);
@@ -806,7 +781,7 @@ impl Runtime {
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
         for (seq, body) in rows {
-            let saved: journal::SavedRefusal =
+            let saved: crate::refusal_receipt::SavedRefusal =
                 serde_json::from_str(&body).map_err(|e| CoreError::Corrupt(e.to_string()))?;
             self.shared
                 .host
@@ -829,26 +804,18 @@ impl Runtime {
     /// another way (a subscription replayed after a restart) use it
     /// directly.
     pub fn complete(&self, completion: &Completion) -> Result<CompletionAck> {
-        if let Some(hosts) = &self.shared.staged_hosts {
-            let capped = self
-                .cap_result(&completion.outcome)
-                .map(|outcome| Completion {
-                    outcome,
-                    ..completion.clone()
-                });
-            let ack = hosts
-                .complete(capped.as_ref().unwrap_or(completion))
-                .map_err(|e| CoreError::Unavailable(e.to_string()))?;
-            self.shared.signal.bump();
-            return Ok(ack);
-        }
-        self.accept(
-            &completion.run_id,
-            completion.position,
-            Some(&completion.handle),
-            &completion.outcome,
-            Source::Completion,
-        )
+        let hosts = self.shared.staged_hosts.as_ref().expect("recovered hosts");
+        let capped = self
+            .cap_result(&completion.outcome)
+            .map(|outcome| Completion {
+                outcome,
+                ..completion.clone()
+            });
+        let ack = hosts
+            .complete(capped.as_ref().unwrap_or(completion))
+            .map_err(|e| CoreError::Unavailable(e.to_string()))?;
+        self.shared.signal.bump();
+        Ok(ack)
     }
 
     /// Records a host's report that an accepted call's outcome cannot be
@@ -856,40 +823,12 @@ impl Runtime {
     /// `None` means the run's activation is still running and the report
     /// was not recorded: the host must make it again later.
     pub fn unknown(&self, u: &UnknownOutcome) -> Result<Option<CompletionAck>> {
-        if let Some(hosts) = &self.shared.staged_hosts {
-            let ack = hosts
-                .unknown(u)
-                .map_err(|e| CoreError::Unavailable(e.to_string()))?;
-            self.shared.signal.bump();
-            return Ok(Some(ack));
-        }
-        let ack = self.write_execution(|tx| {
-            journal::record_host_unknown(tx, &u.run_id, u.position, &u.handle, u.reason, &u.detail)
-        })?;
+        let hosts = self.shared.staged_hosts.as_ref().expect("recovered hosts");
+        let ack = hosts
+            .unknown(u)
+            .map_err(|e| CoreError::Unavailable(e.to_string()))?;
         self.shared.signal.bump();
-        Ok(ack)
-    }
-
-    /// Offers an outcome for a call, from any thread and any activation.
-    pub(crate) fn accept(
-        &self,
-        run_id: &str,
-        position: u64,
-        handle: Option<&str>,
-        outcome: &HostOutcome,
-        source: Source,
-    ) -> Result<CompletionAck> {
-        let capped = self.cap_result(outcome);
-        let outcome = capped.as_ref().unwrap_or(outcome);
-        let accepted = self.write_execution(|tx| {
-            journal::accept_outcome(tx, run_id, position, handle, outcome, source)
-        })?;
-        self.at(run_id, Boundary::OutcomeCommitted { position })?;
-        self.shared.signal.bump();
-        if accepted.woke {
-            self.wake(run_id);
-        }
-        Ok(accepted.ack)
+        Ok(Some(ack))
     }
 
     /// A result over the byte cap, replaced before anything parses it by a
@@ -911,7 +850,11 @@ impl Runtime {
 
     /// Starts an activation for a run made runnable, if configured to.
     pub(crate) fn wake(&self, run_id: &str) {
-        if self.is_stopping() || !self.config.auto_resume || self.shared.source.is_none() {
+        if !self.shared.ready.load(Ordering::Acquire)
+            || self.is_stopping()
+            || !self.config.auto_resume
+            || self.shared.source.is_none()
+        {
             return;
         }
         let rt = self.clone();
@@ -960,30 +903,6 @@ impl Runtime {
 
     // ---- Dispatch ----------------------------------------------------------
 
-    /// Registers a call as being dispatched by this process. Done before the
-    /// call's row (or its resend authorization) commits, so a recovering
-    /// activation never sends a call this process is about to send.
-    pub(crate) fn register(&self, run: &Run, position: u64) {
-        lock(&self.shared.inflight).insert(
-            (run.run_id.clone(), position),
-            InflightRoute {
-                flow_id: run.flow_id.clone(),
-                version: run.flow_version,
-            },
-        );
-    }
-
-    pub(crate) fn unregister(&self, run_id: &str, position: u64) {
-        let route = lock(&self.shared.inflight).remove(&(run_id.to_owned(), position));
-        let terminal = self
-            .store()
-            .read(|c| runs::state(c, run_id))
-            .is_ok_and(|state| state.is_terminal());
-        if terminal && let Some(route) = route {
-            let _ = self.release_unused_flow_routes_for(&route.flow_id);
-        }
-    }
-
     pub(crate) fn mark_event_scope_warning(&self, run_id: &str) -> bool {
         lock(&self.shared.event_scope_warnings).insert_once(run_id)
     }
@@ -992,377 +911,8 @@ impl Runtime {
         lock(&self.shared.event_scope_warnings).remove(run_id);
     }
 
-    pub(crate) fn is_inflight(&self, run_id: &str, position: u64) -> bool {
-        lock(&self.shared.inflight).contains_key(&(run_id.to_owned(), position))
-    }
-
-    /// Dispatches an authorized call on its own thread.
-    pub(crate) fn spawn_dispatch(
-        &self,
-        request: CallRequest,
-        class: StoredClass,
-        prior_unsent: bool,
-    ) {
-        let rt = self.clone();
-        self.spawn(move || {
-            let run_id = request.run_id.clone();
-            let position = request.position;
-            // Errors here mean the store failed or was cut: the outcome is
-            // not recorded, and recovery decides what to do with the call.
-            if let Err(error) = rt.dispatch(request.clone(), class, prior_unsent) {
-                rt.dispatch_failed(&request, &error);
-            }
-            rt.unregister(&run_id, position);
-            rt.shared.signal.bump();
-        });
-    }
-
-    /// Persist a provably unsent refusal with the same bounded retry policy,
-    /// whether the failure happened during preparation or at the provider.
-    pub(crate) fn defer_dispatch_refusal(
-        &self,
-        request: &CallRequest,
-        refusal: &basal_host::flow_refusal::FlowRefusal,
-    ) -> Result<()> {
-        use basal_host::flow_refusal::RefusalReason;
-        let now = self.config.clock.now_ms();
-        let backoff = self
-            .config
-            .deferral_retry
-            .saturating_mul(1u32 << (request.attempt.saturating_sub(1)).min(16))
-            .min(self.config.deferral_retry_max);
-        let delay = refusal
-            .retry_after_ms
-            .unwrap_or_else(|| u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX));
-        // Missing consent must be restored by an explicit grant.
-        // i64::MAX prevents automatic retries before that grant.
-        let retry = if refusal.reason == RefusalReason::ConsentUnavailable {
-            i64::MAX
-        } else {
-            now.saturating_add(i64::try_from(delay).unwrap_or(i64::MAX))
-        };
-        self.write_dispatch_cause(request, &DispatchCause::refusal(refusal), |tx| {
-            let deadline: Option<i64> = tx.query_row(
-                "SELECT deadline_at FROM runs WHERE run_id = ?1",
-                [&request.run_id],
-                |r| r.get(0),
-            )?;
-            let retry = if refusal.reason != RefusalReason::ConsentUnavailable {
-                deadline.map_or(retry, |d| retry.min(d))
-            } else {
-                retry
-            };
-            journal::defer(tx, &request.run_id, request.position, refusal, retry)
-        })?;
-        self.shared.signal.bump();
-        Ok(())
-    }
-
-    fn dispatch(
-        &self,
-        mut request: CallRequest,
-        class: StoredClass,
-        prior_unsent: bool,
-    ) -> Result<()> {
-        let run_id = request.run_id.clone();
-        let position = request.position;
-        let mut retries = 0;
-        let mut scope_cut = false;
-        let mut retry_cause = None;
-        // Why the latest send that may have reached the host ended without
-        // an answer; `None` while every failed send provably never left.
-        let mut maybe_sent: Option<UnknownReason> =
-            (!prior_unsent && class != StoredClass::Query).then_some(UnknownReason::BasalRestarted);
-        let answer = loop {
-            // The store serializes attempt authorization with revocation. Do not
-            // hold its lock across the host call: an authorized attempt is already
-            // in flight, and its eventual outcome remains an obligation.
-            let revoked = if let Some(cause) = retry_cause.take() {
-                self.write_dispatch_cause(&request, &cause, |tx| {
-                    crate::revocation::dispatch_check(tx, &run_id)
-                })?
-            } else {
-                self.write_execution(|tx| crate::revocation::dispatch_check(tx, &run_id))?
-            };
-            if let Some(reason) = revoked {
-                if let Some(last) = maybe_sent.filter(|_| class != StoredClass::Query) {
-                    self.write_execution(|tx| {
-                        journal::record_unknown(tx, &run_id, position, last)
-                    })?;
-                } else {
-                    self.accept(
-                        &run_id,
-                        position,
-                        None,
-                        &crate::kv::rejection("version_revoked", &reason),
-                        Source::Host,
-                    )?;
-                }
-                self.shared.signal.bump();
-                return Ok(());
-            }
-            let expected_class = match class {
-                StoredClass::Query => basal_host::CallClass::Query,
-                _ => basal_host::CallClass::Mutation {
-                    honours_idempotency_keys: class == StoredClass::KeyedMutation,
-                },
-            };
-            match self
-                .shared
-                .host
-                .dispatch_classified(&request, expected_class)
-            {
-                Ok(d) => break Ok(d),
-                Err(TransportError::Refused(refusal)) => {
-                    use basal_host::flow_refusal::RefusalReason;
-                    if refusal.reason == RefusalReason::FlowTargetScopePrincipalRefused {
-                        tracing::error!(flow_id=%request.flow_id,code="flow_target_scope_principal_refused","basal called core flow.target_scope on the wrong carrier route");
-                    }
-                    if let Some(reason) = maybe_sent {
-                        // The retirement label's registry read happens here,
-                        // before the store's writer is held.
-                        let target_id = (!refusal.grant_absent()
-                            && refusal.reason == RefusalReason::AgentRetired)
-                            .then(|| self.retirement_target_id(&request))
-                            .flatten();
-                        self.write_dispatch_cause(
-                            &request,
-                            &DispatchCause::refusal(&refusal),
-                            |tx| {
-                                journal::record_unknown(tx, &run_id, position, reason)?;
-                                // Refusing a resend proves nothing about the earlier
-                                // send. Keep its outcome unknown while applying the
-                                // grant-loss or retirement disable now.
-                                if refusal.grant_absent() {
-                                    crate::grant_loss::record(
-                                        tx,
-                                        &request.flow_id,
-                                        &run_id,
-                                        &refusal,
-                                        self.config.clock.now_ms(),
-                                    )?;
-                                } else if refusal.reason == RefusalReason::AgentRetired {
-                                    crate::grant_loss::record_retirement(
-                                        tx,
-                                        &request,
-                                        &refusal,
-                                        self.config.clock.now_ms(),
-                                        target_id.as_deref(),
-                                    )?;
-                                    crate::install::disable(
-                                        tx,
-                                        &request.flow_id,
-                                        &crate::install::Actor::Core,
-                                        "agent_retired",
-                                        self.config.clock.now_ms(),
-                                    )
-                                    .map_err(|e| CoreError::Invalid(e.to_string()))?;
-                                }
-                                Ok(())
-                            },
-                        )?;
-                    } else if refusal.terminal() {
-                        self.accept(&run_id, position, None, &refusal.outcome(), Source::Host)?;
-                        self.shared.host.refusal_committed(&request, &refusal);
-                        return Ok(());
-                    } else if refusal.reason == RefusalReason::FlowScopeRequired {
-                        tracing::error!(provider=%refusal.provider,action=%refusal.action,code="flow_scope_required","provider refused a flow call without its required scope");
-                        self.accept(&run_id, position, None, &refusal.outcome(), Source::Host)?;
-                        self.shared.host.refusal_committed(&request, &refusal);
-                        return Ok(());
-                    } else if refusal.readiness() {
-                        self.write_execution(|tx| {
-                            let accepted = journal::accept_outcome(
-                                tx, &run_id, position, None, &refusal.outcome(), Source::Host,
-                            )?;
-                            if accepted.ack == CompletionAck::Accepted {
-                                crate::flow_scope::health(tx, &request.flow_id, &refusal)?;
-                                let at: i64 = tx.query_row(
-                                    "SELECT at FROM call_audit WHERE run_id=?1 AND position=?2",
-                                    rusqlite::params![run_id,position],
-                                    |r| r.get(0),
-                                )?;
-                                crate::rate::refund_dispatch(tx, &request.flow_id, at, &self.config.rate)?;
-                                tx.execute(
-                                    "UPDATE call_audit SET outcome=?3 WHERE run_id=?1 AND position=?2",
-                                    rusqlite::params![run_id,position,refusal.reason.as_str()],
-                                )?;
-                            }
-                            Ok(())
-                        })?;
-                        self.shared.host.refusal_committed(&request, &refusal);
-                    } else if refusal.grant_absent() {
-                        let now = self.config.clock.now_ms();
-                        self.write_dispatch_cause(
-                            &request,
-                            &DispatchCause::refusal(&refusal),
-                            |tx| {
-                                journal::defer(tx, &run_id, position, &refusal, i64::MAX)?;
-                                crate::grant_loss::record(
-                                    tx,
-                                    &request.flow_id,
-                                    &run_id,
-                                    &refusal,
-                                    now,
-                                )
-                            },
-                        )?;
-                    } else if refusal.reason == RefusalReason::AgentRetired {
-                        // A retired agent cannot authorize more calls. Fail the run
-                        // and disable its flow together so recovery cannot retry it.
-                        // The retirement label's registry read happens first,
-                        // before the store's writer is held.
-                        let target_id = self.retirement_target_id(&request);
-                        self.write_execution(|tx| {
-                            let flow_id = &request.flow_id;
-                            crate::grant_loss::record_retirement(
-                                tx,
-                                &request,
-                                &refusal,
-                                self.config.clock.now_ms(),
-                                target_id.as_deref(),
-                            )?;
-                            crate::install::disable(
-                                tx,
-                                flow_id,
-                                &crate::install::Actor::Core,
-                                "agent_retired",
-                                self.config.clock.now_ms(),
-                            )
-                            .map_err(|e| CoreError::Invalid(e.to_string()))?;
-                            journal::accept_outcome(
-                                tx,
-                                &run_id,
-                                position,
-                                None,
-                                &crate::kv::rejection(
-                                    "agent_retired",
-                                    &format!("{} {}", refusal.provider, refusal.action),
-                                ),
-                                Source::Host,
-                            )?;
-                            runs::fail_external(
-                                tx,
-                                &run_id,
-                                "agent_retired",
-                                &format!("{} {}", refusal.provider, refusal.action),
-                            )?;
-                            Ok(())
-                        })?;
-                        self.clear_event_scope_warning(&run_id);
-                        self.flush_refusals()?;
-                        self.shared.host.refusal_committed(&request, &refusal);
-                        self.wake_flow(&request.flow_id);
-                    } else {
-                        self.defer_dispatch_refusal(&request, &refusal)?;
-                    }
-                    self.shared.signal.bump();
-                    return Ok(());
-                }
-                Err(TransportError::ScopeCut { detail }) => {
-                    let cause = DispatchCause::transport(&TransportError::ScopeCut {
-                        detail: detail.clone(),
-                    });
-                    maybe_sent = Some(UnknownReason::ConnectionLost);
-                    if class == StoredClass::Query && retries < self.config.unavailable_retries {
-                        retry_cause = Some(cause);
-                        retries += 1;
-                        request.attempt = request.attempt.saturating_add(1);
-                        continue;
-                    }
-                    self.write_dispatch_cause(&request, &cause, |tx| {
-                        tx.execute(
-                            "UPDATE journal SET scope_cut=1 WHERE run_id=?1 AND position=?2",
-                            rusqlite::params![run_id, position],
-                        )?;
-                        Ok(())
-                    })?;
-                    retry_cause = Some(cause);
-                    scope_cut = true;
-                    break Err(detail);
-                }
-                Err(TransportError::Unavailable { sent, detail }) => {
-                    let cause = DispatchCause::transport(&TransportError::Unavailable {
-                        sent,
-                        detail: detail.clone(),
-                    });
-                    let proven_unsent = sent == Sent::Never;
-                    if let Sent::Maybe(reason) = sent {
-                        maybe_sent = Some(reason);
-                    }
-                    // A transient failure is retried inside the call only
-                    // when a second send cannot cause a second effect.
-                    let may_retry = class.safe_to_resend() || proven_unsent;
-                    if may_retry && retries < self.config.unavailable_retries {
-                        retry_cause = Some(cause);
-                        retries += 1;
-                        request.attempt = request.attempt.saturating_add(1);
-                        thread::sleep(self.config.retry_backoff);
-                        continue;
-                    }
-                    retry_cause = Some(cause);
-                    break Err(detail);
-                }
-            }
-        };
-        self.at(&run_id, Boundary::HostAnswered { position })?;
-        match (answer, maybe_sent) {
-            (Ok(Dispatched::Completed(outcome)), _) => {
-                self.accept(&run_id, position, None, &outcome, Source::Host)?;
-                self.shared.host.dispatch_committed(&request);
-            }
-            (Ok(Dispatched::Accepted { handle }), _) => {
-                self.write_execution(|tx| {
-                    journal::record_accepted(tx, &run_id, position, &handle)
-                })?;
-                self.at(&run_id, Boundary::AcceptedCommitted { position })?;
-                self.shared.host.dispatch_committed(&request);
-            }
-            (Err(_), Some(last)) if class != StoredClass::Query => {
-                // A call that honours idempotency keys was sent again and
-                // again; it is unknown because its retries ran out. Any
-                // other is sent once, and is unknown for that send's reason.
-                let reason = if class.safe_to_resend() && !scope_cut {
-                    UnknownReason::RetriesExhausted
-                } else {
-                    last
-                };
-                self.write_dispatch_cause(
-                    &request,
-                    &retry_cause.expect("failed send cause"),
-                    |tx| journal::record_unknown(tx, &run_id, position, reason),
-                )?;
-            }
-            (Err(detail), _) => {
-                // Nothing can have happened remotely: a query has no effect,
-                // and every failed send of this call provably never left.
-                let outcome = unavailable_rejection(&detail);
-                let capped = self.cap_result(&outcome);
-                let accepted = self.write_dispatch_cause(
-                    &request,
-                    &retry_cause.expect("unavailable cause"),
-                    |tx| {
-                        journal::accept_outcome(
-                            tx,
-                            &run_id,
-                            position,
-                            None,
-                            capped.as_ref().unwrap_or(&outcome),
-                            Source::Host,
-                        )
-                    },
-                )?;
-                self.at(&run_id, Boundary::OutcomeCommitted { position })?;
-                self.shared.signal.bump();
-                if accepted.woke {
-                    self.wake(&run_id);
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// The request for a journaled call.
+    #[cfg(test)]
     pub(crate) fn request(run: &Run, row: &CallRow, attempt: u32) -> CallRequest {
         CallRequest {
             flow_version: run.flow_version,
@@ -1423,67 +973,44 @@ impl Runtime {
     }
 
     pub fn health(&self) -> Result<crate::ops::Health> {
-        if self.uses_run_log() {
-            return self.log_health();
-        }
-        self.shared.store.read(crate::ops::health)
+        self.log_health()
     }
 
     /// The age of the oldest pending, suspended and `needs_reconcile` run,
     /// on the runtime's clock.
     pub fn run_ages(&self) -> Result<crate::ops::RunAges> {
         let now = self.config.clock.now_ms();
-        if self.uses_run_log() {
-            let runs = self.log_runs(None)?;
-            let oldest = |state| {
-                runs.iter()
-                    .filter(|r| r.state == state)
-                    .map(|r| now.saturating_sub(r.admitted_at).max(0))
-                    .max()
-            };
-            return Ok(crate::ops::RunAges {
-                oldest_pending_ms: oldest(RunState::Pending),
-                oldest_suspended_ms: oldest(RunState::Suspended),
-                oldest_needs_reconcile_ms: oldest(RunState::NeedsReconcile),
-            });
-        }
-        self.shared.store.read(|c| crate::ops::run_ages(c, now))
+
+        let runs = self.log_runs(None)?;
+        let oldest = |state| {
+            runs.iter()
+                .filter(|r| r.state == state)
+                .map(|r| now.saturating_sub(r.admitted_at).max(0))
+                .max()
+        };
+        Ok(crate::ops::RunAges {
+            oldest_pending_ms: oldest(RunState::Pending),
+            oldest_suspended_ms: oldest(RunState::Suspended),
+            oldest_needs_reconcile_ms: oldest(RunState::NeedsReconcile),
+        })
     }
 
     /// Every flow's health, on the runtime's clock.
     pub fn flow_health(&self) -> Result<Vec<crate::ops::FlowHealth>> {
         let now = self.config.clock.now_ms();
-        if self.uses_run_log() {
-            let runs = self.log_runs(None)?;
-            let states = self.log_states();
-            return self
-                .store()
-                .read(|c| crate::ops::flow_health_staged(c, now, &runs, &states));
-        }
-        self.shared.store.read(|c| crate::ops::flow_health(c, now))
+
+        let runs = self.log_runs(None)?;
+        let states = self.log_states();
+        self.store()
+            .read(|c| crate::ops::flow_health_staged(c, now, &runs, &states))
     }
 
     /// Pending runs no earlier run of their flow holds back, as (run,
     /// flow), in admission order: what can start now.
     pub fn startable(&self) -> Result<Vec<(String, String)>> {
-        if self.uses_run_log() {
-            return self.staged_startable();
-        }
-        self.write_execution(|tx| journal::wake_deferred(tx, self.config.clock.now_ms(), None))?;
-        let mut runs = self.shared.store.read(runs::startable)?;
-        // A run waiting to ask core again is not offered, so a pass loop
-        // cannot ask about it on every pass while core is unreachable.
-        runs.retain(|(run_id, _)| self.gate_wait(run_id).is_none());
-        let now = self.config.clock.now_ms();
-        let waiting: std::collections::BTreeSet<String> = self.store().read(|c| {
-            Ok(c.prepare(
-                "SELECT run_id FROM event_body_journal WHERE body IS NULL AND retry_at>?1",
-            )?
-            .query_map([now], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?)
-        })?;
-        runs.retain(|(run_id, _)| !waiting.contains(run_id));
-        Ok(runs)
+        self.resume_run_removals()?;
+        self.flush_refusals()?;
+        self.staged_startable()
     }
 
     pub fn catalog(&self) -> &dyn Catalog {
@@ -1495,88 +1022,53 @@ impl Runtime {
     /// Fails runs past their deadline, then services durable provider
     /// acknowledgements and retention on the runtime's own cadence.
     pub fn enforce_deadlines(&self) -> Result<Vec<String>> {
-        if self.uses_run_log() {
-            let now = self.config.clock.now_ms();
-            let mut expired = Vec::new();
-            for run in self.log_runs(None)? {
-                if matches!(
-                    run.state,
-                    RunState::Pending | RunState::Running | RunState::Suspended
-                ) && run.deadline_at.is_some_and(|at| at <= now)
+        self.resume_run_removals()?;
+        self.flush_refusals()?;
+        let now = self.config.clock.now_ms();
+        let mut expired = Vec::new();
+        for run in self.log_runs(None)? {
+            if matches!(
+                run.state,
+                RunState::Pending | RunState::Running | RunState::Suspended
+            ) && run.deadline_at.is_some_and(|at| at <= now)
+            {
+                let (kind, detail) = self
+                    .event_body_deadline_failure(&run.run_id)?
+                    .unwrap_or_else(|| {
+                        (
+                            "deadline".into(),
+                            "the run passed its wall-clock deadline".into(),
+                        )
+                    });
+                match self.staged_finish(&run.run_id, RunState::Failed, Some(&kind), Some(&detail))
                 {
-                    let (kind, detail) = self
-                        .event_body_deadline_failure(&run.run_id)?
-                        .unwrap_or_else(|| {
-                            (
-                                "deadline".into(),
-                                "the run passed its wall-clock deadline".into(),
-                            )
-                        });
-                    match self.staged_finish(
-                        &run.run_id,
-                        RunState::Failed,
-                        Some(&kind),
-                        Some(&detail),
-                    ) {
-                        Ok(()) => {
-                            expired.push(run.run_id);
-                            self.wake_flow(&run.flow_id);
-                        }
-                        Err(CoreError::Unavailable(_)) => {}
-                        Err(error) => return Err(error),
+                    Ok(()) => {
+                        expired.push(run.run_id);
+                        self.wake_flow(&run.flow_id);
                     }
+                    Err(CoreError::Unavailable(_)) => {}
+                    Err(error) => return Err(error),
                 }
             }
-            self.flush_refusals()?;
-            self.retention_due(now)?;
-            self.reap_threads();
-            return Ok(expired);
-        }
-        let now = self.config.clock.now_ms();
-        let expired = self.write_execution(|tx| runs::expire(tx, now, None))?;
-        for (run_id, _) in &expired {
-            self.clear_event_scope_warning(run_id);
         }
         self.flush_refusals()?;
         self.retention_due(now)?;
-        for flow in expired.iter().map(|(_, flow)| flow).collect::<HashSet<_>>() {
-            self.release_unused_flow_routes_for(flow)?;
-        }
         self.reap_threads();
-        if !expired.is_empty() {
-            self.shared.signal.bump();
-        }
-        for (_, flow_id) in &expired {
-            self.wake_flow(flow_id);
-        }
-        Ok(expired.into_iter().map(|(run, _)| run).collect())
+        Ok(expired)
     }
 
-    /// Wakes the next pending run of a flow, if configured to resume runs.
+    /// Wakes the next startable run while respecting the flow slot.
     pub(crate) fn wake_flow(&self, flow_id: &str) {
-        if !self.config.auto_resume || self.shared.source.is_none() {
+        if !self.shared.ready.load(Ordering::Acquire)
+            || !self.config.auto_resume
+            || self.shared.source.is_none()
+        {
             return;
         }
-        if self.uses_run_log() {
-            if let Ok(runs) = self.staged_startable()
-                && let Some((id, _)) = runs.into_iter().find(|(_, flow)| flow == flow_id)
-            {
-                self.wake(&id);
-            }
-            return;
-        }
-        let next: Result<Option<String>> = self.shared.store.read(|c| {
-            use rusqlite::OptionalExtension;
-            Ok(c.query_row(
-                "SELECT run_id FROM runs WHERE flow_id = ?1 AND state = 'pending' \
-                 ORDER BY admit_seq LIMIT 1",
-                [flow_id],
-                |r| r.get(0),
-            )
-            .optional()?)
-        });
-        if let Ok(Some(run_id)) = next {
-            self.wake(&run_id);
+        if let Ok(runs) = self.staged_startable()
+            && let Some((id, _)) = runs.into_iter().find(|(_, flow)| flow == flow_id)
+        {
+            self.wake(&id);
         }
     }
 
@@ -1588,6 +1080,58 @@ impl Runtime {
     /// came. Returns whether this one was applied.
     #[cfg(any(test, feature = "test-support"))]
     pub fn report_usage(&self, send_id: &str, usage: crate::tokens::Usage) -> Result<bool> {
+        let hosts = self
+            .shared
+            .staged_hosts
+            .as_ref()
+            .expect("log-backed runtime");
+        for actor in hosts.registry().snapshot() {
+            let (id, _, _, state) = actor.reader_snapshot();
+            let Some(position) = state.calls.values().find_map(|call| {
+                call.intent
+                    .as_ref()
+                    .filter(|i| i.idempotency_key.as_deref() == Some(send_id))
+                    .map(|_| call.identity.position)
+            }) else {
+                continue;
+            };
+            let Ok(entrant) = actor.enter() else {
+                break;
+            };
+            let budgets = hosts.budgets_for(&id)?;
+            return entrant.account(|records| {
+                records.check_healthy()?;
+                let state = records.state();
+                let call = &state.calls[&position];
+                if call.arrival.is_some()
+                    || call.usage_report.is_some()
+                    || call
+                        .intent
+                        .as_ref()
+                        .and_then(|i| i.reservation.as_ref())
+                        .is_none_or(|r| r.input_tokens.saturating_add(r.output_tokens) == 0)
+                {
+                    return Ok((false, crate::run_driver::accounting::rows(state, &budgets)?));
+                }
+                let lsn = records.append(
+                    state.generation,
+                    crate::run_records::Body::MeasuredUsage {
+                        position,
+                        report: crate::run_records::UsageReport {
+                            input_tokens: Some(usage.input_tokens),
+                            cache_write_tokens: Some(usage.cache_write_tokens),
+                            output_tokens: Some(usage.output_tokens),
+                            cached_input_tokens: Some(usage.cached_input_tokens),
+                        },
+                    },
+                )?;
+                crate::run_store::RunRecords::sync_through(records, lsn)?;
+                Ok((
+                    true,
+                    crate::run_driver::accounting::rows(records.state(), &budgets)?,
+                ))
+            });
+        }
         let now = self.config.clock.now_ms();
         self.write_execution(|tx| {
             crate::tokens::settle(
@@ -1623,26 +1167,15 @@ impl Runtime {
         })
     }
 
-    /// Current token windows for approved flows. The log-backed path reads each
-    /// flow under its accounting lock. Unknown flows and flows without token
-    /// grants are omitted.
+    /// Current token windows for approved flows, read in one SQL statement with
+    /// live accounting merged under sorted flow locks. Unknown flows and flows
+    /// without token grants are omitted.
     pub fn token_usage_many(
         &self,
         flow_ids: &[&str],
         at_ms: i64,
     ) -> Result<std::collections::BTreeMap<String, crate::tokens::WindowUsage>> {
-        if self.uses_run_log() {
-            let mut windows = std::collections::BTreeMap::new();
-            for flow in flow_ids {
-                if let Some(usage) = self.log_token_usage(flow, at_ms)? {
-                    windows.insert((*flow).into(), usage);
-                }
-            }
-            return Ok(windows);
-        }
-        self.shared
-            .store
-            .read(|c| crate::tokens::window_usage_many(c, flow_ids, at_ms))
+        self.log_token_usage_many(flow_ids, at_ms)
     }
 }
 

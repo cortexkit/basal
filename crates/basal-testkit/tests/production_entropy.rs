@@ -50,18 +50,23 @@ impl Host for EntropyHost {
     }
 }
 fn open(world: &World, host: Arc<EntropyHost>) -> Runtime {
-    Runtime::new(
-        Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-        host,
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        Config {
-            install_gate: InstallGate::Off,
-            auto_resume: false,
-            ..Config::default()
-        },
-    )
+    {
+        let runtime = Runtime::new(
+            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+            host,
+            Arc::new(world.catalog.clone()),
+            Arc::new(NoHooks),
+            Some(world.source.clone()),
+            Config {
+                install_gate: InstallGate::Off,
+                auto_resume: false,
+                ..Config::default()
+            },
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
+    }
 }
 #[test]
 fn independent_production_draws_are_journaled_and_replayed_without_resampling() {

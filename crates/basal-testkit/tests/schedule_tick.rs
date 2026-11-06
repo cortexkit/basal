@@ -6,16 +6,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use basal_core::hooks::{NoHooks, Step};
+use basal_core::hooks::NoHooks;
 use basal_core::schedule::spec::from_value;
-use basal_core::schedule::{
-    Approval, ScheduleState, Scheduler, SchedulerConfig, TickHooks, TickPoint, validate,
-};
+use basal_core::schedule::{Approval, ScheduleState, Scheduler, SchedulerConfig, validate};
 use basal_core::{
-    Actor, Admission, Clock, Config, CoreError, Durability, InstallError, InstallRequest,
-    ManifestError, Runtime, Store,
+    Actor, Admission, Clock, Config, Durability, InstallError, InstallRequest, ManifestError,
+    Runtime, Store,
 };
 use basal_host::MockCatalog;
 use basal_host::mock::MockHost;
@@ -69,31 +66,27 @@ struct Fixture {
     sched: Option<Scheduler>,
 }
 
-fn open(
-    dir: &Path,
-    clock: &Clock,
-    hooks: Option<Arc<dyn TickHooks>>,
-    schedule: SchedulerConfig,
-) -> (Runtime, Scheduler) {
+fn open(dir: &Path, clock: &Clock, schedule: SchedulerConfig) -> (Runtime, Scheduler) {
     let store = Store::open(dir.join("basal.db"), Durability::throwaway()).expect("open");
-    let rt = Runtime::new(
-        Arc::new(store),
-        Arc::new(MockHost::new()),
-        Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            clock: clock.clone(),
-            schedule,
-            install_gate: basal_core::InstallGate::Off,
-            ..Config::default()
-        },
-    );
-    let sched = rt.scheduler().expect("scheduler");
-    let sched = match hooks {
-        Some(h) => sched.with_hooks(h),
-        None => sched,
+    let rt = {
+        let runtime = Runtime::new(
+            Arc::new(store),
+            Arc::new(MockHost::new()),
+            Arc::new(MockCatalog::standard()),
+            Arc::new(NoHooks),
+            None,
+            Config {
+                clock: clock.clone(),
+                schedule,
+                install_gate: basal_core::InstallGate::Off,
+                ..Config::default()
+            },
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
     };
+    let sched = rt.scheduler().expect("scheduler");
     (rt, sched)
 }
 
@@ -103,22 +96,13 @@ fn manual(at: &str) -> Clock {
 
 impl Fixture {
     fn new(tag: &str, start: &str) -> Self {
-        Self::with_hooks(tag, start, None)
+        Self::with_config(tag, start, SchedulerConfig::default())
     }
 
-    fn with_hooks(tag: &str, start: &str, hooks: Option<Arc<dyn TickHooks>>) -> Self {
-        Self::with_config(tag, start, hooks, SchedulerConfig::default())
-    }
-
-    fn with_config(
-        tag: &str,
-        start: &str,
-        hooks: Option<Arc<dyn TickHooks>>,
-        config: SchedulerConfig,
-    ) -> Self {
+    fn with_config(tag: &str, start: &str, config: SchedulerConfig) -> Self {
         let dir = scratch(tag);
         let clock = manual(start);
-        let (rt, sched) = open(&dir, &clock, hooks, config);
+        let (rt, sched) = open(&dir, &clock, config);
         Self {
             dir,
             clock,
@@ -168,21 +152,6 @@ impl Fixture {
         new_runs(&self.s().tick().expect("tick"))
     }
 
-    /// Reopens the store with a scheduler that stops at `hooks`.
-    fn reopen_with(&mut self, hooks: Option<Arc<dyn TickHooks>>) {
-        self.sched = None;
-        self.rt = None;
-        let (rt, sched) = open(&self.dir, &self.clock, hooks, SchedulerConfig::default());
-        self.rt = Some(rt);
-        self.sched = Some(sched);
-    }
-
-    /// Drops the scheduler, the runtime and their store, as a process exit
-    /// does, and opens the same store again.
-    fn restart(&mut self) {
-        self.reopen_with(None);
-    }
-
     /// Every run admitted for `flow_id`, in admission order: its trigger
     /// id, the trigger payload the script sees, and the script it runs.
     fn fires(&self, flow_id: &str) -> Vec<(String, Value, String)> {
@@ -190,8 +159,10 @@ impl Fixture {
             .store()
             .read(|c| {
                 let mut stmt = c.prepare(
-                    "SELECT i.trigger_id, r.trigger, r.script FROM trigger_inbox i \
-                     JOIN runs_with_snapshots r ON r.run_id = i.run_id WHERE i.flow_id = ?1 ORDER BY i.rowid",
+                    "SELECT i.trigger_id, r.trigger, s.script FROM trigger_inbox i \
+                     JOIN live_runs r ON r.run_id = i.run_id \
+                     JOIN run_snapshots s ON s.snapshot_id = r.snapshot_id \
+                     WHERE i.flow_id = ?1 ORDER BY r.admit_seq",
                 )?;
                 let rows = stmt
                     .query_map([flow_id], |r| {
@@ -534,7 +505,7 @@ fn a_missed_count_past_the_limit_is_reported_as_a_lower_bound() {
         count_limit: 3,
         ..SchedulerConfig::default()
     };
-    let fx = Fixture::with_config("sched-limit", "2026-05-01T00:00:30Z", None, config);
+    let fx = Fixture::with_config("sched-limit", "2026-05-01T00:00:30Z", config);
     fx.approve(&flow("tens", 1, json!({ "cron": "*/10 * * * *" })));
     // Twelve due times, 00:10 to 02:00, all missed.
     fx.set("2026-05-01T02:05:00Z");
@@ -553,113 +524,6 @@ fn a_missed_count_past_the_limit_is_reported_as_a_lower_bound() {
 }
 
 // ---- Restarts and repeated ticks ---------------------------------------------
-
-/// Crashes the process (cuts the store) the first time the scheduler
-/// reaches a point of the given kind.
-struct CrashAt {
-    planned: bool,
-    fired: AtomicBool,
-}
-
-impl TickHooks for CrashAt {
-    fn at(&self, point: &TickPoint) -> Step {
-        let hit = match point {
-            TickPoint::Planned { .. } => self.planned,
-            TickPoint::Admitted { .. } => !self.planned,
-        };
-        if hit && !self.fired.swap(true, Ordering::SeqCst) {
-            Step::Crash
-        } else {
-            Step::Continue
-        }
-    }
-}
-
-fn crash_at(planned: bool) -> Option<Arc<dyn TickHooks>> {
-    Some(Arc::new(CrashAt {
-        planned,
-        fired: AtomicBool::new(false),
-    }))
-}
-
-#[test]
-fn a_restart_after_planning_a_catch_up_mints_no_second_fire() {
-    let mut fx = Fixture::new("sched-restart", "2026-05-01T00:00:30Z");
-    fx.approve(&flow("hourly", 1, json!({ "cron": "0 * * * *" })));
-    assert_eq!(
-        fx.tick("2026-05-01T01:00:00Z"),
-        [id("2026-05-01T01:00:00Z")]
-    );
-    // From here on, the process dies at its next plan commit.
-    fx.reopen_with(crash_at(true));
-
-    // Wake at 04:20: 02:00 to 04:00 were missed. The catch-up is planned
-    // and the schedule advanced, then the process dies before admitting.
-    fx.set("2026-05-01T04:20:00Z");
-    let err = fx.s().tick().expect_err("crash");
-    assert_eq!(err, CoreError::Cut);
-    fx.restart();
-    assert_eq!(fx.fire_ids("hourly"), [id("2026-05-01T01:00:00Z")]);
-
-    // The restarted process ticks later, after 05:00 has also passed.
-    let woke = fx.tick("2026-05-01T05:10:00Z");
-    assert_eq!(
-        woke,
-        [id("2026-05-01T04:00:00Z"), id("2026-05-01T05:00:00Z")]
-    );
-    let fires = fx.fires("hourly");
-    assert_eq!(fires.len(), 3);
-    // The catch-up planned before the crash, unchanged.
-    assert_eq!(
-        catch_up(&fires[1].1),
-        &json!({
-            "policy": "once",
-            "missed_count": 3,
-            "missed_window": { "first": "2026-05-01T02:00:00Z", "last": "2026-05-01T04:00:00Z" },
-        })
-    );
-    // 05:00 alone, ten minutes late: not counted again with 02:00 to 04:00.
-    assert_eq!(
-        catch_up(&fires[2].1),
-        &json!({
-            "policy": "once",
-            "missed_count": 1,
-            "missed_window": { "first": "2026-05-01T05:00:00Z", "last": "2026-05-01T05:00:00Z" },
-        })
-    );
-}
-
-#[test]
-fn a_restart_between_admitting_planned_fires_admits_each_once() {
-    let mut fx = Fixture::with_hooks(
-        "sched-restart-each",
-        "2026-05-01T00:00:30Z",
-        crash_at(false),
-    );
-    fx.approve(&flow(
-        "hourly",
-        1,
-        json!({ "cron": "0 * * * *", "missed": "each" }),
-    ));
-    fx.set("2026-05-01T06:20:00Z");
-    let err = fx.s().tick().expect_err("crash after the first admission");
-    assert_eq!(err, CoreError::Cut);
-    fx.restart();
-    assert_eq!(fx.fire_ids("hourly"), [id("2026-05-01T04:00:00Z")]);
-    let woke = fx.tick("2026-05-01T06:20:00Z");
-    assert_eq!(
-        woke,
-        [id("2026-05-01T05:00:00Z"), id("2026-05-01T06:00:00Z")]
-    );
-    assert_eq!(
-        fx.fire_ids("hourly"),
-        [
-            id("2026-05-01T04:00:00Z"),
-            id("2026-05-01T05:00:00Z"),
-            id("2026-05-01T06:00:00Z"),
-        ]
-    );
-}
 
 #[test]
 fn a_repeated_tick_with_the_same_now_admits_nothing_new() {

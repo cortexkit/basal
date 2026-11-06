@@ -106,10 +106,9 @@ impl TerminalBuilder<Records> for Terminal {
             .collect();
         for call in deferred {
             let deferred = call.deferred.expect("filtered deferral");
-            let outcome =
-                serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&deferred.cause)
-                    .map(|r| r.outcome())
-                    .unwrap_or_else(|_| crate::kv::rejection("route_unavailable", &deferred.cause));
+            let outcome = crate::refusal_receipt::decode_refusal(&deferred.cause)
+                .map(|r| r.outcome())
+                .unwrap_or_else(|_| crate::kv::rejection("route_unavailable", &deferred.cause));
             records.append(
                 records.state().generation,
                 crate::run_records::Body::Arrived(crate::run_records::Arrival {
@@ -212,7 +211,12 @@ impl TerminalBuilder<Records> for Terminal {
             activation_count: state.activation_count,
             script_started: state.script_started,
             phase: state.phase.clone(),
-            deadline_exempt: state.deadline_exempt,
+            // Target-registry outages are control-plane readiness failures,
+            // not script failures. Expiry of that still-pending, proven-unsent
+            // wait must not trip the flow's consecutive-failure breaker.
+            deadline_exempt: state.deadline_exempt || (self.error_kind.as_deref()==Some("deadline") && state.calls.values().any(|call| {
+                call.deferred.as_ref().filter(|d| d.proven_unsent).and_then(|d| crate::refusal_receipt::decode_refusal(&d.cause).ok()).is_some_and(|r| matches!(r.reason,basal_host::flow_refusal::RefusalReason::SinkAudienceUnavailable | basal_host::flow_refusal::RefusalReason::SinkBoardTargetUnavailable))
+            })),
             history_lost: false,
             commit_seq: 0,
         };
@@ -220,6 +224,7 @@ impl TerminalBuilder<Records> for Terminal {
         records.sync_terminal()?;
         Ok(Box::new(Projection {
             summary,
+            incarnation: self.live.template_incarnation,
             state,
             budgets: self.budgets.clone(),
             effects,
@@ -229,6 +234,7 @@ impl TerminalBuilder<Records> for Terminal {
 }
 
 struct Projection {
+    incarnation: Option<i64>,
     summary: RunHistory,
     state: State,
     budgets: Budgets,
@@ -242,43 +248,47 @@ impl TerminalWrite for Projection {
         history.commit_seq = sql::next_commit_seq(tx)?;
         sql::finish_live(tx, &history)?;
         let id = &history.run_id;
-        let mut effects: Vec<_> = self
-            .state
-            .calls
-            .values()
-            .filter_map(|c| c.arrival.as_ref())
-            .collect();
-        effects.sort_by_key(|a| a.arrival_seq);
-        let mut revisions = BTreeMap::<String, (u64, bool)>::new();
-        for arrival in effects {
-            match &arrival.kv_effect {
-                Some(crate::run_records::KvEffect::Set { key, .. }) => {
-                    revisions.entry(key.clone()).or_default().0 += 1;
+        // A re-created template owns a new state domain. Ordinary closes,
+        // including failure/cancellation in the same incarnation, keep overlays.
+        if crate::run_removal::same_incarnation(tx, &history.flow_id, self.incarnation)? {
+            let mut effects: Vec<_> = self
+                .state
+                .calls
+                .values()
+                .filter_map(|c| c.arrival.as_ref())
+                .collect();
+            effects.sort_by_key(|a| a.arrival_seq);
+            let mut revisions = BTreeMap::<String, (u64, bool)>::new();
+            for arrival in effects {
+                match &arrival.kv_effect {
+                    Some(crate::run_records::KvEffect::Set { key, .. }) => {
+                        revisions.entry(key.clone()).or_default().0 += 1;
+                    }
+                    Some(crate::run_records::KvEffect::Delete { key }) => {
+                        revisions.insert(key.clone(), (0, true));
+                    }
+                    None => {}
                 }
-                Some(crate::run_records::KvEffect::Delete { key }) => {
-                    revisions.insert(key.clone(), (0, true));
-                }
-                None => {}
             }
-        }
-        // This run's overlay commits with its summary in the same transaction.
-        for (key, value) in &self.state.overlay {
-            match value {
-                Some(value) => {
-                    let (sets, reset) = revisions[key];
-                    if reset {
+            // This run's overlay commits with its summary in the same transaction.
+            for (key, value) in &self.state.overlay {
+                match value {
+                    Some(value) => {
+                        let (sets, reset) = revisions[key];
+                        if reset {
+                            tx.execute(
+                                "DELETE FROM kv WHERE flow_id=?1 AND key=?2",
+                                params![history.flow_id, key],
+                            )?;
+                        }
+                        tx.execute("INSERT INTO kv(flow_id,key,value,bytes,revision) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(flow_id,key) DO UPDATE SET value=excluded.value,bytes=excluded.bytes,revision=kv.revision+excluded.revision", params![history.flow_id,key,value, (key.len()+value.len()) as i64, accounting::integer(sets)?])?;
+                    }
+                    None => {
                         tx.execute(
                             "DELETE FROM kv WHERE flow_id=?1 AND key=?2",
                             params![history.flow_id, key],
                         )?;
                     }
-                    tx.execute("INSERT INTO kv(flow_id,key,value,bytes,revision) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(flow_id,key) DO UPDATE SET value=excluded.value,bytes=excluded.bytes,revision=kv.revision+excluded.revision", params![history.flow_id,key,value, (key.len()+value.len()) as i64, accounting::integer(sets)?])?;
-                }
-                None => {
-                    tx.execute(
-                        "DELETE FROM kv WHERE flow_id=?1 AND key=?2",
-                        params![history.flow_id, key],
-                    )?;
                 }
             }
         }
@@ -350,8 +360,12 @@ impl TerminalWrite for Projection {
                             sql::ObligationState::Open
                         },
                         audit_at: intent.audit_at,
-                        detail: serde_json::to_value(call)
-                            .map_err(|e| CoreError::Invalid(e.to_string()))?,
+                        detail: if settled {
+                            Value::Null
+                        } else {
+                            serde_json::to_value(call)
+                                .map_err(|e| CoreError::Invalid(e.to_string()))?
+                        },
                         receipt: arrival.map(|a| sql::Receipt::Value(a.value_hash)),
                         settled_at: settled.then_some(history.ended_at),
                     },

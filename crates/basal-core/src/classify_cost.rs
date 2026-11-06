@@ -343,6 +343,14 @@ pub(crate) fn charge(reserved: f64, value: Option<&Value>, code: Option<&str>) -
     }
 }
 
+/// Host rejections use `code`, whereas successful model envelopes may use
+/// `errorCode`. Only a rejected settlement makes a plain `code` a refusal.
+pub(crate) fn refusal_code(settlement: basal_proto::Settlement, value: &Value) -> Option<&str> {
+    (settlement == basal_proto::Settlement::Rejected)
+        .then(|| value["code"].as_str())
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -53,7 +53,7 @@ fn journaled_self_end_survives_crash_and_replay_once() {
     let world = World::new("template-self-end-replay");
     world.catalog.add_named_agent(OWNER, "Owner");
     let probe = Arc::new(Probe::crash_at(
-        Point::parse("LocalCommitted { position: 0 }#1").unwrap(),
+        Point::parse("DriverReleased { position: 0 }#1").unwrap(),
     ));
     let rt = world
         .runtime(probe.clone(), config(InstallGate::Off))
@@ -130,9 +130,27 @@ fn old_self_end_cannot_end_an_instance_reopened_in_a_new_incarnation() {
             .unwrap()["new"],
         false
     );
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO kv(flow_id,key,value,bytes,revision) VALUES(?1,'value','99',7,1)",
+                [&id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let replacement = || {
+        rt.store().read(|c| Ok(c.query_row(
+        "SELECT json_array(f.state,f.removed,f.approved_version,t.incarnation,t.expires_at,s.version,s.spec,s.state,s.anchor_ms,s.next_due_ms,s.last_fired_ms,s.updated_at,k.value,k.revision,(SELECT MAX(seq) FROM template_event_outbox WHERE flow_id=f.flow_id),(SELECT COUNT(*) FROM outbox WHERE kind='flow.owner_notice')) FROM flows f JOIN template_instances t USING(flow_id) LEFT JOIN schedules s USING(flow_id) JOIN kv k USING(flow_id) WHERE f.flow_id=?1 AND k.key='value'",
+        [&id], |r| r.get::<_,String>(0))?)).unwrap()
+    };
+    let before = replacement();
     world.mock.complete_all();
     let finished = common::finish(&rt, &world, &run);
-    assert_eq!(finished.state, RunState::Succeeded);
+    assert_eq!(finished.state, RunState::Cancelled);
+    // Late settlement must not change the replacement's state, schedule or KV,
+    // emit owner notices, or send an end event that resolves waits on that instance.
+    assert_eq!(replacement(), before);
     assert!(matches!(
         rt.admit_trigger(&id, "new", JsonText::null()).unwrap(),
         Admission::Admitted { .. }

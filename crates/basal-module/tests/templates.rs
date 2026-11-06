@@ -536,7 +536,7 @@ fn template_dry_run_refuses_a_failed_agent_registry_read_as_retryable() {
         assert_eq!(error.code, "agent_registry_unavailable", "{failure:?}");
         assert_eq!(error.detail, Some(json!({"retryable": true})));
         assert_eq!(count(&f, "flows"), 0);
-        assert_eq!(count(&f, "runs"), 0);
+        assert_eq!(count(&f, "run_identities"), 0);
     }
 }
 
@@ -911,6 +911,9 @@ fn activation_uses_effective_grants_and_journaled_self_and_params() {
     );
     let created = create(&f, OWNER, json!({"note":"Grüße","path":target}), 1, "1h").unwrap();
     let run = admitted(&f, id(&created), "input");
+    // Immutable inputs belong to live admission state; terminal summaries
+    // intentionally omit those payloads. The script result below checks use.
+    let inputs = f.module.rt.run(&run).unwrap();
     f.module.engine.run_until_idle(50).unwrap();
     let stored = f.module.rt.run(&run).unwrap();
     assert_eq!(stored.state, RunState::Succeeded, "{stored:?}");
@@ -919,11 +922,11 @@ fn activation_uses_effective_grants_and_journaled_self_and_params() {
     assert_eq!(result["params"], created["params"]);
     assert_eq!(result["text"], "watched");
     assert_eq!(result["refusal"], "denied");
-    let guards: Value = serde_json::from_str(stored.grant_guards.as_str()).unwrap();
+    let guards: Value = serde_json::from_str(inputs.grant_guards.as_str()).unwrap();
     assert_eq!(guards[0]["root"], created["params"]["path"]);
     assert_eq!(guards[0]["under"], json!([root]));
     assert_eq!(
-        serde_json::from_str::<Value>(stored.params_input.as_str()).unwrap(),
+        serde_json::from_str::<Value>(inputs.params_input.as_str()).unwrap(),
         created["params"]
     );
     assert_eq!(
@@ -1501,7 +1504,7 @@ fn template_dry_run_creates_no_rows_and_uses_no_quota() {
     register(&f, &m, "return params.note;");
     let snapshot = || {
         f.module.rt.store().read(|c| {
-        Ok(c.query_row("SELECT (SELECT count(*) FROM flows),(SELECT count(*) FROM template_instances),(SELECT count(*) FROM runs),(SELECT count(*) FROM schedules),(SELECT count(*) FROM template_event_outbox)", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)))?)
+        Ok(c.query_row("SELECT (SELECT count(*) FROM flows),(SELECT count(*) FROM template_instances),(SELECT count(*) FROM run_identities),(SELECT count(*) FROM schedules),(SELECT count(*) FROM template_event_outbox)", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)))?)
     }).unwrap()
     };
     let before = snapshot();

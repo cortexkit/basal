@@ -332,6 +332,14 @@ unsafe extern "C" fn wal(
         let mut header = [0; 32];
         let mut file = std::fs::File::open(&state.wal).unwrap();
         file.read_exact(&mut header).expect("WAL header");
+        // Frame spacing is defined by the WAL header, not by SQLite's default
+        // page size. One probe observes a fixed page size across WAL resets.
+        let page_size = u64::from(u32::from_be_bytes(header[8..12].try_into().unwrap()));
+        assert!((512..=65_536).contains(&page_size) && page_size.is_power_of_two());
+        if state.page_size != 0 {
+            assert_eq!(state.page_size, page_size);
+        }
+        state.page_size = page_size;
         let salt: [u8; 8] = header[16..24].try_into().unwrap();
         let frames = frames as u64;
         let added = if salt != state.salt {
@@ -362,7 +370,7 @@ unsafe extern "C" fn wal(
         let owners = owners.expect("dbstat page ownership");
         let mut pages = Vec::new();
         for frame in frames - added..frames {
-            file.seek(SeekFrom::Start(32 + frame * (state.page_size + 24)))
+            file.seek(SeekFrom::Start(32 + frame * (page_size + 24)))
                 .unwrap();
             let mut number = [0; 4];
             file.read_exact(&mut number).unwrap();

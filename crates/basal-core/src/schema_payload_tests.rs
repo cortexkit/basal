@@ -1,5 +1,6 @@
 use super::MIGRATIONS;
-use crate::{journal, model, runs};
+use crate::model;
+use crate::run_cutover::legacy;
 use basal_proto::{ArgsDigest, JsonText, Settlement};
 use rusqlite::{Connection, params};
 
@@ -80,8 +81,11 @@ fn migration_47_preserves_populated_history_and_in_progress_replay() {
             .is_none()
     );
     tx.commit().unwrap();
-    assert_eq!(runs::load(&conn, "active").unwrap(), before_run);
-    assert_eq!(journal::rows(&conn, "active").unwrap(), before_calls);
+    assert_eq!(legacy::inspect_run(&conn, "active").unwrap(), before_run);
+    assert_eq!(
+        legacy::inspect_calls(&conn, "active").unwrap(),
+        before_calls
+    );
     assert_eq!(
         conn.query_row(
             "SELECT payload_hash FROM journal WHERE run_id='active' AND position=0",
@@ -92,14 +96,14 @@ fn migration_47_preserves_populated_history_and_in_progress_replay() {
         hash
     );
     assert_eq!(
-        journal::prefix(&conn, "active").unwrap(),
+        legacy::inspect_prefix(&conn, "active").unwrap(),
         before_calls
             .iter()
             .map(model::CallRow::recorded)
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        journal::run_size(&conn, "active").unwrap(),
+        legacy::inspect_size(&conn, "active").unwrap(),
         (
             2,
             (2 * args.len()
@@ -138,31 +142,47 @@ fn migration_47_preserves_populated_history_and_in_progress_replay() {
             .unwrap(),
         1
     );
-    let lease = runs::Lease {
-        run_id: "active".into(),
-        owner: "owner".into(),
-        generation: 1,
-    };
     let tx = conn.transaction().unwrap();
-    assert_eq!(journal::authorize_resend(&tx, &lease, 1).unwrap(), 1);
+
     assert_eq!(
-        journal::row(&tx, "active", 1)
+        legacy::inspect_call(&tx, "active", 1)
             .unwrap()
             .unwrap()
             .dispatch_args()
             .as_str(),
         "{\"frozen\":true}"
     );
-    let (released, _) = journal::release_next(&tx, &lease, &[1]).unwrap();
-    assert_eq!(released.unwrap().value, value);
+    // The migration preserves an arrival without inventing script delivery.
     assert_eq!(
-        journal::prefix(&tx, "active").unwrap()[1]
-            .outcome
-            .as_ref()
-            .unwrap()
-            .delivery_order,
-        1
+        tx.query_row(
+            "SELECT value FROM mailbox WHERE run_id='active' AND position=1",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        value.as_str()
     );
+    assert!(
+        legacy::inspect_prefix(&tx, "active").unwrap()[1]
+            .outcome
+            .is_none()
+    );
+    let blocked = tx
+        .execute(
+            "DELETE FROM journal WHERE run_id='active' AND position=1",
+            [],
+        )
+        .unwrap_err();
+    assert_eq!(
+        blocked.sqlite_error().unwrap().extended_code,
+        787,
+        "the undelivered mailbox arrival must protect its parent"
+    );
+    tx.execute(
+        "DELETE FROM mailbox WHERE run_id='active' AND position=1",
+        [],
+    )
+    .unwrap();
     tx.execute(
         "DELETE FROM journal WHERE run_id='active' AND position=1",
         [],

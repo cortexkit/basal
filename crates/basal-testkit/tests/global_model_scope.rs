@@ -130,18 +130,23 @@ fn global_model_call_rejects_without_scope_then_uses_registered_scope() {
         gate.clone(),
         broca,
     ));
-    let rt = Runtime::new(
-        Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-        host,
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        Config {
-            selector: world.selector.clone(),
-            install_gate: InstallGate::Core,
-            ..Config::default()
-        },
-    );
+    let rt = {
+        let runtime = Runtime::new(
+            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+            host,
+            Arc::new(world.catalog.clone()),
+            Arc::new(NoHooks),
+            Some(world.source.clone()),
+            Config {
+                selector: world.selector.clone(),
+                install_gate: InstallGate::Core,
+                ..Config::default()
+            },
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
+    };
     let installed = rt
         .install(&InstallRequest {
             script: "return await llm({prompt:'hello'}).catch(e=>e.data);".into(),
@@ -218,18 +223,23 @@ fn local_primitives_need_no_model_scope() {
         gate.clone(),
         broca,
     ));
-    let rt = Runtime::new(
-        Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-        host,
-        Arc::new(world.catalog.clone()),
-        Arc::new(NoHooks),
-        Some(world.source.clone()),
-        Config {
-            selector: world.selector.clone(),
-            install_gate: InstallGate::Core,
-            ..Config::default()
-        },
-    );
+    let rt = {
+        let runtime = Runtime::new(
+            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+            host,
+            Arc::new(world.catalog.clone()),
+            Arc::new(NoHooks),
+            Some(world.source.clone()),
+            Config {
+                selector: world.selector.clone(),
+                install_gate: InstallGate::Core,
+                ..Config::default()
+            },
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
+    };
     let installed = rt
         .install(&InstallRequest {
             script: "await kv.set('n', 1); const n = await kv.get('n'); \

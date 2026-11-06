@@ -198,7 +198,8 @@ async fn fixture(server: &Server) -> (Runtime, Arc<BlockingTransport>) {
             install_gate: InstallGate::Off,
             ..Default::default()
         },
-    );
+    )
+    .expect("runtime startup");
     let install_rt = rt.clone();
     tokio::task::spawn_blocking(move || {
         let installed = install_rt.install(&InstallRequest {

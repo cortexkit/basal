@@ -172,6 +172,8 @@ fn every_record_roundtrips_with_strict_frame_types() {
             cause: "not ready".into(),
             audit_at: 2,
             proven_unsent: true,
+            refund_dispatch: true,
+            attempt: None,
         }),
         Body::Unknown {
             position: 0,
@@ -482,6 +484,15 @@ fn sync_table_covers_every_record_and_outcome_observability_case() {
         },
         Body::Parked { awaited: vec![0] },
         Body::Woken,
+        Body::MeasuredUsage {
+            position: 0,
+            report: UsageReport {
+                input_tokens: Some(7),
+                cache_write_tokens: Some(2),
+                output_tokens: Some(5),
+                cached_input_tokens: Some(100),
+            },
+        },
         Body::Closed { commit_seq: 1 },
     ];
     for body in lazy {
@@ -498,6 +509,7 @@ fn sync_table_covers_every_record_and_outcome_observability_case() {
             position: 0,
             reason: "lost".into(),
         },
+        Body::CallScopeCut { position: 0 },
         Body::Resolution(resolution(0)),
         Body::Snapshot {
             cutoff_lsn: Lsn::default(),
@@ -544,6 +556,8 @@ fn sync_table_covers_every_record_and_outcome_observability_case() {
                     cause: "readiness".into(),
                     audit_at: 2,
                     proven_unsent,
+                    refund_dispatch: true,
+                    attempt: None,
                 }),
             );
             assert_eq!(
@@ -836,6 +850,8 @@ fn lifecycle_readiness_and_refusal_state_survive_a_snapshot() {
             cause: "readiness".into(),
             audit_at: 20,
             proven_unsent: true,
+            refund_dispatch: true,
+            attempt: None,
         }),
     );
     append(

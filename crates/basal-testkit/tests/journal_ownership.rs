@@ -4,17 +4,18 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use basal_core::channel::WorkerChannel;
 use basal_core::runs::Lease;
 use basal_core::{ActivationEnd, Boundary, RunState, Runtime, Step};
+use basal_proto::WorkerMessage;
 use basal_testkit::ProcessSource;
 use basal_testkit::harness::{FnHooks, World, wait_until};
 use basal_testkit::worker_binary;
-use common::{admit, admit_as, finish, query_i64, result, runtime, runtime_with};
+use common::{ObserveWorker, admit, admit_as, finish, result, runtime, runtime_with};
 use serde_json::json;
 
 type Slot = Arc<OnceLock<Runtime>>;
@@ -47,13 +48,13 @@ fn takeover_at(
     })
 }
 
-fn issued_generation(rt: &Runtime, run_id: &str, position: u64) -> i64 {
-    query_i64(
-        rt,
-        &format!(
-            "SELECT issued_generation FROM journal WHERE run_id = '{run_id}' AND position = {position}"
-        ),
-    )
+fn take_over(rt: &Runtime, run_id: &str, taken: &Mutex<Option<Lease>>) {
+    let generation = rt.run(run_id).expect("run").generation;
+    let lease = rt
+        .with_owner("owner-b")
+        .take_over(run_id, generation)
+        .expect("take over");
+    *taken.lock().expect("lease lock") = Some(lease);
 }
 
 /// The run is taken over after the worker issued a call and before its row
@@ -63,20 +64,30 @@ fn issued_generation(rt: &Runtime, run_id: &str, position: u64) -> i64 {
 #[test]
 fn owner_loss_before_call_commit_dispatches_nothing() {
     let world = World::new("owner-before-commit");
-    let slot: Slot = Arc::new(OnceLock::new());
     let taken = Arc::new(Mutex::new(None));
-    let hooks = takeover_at(slot.clone(), taken.clone(), |b| {
-        matches!(b, Boundary::HostCallReceived { position: 0 })
-    });
-    let rt = runtime_with(&world, Arc::new(hooks));
-    let _ = slot.set(rt.clone());
+    let rt = runtime(&world);
     let run_id = admit(
         &rt,
         &world,
         "const r = await ops.call('mock', 'post', { n: 1 }); return r.applied.n;",
     );
     let mut old = world.source.spawn().expect("worker");
-    let end = rt.activate(&run_id, &mut old).expect("activation");
+    let once = AtomicBool::new(false);
+    let observed_rt = rt.clone();
+    let observed_run = run_id.clone();
+    let observed_taken = taken.clone();
+    let end = rt
+        .activate(
+            &run_id,
+            &mut ObserveWorker::new(&mut old).receiving(move |message| {
+                if matches!(message, WorkerMessage::HostCall(_))
+                    && !once.swap(true, Ordering::SeqCst)
+                {
+                    take_over(&observed_rt, &observed_run, &observed_taken);
+                }
+            }),
+        )
+        .expect("activation");
     assert_eq!(end, ActivationEnd::OwnerLost);
     assert!(
         old.exited(Duration::from_secs(5)),
@@ -94,11 +105,7 @@ fn owner_loss_before_call_commit_dispatches_nothing() {
     rt.quiesce();
     assert_eq!(world.mock.total_sends(), 1);
     assert_eq!(world.mock.effects().len(), 1);
-    assert_eq!(
-        issued_generation(&rt, &run_id, 0),
-        new_generation as i64,
-        "the call row was written by the old activation"
-    );
+    assert_eq!(rt.run(&run_id).expect("run").generation, new_generation);
 }
 
 /// The run is taken over after the call's row committed and before the
@@ -112,18 +119,9 @@ fn owner_loss_after_call_commit_dispatches_once() {
     let slot: Slot = Arc::new(OnceLock::new());
     let taken = Arc::new(Mutex::new(None));
     let takeover = takeover_at(slot.clone(), taken.clone(), |b| {
-        matches!(b, Boundary::CallCommitted { position: 0 })
+        matches!(b, Boundary::DriverSynced { position: 0 })
     });
-    let mock = world.mock.clone();
-    let blocked = AtomicUsize::new(0);
-    // The gated call is released once the new activation is blocked on it.
-    let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
-        if matches!(b, Boundary::BlockedReceived) && blocked.fetch_add(1, Ordering::SeqCst) == 1 {
-            mock.open_gate("g");
-        }
-        (takeover.0)(run_id, b)
-    });
-    let rt = runtime_with(&world, Arc::new(hooks));
+    let rt = runtime_with(&world, Arc::new(takeover));
     let _ = slot.set(rt.clone());
     let run_id = admit(
         &rt,
@@ -172,7 +170,17 @@ fn owner_loss_after_call_commit_dispatches_once() {
 
     let lease = taken.lock().ok().and_then(|mut t| t.take()).expect("lease");
     let mut fresh = world.source.spawn().expect("worker");
-    let end = rt.with_owner("owner-b").drive(lease, &mut fresh);
+    // Release the authorized old send only when the replacement worker blocks
+    // on its result; recovery must not send the same mutation again.
+    let mock = world.mock.clone();
+    let end = rt.with_owner("owner-b").drive(
+        lease,
+        &mut ObserveWorker::new(&mut fresh).receiving(move |message| {
+            if matches!(message, WorkerMessage::Blocked { .. }) {
+                mock.open_gate("g");
+            }
+        }),
+    );
     world.mock.open_gate("g");
     rt.quiesce();
     assert!(matches!(end, ActivationEnd::Succeeded { .. }), "{end:?}");
@@ -243,18 +251,28 @@ fn a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker() {
 #[test]
 fn owner_loss_around_order_commit_delivers_nothing_more() {
     let world = World::new("owner-order");
-    let slot: Slot = Arc::new(OnceLock::new());
     let taken = Arc::new(Mutex::new(None));
-    let hooks = takeover_at(slot.clone(), taken.clone(), |b| {
-        matches!(b, Boundary::BlockedReceived)
-    });
-    let rt = runtime_with(&world, Arc::new(hooks));
-    let _ = slot.set(rt.clone());
+    let rt = runtime(&world);
     let script = "const r = await ops.call('mock', 'echo', { n: 1, delay_ms: 50 }); return r.n;";
     let run_id = admit(&rt, &world, script);
     let old_source = ProcessSource::new(worker_binary());
     let mut old = old_source.spawn().expect("worker");
-    let end = rt.activate(&run_id, &mut old).expect("activation");
+    let once = AtomicBool::new(false);
+    let observed_rt = rt.clone();
+    let observed_run = run_id.clone();
+    let observed_taken = taken.clone();
+    let end = rt
+        .activate(
+            &run_id,
+            &mut ObserveWorker::new(&mut old).receiving(move |message| {
+                if matches!(message, WorkerMessage::Blocked { .. })
+                    && !once.swap(true, Ordering::SeqCst)
+                {
+                    take_over(&observed_rt, &observed_run, &observed_taken);
+                }
+            }),
+        )
+        .expect("activation");
     assert_eq!(end, ActivationEnd::OwnerLost);
     assert!(
         old.exited(Duration::from_secs(5)),
@@ -277,7 +295,7 @@ fn owner_loss_around_order_commit_delivers_nothing_more() {
     let slot: Slot = Arc::new(OnceLock::new());
     let taken = Arc::new(Mutex::new(None));
     let hooks = takeover_at(slot.clone(), taken.clone(), |b| {
-        matches!(b, Boundary::OrderCommitted { position: 0, .. })
+        matches!(b, Boundary::DriverReleased { position: 0, .. })
     });
     let rt = runtime_with(&world, Arc::new(hooks));
     let _ = slot.set(rt.clone());
@@ -304,7 +322,7 @@ fn storage_failure_before_commit_dispatches_nothing() {
     let slot: Slot = Arc::new(OnceLock::new());
     let inner = slot.clone();
     let hooks = FnHooks(move |_: &str, b: &Boundary| {
-        if matches!(b, Boundary::HostCallReceived { position: 0 }) {
+        if matches!(b, Boundary::DriverAppended { position: 0 }) {
             inner.get().expect("runtime").store().cut();
         }
         Step::Continue

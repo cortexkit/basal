@@ -180,14 +180,14 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
     // behind an unresolved one, a local effect behind an unresolved call,
     // and a cut inside the resumed activation.
     let chosen = [
-        "CallCommitted { position: 0 }#1",
-        "OrderCommitted { position: 1 }#1",
-        "SyncCommitted { position: 2 }#1",
-        "RefusalCommitted { position: 4 }#1",
-        "LocalCommitted { position: 5 }#1",
-        "CallCommitted { position: 6 }#1",
-        "HostAnswered { position: 6 }#1",
-        "Claimed { generation: 2 }#1",
+        "DriverSynced { position: 0 }#1",
+        "DriverReleased { position: 1 }#1",
+        "DriverReleased { position: 2 }#1",
+        "DriverReleased { position: 4 }#1",
+        "DriverReleased { position: 5 }#1",
+        "DriverSynced { position: 6 }#1",
+        "DriverDispatched { position: 6 }#1",
+        "DriverActivated { generation: 2 }#1",
     ];
     let firsts: Vec<Point> = base.phases[0]
         .iter()
@@ -195,6 +195,13 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
         .cloned()
         .collect();
     assert!(exhaustive || firsts.len() == chosen.len(), "{firsts:?}");
+    assert_eq!(
+        firsts
+            .iter()
+            .filter(|point| point.boundary == "DriverActivated { generation: 2 }")
+            .count(),
+        1
+    );
     // Learn each recovery's boundaries from a run with only the first cut.
     let learned = run_all(firsts.iter().map(|p| vec![p.clone()]).collect());
     let mut cases = Vec::new();
@@ -216,8 +223,8 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
     let fired = assert_equivalent(&base.summary, &results);
     // What a recovery does depends on which of the calls in flight at the
     // first cut had their outcomes committed, so its later boundaries vary
-    // between runs. Its claim of the run never does: for every first cut,
-    // the cut at the recovery's claim must have landed, which proves the
+    // between runs. The activation boundary never does: for every first cut,
+    // the cut at recovery activation must have landed, which proves the
     // second cuts reach recovery at all.
     let mut missed = Vec::new();
     for (cuts, result) in &learned {
@@ -228,7 +235,7 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
         let claim = run
             .phases
             .get(1)
-            .and_then(|r| r.iter().find(|p| p.boundary.starts_with("Claimed")))
+            .and_then(|r| r.iter().find(|p| p.boundary.starts_with("DriverActivated")))
             .cloned();
         let landed = claim
             .as_ref()
@@ -237,6 +244,107 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
             missed.push((cuts[0].render(), claim.map(|c| c.render())));
         }
     }
-    assert!(missed.is_empty(), "recovery claims not cut: {missed:?}");
+    assert!(
+        missed.is_empty(),
+        "recovery activations not cut: {missed:?}"
+    );
     eprintln!("{} of {total} second-level cuts fired", fired.len());
+}
+
+#[test]
+fn quiesce_waits_for_dispatch_threads_after_an_activation_cut() {
+    use basal_core::{ActivationEnd, Boundary, Runtime, Step, Store};
+    use basal_testkit::harness::{FnHooks, wait_until};
+    use std::sync::{Arc, mpsc};
+    use std::time::{Duration, Instant};
+
+    let world = World::new("quiesce-dispatch-cut");
+    let store = Arc::new(Store::open(world.store_path(), world.durability).unwrap());
+    let weak = Arc::downgrade(&store);
+    let (trace_tx, trace_rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let entered_rx = Mutex::new(entered_rx);
+    let release_rx = Mutex::new(release_rx);
+    let hooks = Arc::new(FnHooks(
+        move |_: &str, boundary: &Boundary| match boundary {
+            Boundary::DriverDispatched { position: 0 } => {
+                trace_tx
+                    .send(format!(
+                        "thread {:?}:\n{}",
+                        std::thread::current().id(),
+                        std::backtrace::Backtrace::force_capture()
+                    ))
+                    .unwrap();
+                entered_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                Step::Continue
+            }
+            Boundary::DriverSynced { position: 1 } => {
+                entered_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                Step::Crash
+            }
+            _ => Step::Continue,
+        },
+    ));
+    let rt = Runtime::new(
+        store,
+        Arc::new(world.mock.clone()),
+        Arc::new(world.catalog.clone()),
+        hooks,
+        Some(world.source.clone()),
+        Config {
+            install_gate: basal_core::InstallGate::Off,
+            auto_resume: false,
+            selector: world.selector.clone(),
+            ..Config::default()
+        },
+    )
+    .unwrap();
+    let spec = world.spec(&rt, "return await Promise.all([ops.call('mock','echo',{n:0}),ops.call('mock','echo',{n:1})]);").unwrap();
+    let run = rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+    assert_eq!(rt.resume(&run).unwrap(), ActivationEnd::Crashed);
+    let trace = trace_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let quiescer = {
+        let rt = rt.clone();
+        std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            rt.quiesce();
+            drop(rt);
+            done_tx.send(()).unwrap();
+        })
+    };
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let escaped = done_rx.recv_timeout(Duration::from_millis(200)).is_ok();
+    world.mock.detach();
+    drop(rt);
+    let holders = weak.strong_count();
+    let refusal = Store::open(world.store_path(), world.durability)
+        .err()
+        .map(|e| e.to_string());
+    release_tx.send(()).unwrap();
+    if !escaped {
+        done_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+    quiescer.join().unwrap();
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        "dispatch store references to drop",
+        || weak.strong_count() == 0,
+    )
+    .unwrap();
+    Store::open(world.store_path(), world.durability).unwrap();
+    assert!(
+        !escaped,
+        "quiesce returned with {holders} store references; reopen refused: {refusal:?}; held dispatch {trace}"
+    );
+    // The held dispatch owns the lease until it drains, even after a sibling
+    // crash has ended the activation. Quiesce must join it before returning.
+    assert!(refusal.is_some());
 }

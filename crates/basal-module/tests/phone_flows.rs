@@ -70,12 +70,77 @@ fn seed_run(
     trigger: Value,
     error: Option<&str>,
 ) {
-    f.module.rt.store().write(|tx| {
-        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,ended_at,admit_seq,error_kind,error_detail)
-            VALUES (?1,?2,?1,1,?3,?10,zeroblob(32),?4,?5,?6,?7,?8,?9)",
-            params![id,flow,trigger.to_string(),state,T0+seq,ended,seq,error.map(|_|"script"),error,basal_core::runs::snapshot(tx,flow,None,&[0;32],"SECRET SCRIPT","{}")?])?;
-        Ok(())
-    }).unwrap();
+    use basal_core::run_records::{Body, CallIdentity, Intent, State};
+    let rt = &f.module.rt;
+    rt.fixture_run(id, flow, 1, "SECRET SCRIPT", "{}", State::new(T0 + seq))
+        .unwrap();
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE live_runs SET trigger=?2,admit_seq=?3,attempt=1 WHERE run_id=?1",
+                params![id, trigger.to_string(), seq],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    if let Some(ended) = ended {
+        let now = rt.config().clock.now_ms();
+        rt.config().clock.set(ended);
+        rt.fixture_finish(
+            id,
+            basal_core::RunState::parse(state).unwrap(),
+            None,
+            error.map(|detail| ("script", detail)),
+        )
+        .unwrap();
+        rt.config().clock.set(now);
+    } else if state == "needs_reconcile" {
+        rt.fixture_append(
+            id,
+            Body::Intent(Intent {
+                call: CallIdentity::new(
+                    basal_proto::HostCall {
+                        position: 0,
+                        kind: basal_proto::CallKind::Op {
+                            module: "mock".into(),
+                            op: "post".into(),
+                        },
+                        args: basal_proto::JsonText::null(),
+                    },
+                    basal_core::StoredClass::Mutation,
+                ),
+                idempotency_key: Some(format!("{id}:0")),
+                frozen_request: basal_proto::JsonText::null(),
+                attempts: 1,
+                dispatch_count_window: None,
+                audit_at: T0 + seq,
+                reservation: None,
+            }),
+        )
+        .unwrap();
+        // A live reconciliation error is projected from its unknown call, not
+        // a mutable script-error column. A long handle exercises UTF-8 bounds.
+        if let Some(handle) = error {
+            rt.fixture_append(
+                id,
+                Body::Accepted {
+                    position: 0,
+                    handle: handle.into(),
+                },
+            )
+            .unwrap();
+        }
+        rt.fixture_append(
+            id,
+            Body::Unknown {
+                position: 0,
+                reason: "basal_restarted".into(),
+            },
+        )
+        .unwrap();
+    } else {
+        assert_eq!(state, "pending");
+    }
 }
 
 fn ids(reply: &Value) -> Vec<&str> {
@@ -229,8 +294,9 @@ fn phone_details_fields_precedence_history_and_limits() {
     assert_eq!(detail["runs"][0]["trigger"], "manual");
     assert_eq!(detail["runs"][0]["admitted_at_ms"], T0 + 11);
     assert_eq!(detail["runs"][0]["ended_at_ms"], Value::Null);
-    assert_eq!(detail["runs"][0]["error_kind"], "script");
+    assert_eq!(detail["runs"][0]["error_kind"], "unknown_outcome");
     assert!(detail["runs"][0]["error"].as_str().unwrap().len() <= 200);
+    assert!(detail["runs"][0]["error"].as_str().unwrap().contains('é'));
     assert_eq!(detail["runs"][1]["trigger"], "pull_request_review");
     assert_eq!(detail["runs"][2]["trigger"], "schedule");
     assert_eq!(detail["runs"][2]["error"], "first error");
@@ -429,7 +495,7 @@ fn phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog() {
                     |r| r.get(0),
                 )?,
                 c.query_row(
-                    "SELECT COUNT(*) FROM runs WHERE flow_id='flow-uninstall'",
+                    "SELECT COUNT(*) FROM run_identities WHERE flow_id='flow-uninstall'",
                     [],
                     |r| r.get(0),
                 )?,

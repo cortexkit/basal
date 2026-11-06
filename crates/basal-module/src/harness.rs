@@ -25,7 +25,7 @@
 //! through the same [`crate::serve::Routes`] as a real route's bind.
 //!
 //! A point is a boundary as its debug form, then `#` and which occurrence
-//! in this process: `HostAnswered { position: 2 }#1`. At it the harness
+//! in this process: `DriverDispatched { position: 2 }#1`. At it the harness
 //! kills the run's worker, sends itself SIGKILL, or cuts the store (a
 //! storage failure).
 //!
@@ -266,44 +266,18 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
 }
 
 fn runs(module: &Module) -> Result<Value, String> {
-    if module.rt.uses_run_log() {
-        let flows = module.rt.flow_health().map_err(|e| e.to_string())?;
-        let mut runs = Vec::new();
-        for flow in flows {
-            runs.extend(
-                module
-                    .rt
-                    .runs_for_flow(&flow.flow_id)
-                    .map_err(|e| e.to_string())?,
-            );
-        }
-        runs.sort_by(|a, b| (a.admit_seq, &a.run_id).cmp(&(b.admit_seq, &b.run_id)));
-        return Ok(Value::Array(runs.into_iter().map(|r|json!({"run_id":r.run_id,"flow_id":r.flow_id,"trigger_id":r.trigger_id,"state":r.state.as_str(),"broken":r.broken,"result":r.result,"error_kind":r.error_kind})).collect()));
+    let flows = module.rt.flow_health().map_err(|e| e.to_string())?;
+    let mut runs = Vec::new();
+    for flow in flows {
+        runs.extend(
+            module
+                .rt
+                .runs_for_flow(&flow.flow_id)
+                .map_err(|e| e.to_string())?,
+        );
     }
-    module
-        .rt
-        .store()
-        .read(|c| {
-            let mut stmt = c.prepare(
-                "SELECT run_id, flow_id, trigger_id, state, broken, result, error_kind \
-                 FROM runs ORDER BY admit_seq, run_id",
-            )?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok(json!({
-                        "run_id": r.get::<_, String>(0)?,
-                        "flow_id": r.get::<_, String>(1)?,
-                        "trigger_id": r.get::<_, String>(2)?,
-                        "state": r.get::<_, String>(3)?,
-                        "broken": r.get::<_, i64>(4)?,
-                        "result": r.get::<_, Option<String>>(5)?,
-                        "error_kind": r.get::<_, Option<String>>(6)?,
-                    }))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(Value::Array(rows))
-        })
-        .map_err(|e| e.to_string())
+    runs.sort_by(|a, b| (a.admit_seq, &a.run_id).cmp(&(b.admit_seq, &b.run_id)));
+    Ok(Value::Array(runs.into_iter().map(|r|json!({"run_id":r.run_id,"flow_id":r.flow_id,"trigger_id":r.trigger_id,"state":r.state.as_str(),"broken":r.broken,"result":r.result,"error_kind":r.error_kind})).collect()))
 }
 
 pub fn main() -> std::process::ExitCode {
@@ -371,9 +345,11 @@ pub fn main() -> std::process::ExitCode {
             hooks,
         },
         Arc::new(ProcessSpawner::new(&pool)),
-        |shared| {
+        |_shared, recovered| {
             if args.broca {
-                broca_store.bind(shared).map_err(|e| e.to_string())
+                broca_store
+                    .bind_recovered(&recovered)
+                    .map_err(|e| e.to_string())
             } else {
                 Ok(())
             }

@@ -224,7 +224,11 @@ fn rig_readers_observe_a_real_retained_staged_run() {
     rt.store()
         .read(|c| {
             assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get::<_, u64>(0))?,
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name='runs'",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?,
                 0
             );
             Ok(())

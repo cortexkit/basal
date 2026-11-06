@@ -121,10 +121,15 @@ impl RecoveredHosts {
                 }
                 if let Some(snapshot) = before.iter().find(|s| Some(&s.id) == card.run_id.as_ref())
                     && let Some(call) = card.position.and_then(|p| snapshot.state.calls.get(&p))
-                    && let Some(resolution) = call
-                        .resolutions
-                        .iter()
-                        .find(|r| r.attempts == card.instance && r.choice != "cancel")
+                    && let Some(resolution) = call.resolutions.iter().find(|r| {
+                        r.attempts == card.instance
+                            && r.choice != "cancel"
+                            && !r.elicitation_id.is_empty()
+                            && card
+                                .elicitation_id
+                                .as_ref()
+                                .is_none_or(|id| id == &r.elicitation_id)
+                    })
                 {
                     cas(tx, card, CardState::Applied, Some(&resolution.choice), now)?;
                 }
@@ -176,7 +181,7 @@ impl RecoveredHosts {
                 .store
                 .write(|tx| decisions::answer_on(tx, path, answer, now));
         }
-        let Some(card) = self.store.read(|c| decisions::find(c, path, answer))? else {
+        let Some(mut card) = self.store.read(|c| decisions::find(c, path, answer))? else {
             return Ok((Answered::NoSuchCard, None));
         };
         if card.kind != answer.decision || card.flow_id != answer.flow_id {
@@ -196,6 +201,9 @@ impl RecoveredHosts {
             .run_id
             .as_deref()
             .ok_or_else(|| CoreError::Corrupt("reconcile card without run".into()))?;
+        if card.elicitation_id.is_none() {
+            card.elicitation_id = Some(answer.elicitation_id.clone());
+        }
         let position = card
             .position
             .ok_or_else(|| CoreError::Corrupt("reconcile card without position".into()))?;
@@ -206,7 +214,27 @@ impl RecoveredHosts {
             } else {
                 CardState::Declined
             };
-            let apply = || self.store.write(|tx| cas(tx, &card, state, choice, now));
+            let apply = || {
+                self.store.write(|tx| {
+                    let changed = cas(tx, &card, state, choice, now)?;
+                    if changed {
+                        crate::reconcile::audit_answer(
+                            tx,
+                            crate::decisions::OPERATOR_ACTOR,
+                            if choice.is_none() {
+                                "decision.expired"
+                            } else {
+                                "decision.declined"
+                            },
+                            Some(id),
+                            Some(position),
+                            "",
+                            Some(&answer.elicitation_id),
+                        )?;
+                    }
+                    Ok(changed)
+                })
+            };
             // Leave has no log record, but shares the answer's actor serialization
             // so it cannot win the card CAS halfway through an effective answer.
             let changed =
@@ -252,6 +280,33 @@ impl RecoveredHosts {
                 Answered::Now(CardState::Applied),
                 (state == RunState::Pending).then(|| id.into()),
             )),
+            Err(CoreError::Invalid(detail))
+                if detail == "attempt is no longer unknown"
+                    || detail == "closed runs accept only observed_result" =>
+            {
+                self.store.write(|tx| {
+                    let changed = cas(tx, &card, CardState::Stale, choice, now)?;
+                    if changed {
+                        crate::reconcile::audit_answer(
+                            tx,
+                            crate::decisions::OPERATOR_ACTOR,
+                            "decision.stale",
+                            Some(id),
+                            Some(position),
+                            "",
+                            Some(&answer.elicitation_id),
+                        )?;
+                    }
+                    Ok((
+                        if changed {
+                            Answered::Now(CardState::Stale)
+                        } else {
+                            Answered::Superseded
+                        },
+                        None,
+                    ))
+                })
+            }
             Err(CoreError::Invalid(_)) => Ok((Answered::Superseded, None)),
             Err(e) => Err(e),
         }
@@ -267,7 +322,11 @@ impl RecoveredHosts {
         card: Option<&DecisionRecord>,
         now: i64,
     ) -> Result<RunState> {
-        let Some(run) = self.registry().get(id) else {
+        let Some(run) = self
+            .registry()
+            .get(id)
+            .filter(|run| run.routing() != crate::run_store::Routing::Closed)
+        else {
             return self.resolve_closed(id, position, resolution, actor, card, now);
         };
         let budgets = self.budgets_for(id)?;
@@ -463,15 +522,17 @@ impl RecoveredHosts {
         card: Option<&DecisionRecord>,
         now: i64,
     ) -> Result<RunState> {
-        let Resolution::ObservedResult(outcome) = resolution else {
-            return Err(CoreError::Invalid(
-                "closed runs accept only observed_result".into(),
-            ));
-        };
         let history = self
             .store
             .read(|c| sql::history(c, id))?
             .ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
+        let Resolution::ObservedResult(outcome) = resolution else {
+            return Err(CoreError::WrongState {
+                run_id: id.into(),
+                state: history.state,
+                operation: "reconcile",
+            });
+        };
         self.registry()
             .accounting_write(&history.flow_id, &self.store, |tx| {
                 let row = sql::obligation(tx, id, position)?
@@ -544,7 +605,7 @@ fn cas(
     choice: Option<&str>,
     now: i64,
 ) -> Result<bool> {
-    Ok(tx.execute("UPDATE decision_cards SET state=?3,choice=?4,answered_at=?5 WHERE dedup_key=?1 AND instance=?2 AND revision=?6 AND state='open'", params![card.dedup_key, card.instance, state.as_str(), choice, now, card.revision])? == 1)
+    Ok(tx.execute("UPDATE decision_cards SET state=?3,choice=?4,answered_at=?5,elicitation_id=COALESCE(elicitation_id,?7) WHERE dedup_key=?1 AND instance=?2 AND revision=?6 AND state='open'", params![card.dedup_key, card.instance, state.as_str(), choice, now, card.revision, card.elicitation_id])? == 1)
 }
 fn refresh(tx: &Transaction<'_>, snapshot: &Snapshot, now: i64) -> Result<()> {
     let Some(live) = sql::live(tx, &snapshot.id)? else {

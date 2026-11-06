@@ -280,7 +280,7 @@ fn startup_transaction_child() {
                 consent:std::sync::Arc::new(basal_host::MockConsent::new()),
                 hooks:std::sync::Arc::new(basal_core::NoHooks),
             }),
-        ).with_store_initializer(Box::new(move |store| {
+        ).with_store_initializer(Box::new(move |store,_recovered| {
             store.write(|tx| {
                 tx.execute_batch("CREATE TABLE eof_commit(value INTEGER NOT NULL); INSERT INTO eof_commit VALUES(73);")?;
                 std::fs::write(initialized_root.join("entered"), "uncommitted").unwrap();

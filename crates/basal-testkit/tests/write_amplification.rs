@@ -319,7 +319,7 @@ fn measure(
             )
         })
         .unwrap();
-    assert_eq!(settings["page_size"], page_size.unwrap_or(4096));
+    assert_eq!(settings["page_size"], page_size.unwrap_or(1024));
     store
         .read(|conn| {
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
@@ -450,6 +450,7 @@ fn measure(
         .iter()
         .map(|kind| kind["frames"].as_u64().unwrap())
         .sum();
+    let wal_frame_bytes = wal_frames * (settings["page_size"].as_u64().unwrap() + 24);
     let report: Value = json!({
         "runs": n, "instances": INSTANCES, "calls_per_run": calls,
         "profile": if batch { "26 fires per five-minute tick, 20 ticks" } else { "500 sequential one-fire ticks" },
@@ -466,7 +467,7 @@ fn measure(
         "total_write_bytes": total_writes,
         "outside_sql_or_log_write_bytes": outside_sql_or_log,
         "sqlite": {"write_bytes": sqlite_writes, "wal_frames": wal_frames,
-            "wal_format_bytes": wal_frames * (settings["page_size"].as_u64().unwrap() + 24)},
+            "wal_format_bytes": wal_frame_bytes},
         "run_log": {"write_bytes": stats.write_bytes, "append_bytes": stats.append_bytes,
             "file_syncs": stats.file_syncs, "directory_syncs": stats.directory_syncs,
             "segment_creates": stats.segment_creates, "rotations": stats.rotations,
@@ -590,6 +591,10 @@ fn probe_maps_transaction_pages_to_tables_and_indexes_and_reconciles_gaps() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let store = Store::open(dir.join("core.db"), Durability::default()).unwrap();
+    let page_size = store
+        .read(|conn| Ok(conn.pragma_query_value(None, "page_size", |row| row.get::<_, u64>(0))?))
+        .unwrap();
+    assert_eq!(page_size, 1024);
     checkpoint_unmeasured(&store);
     let probe = Probe::start(&store, dir.join("core.db-wal"), 1000);
     let before = probe.initial_io();
@@ -636,6 +641,23 @@ fn probe_maps_transaction_pages_to_tables_and_indexes_and_reconciles_gaps() {
         .map(|t| t["wal_frames"].as_u64().unwrap())
         .sum();
     assert_eq!(frames as usize, pages.len());
+    for item in report["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(report["kinds"].as_array().unwrap())
+    {
+        let count = item
+            .get("wal_frames")
+            .or_else(|| item.get("frames"))
+            .unwrap()
+            .as_u64()
+            .unwrap();
+        assert_eq!(
+            item["wal_frame_bytes"].as_u64().unwrap(),
+            count * (page_size + 24)
+        );
+    }
     drop(probe);
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();

@@ -128,7 +128,8 @@ fn runtime(
         Arc::new(NoHooks),
         Some(source),
         config,
-    ))
+    )
+    .expect("runtime startup"))
 }
 
 fn commit_cost(fullfsync: bool, samples: usize) -> Result<Value, String> {

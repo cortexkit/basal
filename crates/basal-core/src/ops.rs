@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::Result;
-use crate::model::to_u64;
 
 /// A snapshot of the runtime's state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,22 +31,6 @@ pub struct RunAges {
     pub oldest_pending_ms: Option<i64>,
     pub oldest_suspended_ms: Option<i64>,
     pub oldest_needs_reconcile_ms: Option<i64>,
-}
-
-pub fn run_ages(conn: &Connection, now_ms: i64) -> Result<RunAges> {
-    let oldest = |state: &str| -> Result<Option<i64>> {
-        let admitted: Option<i64> = conn.query_row(
-            "SELECT MIN(admitted_at) FROM runs WHERE state = ?1",
-            [state],
-            |r| r.get(0),
-        )?;
-        Ok(admitted.map(|a| now_ms.saturating_sub(a).max(0)))
-    };
-    Ok(RunAges {
-        oldest_pending_ms: oldest("pending")?,
-        oldest_suspended_ms: oldest("suspended")?,
-        oldest_needs_reconcile_ms: oldest("needs_reconcile")?,
-    })
 }
 
 /// A flow's most recent finished run.
@@ -105,47 +88,13 @@ pub struct FlowHealth {
     pub needs_reconcile: Vec<String>,
 }
 
-/// Count terminal run failures consistently in the health view and the owner
-/// alert threshold, so a refusal exempt from health cannot trigger an alert.
-pub(crate) fn counted_failure(
-    conn: &Connection,
-    run_id: &str,
-    state: &str,
-    kind: Option<&str>,
-) -> Result<bool> {
-    if state == "engine_mismatch" {
-        return Ok(true);
-    }
-    if state != "failed"
-        || matches!(
-            kind,
-            Some("readiness_rejection" | "agent_retired" | "version_revoked")
-        )
-    {
-        return Ok(false);
-    }
-    if kind == Some("deadline") {
-        let mut stmt = conn.prepare_cached("SELECT value FROM mailbox WHERE run_id=?1 AND settlement='rejected' UNION ALL SELECT value FROM journal_with_payloads WHERE run_id=?1 AND settlement='rejected' AND value IS NOT NULL")?;
-        for value in stmt.query_map([run_id], |r| r.get::<_, String>(0))? {
-            if typed_scope_rejection(&value?, false) {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
-}
-
-pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
-    flow_health_with(conn, now_ms, None)
-}
-
 pub(crate) fn flow_health_staged(
     conn: &Connection,
     now_ms: i64,
     runs: &[crate::Run],
     states: &BTreeMap<String, crate::run_records::State>,
 ) -> Result<Vec<FlowHealth>> {
-    flow_health_with(conn, now_ms, Some((runs, states)))
+    flow_health_with(conn, now_ms, (runs, states))
 }
 
 pub(crate) fn counted_failure_staged(
@@ -176,7 +125,7 @@ pub(crate) fn counted_failure_staged(
 fn flow_health_with(
     conn: &Connection,
     now_ms: i64,
-    staged: Option<(&[crate::Run], &BTreeMap<String, crate::run_records::State>)>,
+    staged: (&[crate::Run], &BTreeMap<String, crate::run_records::State>),
 ) -> Result<Vec<FlowHealth>> {
     let mut flows = Vec::new();
     let ids: Vec<String> = conn
@@ -191,12 +140,7 @@ fn flow_health_with(
         let mut consecutive_failures = 0;
         let mut failure_first_seen_ms: Option<i64> = None;
         let mut counting = true;
-        let mut stmt = conn.prepare_cached(
-            if staged.is_some() { "SELECT run_id,state,error_kind,ended_at FROM run_history WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC" } else { "SELECT run_id, state, error_kind, COALESCE(ended_at, admitted_at) FROM runs \
-             WHERE flow_id = ?1 \
-             AND state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') \
-             ORDER BY admit_seq DESC, run_id DESC" },
-        )?;
+        let mut stmt = conn.prepare_cached("SELECT run_id,state,error_kind,ended_at FROM run_history WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC")?;
         let finished = stmt.query_map([&flow_id], |r| {
             Ok(LastRun {
                 run_id: r.get(0)?,
@@ -208,15 +152,13 @@ fn flow_health_with(
         for run in finished {
             let run = run?;
             if counting {
-                if if staged.is_some() {
+                if {
                     counted_failure_staged(
                         conn,
                         &run.run_id,
                         &run.state,
                         run.error_kind.as_deref(),
                     )?
-                } else {
-                    counted_failure(conn, &run.run_id, &run.state, run.error_kind.as_deref())?
                 } {
                     consecutive_failures += 1;
                     failure_first_seen_ms =
@@ -232,18 +174,12 @@ fn flow_health_with(
                 break;
             }
         }
-        let needs_reconcile: Vec<String> = if let Some((runs, _)) = staged {
+        let needs_reconcile: Vec<String> = {
+            let (runs, _) = staged;
             runs.iter()
                 .filter(|r| r.flow_id == flow_id && r.state == crate::RunState::NeedsReconcile)
                 .map(|r| r.run_id.clone())
                 .collect()
-        } else {
-            conn.prepare_cached(
-                "SELECT run_id FROM runs WHERE flow_id = ?1 AND state = 'needs_reconcile' \
-                 ORDER BY admit_seq",
-            )?
-            .query_map([&flow_id], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?
         };
         let next_due: Option<i64> = conn
             .query_row(
@@ -258,17 +194,12 @@ fn flow_health_with(
             [&flow_id],
             |r| r.get(0),
         )?;
-        let pending: Option<i64> = if let Some((runs, _)) = staged {
+        let pending: Option<i64> = {
+            let (runs, _) = staged;
             runs.iter()
                 .filter(|r| r.flow_id == flow_id && r.state == crate::RunState::Pending)
                 .map(|r| r.admitted_at)
                 .min()
-        } else {
-            conn.query_row(
-                "SELECT MIN(admitted_at) FROM runs WHERE flow_id = ?1 AND state = 'pending'",
-                [&flow_id],
-                |r| r.get(0),
-            )?
         };
         let oldest_overdue_ms = [next_due, planned, pending]
             .into_iter()
@@ -276,7 +207,8 @@ fn flow_health_with(
             .filter(|since| *since <= now_ms)
             .map(|since| now_ms - since)
             .max();
-        let waiting_reason = if let Some((runs, states)) = staged {
+        let waiting_reason = {
+            let (runs, states) = staged;
             runs.iter()
                 .filter(|r| r.flow_id == flow_id && !r.state.is_terminal())
                 .find_map(|r| {
@@ -287,8 +219,6 @@ fn flow_health_with(
                             .and_then(|c| c.deferred.as_ref().map(|d| d.cause.clone()))
                     })
                 })
-        } else {
-            conn.query_row("SELECT refusal_detail FROM journal JOIN runs USING (run_id) WHERE runs.flow_id = ?1 AND journal.dispatch = 'deferred' AND runs.state IN ('running','pending','suspended') ORDER BY admit_seq, position LIMIT 1", [&flow_id], |r| r.get::<_, String>(0)).optional()?
         };
         let waiting_reason = match waiting_reason {
             Some(reason) => Some(reason),
@@ -405,45 +335,4 @@ pub(crate) fn typed_scope_rejection(value: &str, readiness_only: bool) -> bool {
         ) => !readiness_only,
         _ => false,
     }
-}
-
-pub(crate) fn health(conn: &Connection) -> Result<Health> {
-    let mut h = Health::default();
-    let mut counts = conn.prepare("SELECT state, COUNT(*) FROM runs GROUP BY state")?;
-    for row in counts.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-        let (state, count) = row?;
-        h.runs.insert(state, to_u64(count, "run count")?);
-    }
-    let mut unfinished = conn.prepare("SELECT run_id, state FROM runs WHERE state IN ('pending','running','suspended','needs_reconcile') ORDER BY run_id")?;
-    for row in unfinished.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-        let (run_id, state) = row?;
-        h.unfinished.entry(state).or_default().push(run_id);
-    }
-    let calls = |filter: &str| -> Result<Vec<(String, u64)>> {
-        let mut stmt = conn.prepare(&format!(
-            "SELECT j.run_id, j.position FROM journal j JOIN runs r ON r.run_id=j.run_id \
-             WHERE j.settlement IS NULL AND NOT EXISTS \
-             (SELECT 1 FROM mailbox m WHERE m.run_id=j.run_id AND m.position=j.position) \
-             {filter} ORDER BY j.run_id, j.position"
-        ))?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-        rows.map(|row| {
-            let (run, position) = row?;
-            Ok((run, to_u64(position, "position")?))
-        })
-        .collect()
-    };
-    h.unknown_calls = calls("AND j.dispatch='unknown'")?;
-    h.open_obligations = calls(
-        "AND NOT EXISTS (SELECT 1 FROM quarantine q WHERE q.run_id=j.run_id AND q.position=j.position AND q.reason='run_cancelled')",
-    )?;
-    let q: i64 = conn.query_row("SELECT COUNT(*) FROM quarantine", [], |r| r.get(0))?;
-    h.quarantined = to_u64(q, "quarantine count")?;
-    let draining: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key = 'draining'", [], |r| {
-            r.get(0)
-        })
-        .optional()?;
-    h.draining = draining.as_deref() == Some("1");
-    Ok(h)
 }

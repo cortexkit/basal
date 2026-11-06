@@ -483,7 +483,7 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
     },
     Migration {
         version: 45,
-        statements: include_str!("schema_secret_review_v45.sql"),
+        statements: include_str!("../schema_secret_review_v45.sql"),
     },
     Migration {
         version: 46,
@@ -493,7 +493,7 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
     },
     Migration {
         version: 47,
-        statements: include_str!("schema_run_history_v47.sql"),
+        statements: include_str!("../schema_run_history_v47.sql"),
     },
     Migration {
         version: 48,
@@ -1595,23 +1595,23 @@ CREATE TABLE outbox (
 "#;
 
 #[cfg(test)]
-#[path = "schema_flow_deferral_tests.rs"]
+#[path = "../schema_flow_deferral_tests.rs"]
 mod flow_deferral_tests;
 
 #[cfg(test)]
-#[path = "schema_package_tests.rs"]
+#[path = "../schema_package_tests.rs"]
 mod package_tests;
 
 #[cfg(test)]
-#[path = "schema_health_tests.rs"]
+#[path = "../schema_health_tests.rs"]
 mod health_tests;
 
 #[cfg(test)]
-#[path = "schema_consent_tests.rs"]
+#[path = "../schema_consent_tests.rs"]
 mod consent_tests;
 
 #[cfg(test)]
-#[path = "schema_retention_tests.rs"]
+#[path = "../schema_retention_tests.rs"]
 mod retention_tests;
 
 // SQLite cannot alter the status CHECK to admit person_wait. Rebuild
@@ -1828,5 +1828,5 @@ END;
 );
 
 #[cfg(test)]
-#[path = "schema_payload_tests.rs"]
+#[path = "../schema_payload_tests.rs"]
 mod payload_tests;

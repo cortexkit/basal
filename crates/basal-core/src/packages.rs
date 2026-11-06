@@ -339,7 +339,8 @@ impl Runtime {
         agent: &str,
         incoming: i64,
     ) -> Result<Value, PackageError> {
-        let mut liveness_changed = false;
+        let mut changed_liveness = false;
+        let mut targets = Vec::new();
         decide(self, |tx| {
             if let Some(reply) = generation(tx, package, agent, incoming, "remove", None)? {
                 return Ok(reply);
@@ -349,18 +350,23 @@ impl Runtime {
                 "UPDATE flows SET removed=1 WHERE flow_id=?1 AND package IS NOT NULL AND removed=0",
                 [&id],
             )?;
-            liveness_changed = changed != 0;
+            changed_liveness = changed != 0;
             if changed != 0 {
                 let now = jiff::Timestamp::from_millisecond(self.config().clock.now_ms())
                     .map_err(|e| CoreError::Invalid(e.to_string()))?;
                 schedule::table::disable(tx, &id, now)?;
+                targets = crate::run_removal::capture(tx, &id, self.config().clock.now_ms())?;
             }
-            let reply = json!({"flow_id":id,"generation":incoming,"removed":changed != 0});
+            let reply = json!({"flow_id":id,"generation":incoming,"removed":changed!=0});
             record_generation(tx, package, agent, incoming, "remove", None, &reply)?;
             Ok(reply)
         })
         .and_then(|reply| {
-            if liveness_changed {
+            self.removal_captured(&targets)
+                .map_err(PackageError::Store)?;
+            self.resume_run_removals().map_err(PackageError::Store)?;
+            self.flush_refusals().map_err(PackageError::Store)?;
+            if changed_liveness {
                 self.release_unused_flow_routes_for(&instance_id(package, agent))
                     .map_err(PackageError::Store)?;
             }

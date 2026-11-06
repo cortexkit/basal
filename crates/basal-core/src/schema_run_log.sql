@@ -1,4 +1,4 @@
--- Staged run-log control plane. Not part of the production migration chain.
+-- Run-log control plane, installed by fresh initialization or the cutover.
 CREATE UNIQUE INDEX run_snapshots_identity ON run_snapshots(snapshot_id, flow_id, flow_version);
 
 -- Execution state belongs to the actor; history_lost survives a missing log.
@@ -113,6 +113,9 @@ CREATE TABLE run_log_segments (
     state TEXT NOT NULL CHECK(state IN ('reserved','active')),
     PRIMARY KEY(log_epoch, seq)
 ) WITHOUT ROWID;
+
+CREATE INDEX outbox_run_removals ON outbox(CAST(json_extract(body,'$.run_id') AS TEXT))
+    WHERE kind='run.removed' AND delivered_at IS NULL;
 
 -- The cutover replaces these shared control tables, preserving their rows.
 -- Small keyed control rows fit index leaves. Snapshots, history, call detail

@@ -400,15 +400,9 @@ fn wait_store_refusal_defers_and_reuses_frozen_receipt() {
     let retry: i64 = f
         .module
         .rt
-        .store()
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT retry_not_before FROM journal WHERE run_id=?1",
-                [&run],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
+        .fixture_deferral(&run, 0)
+        .unwrap()
+        .retry_not_before;
     f.clock.set(retry);
     f.module.engine.run_until_idle(50).unwrap();
     assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
@@ -471,18 +465,18 @@ fn wait_repeated_unsent_refusals_reproduce_fifteen_attempt_deadline_shape_with_a
             let row = &f.module.rt.calls(&run).unwrap()[0];
             assert_eq!(row.attempts, attempt, "{code}");
             assert_eq!(row.dispatch, basal_core::DispatchState::Deferred, "{code}");
-            let (retry, cause): (i64, String) = f
-                .module
-                .rt
-                .store()
-                .read(|c| {
-                    Ok(c.query_row(
-                        "SELECT retry_not_before,last_dispatch_cause FROM journal WHERE run_id=?1",
-                        [&run],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )?)
-                })
-                .unwrap();
+            let (retry, cause): (i64, String) = {
+                let d = f.module.rt.fixture_deferral(&run, 0).unwrap();
+                (
+                    d.retry_not_before,
+                    serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&d.cause)
+                        .unwrap()
+                        .outcome()
+                        .value
+                        .as_str()
+                        .to_owned(),
+                )
+            };
             assert_eq!(serde_json::from_str::<Value>(&cause).unwrap()["code"], code);
             if attempt < sends {
                 f.clock.set(retry);
@@ -508,15 +502,31 @@ fn wait_repeated_unsent_refusals_reproduce_fifteen_attempt_deadline_shape_with_a
         assert_eq!(row.attempts, sends);
         assert!(row.outcome.is_none());
         assert!(row.handle.is_none());
-        f.module.rt.store().read(|c| {
-            let empty: i64 = c.query_row("SELECT refusal IS NULL AND refusal_detail IS NULL AND retry_not_before IS NULL AND unknown_reason IS NULL AND scope_cut=0 FROM journal WHERE run_id=?1", [&run], |r| r.get(0))?;
-            assert_eq!(empty, 1, "{code}");
-            let mailbox: String = c.query_row("SELECT value FROM mailbox WHERE run_id=?1", [&run], |r| r.get(0))?;
-            assert_eq!(serde_json::from_str::<Value>(&mailbox).unwrap()["code"], code);
-            let cause: String = c.query_row("SELECT last_dispatch_cause FROM journal WHERE run_id=?1", [&run], |r| r.get(0))?;
-            assert_eq!(serde_json::from_str::<Value>(&cause).unwrap()["code"], code);
-            Ok(())
-        }).unwrap();
+        let call = f.module.rt.fixture_call_state(&run, 0).unwrap();
+        assert!(call.unknown.is_none() && !call.scope_cut, "{code}");
+        assert!(
+            f.module
+                .rt
+                .deferred_calls()
+                .unwrap()
+                .iter()
+                .all(|(id, _, _, _)| id != &run),
+            "the refusal is history, not a pending retry: {code}"
+        );
+        let arrival = call.arrival.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(arrival.value.as_str()).unwrap()["code"],
+            code
+        );
+        assert_eq!(
+            f.module
+                .rt
+                .fixture_refusal(&run, 0)
+                .unwrap()
+                .reason
+                .as_str(),
+            code
+        );
         assert_eq!(fake.calls("sink.wait_resolve").len(), sends as usize);
     }
 }
@@ -633,12 +643,12 @@ fn wait_failure_candidates_that_cannot_produce_the_fifteen_attempt_shape() {
         approve(&fake, &f.module);
         fake.enqueue("sink.wait_resolve", vec![reply; 5]);
         let run = common::admit(&f, "host-flow", name);
-        f.module.engine.run_until_idle(50).unwrap();
+        drive_transport_retries(&f, &run);
         let stored = f.module.rt.run(&run).unwrap();
         let row = &f.module.rt.calls(&run).unwrap()[0];
         assert_eq!(
-            row.attempts, 1,
-            "{name}: transport retries are inside one authorized attempt"
+            row.attempts as usize, sends,
+            "{name}: every host send needs its own counted Intent"
         );
         assert_eq!(fake.calls("sink.wait_resolve").len(), sends, "{name}");
         if let Some(result) = result {
@@ -769,8 +779,8 @@ fn wait_journals_before_send_and_replays_identical_intent_after_cut() {
     };
     use basal_testkit::harness::{Point, Probe};
     for (point, sent_before_cut) in [
-        ("CallCommitted { position: 0 }#1", 0),
-        ("HostAnswered { position: 0 }#1", 1),
+        ("DriverSynced { position: 0 }#1", 0),
+        ("DriverDispatched { position: 0 }#1", 1),
     ] {
         let dir = common::scratch("wait-cut");
         let clock = Clock::manual(common::T0);
@@ -796,12 +806,19 @@ fn wait_journals_before_send_and_replays_identical_intent_after_cut() {
         let probe = Arc::new(Probe::crash_at(Point::parse(point).unwrap()));
         let mut dependencies = hosts(fake.clone(), consent.clone());
         dependencies.hooks = probe.clone();
-        let module = Module::start(
-            config.clone(),
-            dependencies,
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config.clone(),
+                dependencies,
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         module.handle(&Caller::Operator, "flow.install", json!({"script":"return await sink.wait.resolve('met','CI is green');", "manifest":wait_manifest().to_string()})).unwrap();
         approve(&fake, &module);
         fake.enqueue(
@@ -830,12 +847,19 @@ fn wait_journals_before_send_and_replays_identical_intent_after_cut() {
         consent.attach(Arc::new(Decisions::default()));
         drop(module);
         clock.set(common::T0 + 10_000);
-        let module = Module::start(
-            config,
-            hosts(fake.clone(), consent),
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config,
+                hosts(fake.clone(), consent),
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         let row = module.rt.calls(&run).unwrap().remove(0);
         let frozen = row
             .request

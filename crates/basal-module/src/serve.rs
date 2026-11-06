@@ -32,7 +32,12 @@ use crate::pool::{ProcessSpawner, Spawn};
 pub type Configure = Box<dyn Fn(PathBuf) -> ModuleConfig + Send + Sync>;
 /// Builds the hosts the module runs with.
 pub type MakeHosts = Box<dyn Fn() -> Hosts + Send + Sync>;
-pub type InitializeHosts = Box<dyn Fn(Arc<basal_core::Store>) -> Result<(), String> + Send + Sync>;
+pub type InitializeHosts = Box<
+    dyn Fn(Arc<basal_core::Store>, Arc<basal_core::run_host::RecoveredHosts>) -> Result<(), String>
+        + Send
+        + Sync,
+>;
+pub type MakeHooks = Box<dyn Fn() -> Arc<dyn basal_core::Hooks> + Send + Sync>;
 /// Starts adapter polling only after module preparation has succeeded.
 pub type ReadyHosts = Box<dyn Fn() + Send + Sync>;
 /// What the serving process does with the first store failure the module
@@ -149,6 +154,7 @@ pub struct BasalHandler {
     routes: Arc<Routes>,
     configure: Arc<Configure>,
     hosts: Arc<MakeHosts>,
+    startup_hooks: Arc<MakeHooks>,
     initialize: Arc<InitializeHosts>,
     ready: Arc<ReadyHosts>,
     event_transport: Arc<Option<Arc<dyn basal_host::transport::Transport>>>,
@@ -169,7 +175,8 @@ impl BasalHandler {
             routes: Arc::new(Routes::default()),
             configure: Arc::new(configure),
             hosts: Arc::new(hosts),
-            initialize: Arc::new(Box::new(|_| Ok(()))),
+            startup_hooks: Arc::new(Box::new(|| Arc::new(basal_core::NoHooks))),
+            initialize: Arc::new(Box::new(|_, _| Ok(()))),
             ready: Arc::new(Box::new(|| {})),
             event_transport: Arc::new(None),
             initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -218,6 +225,12 @@ impl BasalHandler {
         self.daemon_capabilities = capabilities;
         self
     }
+    /// Startup hooks are obtained without constructing hosts or workers.
+    pub fn with_startup_hooks(mut self, hooks: MakeHooks) -> Self {
+        self.startup_hooks = Arc::new(hooks);
+        self
+    }
+
     pub fn with_store_initializer(mut self, initialize: InitializeHosts) -> Self {
         self.initialize = Arc::new(initialize);
         self
@@ -411,6 +424,7 @@ fn start(path: PathBuf, handler: &BasalHandler) {
     let BasalHandler {
         configure,
         hosts,
+        startup_hooks,
         initialize,
         ready,
         phase,
@@ -426,12 +440,20 @@ fn start(path: PathBuf, handler: &BasalHandler) {
             }
             // Every attempt owns fresh adapters. Retaining a failed attempt's
             // bound Broca store would hold the old write lease across retries.
-            let dependencies = hosts();
-            let config = configure(path.clone());
-            let spawner: Arc<dyn Spawn> = Arc::new(ProcessSpawner::new(&config.pool));
-            match Module::start_with_store(config.clone(), dependencies.clone(), spawner, |store| {
-                initialize(store)
-            }) {
+            let attempt = (|| {
+                let config = configure(path.clone());
+                let prepared = Module::prepare(&config, startup_hooks())?;
+                let dependencies = hosts();
+                let spawner: Arc<dyn Spawn> = Arc::new(ProcessSpawner::new(&config.pool));
+                Module::start_prepared(
+                    config,
+                    dependencies,
+                    spawner,
+                    prepared,
+                    |store, recovered| initialize(store, recovered),
+                )
+            })();
+            match attempt {
                 Ok(module) => break Ok(module),
                 Err(e) if std::time::Instant::now() < deadline => {
                     tracing::warn!(target: "store", "starting: {e}; retrying");

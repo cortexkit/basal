@@ -144,18 +144,20 @@ fn board_retryable_refusals_defer_with_same_receipt_until_success_or_deadline() 
         let row = &f.module.rt.calls(&run).unwrap()[0];
         assert_eq!(row.dispatch, basal_core::model::DispatchState::Deferred);
         assert_eq!(fake.calls("sink.board").len(), 1);
-        let (reason, retry): (String, i64) = f
-            .module
-            .rt
-            .store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT refusal,retry_not_before FROM journal WHERE run_id=?1",
-                    [&run],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )?)
-            })
-            .unwrap();
+        let (reason, retry): (String, i64) = (
+            f.module
+                .rt
+                .fixture_refusal(&run, 0)
+                .unwrap()
+                .reason
+                .as_str()
+                .to_owned(),
+            f.module
+                .rt
+                .fixture_deferral(&run, 0)
+                .unwrap()
+                .retry_not_before,
+        );
         assert_eq!(reason, code);
         assert!(retry > common::T0 && retry <= common::T0 + 30_000);
         f.clock
@@ -164,18 +166,23 @@ fn board_retryable_refusals_defer_with_same_receipt_until_success_or_deadline() 
         if expire {
             assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Failed);
             assert_eq!(fake.calls("sink.board").len(), 1);
-            let (settlement, value): (String, String) = f
-                .module
-                .rt
-                .store()
-                .read(|c| {
-                    Ok(c.query_row(
-                        "SELECT settlement,value FROM mailbox WHERE run_id=?1 AND position=0",
-                        [&run],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )?)
-                })
-                .unwrap();
+            let (settlement, value): (String, String) = {
+                let a = f
+                    .module
+                    .rt
+                    .fixture_call_state(&run, 0)
+                    .unwrap()
+                    .arrival
+                    .unwrap();
+                (
+                    match a.settlement {
+                        basal_proto::Settlement::Fulfilled => "fulfilled",
+                        basal_proto::Settlement::Rejected => "rejected",
+                    }
+                    .to_owned(),
+                    a.value.as_str().to_owned(),
+                )
+            };
             assert_eq!(settlement, "rejected");
             assert_eq!(serde_json::from_str::<Value>(&value).unwrap()["code"], code);
         } else {
@@ -213,21 +220,27 @@ fn board_registry_failure_defers_before_send_and_resolves_once_on_retry() {
         f.module.engine.run_until_idle(50).unwrap();
         let row = f.module.rt.calls(&run).unwrap().remove(0);
         assert_eq!(row.dispatch, basal_core::DispatchState::Deferred);
+        assert_eq!(
+            row.attempts, 0,
+            "registry preparation did not authorize a transport attempt"
+        );
         assert!(row.request.is_none());
         assert!(fake.calls("sink.board").is_empty());
         assert_eq!(fake.calls("agent.list").len(), reads + 1);
-        let (reason, retry): (String, i64) = f
-            .module
-            .rt
-            .store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT refusal,retry_not_before FROM journal WHERE run_id=?1",
-                    [&run],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )?)
-            })
-            .unwrap();
+        let (reason, retry): (String, i64) = (
+            f.module
+                .rt
+                .fixture_refusal(&run, 0)
+                .unwrap()
+                .reason
+                .as_str()
+                .to_owned(),
+            f.module
+                .rt
+                .fixture_deferral(&run, 0)
+                .unwrap()
+                .retry_not_before,
+        );
         assert_eq!(reason, "sink_board_target_unavailable");
         assert!(retry > common::T0 && retry <= common::T0 + 30_000);
         f.clock.set(retry);
@@ -239,22 +252,12 @@ fn board_registry_failure_defers_before_send_and_resolves_once_on_retry() {
         assert_eq!(sent[0]["params"]["agent"], "ag_synapse");
         assert_eq!(sent[0]["params"]["receipt_key"], row.idempotency_key);
         let completed = f.module.rt.calls(&run).unwrap().remove(0);
-        assert_eq!(completed.attempts, 2);
+        assert_eq!(completed.attempts, 1);
         let frozen: Value =
             serde_json::from_str(completed.request.as_ref().unwrap().as_str()).unwrap();
         assert_eq!(frozen["agent"], "ag_synapse");
         assert_eq!(frozen["stamp"], sent[0]["params"]["stamp"]);
-        let bytes = completed.args.len()
-            + completed.request.as_ref().unwrap().len()
-            + completed.outcome.as_ref().unwrap().value.len();
-        assert_eq!(
-            f.module
-                .rt
-                .store()
-                .read(|c| basal_core::journal::run_size(c, &run))
-                .unwrap(),
-            (1, bytes as u64)
-        );
+        assert_eq!(f.module.rt.fixture_calls(&run).unwrap().len(), 1);
     }
 }
 
@@ -322,15 +325,9 @@ fn board_registry_outage_backoff_stops_at_the_run_deadline() {
     let retry = || {
         f.module
             .rt
-            .store()
-            .read(|c| {
-                Ok(c.query_row(
-                    "SELECT retry_not_before FROM journal WHERE run_id=?1",
-                    [&run],
-                    |r| r.get::<_, i64>(0),
-                )?)
-            })
+            .fixture_deferral(&run, 0)
             .unwrap()
+            .retry_not_before
     };
     let first = retry();
     assert!(first > common::T0);
@@ -346,15 +343,13 @@ fn board_registry_outage_backoff_stops_at_the_run_deadline() {
     let value: String = f
         .module
         .rt
-        .store()
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT value FROM mailbox WHERE run_id=?1 AND position=0",
-                [&run],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
+        .fixture_call_state(&run, 0)
+        .unwrap()
+        .arrival
+        .unwrap()
+        .value
+        .as_str()
+        .to_owned();
     assert_eq!(
         serde_json::from_str::<Value>(&value).unwrap()["code"],
         "sink_board_target_unavailable"
