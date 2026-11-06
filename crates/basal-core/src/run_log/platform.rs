@@ -58,12 +58,15 @@ pub(super) fn create(path: &Path) -> io::Result<File> {
 }
 
 pub(super) fn mkdir(path: &Path) -> io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
         builder.mode(0o700);
-    }
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
     match builder.create(path) {
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
         result => result,

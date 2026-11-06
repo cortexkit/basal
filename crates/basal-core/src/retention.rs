@@ -378,13 +378,11 @@ fn os_from_bytes(bytes: Vec<u8>) -> Option<OsString> {
 #[cfg(windows)]
 fn os_from_bytes(bytes: Vec<u8>) -> Option<OsString> {
     use std::os::windows::ffi::OsStringExt;
-    if bytes.len() % 2 != 0 {
+    let (pairs, rest) = bytes.as_chunks::<2>();
+    if !rest.is_empty() {
         return None;
     }
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
-        .collect();
+    let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
     Some(OsString::from_wide(&units))
 }
 
