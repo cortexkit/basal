@@ -619,7 +619,7 @@ impl DryRunner {
                     Ok(())
                 }).map_err(failed)?;
             }
-            let mut events = Vec::new();
+            let events = Arc::new(Mutex::new(Vec::new()));
             let mut ending = None;
             for _ in 0..self.config.attempts_per_fire {
                 let mut lease = self
@@ -632,7 +632,7 @@ impl DryRunner {
                 let end = {
                     let mut recording = Recording {
                         inner: &mut lease,
-                        events: &mut events,
+                        events: events.clone(),
                     };
                     rt.activate(&run_id, &mut recording).map_err(failed)?
                 };
@@ -646,7 +646,14 @@ impl DryRunner {
             rt.quiesce();
             let run = rt.run(&run_id).map_err(failed)?;
             let calls = rt.calls(&run_id).map_err(failed)?;
-            runs.push(self.describe_run(manifest, &run, &calls, &events, ending.as_ref(), &host));
+            runs.push(self.describe_run(
+                manifest,
+                &run,
+                &calls,
+                &events.lock().unwrap_or_else(|p| p.into_inner()),
+                ending.as_ref(),
+                &host,
+            ));
         }
         Ok((runs, warnings))
     }
@@ -813,7 +820,7 @@ enum Event {
 /// A worker channel that notes the order of deliveries and calls.
 struct Recording<'a> {
     inner: &'a mut Lease,
-    events: &'a mut Vec<Event>,
+    events: Arc<Mutex<Vec<Event>>>,
 }
 
 impl WorkerChannel for Recording<'_> {
@@ -823,17 +830,23 @@ impl WorkerChannel for Recording<'_> {
 
     fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
         match message {
-            ParentMessage::Activate(request) => self.events.push(Event::Prefix(
-                request
-                    .prefix
-                    .iter()
-                    .filter(|c| c.outcome.is_some())
-                    .map(|c| c.position)
-                    .collect(),
-            )),
-            ParentMessage::Deliver(outcome) => {
-                self.events.push(Event::DriverReleased(outcome.position))
-            }
+            ParentMessage::Activate(request) => self
+                .events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Event::Prefix(
+                    request
+                        .prefix
+                        .iter()
+                        .filter(|c| c.outcome.is_some())
+                        .map(|c| c.position)
+                        .collect(),
+                )),
+            ParentMessage::Deliver(outcome) => self
+                .events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Event::DriverReleased(outcome.position)),
             _ => {}
         }
         self.inner.send(message)
@@ -842,19 +855,42 @@ impl WorkerChannel for Recording<'_> {
     fn recv(&mut self, timeout: Duration) -> Result<WorkerMessage, ChannelError> {
         let message = self.inner.recv(timeout)?;
         if let WorkerMessage::HostCall(call) = &message {
-            self.events.push(Event::Issued(call.position));
+            self.events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Event::Issued(call.position));
         }
         Ok(message)
     }
 
-    /// Frames read through a split-off receiver bypass the recording. The
-    /// flow driver that runs dry-run activations reads only through `recv`.
+    /// Split receiving must record the same issuance order as timed recv; dry
+    /// run partialness depends on whether a call followed a captured reply.
     fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
-        self.inner.receiver()
+        Box::new(RecordingReceiver {
+            inner: self.inner.receiver(),
+            events: self.events.clone(),
+        })
     }
 
     fn kill(&mut self) {
         self.inner.kill();
+    }
+}
+
+struct RecordingReceiver {
+    inner: Box<dyn WorkerReceiver>,
+    events: Arc<Mutex<Vec<Event>>>,
+}
+impl WorkerReceiver for RecordingReceiver {
+    fn recv(&mut self) -> Result<WorkerMessage, ChannelError> {
+        let message = self.inner.recv()?;
+        if let WorkerMessage::HostCall(call) = &message {
+            self.events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(Event::Issued(call.position));
+        }
+        Ok(message)
     }
 }
 

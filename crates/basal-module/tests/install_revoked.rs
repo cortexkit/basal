@@ -83,7 +83,12 @@ fn assert_revoked(f: &common::Fixture, run: &str) {
     assert_eq!(stored.error_kind.as_deref(), Some("version_revoked"));
     let calls = f.module.rt.calls(run).unwrap();
     assert_eq!(calls.len(), 2, "{calls:?}");
-    let refused = calls[1].outcome.as_ref().expect("typed refusal");
+    assert!(
+        calls[1].outcome.is_none(),
+        "revocation seals the worker before releasing its refusal"
+    );
+    let call = f.module.rt.fixture_call_state(run, 1).unwrap();
+    let refused = call.arrival.as_ref().expect("durable typed refusal");
     assert_eq!(refused.settlement, Settlement::Rejected);
     assert_eq!(
         serde_json::from_str::<Value>(refused.value.as_str()).unwrap()["code"],
@@ -173,8 +178,20 @@ fn push_between_journal_and_send_refuses_the_dispatch_attempt() {
     );
     assert_eq!(f.mock.total_sends(), sends);
     let calls = f.module.rt.calls(&run).unwrap();
+    assert!(calls[0].outcome.is_none());
     assert_eq!(
-        serde_json::from_str::<Value>(calls[0].outcome.as_ref().unwrap().value.as_str()).unwrap()["code"],
+        serde_json::from_str::<Value>(
+            f.module
+                .rt
+                .fixture_call_state(&run, 0)
+                .unwrap()
+                .arrival
+                .as_ref()
+                .unwrap()
+                .value
+                .as_str()
+        )
+        .unwrap()["code"],
         "version_revoked"
     );
 }

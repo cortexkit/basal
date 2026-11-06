@@ -1154,116 +1154,123 @@ fn carrier_core_payload_and_route_remain_unchanged() {
 
 #[test]
 fn a_stalled_scope_activation_deadline_reaps_its_worker() {
-    let f = Fixture::with_activation_deadline(
-        "scope-activation-wait",
-        "await ops.call('mock','send',{n:7}); return await ops.call('mock','send',{n:8});",
-        true,
-        true,
-        STALLED_ACTIVATION_WAIT,
-    );
-    let run = f.admit("one");
-    let mut worker = f.world.source.spawn().expect("worker");
-    // Only provider dispatch reads this queue. Hold its reply without blocking
-    // the install gate, deadline checks, SQLite or another flow's actor.
-    let held_reply = f.wire.refusals.lock().unwrap();
-    let (began, beginning) = mpsc::channel();
-    let driver = {
-        let rt = f.rt.clone();
-        let run = run.clone();
-        std::thread::spawn(move || {
-            let started = Instant::now();
-            began.send(started).unwrap();
-            let end = rt.activate(&run, &mut worker);
-            (end, worker)
-        })
-    };
-    let started = beginning.recv_timeout(ACTIVATION_WAIT).unwrap();
-    let killed = wait_until(
-        started + ACTIVATION_WAIT,
-        "deadline to reap the worker",
-        || {
-            f.world
-                .source
-                .counts
-                .live_pid
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
-        },
-    );
-    let kill_time = started.elapsed();
-    let closing = wait_until(
-        Instant::now() + ACTIVATION_WAIT,
-        "deadline to seal the run Closing",
-        || f.rt.fixture_routing(&run) == Some(basal_core::run_store::Routing::Closing),
-    );
-    let still_draining = !driver.is_finished();
-    let queued =
-        f.rt.admit_trigger("flow-test", "while-closing", JsonText::null())
-            .unwrap()
-            .run_id()
-            .unwrap()
-            .to_owned();
-    let held_slot = f.rt.resume(&queued).unwrap();
+    for route_timeout in [false, true] {
+        let f = Fixture::with_activation_deadline(
+            "scope-activation-wait",
+            "await ops.call('mock','send',{n:7}); return await ops.call('mock','send',{n:8});",
+            true,
+            true,
+            STALLED_ACTIVATION_WAIT,
+        );
+        let run = f.admit("one");
+        let mut worker = f.world.source.spawn().expect("worker");
+        // Only provider dispatch reads this queue. Hold its reply without blocking
+        // the install gate, deadline checks, SQLite or another flow's actor.
+        let mut held_reply = f.wire.refusals.lock().unwrap();
+        if route_timeout {
+            held_reply.push_back(WireError::TimedOut(
+                "synthetic provider route timeout".into(),
+            ));
+        }
+        let (began, beginning) = mpsc::channel();
+        let driver = {
+            let rt = f.rt.clone();
+            let run = run.clone();
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                began.send(started).unwrap();
+                let end = rt.activate(&run, &mut worker);
+                (end, worker)
+            })
+        };
+        let started = beginning.recv_timeout(ACTIVATION_WAIT).unwrap();
+        let killed = wait_until(
+            started + ACTIVATION_WAIT,
+            "deadline to reap the worker",
+            || {
+                f.world
+                    .source
+                    .counts
+                    .live_pid
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == 0
+            },
+        );
+        let kill_time = started.elapsed();
+        let closing = wait_until(
+            Instant::now() + ACTIVATION_WAIT,
+            "deadline to seal the run Closing",
+            || f.rt.fixture_routing(&run) == Some(basal_core::run_store::Routing::Closing),
+        );
+        let still_draining = !driver.is_finished();
+        let queued =
+            f.rt.admit_trigger("flow-test", "while-closing", JsonText::null())
+                .unwrap()
+                .run_id()
+                .unwrap()
+                .to_owned();
+        let held_slot = f.rt.resume(&queued).unwrap();
 
-    let mut manifest = test_manifest();
-    manifest["id"] = json!("independent-flow");
-    let spec = f.world.spec_with(&f.rt, "return 2;", &manifest).unwrap();
-    *f.wire.hash.lock().unwrap() =
-        basal_core::ids::hex(&basal_core::ids::code_hash(&spec.script, &spec.manifest));
-    let other = f.rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
-    let mut other_worker = f.world.source.spawn().expect("independent worker");
-    let (finished, finish) = mpsc::channel();
-    let independent = {
-        let rt = f.rt.clone();
-        std::thread::spawn(move || {
-            let result = rt.activate(&other, &mut other_worker);
-            finished.send(result).unwrap();
-        })
-    };
-    let independent_result = finish.recv_timeout(ACTIVATION_WAIT);
-    // Returning a terminal result before the reply is no longer the contract:
-    // Closing retains the flow slot until its already-authorized entrant drains.
-    // The child and independent flows must nevertheless make progress on time.
-    drop(held_reply);
-    wait_until(
-        Instant::now() + ACTIVATION_WAIT,
-        "close to finish after the held reply",
-        || driver.is_finished(),
-    )
-    .expect("bounded drain");
-    let (end, mut worker) = driver.join().unwrap();
-    independent.join().unwrap();
-    let reaped = worker.exited(ACTIVATION_WAIT);
-    worker.kill();
-    f.rt.quiesce();
-    killed.expect("deadline did not reap its worker");
-    closing.expect("deadline did not seal the run");
-    assert!(
-        kill_time < Config::default().activation_deadline,
-        "deadline reap took {kill_time:?}"
-    );
-    assert!(still_draining, "close did not retain the in-flight entrant");
-    assert!(matches!(held_slot,basal_core::ActivationEnd::Waiting {holder} if holder == run));
-    let independent_end = independent_result
-        .expect("another flow was blocked")
-        .unwrap();
-    assert!(
-        matches!(&independent_end, basal_core::ActivationEnd::Succeeded {value} if value == "2"),
-        "{independent_end:?}"
-    );
-    assert!(
-        matches!(end.unwrap(), basal_core::ActivationEnd::Failed {kind,..} if kind == "deadline")
-    );
-    assert_eq!(
-        f.rt.run(&run).unwrap().error_kind.as_deref(),
-        Some("deadline")
-    );
-    assert_eq!(
-        f.sends(),
-        1,
-        "the sealed run must execute no later script call"
-    );
-    assert!(reaped);
+        let mut manifest = test_manifest();
+        manifest["id"] = json!("independent-flow");
+        let spec = f.world.spec_with(&f.rt, "return 2;", &manifest).unwrap();
+        *f.wire.hash.lock().unwrap() =
+            basal_core::ids::hex(&basal_core::ids::code_hash(&spec.script, &spec.manifest));
+        let other = f.rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+        let mut other_worker = f.world.source.spawn().expect("independent worker");
+        let (finished, finish) = mpsc::channel();
+        let independent = {
+            let rt = f.rt.clone();
+            std::thread::spawn(move || {
+                let result = rt.activate(&other, &mut other_worker);
+                finished.send(result).unwrap();
+            })
+        };
+        let independent_result = finish.recv_timeout(ACTIVATION_WAIT);
+        // Returning a terminal result before the reply is no longer the contract:
+        // Closing retains the flow slot until its already-authorized entrant drains.
+        // The child and independent flows must nevertheless make progress on time.
+        drop(held_reply);
+        wait_until(
+            Instant::now() + ACTIVATION_WAIT,
+            "close to finish after the held reply",
+            || driver.is_finished(),
+        )
+        .expect("bounded drain");
+        let (end, mut worker) = driver.join().unwrap();
+        independent.join().unwrap();
+        let reaped = worker.exited(ACTIVATION_WAIT);
+        worker.kill();
+        f.rt.quiesce();
+        killed.expect("deadline did not reap its worker");
+        closing.expect("deadline did not seal the run");
+        assert!(
+            kill_time < Config::default().activation_deadline,
+            "deadline reap took {kill_time:?}"
+        );
+        assert!(still_draining, "close did not retain the in-flight entrant");
+        assert!(matches!(held_slot,basal_core::ActivationEnd::Waiting {holder} if holder == run));
+        let independent_end = independent_result
+            .expect("another flow was blocked")
+            .unwrap();
+        assert!(
+            matches!(&independent_end, basal_core::ActivationEnd::Succeeded {value} if value == "2"),
+            "{independent_end:?}"
+        );
+        assert!(
+            matches!(end.unwrap(), basal_core::ActivationEnd::Failed {kind,..} if kind == "deadline")
+        );
+        assert_eq!(
+            f.rt.run(&run).unwrap().error_kind.as_deref(),
+            Some("deadline")
+        );
+        assert_eq!(
+            f.sends(),
+            1,
+            "the sealed run must execute no later script call"
+        );
+        assert!(reaped);
+    }
 }
 
 #[test]

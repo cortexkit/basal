@@ -106,10 +106,11 @@ fn module_projections_read_a_real_log_backed_flow() {
         .store()
         .read(|c| {
             assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM run_identities", [], |r| r
+                c.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name IN ('runs','journal') OR name LIKE 'rig_%'", [], |r| r
                     .get::<_, u64>(0))?,
                 0
             );
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM run_history", [], |r| r.get::<_,u64>(0))?,1);
             Ok(())
         })
         .unwrap();
@@ -151,5 +152,20 @@ fn staged_dry_run_uses_its_own_log_and_retains_success_call_detail() {
         0,
         "scratch cleanup removes the SQLite file and its own run-log directory"
     );
-    f.module.rt.store().read(|c|{assert_eq!(c.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name='run_history' OR name LIKE 'rig_%'",[],|r|r.get::<_,u64>(0))?,0);Ok(())}).unwrap();
+    f.module
+        .rt
+        .store()
+        .read(|c| {
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM run_history", [], |r| r
+                    .get::<_, u64>(0))?,
+                0
+            );
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM live_runs", [], |r| r.get::<_, u64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
 }

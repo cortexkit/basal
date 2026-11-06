@@ -209,21 +209,34 @@ pub(crate) fn call(call: &CallState) -> Result<CallRow> {
 }
 
 pub(crate) fn calls(conn: &Connection, id: &str, snapshot: Option<&State>) -> Result<Vec<CallRow>> {
-    if let Some(state) = snapshot {
-        return state.calls.values().map(call).collect();
+    let mut calls: Vec<CallRow> = if let Some(state) = snapshot {
+        state.calls.values().map(call).collect::<Result<_>>()?
+    } else {
+        let mut stmt =
+            conn.prepare("SELECT detail FROM run_calls WHERE run_id=?1 ORDER BY position")?;
+        let rows = stmt
+            .query_map([id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|text| {
+                let state: CallState =
+                    serde_json::from_str(&text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                call(&state)
+            })
+            .collect::<Result<_>>()?
+    };
+    if calls.iter().any(|c| c.idempotency_key.is_empty()) {
+        let identity = sql::identity(conn, id)?.ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
+        for call in &mut calls {
+            if call.idempotency_key.is_empty() {
+                // Preparation may not have authorized an Intent yet. Its public
+                // key is still determined by the durable run identity/position.
+                call.idempotency_key =
+                    crate::ids::idempotency_key(&identity.flow_id, id, call.position);
+            }
+        }
     }
-    let mut stmt =
-        conn.prepare("SELECT detail FROM run_calls WHERE run_id=?1 ORDER BY position")?;
-    let rows = stmt
-        .query_map([id], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    rows.into_iter()
-        .map(|text| {
-            let state: CallState =
-                serde_json::from_str(&text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
-            call(&state)
-        })
-        .collect()
+    Ok(calls)
 }
 
 pub(crate) fn json(value: &serde_json::Value) -> Result<JsonText> {

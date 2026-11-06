@@ -451,7 +451,9 @@ impl State {
                 self.call_mut(*position)?.unknown = Some(reason.clone());
             }
             Body::CallScopeCut { position } => {
-                self.call_mut(*position)?.scope_cut = true;
+                let call = self.call_mut(*position)?;
+                call.scope_cut = true;
+                call.unknown = Some("connection_lost".into());
             }
             Body::MeasuredUsage { position, report } => {
                 self.call_mut(*position)?.usage_report = Some(*report);

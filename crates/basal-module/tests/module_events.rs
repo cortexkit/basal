@@ -472,7 +472,7 @@ async fn per_flow_fanout_rolls_back_before_ack_on_commit_failure() {
     approve(&rt, "a");
     approve(&rt, "b");
     server.publish(0, SUBJECT).await;
-    rt.store().write(|tx|{tx.execute_batch("CREATE TRIGGER refuse_second BEFORE INSERT ON runs WHEN NEW.flow_id='b' BEGIN SELECT RAISE(ABORT,'second flow failed'); END;")?;Ok(())}).unwrap();
+    rt.store().write(|tx|{tx.execute_batch("CREATE TRIGGER refuse_second BEFORE INSERT ON live_runs WHEN NEW.flow_id='b' BEGIN SELECT RAISE(ABORT,'second flow failed'); END;")?;Ok(())}).unwrap();
     let mut consumer = bind(&server.bus, STREAM).await.unwrap();
     let messages = pull(&consumer).await.unwrap();
     assert!(commit_batch(rt.clone(), &messages, true).await.is_err());

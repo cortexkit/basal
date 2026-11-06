@@ -503,7 +503,16 @@ fn wait_repeated_unsent_refusals_reproduce_fifteen_attempt_deadline_shape_with_a
         assert!(row.outcome.is_none());
         assert!(row.handle.is_none());
         let call = f.module.rt.fixture_call_state(&run, 0).unwrap();
-        assert!(call.deferred.is_none() && call.unknown.is_none(), "{code}");
+        assert!(call.unknown.is_none() && !call.scope_cut, "{code}");
+        assert!(
+            f.module
+                .rt
+                .deferred_calls()
+                .unwrap()
+                .iter()
+                .all(|(id, _, _, _)| id != &run),
+            "the refusal is history, not a pending retry: {code}"
+        );
         let arrival = call.arrival.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(arrival.value.as_str()).unwrap()["code"],
@@ -634,12 +643,12 @@ fn wait_failure_candidates_that_cannot_produce_the_fifteen_attempt_shape() {
         approve(&fake, &f.module);
         fake.enqueue("sink.wait_resolve", vec![reply; 5]);
         let run = common::admit(&f, "host-flow", name);
-        f.module.engine.run_until_idle(50).unwrap();
+        drive_transport_retries(&f, &run);
         let stored = f.module.rt.run(&run).unwrap();
         let row = &f.module.rt.calls(&run).unwrap()[0];
         assert_eq!(
-            row.attempts, 1,
-            "{name}: transport retries are inside one authorized attempt"
+            row.attempts as usize, sends,
+            "{name}: every host send needs its own counted Intent"
         );
         assert_eq!(fake.calls("sink.wait_resolve").len(), sends, "{name}");
         if let Some(result) = result {
@@ -797,12 +806,19 @@ fn wait_journals_before_send_and_replays_identical_intent_after_cut() {
         let probe = Arc::new(Probe::crash_at(Point::parse(point).unwrap()));
         let mut dependencies = hosts(fake.clone(), consent.clone());
         dependencies.hooks = probe.clone();
-        let module = Module::start(
-            config.clone(),
-            dependencies,
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config.clone(),
+                dependencies,
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         module.handle(&Caller::Operator, "flow.install", json!({"script":"return await sink.wait.resolve('met','CI is green');", "manifest":wait_manifest().to_string()})).unwrap();
         approve(&fake, &module);
         fake.enqueue(
@@ -831,12 +847,19 @@ fn wait_journals_before_send_and_replays_identical_intent_after_cut() {
         consent.attach(Arc::new(Decisions::default()));
         drop(module);
         clock.set(common::T0 + 10_000);
-        let module = Module::start(
-            config,
-            hosts(fake.clone(), consent),
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config,
+                hosts(fake.clone(), consent),
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         let row = module.rt.calls(&run).unwrap().remove(0);
         let frozen = row
             .request

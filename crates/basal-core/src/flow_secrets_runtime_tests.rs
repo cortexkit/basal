@@ -330,21 +330,18 @@ impl Host for SecondReviewProbeHost {
 
 #[test]
 fn second_review_abandonment_rechecks_confirmation_after_unlocked_probe() {
-    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
-    let store = fixture.rt.shared.store.clone();
-    let host = Arc::new(SecondReviewProbeHost {
-        store: store.clone(),
-        reads: AtomicUsize::new(0),
-    });
-    let rt = Runtime::new(
-        store,
-        host.clone(),
-        Arc::new(basal_host::MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config::default(),
-    )
-    .expect("runtime startup");
+    let mut probe = None;
+    let fixture =
+        crate::runtime_authorization_regressions::TestRuntime::with_host_factory(|store| {
+            let host = Arc::new(SecondReviewProbeHost {
+                store,
+                reads: AtomicUsize::new(0),
+            });
+            probe = Some(host.clone());
+            host
+        });
+    let host = probe.unwrap();
+    let rt = &fixture.rt;
     let manifest = json!({"id":"guarded-secret","version":1,"purpose":"guarded cleanup","trigger":{"schedule":{"interval":"1h"}},
         "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/"},"methods":["GET"]}]}).to_string();
     let installed = rt

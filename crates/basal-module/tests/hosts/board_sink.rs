@@ -220,6 +220,10 @@ fn board_registry_failure_defers_before_send_and_resolves_once_on_retry() {
         f.module.engine.run_until_idle(50).unwrap();
         let row = f.module.rt.calls(&run).unwrap().remove(0);
         assert_eq!(row.dispatch, basal_core::DispatchState::Deferred);
+        assert_eq!(
+            row.attempts, 0,
+            "registry preparation did not authorize a transport attempt"
+        );
         assert!(row.request.is_none());
         assert!(fake.calls("sink.board").is_empty());
         assert_eq!(fake.calls("agent.list").len(), reads + 1);
@@ -248,7 +252,7 @@ fn board_registry_failure_defers_before_send_and_resolves_once_on_retry() {
         assert_eq!(sent[0]["params"]["agent"], "ag_synapse");
         assert_eq!(sent[0]["params"]["receipt_key"], row.idempotency_key);
         let completed = f.module.rt.calls(&run).unwrap().remove(0);
-        assert_eq!(completed.attempts, 2);
+        assert_eq!(completed.attempts, 1);
         let frozen: Value =
             serde_json::from_str(completed.request.as_ref().unwrap().as_str()).unwrap();
         assert_eq!(frozen["agent"], "ag_synapse");

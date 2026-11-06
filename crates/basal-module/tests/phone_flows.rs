@@ -70,7 +70,7 @@ fn seed_run(
     trigger: Value,
     error: Option<&str>,
 ) {
-    use basal_core::run_records::{Body, CallIdentity, State};
+    use basal_core::run_records::{Body, CallIdentity, Intent, State};
     let rt = &f.module.rt;
     rt.fixture_run(id, flow, 1, "SECRET SCRIPT", "{}", State::new(T0 + seq))
         .unwrap();
@@ -97,19 +97,39 @@ fn seed_run(
     } else if state == "needs_reconcile" {
         rt.fixture_append(
             id,
-            Body::Issued(CallIdentity::new(
-                basal_proto::HostCall {
-                    position: 0,
-                    kind: basal_proto::CallKind::Op {
-                        module: "mock".into(),
-                        op: "post".into(),
+            Body::Intent(Intent {
+                call: CallIdentity::new(
+                    basal_proto::HostCall {
+                        position: 0,
+                        kind: basal_proto::CallKind::Op {
+                            module: "mock".into(),
+                            op: "post".into(),
+                        },
+                        args: basal_proto::JsonText::null(),
                     },
-                    args: basal_proto::JsonText::null(),
-                },
-                basal_core::StoredClass::Mutation,
-            )),
+                    basal_core::StoredClass::Mutation,
+                ),
+                idempotency_key: Some(format!("{id}:0")),
+                frozen_request: basal_proto::JsonText::null(),
+                attempts: 1,
+                dispatch_count_window: None,
+                audit_at: T0 + seq,
+                reservation: None,
+            }),
         )
         .unwrap();
+        // A live reconciliation error is projected from its unknown call, not
+        // a mutable script-error column. A long handle exercises UTF-8 bounds.
+        if let Some(handle) = error {
+            rt.fixture_append(
+                id,
+                Body::Accepted {
+                    position: 0,
+                    handle: handle.into(),
+                },
+            )
+            .unwrap();
+        }
         rt.fixture_append(
             id,
             Body::Unknown {
@@ -274,8 +294,9 @@ fn phone_details_fields_precedence_history_and_limits() {
     assert_eq!(detail["runs"][0]["trigger"], "manual");
     assert_eq!(detail["runs"][0]["admitted_at_ms"], T0 + 11);
     assert_eq!(detail["runs"][0]["ended_at_ms"], Value::Null);
-    assert_eq!(detail["runs"][0]["error_kind"], "script");
+    assert_eq!(detail["runs"][0]["error_kind"], "unknown_outcome");
     assert!(detail["runs"][0]["error"].as_str().unwrap().len() <= 200);
+    assert!(detail["runs"][0]["error"].as_str().unwrap().contains('é'));
     assert_eq!(detail["runs"][1]["trigger"], "pull_request_review");
     assert_eq!(detail["runs"][2]["trigger"], "schedule");
     assert_eq!(detail["runs"][2]["error"], "first error");

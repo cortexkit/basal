@@ -882,12 +882,19 @@ fn room_journals_before_send_and_replays_the_identical_intent_after_a_cut() {
         let probe = Arc::new(Probe::crash_at(Point::parse(point).unwrap()));
         let mut dependencies = hosts(fake.clone(), consent.clone());
         dependencies.hooks = probe.clone();
-        let module = Module::start(
-            config.clone(),
-            dependencies,
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config.clone(),
+                dependencies,
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         module
             .handle(
                 &Caller::Operator,
@@ -925,12 +932,19 @@ fn room_journals_before_send_and_replays_the_identical_intent_after_a_cut() {
         consent.attach(Arc::new(Decisions::default()));
         drop(module);
         clock.set(common::T0 + 10_000);
-        let module = Module::start(
-            config,
-            hosts(fake.clone(), consent),
-            Arc::new(ProcessSpawner::new(&pool)),
-        )
-        .unwrap();
+        let module = {
+            let module = Module::start(
+                config,
+                hosts(fake.clone(), consent),
+                Arc::new(ProcessSpawner::new(&pool)),
+            )
+            .unwrap();
+            module
+                .rt
+                .retain_detail_for_test()
+                .expect("replay inspection");
+            module
+        };
         let row = module.rt.calls(&run).unwrap().remove(0);
         let frozen = row
             .request

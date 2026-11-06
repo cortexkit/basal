@@ -40,6 +40,9 @@ impl TestRuntime {
         Self::with_host(Arc::new(MockHost::new()))
     }
     pub fn with_host(host: Arc<dyn basal_host::Host>) -> Self {
+        Self::with_host_factory(|_| host)
+    }
+    pub fn with_host_factory(build: impl FnOnce(Arc<Store>) -> Arc<dyn basal_host::Host>) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "basal-regression-{}-{}",
@@ -49,6 +52,7 @@ impl TestRuntime {
         std::fs::create_dir_all(&path).unwrap();
         let store =
             Arc::new(Store::open(path.join("store.sqlite"), Durability::throwaway()).unwrap());
+        let host = build(store.clone());
         let rt = Runtime::new(
             store,
             host,

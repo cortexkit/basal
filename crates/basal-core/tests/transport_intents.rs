@@ -510,9 +510,22 @@ fn scope_cut_is_position_specific_durable_before_reply_and_never_retried_after_r
         },
     )
     .unwrap();
-    let activation = recovered.fixture_activation(&f.id).unwrap();
-    assert!(activation.recover_dispatches().unwrap().is_empty());
-    let state = activation.state().unwrap();
+    assert_eq!(
+        recovered.run(&f.id).unwrap().state,
+        RunState::NeedsReconcile
+    );
+    assert!(matches!(
+        recovered
+            .activate(
+                &f.id,
+                &mut basal_core::test_support::ScriptedWorker::new(vec![])
+            )
+            .unwrap(),
+        basal_core::ActivationEnd::NotRunnable {
+            state: RunState::NeedsReconcile
+        }
+    ));
+    let state = recovered.fixture_state(&f.id).unwrap();
     assert!(state.calls[&0].scope_cut);
     assert_eq!(state.calls[&0].unknown.as_deref(), Some("connection_lost"));
     assert!(!state.calls[&1].scope_cut);
@@ -528,7 +541,6 @@ fn scope_cut_is_position_specific_durable_before_reply_and_never_retried_after_r
         2,
         "no call may be resent after restart"
     );
-    drop(activation);
     f.rt = Some(recovered);
     f.store = Some(store);
 }

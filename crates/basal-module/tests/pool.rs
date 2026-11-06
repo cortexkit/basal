@@ -582,7 +582,8 @@ fn the_run_deadline_starts_after_the_worker_answers_its_handshake() {
     // only once the worker has answered.
     let state = f.module.rt.run(&run).expect("run");
     assert_eq!(state.state, RunState::Succeeded, "{state:#?}");
-    assert_eq!(state.deadline_at, Some(T0 + HOUR + 10_000));
+    let claim = f.module.rt.fixture_state(&run).unwrap().claim.unwrap();
+    assert_eq!(claim.deadline_at, T0 + HOUR + 10_000);
 }
 
 struct RecordedSpawner {

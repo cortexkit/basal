@@ -59,13 +59,13 @@ impl Services {
         &self,
         rt: &Runtime,
         live: &LiveRun,
-        intent: &Intent,
+        attempt: u64,
         refusal: &basal_host::flow_refusal::FlowRefusal,
     ) -> i64 {
         if refusal.reason == basal_host::flow_refusal::RefusalReason::ConsentUnavailable {
             return i64::MAX;
         }
-        let shift = u32::try_from(intent.attempts.saturating_sub(1))
+        let shift = u32::try_from(attempt.saturating_sub(1))
             .unwrap_or(31)
             .min(31);
         let delay = rt
@@ -309,13 +309,21 @@ impl run_driver::Services for Services {
                 rt.back_off(&live.run_id)?;
                 Ok(Gate::Deferred)
             }
-            Ok(_) => {
+            Ok(status) => {
+                let detail = match status {
+                    InstallStatus::Active { code_hash, .. } => format!(
+                        "core reports code hash {}; pinned code hash {}",
+                        code_hash.chars().take(128).collect::<String>(),
+                        crate::ids::hex(&identity.code_hash)
+                    ),
+                    _ => "core no longer approves the pinned install".into(),
+                };
                 rt.store().write(|tx| {
                     crate::install::revoke(
                         tx,
                         &live.flow_id,
                         live.flow_version,
-                        "core no longer approves the pinned install",
+                        &detail,
                         rt.config.clock.now_ms(),
                     )
                 })?;
@@ -504,13 +512,15 @@ impl run_driver::Services for Services {
             prepared.request = Some(crate::run_readers::json(&input)?);
         }
         if let Some(deferred) = prepared.deferred {
+            let attempt = state.calls.get(&call.position).map_or(1, |c| {
+                c.prior_deferrals.len() as u64 + u64::from(c.deferred.is_some()) + 1
+            });
+            let retry_not_before = self.retry_at(&rt, live, attempt, &deferred);
             return Ok(Prepared::Deferred {
                 class,
                 cause: serde_json::to_string(&deferred)
                     .map_err(|e| CoreError::Invalid(e.to_string()))?,
-                retry_not_before: self.now_ms().saturating_add(
-                    i64::try_from(rt.config.deferral_retry.as_millis()).unwrap_or(i64::MAX),
-                ),
+                retry_not_before,
             });
         }
         match class {
@@ -767,7 +777,7 @@ impl run_driver::Services for Services {
             {
                 Ok(Reply::Deferred(crate::run_records::Deferred {
                     position: intent.call.position,
-                    retry_not_before: self.retry_at(&rt, live, intent, &refusal),
+                    retry_not_before: self.retry_at(&rt, live, intent.attempts, &refusal),
                     cause: serde_json::to_string(&refusal)
                         .map_err(|e| CoreError::Invalid(e.to_string()))?,
                     audit_at: intent.audit_at,
@@ -1239,6 +1249,15 @@ impl Runtime {
                         retry_in: self.gate_wait(id).unwrap_or(self.config.install_gate_retry),
                     })),
                     Ok(run_driver::Claim::Revoked) | Ok(run_driver::Claim::Removed) => {
+                        let detail = if removed {
+                            "the flow instance was removed".to_owned()
+                        } else {
+                            self.store()
+                                .read(|c| {
+                                    crate::install::revocation(c, &live.flow_id, live.flow_version)
+                                })?
+                                .unwrap_or_else(|| "install no longer approved".into())
+                        };
                         let mut terminal = Terminal::new(
                             live.clone(),
                             RunState::Cancelled,
@@ -1253,8 +1272,8 @@ impl Runtime {
                         );
                         if removed {
                             terminal.error_kind = Some("removed".into());
-                            terminal.error_detail = Some("the flow instance was removed".into());
                         }
+                        terminal.error_detail = Some(detail.clone());
                         self.staged_driver(id)?.cancel(terminal)?;
                         Ok(Err(ActivationEnd::Revoked {
                             version: live.flow_version,
@@ -1263,12 +1282,7 @@ impl Runtime {
                             } else {
                                 crate::gate::RevokeCause::AlreadyRevoked
                             },
-                            detail: if removed {
-                                "the flow instance was removed"
-                            } else {
-                                "install no longer approved"
-                            }
-                            .into(),
+                            detail,
                         }))
                     }
                     Err(CoreError::OwnerLost { .. }) => Ok(Err(ActivationEnd::OwnerLost)),

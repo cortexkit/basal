@@ -326,9 +326,16 @@ fn live_matching_adopts_a_handle_without_using_activation_generation() {
     assert_eq!(arrival.cost_micros, Some(1));
     let frames = f.log.recovered();
     assert!(matches!(
-        frames[frames.len() - 2].record.body,
+        frames[frames.len() - 3].record.body,
         Body::Accepted { .. }
     ));
+    assert!(matches!(
+        frames[frames.len() - 2].record.body,
+        Body::MeasuredUsage { position: 0, .. }
+    ));
+    let report = state.calls[&0].usage_report.unwrap();
+    assert_eq!(report.input_tokens, Some(3));
+    assert_eq!(report.cache_write_tokens, Some(1));
     assert!(matches!(
         frames.last().unwrap().record.body,
         Body::Arrived(_)
