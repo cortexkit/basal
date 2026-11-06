@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use basal_host::flow_refusal::FlowRefusal;
 use basal_host::flow_scope::RegisteredScope;
-use basal_host::{MockCatalog, OpDecl, OpKind};
+use basal_host::{Catalog, MockCatalog, OpDecl, OpKind};
 use basal_proto::{Confinement, PROTOCOL_VERSION, Primitive, Welcome};
 
 use super::super::admission::{Limits, Tool, Unavailable};
@@ -491,7 +491,6 @@ impl Fixture {
         let supervisor = Supervisor::new(
             store,
             host.clone(),
-            catalog.clone(),
             source.clone(),
             clock.clone(),
             hash,

@@ -56,7 +56,6 @@ impl Codemode {
         let supervisor = Supervisor::new(
             store.clone(),
             hosts.transport.clone(),
-            hosts.catalog.clone(),
             Arc::new(FreshWorkers(pool)),
             config.clock.clone(),
             basal_proto::PreludeHash::of(include_str!(

@@ -25,7 +25,6 @@ mod held;
 #[path = "held_time.rs"]
 mod held_time;
 
-use basal_host::Catalog;
 use basal_host::flow_refusal::RefusalReason;
 use basal_host::transport::{Transport, WireError};
 use basal_proto::{
@@ -256,7 +255,6 @@ impl Supervisor {
     pub fn new(
         store: Arc<Store>,
         transport: Arc<dyn Transport>,
-        _catalog: Arc<dyn Catalog>,
         workers: Arc<dyn WorkerSource>,
         clock: Clock,
         prelude_hash: PreludeHash,
