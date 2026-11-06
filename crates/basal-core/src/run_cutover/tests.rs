@@ -338,7 +338,7 @@ fn migrated_reservations_settle_in_place_without_recounting_dispatches() {
 }
 
 #[test]
-fn refused_outbox_and_cancelled_quarantine_become_receipts_with_all_source_detail() {
+fn settled_receipts_keep_source_provenance_only_in_the_transient_migration_audit() {
     for cancelled in [false, true] {
         let fixture = Fixture::new();
         let store = fixture.store();
@@ -354,7 +354,10 @@ fn refused_outbox_and_cancelled_quarantine_become_receipts_with_all_source_detai
             }
             Ok(())
         }).unwrap();
-        fixture.migration(Arc::new(NoHooks)).run().unwrap();
+        let migration = fixture.migration(Arc::new(NoHooks));
+        while migration.phase().unwrap() != Phase::Finish {
+            migration.advance().unwrap();
+        }
         store
             .read(|c| {
                 let receipt = sql::obligation(c, "failed", 0)?.unwrap();
@@ -366,11 +369,25 @@ fn refused_outbox_and_cancelled_quarantine_become_receipts_with_all_source_detai
                     "refusal_outbox_rows"
                 };
                 assert_eq!(
-                    receipt.detail["migration_sources"][source]
+                    serde_json::from_str::<serde_json::Value>(&c.query_row::<String, _, _>(
+                        "SELECT value FROM meta WHERE key='migration_audit'",
+                        [],
+                        |r| r.get(0)
+                    )?)
+                    .unwrap()["late"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|entry| entry["run_id"] == "failed")
+                        .unwrap()["sources"][source]
                         .as_array()
                         .unwrap()
                         .len(),
                     1
+                );
+                assert!(
+                    receipt.detail.is_null(),
+                    "settled provenance must not retain call payloads"
                 );
                 assert_eq!(
                     c.query_row("SELECT COUNT(*) FROM obligations", [], |r| r
@@ -381,6 +398,17 @@ fn refused_outbox_and_cancelled_quarantine_become_receipts_with_all_source_detai
                 Ok(())
             })
             .unwrap();
+        migration.run().unwrap();
+        assert_eq!(
+            store
+                .read(|c| Ok(c.query_row(
+                    "SELECT COUNT(*) FROM meta WHERE key='migration_audit'",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?))
+                .unwrap(),
+            0
+        );
     }
 }
 
@@ -608,4 +636,100 @@ fn migrated_broca_deletion_cleans_waits_and_wakes_after_preserving_them_during_r
         })
         .unwrap();
     assert_eq!(counts(), (0, 0));
+}
+
+#[test]
+fn drop_removes_and_audits_all_orphaned_journal_counters() {
+    let f = Fixture::new();
+    let store = f.store();
+    store.write(|tx|{tx.execute_batch("INSERT INTO meta VALUES('journal_calls:success','10'),('journal_bytes:success','500'),('journal_calls:orphan','22'),('journal_calls_not_a_counter:kept','1');")?;Ok(())}).unwrap();
+    let migration = f.migration(Arc::new(NoHooks));
+    while migration.phase().unwrap() != Phase::Drop {
+        migration.advance().unwrap();
+    }
+    let audit: serde_json::Value = store
+        .read(|c| {
+            Ok(serde_json::from_str(&c.query_row::<String, _, _>(
+                "SELECT value FROM meta WHERE key='migration_audit'",
+                [],
+                |r| r.get(0),
+            )?)
+            .unwrap())
+        })
+        .unwrap();
+    assert_eq!(audit["journal_meta_keys_before"], 3);
+    migration.advance().unwrap();
+    assert_eq!(store.read(audit::journal_meta_keys).unwrap(), 0);
+    while migration.phase().unwrap() != Phase::Finish {
+        migration.advance().unwrap();
+    }
+    store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO meta VALUES('journal_bytes:reintroduced','4')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        migration
+            .run()
+            .unwrap_err()
+            .to_string()
+            .contains("legacy journal meta keys")
+    );
+    store
+        .write(|tx| {
+            tx.execute(
+                "DELETE FROM meta WHERE key='journal_bytes:reintroduced'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    migration.run().unwrap();
+    assert_eq!(
+        store
+            .read(|c| Ok(c.query_row(
+                "SELECT value FROM meta WHERE key='journal_calls_not_a_counter:kept'",
+                [],
+                |r| r.get::<_, String>(0)
+            )?))
+            .unwrap(),
+        "1"
+    );
+}
+
+#[test]
+fn migrated_success_receipts_exclude_legacy_call_values() {
+    let f = Fixture::new();
+    let store = f.store();
+    let value = JsonText::new(
+        serde_json::json!({"private":"MIGRATED-PRIVATE-VALUE".repeat(4096)}).to_string(),
+    )
+    .unwrap();
+    let hash = crate::ids::payload_hash(Settlement::Fulfilled, &value);
+    store.write(|tx|{
+        tx.execute("UPDATE journal_payloads SET value=?1 WHERE run_id='success' AND position=0",[value.as_str()])?;
+        tx.execute("UPDATE journal SET payload_hash=?1,value_bytes=?2 WHERE run_id='success' AND position=0",params![hash.as_slice(),value.len() as u64])?;
+        Ok(())
+    }).unwrap();
+    f.migration(Arc::new(NoHooks)).run().unwrap();
+    store
+        .read(|c| {
+            let text: String = c.query_row(
+                "SELECT receipts FROM run_history WHERE run_id='success'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert!(!text.contains("MIGRATED-PRIVATE-VALUE"));
+            assert!(!text.contains("detail"));
+            assert!(text.len() < 512);
+            let receipt = sql::obligation(c, "success", 0)?.unwrap();
+            assert_eq!(receipt.receipt, Some(sql::Receipt::Value(hash)));
+            assert!(receipt.detail.is_null());
+            Ok(())
+        })
+        .unwrap();
 }

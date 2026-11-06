@@ -60,6 +60,7 @@ struct Late {
     run_id: String,
     position: u64,
     established: bool,
+    receipt: Option<Row>,
     sources: BTreeMap<String, Vec<Row>>,
 }
 #[derive(Serialize, Deserialize)]
@@ -73,6 +74,7 @@ struct Audit {
     receipts: Digest,
     late: Vec<Late>,
     tombstones_after: Option<Digest>,
+    journal_meta_keys_before: u64,
 }
 
 struct HashRows {
@@ -135,7 +137,7 @@ fn load(c: &Connection) -> Result<Audit> {
         |r| r.get(0),
     )?;
     let audit: Audit = serde_json::from_str(&raw).map_err(|e| corrupt(e.to_string()))?;
-    if audit.version != 1 {
+    if audit.version != 2 {
         return Err(corrupt("unsupported audit version"));
     }
     Ok(audit)
@@ -169,7 +171,6 @@ fn receipt_row(
     c: &Connection,
     id: &str,
     position: u64,
-    legacy: Row,
     hash: [u8; 32],
     handle: Option<String>,
     ended: i64,
@@ -184,17 +185,27 @@ fn receipt_row(
     let admitted: i64 = c.query_row("SELECT admitted_at FROM runs WHERE run_id=?1", [id], |r| {
         r.get(0)
     })?;
-    serde_json::from_value(json!({"run_id":id,"position":position,"legacy":legacy,"value_hash":hash,"handle":handle,"audit_at":at.unwrap_or(admitted),"settled_at":ended})).map_err(|e|corrupt(e.to_string()))
+    serde_json::from_value(json!({"run_id":id,"position":position,"value_hash":hash,"handle":handle,"audit_at":at.unwrap_or(admitted),"settled_at":ended})).map_err(|e|corrupt(e.to_string()))
 }
-fn expected_receipts(c: &Connection) -> Result<Digest> {
+fn expected_receipts(c: &Connection, late: &[Late]) -> Result<Digest> {
+    let late: BTreeSet<_> = late
+        .iter()
+        .map(|l| (l.run_id.as_str(), l.position))
+        .collect();
     let mut hash = HashRows::new();
     legacy::visit(
         c,
-        "SELECT j.* FROM journal_with_payloads j JOIN runs r USING(run_id) WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') AND j.attempts>0 AND j.class NOT IN ('sync','local') ORDER BY j.run_id,j.position",
+        "SELECT j.* FROM journal_with_payloads j JOIN runs r USING(run_id) WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') ORDER BY j.run_id,j.position",
         [],
         |row| {
             let id = text(&row, "run_id")?.to_owned();
             let position = unsigned(&row, "position")?;
+            if !(unsigned(&row, "attempts")? > 0
+                && !matches!(text(&row, "class")?, "sync" | "local"))
+                && !late.contains(&(id.as_str(), position))
+            {
+                return Ok(());
+            }
             if let Some(outcome) = legacy::established(c, &row)? {
                 let ended: i64 =
                     c.query_row("SELECT ended_at FROM runs WHERE run_id=?1", [&id], |r| {
@@ -204,7 +215,6 @@ fn expected_receipts(c: &Connection) -> Result<Digest> {
                     c,
                     &id,
                     position,
-                    row,
                     outcome.hash,
                     outcome.handle,
                     ended,
@@ -226,18 +236,24 @@ fn actual_receipts(c: &Connection) -> Result<Digest> {
             let receipts: BTreeMap<u64, Value> = serde_json::from_str(text(&row, "receipts")?)
                 .map_err(|e| corrupt(e.to_string()))?;
             for (position, r) in receipts {
-                // Receipts without a remote attempt are compared against each exact
-                // late-work source in check(), rather than this remote-receipt digest.
-                if r["detail"]["legacy"]["attempts"].as_u64().unwrap_or(0) == 0 {
-                    continue;
+                if r.get("detail").is_some() {
+                    return Err(corrupt("settled receipt retains call detail"));
                 }
-                let actual:Row=serde_json::from_value(json!({"run_id":id,"position":position,"legacy":r["detail"]["legacy"],"value_hash":r["value_hash"],"handle":r["handle"],"audit_at":r["audit_at"],"settled_at":r["settled_at"]})).map_err(|e|corrupt(e.to_string()))?;
+                let actual:Row=serde_json::from_value(json!({"run_id":id,"position":position,"value_hash":r["value_hash"],"handle":r["handle"],"audit_at":r["audit_at"],"settled_at":r["settled_at"]})).map_err(|e|corrupt(e.to_string()))?;
                 hash.add(&actual)?;
             }
             Ok(())
         },
     )?;
     Ok(hash.finish())
+}
+
+pub(super) fn journal_meta_keys(c: &Connection) -> Result<u64> {
+    Ok(c.query_row(
+        "SELECT COUNT(*) FROM meta WHERE key GLOB 'journal_calls:*' OR key GLOB 'journal_bytes:*'",
+        [],
+        |r| r.get(0),
+    )?)
 }
 
 pub(super) fn capture(tx: &Transaction<'_>) -> Result<()> {
@@ -262,6 +278,7 @@ pub(super) fn capture(tx: &Transaction<'_>) -> Result<()> {
                     run_id: id,
                     position,
                     established: false,
+                    receipt: None,
                     sources: BTreeMap::new(),
                 });
             entry.sources.entry(source.into()).or_default().push(row);
@@ -280,7 +297,22 @@ pub(super) fn capture(tx: &Transaction<'_>) -> Result<()> {
                     late.run_id, late.position
                 ))
             })?;
-        late.established = legacy::established(tx, &row)?.is_some();
+        if let Some(outcome) = legacy::established(tx, &row)? {
+            late.established = true;
+            let ended = tx.query_row(
+                "SELECT ended_at FROM runs WHERE run_id=?1",
+                [&late.run_id],
+                |r| r.get(0),
+            )?;
+            late.receipt = Some(receipt_row(
+                tx,
+                &late.run_id,
+                late.position,
+                outcome.hash,
+                outcome.handle,
+                ended,
+            )?);
+        }
     }
     let late: Vec<_> = positions.into_values().collect();
     let bytes = serde_json::to_vec(&late)
@@ -293,7 +325,7 @@ pub(super) fn capture(tx: &Transaction<'_>) -> Result<()> {
     }
     tracing::info!(target:"migration",?counts,open_union=late.iter().filter(|l|!l.established).count(),late_audit_bytes=bytes,"captured late-work sources");
     let audit = Audit {
-        version: 1,
+        version: 2,
         tables,
         finished: digest(
             tx,
@@ -311,9 +343,10 @@ pub(super) fn capture(tx: &Transaction<'_>) -> Result<()> {
             tx,
             "SELECT r.run_id,(SELECT COUNT(*) FROM journal j WHERE j.run_id=r.run_id) calls FROM runs r WHERE r.state IN ('failed','engine_mismatch','cancelled') ORDER BY r.run_id",
         )?,
-        receipts: expected_receipts(tx)?,
+        receipts: expected_receipts(tx, &late)?,
         late,
         tombstones_after: None,
+        journal_meta_keys_before: journal_meta_keys(tx)?,
     };
     save(tx, &audit)
 }
@@ -340,6 +373,13 @@ pub(super) fn check_broca(c: &Connection) -> Result<()> {
 
 pub(super) fn check(c: &Connection, frames: &[RecoveredRecord<Record>]) -> Result<()> {
     let audit = load(c)?;
+    let journal_meta_keys_after = journal_meta_keys(c)?;
+    if journal_meta_keys_after != 0 {
+        return Err(corrupt(format!(
+            "legacy journal meta keys: expected zero after dropping {} keys, got {journal_meta_keys_after}",
+            audit.journal_meta_keys_before
+        )));
+    }
     for name in TABLES {
         let expected = if *name == "tombstones" {
             audit
@@ -429,9 +469,36 @@ pub(super) fn check(c: &Connection, frames: &[RecoveredRecord<Record>]) -> Resul
             actual.len()
         )));
     }
+    // Settled calls deliberately lose their payload detail. Compare every
+    // surviving late-work source against the transient audit rather than
+    // retaining a second copy of those payloads in each permanent receipt.
+    for (source, query) in SOURCES
+        .iter()
+        .filter(|(name, _)| *name != "unsettled_positions")
+    {
+        let expected: Vec<_> = audit
+            .late
+            .iter()
+            .flat_map(|l| l.sources.get(*source).into_iter().flatten().cloned())
+            .collect();
+        let actual = legacy::rows(c, &query.replace("JOIN runs r", "JOIN run_history r"), [])?;
+        if actual != expected {
+            return Err(corrupt(format!("late-work source detail lost: {source}")));
+        }
+    }
     for late in &audit.late {
         let obligation = sql::obligation(c, &late.run_id, late.position)?
             .ok_or_else(|| corrupt("late-work source not covered by obligation/receipt"))?;
+        if let Some(expected) = &late.receipt {
+            let actual:Row=serde_json::from_value(json!({"run_id":late.run_id,"position":late.position,"value_hash":match obligation.receipt {Some(sql::Receipt::Value(hash))=>Some(hash),_=>None},"handle":obligation.handle,"audit_at":obligation.audit_at,"settled_at":obligation.settled_at})).map_err(|e|corrupt(e.to_string()))?;
+            if obligation.state != sql::ObligationState::Settled
+                || &actual != expected
+                || !obligation.detail.is_null()
+            {
+                return Err(corrupt("settled late-work source receipt mismatch"));
+            }
+            continue;
+        }
         let sources: BTreeMap<String, Vec<Row>> =
             serde_json::from_value(obligation.detail["migration_sources"].clone())
                 .map_err(|e| corrupt(e.to_string()))?;

@@ -455,6 +455,7 @@ fn settled_receipts_survive_redelivery_without_changes() {
     expected.state = ObligationState::Settled;
     expected.receipt = Some(Receipt::Value([7; 32]));
     expected.settled_at = Some(210);
+    expected.detail = Value::Null;
     assert_eq!(obligation(&conn, "run", 4).unwrap(), Some(expected.clone()));
     let tx = conn.transaction().unwrap();
     for (handle, receipt, result) in [
@@ -513,6 +514,7 @@ fn unknown_obligation_retains_an_unknown_settlement_receipt() {
     row.state = ObligationState::Settled;
     row.receipt = Some(Receipt::Unknown);
     row.settled_at = Some(220);
+    row.detail = Value::Null;
     assert_eq!(obligation(&conn, "run", 0).unwrap(), Some(row));
     let tx = conn.transaction().unwrap();
     assert_eq!(
@@ -827,6 +829,7 @@ fn settled_receipts_share_history_and_late_settlement_moves_atomically() {
     expected.state = ObligationState::Settled;
     expected.receipt = Some(Receipt::Value([7; 32]));
     expected.settled_at = Some(300);
+    expected.detail = Value::Null;
     assert_eq!(obligation(&conn, "run", 7).unwrap(), Some(expected));
     assert_eq!(
         conn.query_row("SELECT count(*) FROM obligations", [], |r| r

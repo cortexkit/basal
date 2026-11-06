@@ -678,6 +678,10 @@ pub(super) fn rebuild_broca(tx: &Transaction<'_>) -> Result<()> {
 }
 pub(super) fn drop_legacy(tx: &Transaction<'_>) -> Result<()> {
     audit::drop_dependencies(tx)?;
+    tx.execute(
+        "DELETE FROM meta WHERE key GLOB 'journal_calls:*' OR key GLOB 'journal_bytes:*'",
+        [],
+    )?;
     tx.execute_batch("DROP VIEW IF EXISTS runs_with_snapshots;DROP VIEW IF EXISTS journal_with_payloads;DROP TABLE IF EXISTS mailbox;DROP TABLE IF EXISTS journal_payloads;DROP TABLE IF EXISTS event_body_journal;DROP TABLE IF EXISTS call_audit;DROP TABLE IF EXISTS activations;DROP TABLE IF EXISTS journal;DROP TABLE IF EXISTS runs;")?;
     audit::drop_dependencies(tx)
 }

@@ -142,13 +142,12 @@ pub enum Receipt {
     Unknown,
 }
 
-// Settled calls share their history row's storage, but retain the handle,
-// timestamps and full call detail needed by readers and redelivery checks.
+// Settled calls keep only duplicate/conflict classification metadata. Their
+// position is the map key; open/unknown obligations retain full call detail.
 #[derive(Serialize, Deserialize)]
 struct SavedReceipt {
     handle: Option<String>,
     audit_at: i64,
-    detail: Value,
     value_hash: Option<[u8; 32]>,
     settled_at: i64,
 }
@@ -183,7 +182,6 @@ fn save_receipt(tx: &Transaction<'_>, row: &Obligation) -> Result<()> {
         SavedReceipt {
             handle: row.handle.clone(),
             audit_at: row.audit_at,
-            detail: row.detail.clone(),
             value_hash,
             settled_at,
         },
@@ -611,7 +609,7 @@ pub fn obligation(conn: &Connection, run_id: &str, position: u64) -> Result<Opti
             handle: receipt.handle,
             state: ObligationState::Settled,
             audit_at: receipt.audit_at,
-            detail: receipt.detail,
+            detail: Value::Null,
             receipt: Some(receipt.value_hash.map_or(Receipt::Unknown, Receipt::Value)),
             settled_at: Some(receipt.settled_at),
         }))

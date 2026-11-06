@@ -1215,3 +1215,30 @@ fn not_applied_authorizes_only_one_unkeyed_retry_and_retains_its_key() {
     assert!(a.state().unwrap().calls[&0].unknown.is_some());
     assert!(f.service.sent.lock().unwrap().is_empty());
 }
+
+#[test]
+fn successful_remote_receipt_keeps_hash_metadata_without_call_payloads() {
+    let f = Fixture::new();
+    let a = f.claim(0);
+    let private = serde_json::to_string(&"PRIVATE-RECEIPT-VALUE".repeat(4096)).unwrap();
+    f.service
+        .replies
+        .lock()
+        .unwrap()
+        .push_back(Reply::Completed(arrival(0, &private)));
+    f.send(&a, 0, "query");
+    a.release(&[0]).unwrap().unwrap();
+    a.finish(f.terminal(RunState::Succeeded)).unwrap();
+    f.store.read(|c| {
+        let (receipts,calls):(String,u64)=c.query_row("SELECT receipts,(SELECT COUNT(*) FROM run_calls WHERE run_id=run_history.run_id) FROM run_history WHERE run_id=?1",[&f.live.run_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        assert_eq!(calls,0);
+        assert!(!receipts.contains("PRIVATE-RECEIPT-VALUE"));
+        assert!(!receipts.contains("frozen"));
+        let value:serde_json::Value=serde_json::from_str(&receipts).unwrap();
+        let keys:std::collections::BTreeSet<_>=value["0"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys,std::collections::BTreeSet::from(["handle","audit_at","settled_at","value_hash"]));
+        assert!(receipts.len()<512,"receipt grew with the result: {}",receipts.len());
+        assert!(crate::run_store_sql::obligation(c,&f.live.run_id,0)?.unwrap().detail.is_null());
+        Ok(())
+    }).unwrap();
+}

@@ -360,8 +360,12 @@ impl TerminalWrite for Projection {
                             sql::ObligationState::Open
                         },
                         audit_at: intent.audit_at,
-                        detail: serde_json::to_value(call)
-                            .map_err(|e| CoreError::Invalid(e.to_string()))?,
+                        detail: if settled {
+                            Value::Null
+                        } else {
+                            serde_json::to_value(call)
+                                .map_err(|e| CoreError::Invalid(e.to_string()))?
+                        },
                         receipt: arrival.map(|a| sql::Receipt::Value(a.value_hash)),
                         settled_at: settled.then_some(history.ended_at),
                     },
