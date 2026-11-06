@@ -7,9 +7,12 @@
 //!
 //! Each run's driver sleeps on one event channel until something happens:
 //! a worker frame (forwarded by the run's reader thread), a provider answer,
-//! a cancel, or a move of a manual clock. Without held replies its only timeout
-//! is the run's wall deadline, so an ordinary slow RPC costs no polling CPU.
-//! Held replies additionally schedule bounded late-result reads.
+//! a cancel, or a move of a manual clock. Without held replies or reconnect waits,
+//! its only timeout is the run's wall deadline, so an ordinary slow RPC costs no
+//! polling CPU.
+//! Calls held by a provider schedule bounded reads for their final replies.
+//! Calls awaiting a restarting provider use the same event wait with a bounded
+//! retry timer.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,6 +49,8 @@ use crate::store::Store;
 const IN_FLIGHT: usize = 8;
 const QUEUED_BYTES: usize = 4 * 1024 * 1024;
 const RESULT_BYTES: usize = 16_384;
+const PROVIDER_HOLD_MS: i64 = 15_000;
+const PROVIDER_RECHECK_MS: i64 = 1_000;
 /// The longest single `sleep` a program may ask for. The worker's prelude
 /// refuses longer ones; the parent checks again, so a worker that bypassed
 /// the prelude cannot hold a longer pause.
@@ -68,6 +73,7 @@ enum Event {
         ack: mpsc::SyncSender<()>,
     },
     CustodyChanged,
+    CatalogChanged,
     ModelAnswer {
         position: u64,
         result: std::result::Result<basal_host::HostOutcome, WireError>,
@@ -130,7 +136,6 @@ impl Drop for DispatchStore {
 struct Shared {
     store: Arc<Store>,
     transport: Arc<dyn Transport>,
-    catalog: Arc<dyn Catalog>,
     models: Mutex<Option<Models>>,
     workers: Arc<dyn WorkerSource>,
     clock: Clock,
@@ -251,7 +256,7 @@ impl Supervisor {
     pub fn new(
         store: Arc<Store>,
         transport: Arc<dyn Transport>,
-        catalog: Arc<dyn Catalog>,
+        _catalog: Arc<dyn Catalog>,
         workers: Arc<dyn WorkerSource>,
         clock: Clock,
         prelude_hash: PreludeHash,
@@ -260,7 +265,6 @@ impl Supervisor {
         let supervisor = Self(Arc::new(Shared {
             store,
             transport,
-            catalog,
             models: Mutex::new(None),
             workers,
             clock,
@@ -288,6 +292,14 @@ impl Supervisor {
             wakes: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             worker_blocked: AtomicBool::new(false),
+        }));
+        let shared = Arc::downgrade(&supervisor.0);
+        supervisor.0.transport.on_catalog_change(Arc::new(move || {
+            if let Some(shared) = shared.upgrade() {
+                for events in shared.active.lock().unwrap().values() {
+                    let _ = events.send(Event::CatalogChanged);
+                }
+            }
         }));
         supervisor.recover()?;
         Ok(supervisor)
@@ -600,6 +612,12 @@ struct Answer {
     no_effect: bool,
 }
 
+struct ProviderWait {
+    call: HostCall,
+    deadline_ms: i64,
+    recheck_ms: i64,
+}
+
 struct Driver {
     shared: Arc<Shared>,
     run: RunRecord,
@@ -622,6 +640,10 @@ struct Driver {
     in_flight: usize,
     flight_positions: BTreeSet<u64>,
     held_positions: BTreeSet<u64>,
+    /// Calls waiting for a provider to reconnect occupy in-flight slots but
+    /// have no permission-to-send or sent-at timestamps in the journal. They
+    /// spend wall time, not person time, and have not been sent to a provider.
+    provider_waits: BTreeMap<u64, ProviderWait>,
     tool_calls: BTreeMap<u64, (String, HostCall)>,
     /// The tool, provider code and message of each call that rejected, so a
     /// program ending on an uncaught rejection reports them as plain text.
@@ -677,6 +699,7 @@ impl Driver {
             in_flight: 0,
             flight_positions: BTreeSet::new(),
             held_positions: BTreeSet::new(),
+            provider_waits: BTreeMap::new(),
             tool_calls: BTreeMap::new(),
             rejections: BTreeMap::new(),
             hold_reasons: BTreeMap::new(),
@@ -783,6 +806,7 @@ impl Driver {
                 break;
             }
             self.wake_sleepers()?;
+            self.retry_providers(false)?;
             if self.stopping {
                 break;
             }
@@ -814,6 +838,7 @@ impl Driver {
                     let _ = ack.send(());
                 }
                 Some(Event::CustodyChanged) => {}
+                Some(Event::CatalogChanged) => self.retry_providers(true)?,
                 Some(Event::ModelAnswer { position, result }) => {
                     self.model_answer(position, result)?
                 }
@@ -862,8 +887,8 @@ impl Driver {
 
     /// Sleeps until an event, the applicable deadline (the injected wall
     /// deadline, or the person-wait budget while only people are awaited) or
-    /// the earliest program sleep falling due. Provider intake workers own their polling
-    /// timers; the driver wakes on their deliveries.
+    /// the earliest program sleep or provider retry falling due. Separate intake
+    /// workers poll for final replies to calls already held by a provider.
     fn next_event(&mut self) -> Option<Event> {
         let deadline = if self.person_only() {
             basal_host::run_scope::PERSON_WAIT_MS.saturating_sub(self.person_wait_ms)
@@ -876,7 +901,17 @@ impl Driver {
         let sleep = self.sleeps.first().map_or(i64::MAX, |(due, _)| {
             due.saturating_sub(self.shared.clock.now_ms())
         });
-        let remaining = deadline.min(sleep);
+        let provider = self
+            .provider_waits
+            .values()
+            .map(|wait| {
+                wait.recheck_ms
+                    .min(wait.deadline_ms)
+                    .saturating_sub(self.shared.clock.now_ms())
+            })
+            .min()
+            .unwrap_or(i64::MAX);
+        let remaining = deadline.min(sleep).min(provider);
         // A wait of zero means something is due, but a countdown that reaches
         // zero does not: `wall` decides the deadline after adding the
         // person-wait allowance back, so nothing may actually be due. A
@@ -1659,7 +1694,8 @@ impl Driver {
             return self.deliver(&call, mapped);
         }
         let Some(tool) = self.start.tools.get(name) else {
-            return self.refuse(call, Outcome::Refused, "unknown_tool", true);
+            let message = format!("{name} was not admitted for this program");
+            return self.refuse(call, Outcome::Refused, "unknown_tool", &message, true);
         };
         let mut input: Value = match serde_json::from_str(call.args.as_str()) {
             Ok(value) => value,
@@ -1675,23 +1711,22 @@ impl Driver {
             let mapped = invalid_input(name, &tool.input_schema, Some(&input));
             return self.refuse_input(call, mapped);
         }
-        if self.shared.transport.catalog().is_err() {
-            return self.refuse(call, Outcome::ToolUnavailable, "tool_unavailable", true);
-        }
-        let declaration = self.shared.catalog.op(&tool.module, &tool.op);
-        if !super::models::is_local(&tool.module, &tool.op) && declaration.is_none() {
-            return self.refuse(call, Outcome::Refused, "not_in_catalog", true);
-        }
         if self.in_flight >= IN_FLIGHT || !self.queue.is_empty() {
             if self.queued_bytes.saturating_add(call.args.as_str().len()) > QUEUED_BYTES {
-                return self.refuse(call, Outcome::Refused, "queue_full", false);
+                return self.refuse(
+                    call,
+                    Outcome::Refused,
+                    "queue_full",
+                    "the program's queued tool arguments exceed the queue byte limit",
+                    false,
+                );
             }
             self.insert(&call, CallStart::Queued)?;
             self.queued_bytes += call.args.as_str().len();
             self.queue.push_back(call);
             Ok(())
         } else {
-            self.dispatch(call, false)
+            self.dispatch(call, false, None)
         }
     }
 
@@ -1712,7 +1747,14 @@ impl Driver {
         })
     }
 
-    fn refuse(&mut self, call: HostCall, outcome: Outcome, code: &str, row: bool) -> Result<()> {
+    fn refuse(
+        &mut self,
+        call: HostCall,
+        outcome: Outcome,
+        code: &str,
+        message: &str,
+        row: bool,
+    ) -> Result<()> {
         if row {
             self.insert(
                 &call,
@@ -1722,7 +1764,7 @@ impl Driver {
                 },
             )?;
         }
-        self.deliver(&call, Mapped::rejected(outcome, code, code))
+        self.deliver(&call, Mapped::rejected(outcome, code, message))
     }
 
     fn refuse_input(&mut self, call: HostCall, mapped: Mapped) -> Result<()> {
@@ -1736,7 +1778,90 @@ impl Driver {
         self.deliver(&call, mapped)
     }
 
-    fn dispatch(&mut self, mut call: HostCall, queued: bool) -> Result<()> {
+    fn unavailable(
+        &mut self,
+        call: HostCall,
+        queued: bool,
+        module: &str,
+        removed: bool,
+    ) -> Result<()> {
+        let CallKind::Tool { name } = &call.kind else {
+            unreachable!()
+        };
+        let message = if removed {
+            format!("{name} is no longer declared by module {module}")
+        } else {
+            format!("{module} is restarting or not connected; retry shortly")
+        };
+        let mut mapped = Mapped::rejected(Outcome::ToolUnavailable, "tool_unavailable", &message);
+        mapped.detail = Some(json!({
+            "reason": if removed { "tool_removed" } else { "provider_unavailable" },
+            "module": module,
+            "retryable": !removed,
+        }));
+        if queued {
+            if !self.shared.store.write(|tx| {
+                store::record_outcome(
+                    tx,
+                    &self.run.run_id,
+                    call.position,
+                    mapped.outcome,
+                    mapped.code.as_deref(),
+                    self.shared.clock.now_ms(),
+                )
+            })? {
+                return Ok(());
+            }
+        } else {
+            self.insert(
+                &call,
+                CallStart::Settled {
+                    outcome: mapped.outcome,
+                    code: mapped.code.as_deref(),
+                },
+            )?;
+        }
+        self.deliver(&call, mapped)
+    }
+
+    fn retry_providers(&mut self, catalog_changed: bool) -> Result<()> {
+        if self.provider_waits.is_empty() || self.wall()? {
+            return Ok(());
+        }
+        let now = self.shared.clock.now_ms();
+        let due: Vec<_> = self
+            .provider_waits
+            .iter()
+            .filter_map(|(position, wait)| {
+                (catalog_changed || now >= wait.recheck_ms || now >= wait.deadline_ms)
+                    .then_some(*position)
+            })
+            .collect();
+        for position in due {
+            if self.wall()? {
+                break;
+            }
+            let wait = &self.provider_waits[&position];
+            // Keep the original bound even if the catalog disappears again
+            // between the notification and the dispatch check.
+            self.dispatch(wait.call.clone(), true, Some(wait.deadline_ms))?;
+        }
+        Ok(())
+    }
+
+    fn release_provider_wait(&mut self, position: u64) {
+        if self.provider_waits.remove(&position).is_some() {
+            self.in_flight -= 1;
+            self.flight_positions.remove(&position);
+        }
+    }
+
+    fn dispatch(
+        &mut self,
+        mut call: HostCall,
+        queued: bool,
+        provider_deadline: Option<i64>,
+    ) -> Result<()> {
         if self.wall()? {
             return Ok(());
         }
@@ -1748,10 +1873,60 @@ impl Driver {
         if local_model {
             return self.dispatch_model(call, queued);
         }
-        if let Err(error) =
-            self.shared
-                .transport
-                .provider_ready(&self.key(), &tool.module, &tool.op)
+        let module = tool.module.clone();
+        let op = tool.op.clone();
+        let classify_cost = tool.classify_cost;
+        let now = self.shared.clock.now_ms();
+        if provider_deadline.is_some_and(|deadline| now >= deadline) {
+            self.release_provider_wait(call.position);
+            return self.unavailable(call, queued, &module, false);
+        }
+        let declaration = self
+            .shared
+            .transport
+            .catalog()
+            .ok()
+            .and_then(|catalog| live_declaration(&catalog, &module, &op));
+        if self.wall()? {
+            return Ok(());
+        }
+        if provider_deadline.is_some_and(|deadline| self.shared.clock.now_ms() >= deadline) {
+            self.release_provider_wait(call.position);
+            return self.unavailable(call, queued, &module, false);
+        }
+        if declaration.is_none() {
+            if !queued {
+                self.insert(&call, CallStart::Queued)?;
+            }
+            let deadline_ms = provider_deadline
+                .unwrap_or_else(|| now.saturating_add(PROVIDER_HOLD_MS))
+                .min(self.run.deadline_ms);
+            if provider_deadline.is_none() {
+                self.in_flight += 1;
+                self.flight_positions.insert(call.position);
+            }
+            self.provider_waits.insert(
+                call.position,
+                ProviderWait {
+                    call,
+                    deadline_ms,
+                    recheck_ms: self
+                        .shared
+                        .clock
+                        .now_ms()
+                        .saturating_add(PROVIDER_RECHECK_MS),
+                },
+            );
+            return Ok(());
+        }
+        self.release_provider_wait(call.position);
+        if declaration == Some(false) {
+            return self.unavailable(call, queued, &module, true);
+        }
+        if let Err(error) = self
+            .shared
+            .transport
+            .provider_ready(&self.key(), &module, &op)
         {
             if queued {
                 self.shared.store.write(|tx| {
@@ -1773,11 +1948,14 @@ impl Driver {
                     ),
                 );
             }
-            return self.refuse(call, Outcome::ToolUnavailable, "tool_unavailable", true);
+            return self.refuse(
+                call,
+                Outcome::ToolUnavailable,
+                "tool_unavailable",
+                error.message(),
+                true,
+            );
         }
-        let module = tool.module.clone();
-        let op = tool.op.clone();
-        let classify_cost = tool.classify_cost;
         if self.wall()? {
             return Ok(());
         }
@@ -2007,7 +2185,7 @@ impl Driver {
             }
             let call = self.queue.pop_front().unwrap();
             self.queued_bytes -= call.args.as_str().len();
-            self.dispatch(call, true)?;
+            self.dispatch(call, true, None)?;
         }
         Ok(())
     }
@@ -2077,6 +2255,32 @@ impl Driver {
         self.shared.holds.lock().unwrap().remove(&self.run.run_id);
         self.account_time();
         self.stopping = true;
+        if terminal.status == Status::BudgetExhausted(Budget::Wall) {
+            for wait in self.provider_waits.values() {
+                self.shared.store.write(|tx| {
+                    store::record_outcome(
+                        tx,
+                        &self.run.run_id,
+                        wait.call.position,
+                        Outcome::ToolUnavailable,
+                        Some("tool_unavailable"),
+                        self.shared.clock.now_ms(),
+                    )
+                })?;
+                if let Some(error) = terminal.error.as_mut() {
+                    let CallKind::Tool { name } = &wait.call.kind else {
+                        unreachable!()
+                    };
+                    error.message.push_str(&format!(
+                        "; {name} (call {}) was not sent while waiting for {} to reconnect",
+                        self.tool_numbers[&wait.call.position], self.start.tools[name].module,
+                    ));
+                }
+            }
+        }
+        // No provider thread exists for these calls. Other terminal paths let
+        // terminate settle their queued rows as cancelled, never as sent.
+        self.provider_waits.clear();
         self.parent_owned_kill = true;
         terminal.output = self.run.output.clone();
         terminal.warnings = self.run.warnings.clone();
@@ -2096,6 +2300,34 @@ impl Driver {
         );
         ended.and(accounting)
     }
+}
+
+/// Resolve presence and operation from one snapshot. Catalog::op flattens read
+/// errors into missing operations, which cannot distinguish a restart from a
+/// tool that was removed. None means the provider or readable declarations are
+/// unavailable, not that the tool was removed.
+fn live_declaration(catalog: &Value, module: &str, op: &str) -> Option<bool> {
+    use subc_protocol::manifest::ProviderRole;
+    let entry = catalog
+        .get("modules")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry.get("module_id").and_then(Value::as_str) == Some(module))?;
+    let roles: Vec<ProviderRole> = serde_json::from_value(entry.get("roles")?.clone()).ok()?;
+    let count = roles
+        .into_iter()
+        .map(|role| match role {
+            ProviderRole::ToolProvider { tools, .. } => {
+                tools.into_iter().filter(|tool| tool.name == op).count()
+            }
+            ProviderRole::ManagementSurface { operations, .. } => operations
+                .into_iter()
+                .filter(|operation| operation.name == op)
+                .count(),
+            _ => 0,
+        })
+        .sum::<usize>();
+    (count <= 1).then_some(count == 1)
 }
 
 fn terminate(
