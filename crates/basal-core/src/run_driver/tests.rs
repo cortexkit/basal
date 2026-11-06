@@ -350,6 +350,9 @@ impl crate::channel::WorkerChannel for Worker {
     fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
         panic!("driver uses timed receives")
     }
+    fn fixture_inline_recv(&self) -> bool {
+        true
+    }
     fn kill(&mut self) {
         self.killed = true;
     }
@@ -948,8 +951,8 @@ fn retry_consumes_unsent_proof_before_another_possible_send() {
             cause: "not sent".into(),
             audit_at: 20,
             proven_unsent: true,
-                    refund_dispatch: true,
-                    attempt: None,
+            refund_dispatch: true,
+            attempt: None,
         }));
     f.send(&a, 0, "write");
     let mut retries = a.recover_dispatches().unwrap();
@@ -970,6 +973,15 @@ fn each_driver_boundary_preserves_every_causal_recovery_clause() {
 }
 
 pub(crate) fn crash_case(boundary: Boundary) {
+    // Boundary::ALL uses position zero, but this scenario has earlier durable
+    // calls. Cut the new authorization at a non-zero position so the hook must
+    // carry the actual call's position rather than a constant representative.
+    let boundary = match boundary {
+        Boundary::DriverAppended { .. } => Boundary::DriverAppended { position: 5 },
+        Boundary::DriverSynced { .. } => Boundary::DriverSynced { position: 5 },
+        Boundary::DriverDispatched { .. } => Boundary::DriverDispatched { position: 5 },
+        other => other,
+    };
     let f = Fixture::new();
     let a = f.claim(0);
     a.requeue(true).unwrap();
@@ -1007,6 +1019,8 @@ pub(crate) fn crash_case(boundary: Boundary) {
     *f.cut.0.lock().unwrap() = Some(boundary.clone());
     let result = if boundary == (Boundary::DriverReleased { position: 0 }) {
         a.release(&[0]).map(|_| ())
+    } else if boundary == Boundary::DriverBeforeClose {
+        a.finish(f.terminal(RunState::Cancelled))
     } else {
         match a.issue(call(5, "keyed")) {
             Ok(Issued::Dispatch(d)) => d.send(),

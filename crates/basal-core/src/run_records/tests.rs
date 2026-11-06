@@ -172,8 +172,8 @@ fn every_record_roundtrips_with_strict_frame_types() {
             cause: "not ready".into(),
             audit_at: 2,
             proven_unsent: true,
-                    refund_dispatch: true,
-                    attempt: None,
+            refund_dispatch: true,
+            attempt: None,
         }),
         Body::Unknown {
             position: 0,
@@ -546,6 +546,8 @@ fn sync_table_covers_every_record_and_outcome_observability_case() {
                     cause: "readiness".into(),
                     audit_at: 2,
                     proven_unsent,
+                    refund_dispatch: true,
+                    attempt: None,
                 }),
             );
             assert_eq!(
@@ -838,8 +840,8 @@ fn lifecycle_readiness_and_refusal_state_survive_a_snapshot() {
             cause: "readiness".into(),
             audit_at: 20,
             proven_unsent: true,
-                    refund_dispatch: true,
-                    attempt: None,
+            refund_dispatch: true,
+            attempt: None,
         }),
     );
     append(

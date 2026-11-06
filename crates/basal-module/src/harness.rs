@@ -265,10 +265,18 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
     }
 }
 
-fn runs(module:&Module)->Result<Value,String> {
-    let flows=module.rt.flow_health().map_err(|e|e.to_string())?;
-    let mut runs=Vec::new();for flow in flows {runs.extend(module.rt.runs_for_flow(&flow.flow_id).map_err(|e|e.to_string())?);}
-    runs.sort_by(|a,b|(a.admit_seq,&a.run_id).cmp(&(b.admit_seq,&b.run_id)));
+fn runs(module: &Module) -> Result<Value, String> {
+    let flows = module.rt.flow_health().map_err(|e| e.to_string())?;
+    let mut runs = Vec::new();
+    for flow in flows {
+        runs.extend(
+            module
+                .rt
+                .runs_for_flow(&flow.flow_id)
+                .map_err(|e| e.to_string())?,
+        );
+    }
+    runs.sort_by(|a, b| (a.admit_seq, &a.run_id).cmp(&(b.admit_seq, &b.run_id)));
     Ok(Value::Array(runs.into_iter().map(|r|json!({"run_id":r.run_id,"flow_id":r.flow_id,"trigger_id":r.trigger_id,"state":r.state.as_str(),"broken":r.broken,"result":r.result,"error_kind":r.error_kind})).collect()))
 }
 
@@ -337,9 +345,11 @@ pub fn main() -> std::process::ExitCode {
             hooks,
         },
         Arc::new(ProcessSpawner::new(&pool)),
-        |_shared,recovered| {
+        |_shared, recovered| {
             if args.broca {
-                broca_store.bind_recovered(&recovered).map_err(|e| e.to_string())
+                broca_store
+                    .bind_recovered(&recovered)
+                    .map_err(|e| e.to_string())
             } else {
                 Ok(())
             }

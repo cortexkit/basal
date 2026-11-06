@@ -67,7 +67,16 @@ fn startup_binds_the_model_store_before_host_recovery() {
         hooks: Arc::new(NoHooks),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        Module::start_with_store(config,hosts,Arc::new(FailingSpawner::default()),|store,_recovered| snapshots.bind_recovered(&_recovered).map_err(|e| e.to_string()))
+        Module::start_with_store(
+            config,
+            hosts,
+            Arc::new(FailingSpawner::default()),
+            |_store, _recovered| {
+                snapshots
+                    .bind_recovered(&_recovered)
+                    .map_err(|e| e.to_string())
+            },
+        )
     }));
     let succeeded = matches!(&result, Ok(Ok(_)));
     if let Ok(Ok(module)) = result {
@@ -117,10 +126,17 @@ fn failed_start_does_not_bind_or_retain_the_store() {
         hooks: Arc::new(NoHooks),
     };
     let mut opened = None;
-    let result = Module::start_with_store(config.clone(),hosts.clone(),spawn.clone(),|store,_recovered| {
-        opened = Some(Arc::downgrade(&store));
-        snapshots.bind_recovered(&_recovered).map_err(|e| e.to_string())
-    });
+    let result = Module::start_with_store(
+        config.clone(),
+        hosts.clone(),
+        spawn.clone(),
+        |store, _recovered| {
+            opened = Some(Arc::downgrade(&store));
+            snapshots
+                .bind_recovered(&_recovered)
+                .map_err(|e| e.to_string())
+        },
+    );
     assert!(result.is_err());
     assert!(
         opened.is_none(),
@@ -130,8 +146,10 @@ fn failed_start_does_not_bind_or_retain_the_store() {
     let store = Store::open(&config.store_path, config.durability).expect("write lease released");
     drop(store);
     std::fs::remove_file(&scratch).unwrap();
-    let module = Module::start_with_store(config,hosts,spawn,|store,_recovered| {
-        snapshots.bind_recovered(&_recovered).map_err(|e| e.to_string())
+    let module = Module::start_with_store(config, hosts, spawn, |_store, _recovered| {
+        snapshots
+            .bind_recovered(&_recovered)
+            .map_err(|e| e.to_string())
     })
     .unwrap_or_else(|e| panic!("retry: {e}"));
     module.pool.stop();

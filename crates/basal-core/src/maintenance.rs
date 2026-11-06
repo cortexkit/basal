@@ -30,13 +30,13 @@ impl Runtime {
             let retry = runs
                 .iter()
                 .filter(|r| !r.state.is_terminal())
-                .filter_map(|r| states.get(&r.run_id).map(|state|(r,state)))
-                .flat_map(|(run,s)| {
+                .filter_map(|r| states.get(&r.run_id).map(|state| (r, state)))
+                .flat_map(|(run, s)| {
                     s.calls
                         .values()
                         // Runnable work is signalled separately. Its past retry
                         // time must not turn an occupied worker pool into a spin.
-                        .filter(move |_|run.state==crate::RunState::Suspended)
+                        .filter(move |_| run.state == crate::RunState::Suspended)
                         .filter(|c| c.arrival.is_none())
                         .filter_map(|c| c.deferred.as_ref().map(|d| d.retry_not_before))
                         .chain(s.event_bodies.last().and_then(|b| match b {
@@ -108,7 +108,10 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Clock,RunState,StoredClass,run_records::{Body,State,CallIdentity,Intent,Deferred}};
+    use crate::{
+        Clock, RunState, StoredClass,
+        run_records::{Body, CallIdentity, Deferred, Intent, State},
+    };
     use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
     use basal_proto::{CallKind, JsonText};
     use std::sync::Arc;
@@ -116,8 +119,9 @@ mod tests {
     fn fixture() -> crate::runtime_authorization_regressions::TestRuntime {
         let mut f = crate::runtime_authorization_regressions::TestRuntime::new();
         Arc::make_mut(&mut f.rt.config).clock = Clock::manual(0);
-        Arc::make_mut(&mut f.rt.config).install_gate=crate::InstallGate::Off;
-        Arc::make_mut(&mut f.rt.config).limits.default_deadline=std::time::Duration::from_millis(600000);
+        Arc::make_mut(&mut f.rt.config).install_gate = crate::InstallGate::Off;
+        Arc::make_mut(&mut f.rt.config).limits.default_deadline =
+            std::time::Duration::from_millis(600000);
         *f.rt.shared.retention_next.lock().unwrap() = Some(3_600_000);
         f.rt.store()
             .write(|tx| {
@@ -131,20 +135,88 @@ mod tests {
         f
     }
 
-    fn pending(rt:&Runtime){rt.fixture_run("run","flow",1,"return 1","{}",State::new(0)).unwrap();}
+    fn pending(rt: &Runtime) {
+        rt.fixture_run("run", "flow", 1, "return 1", "{}", State::new(0))
+            .unwrap();
+    }
 
     #[test]
-fn next_wake_combines_schedule_deadline_deferred_pool_and_retention(){
- let f=fixture();let rt=&f.rt;assert_eq!(rt.next_wake_at(None).unwrap(),Some(3_600_000));assert_eq!(rt.next_wake_at(Some(900000)).unwrap(),Some(900000));pending(rt);let activation=rt.fixture_activation("run").unwrap();assert_eq!(rt.next_wake_at(None).unwrap(),Some(600000));
- let call=basal_proto::HostCall{position:0,kind:CallKind::Op{module:"mock".into(),op:"send".into()},args:JsonText::null()};
- rt.fixture_append("run",Body::Intent(Intent{call:CallIdentity::new(call,StoredClass::KeyedMutation),idempotency_key:Some("key".into()),frozen_request:JsonText::null(),attempts:1,dispatch_count_window:None,audit_at:0,reservation:None})).unwrap();
- rt.fixture_append("run",Body::Deferred(Deferred{position:0,retry_not_before:10000,cause:serde_json::to_string(&FlowRefusal::new(RefusalReason::ResourceBusy,"mock","send")).unwrap(),audit_at:0,proven_unsent:true,refund_dispatch:true,attempt:None})).unwrap();activation.park(&[0]).unwrap();rt.shared.staged_owners.lock().unwrap().remove("run");
- assert_eq!(rt.next_wake_at(None).unwrap(),Some(10000));rt.config.clock.set(10000);assert_eq!(rt.startable().unwrap().len(),1);assert_eq!(rt.run("run").unwrap().state,RunState::Pending);assert_eq!(rt.next_wake_at(None).unwrap(),Some(600000));
- rt.store().write(|tx|{tx.execute("INSERT INTO schedules(flow_id,version,spec,state,anchor_ms,next_due_ms,updated_at) VALUES('flow',1,'{}','active',0,20000,0)",[])?;Ok(())}).unwrap();assert_eq!(rt.next_wake_at(None).unwrap(),Some(20000));rt.store().write(|tx|{tx.execute("UPDATE schedules SET state='disabled'",[])?;Ok(())}).unwrap();assert_eq!(rt.next_wake_at(None).unwrap(),Some(600000));rt.config.clock.set(600000);assert_eq!(rt.enforce_deadlines().unwrap(),["run"]);assert_eq!(rt.next_wake_at(None).unwrap(),Some(3_600_000));
-}
+    fn next_wake_combines_schedule_deadline_deferred_pool_and_retention() {
+        let f = fixture();
+        let rt = &f.rt;
+        assert_eq!(rt.next_wake_at(None).unwrap(), Some(3_600_000));
+        assert_eq!(rt.next_wake_at(Some(900000)).unwrap(), Some(900000));
+        pending(rt);
+        let activation = rt.fixture_activation("run").unwrap();
+        assert_eq!(rt.next_wake_at(None).unwrap(), Some(600000));
+        let call = basal_proto::HostCall {
+            position: 0,
+            kind: CallKind::Op {
+                module: "mock".into(),
+                op: "send".into(),
+            },
+            args: JsonText::null(),
+        };
+        rt.fixture_append(
+            "run",
+            Body::Intent(Intent {
+                call: CallIdentity::new(call, StoredClass::KeyedMutation),
+                idempotency_key: Some("key".into()),
+                frozen_request: JsonText::null(),
+                attempts: 1,
+                dispatch_count_window: None,
+                audit_at: 0,
+                reservation: None,
+            }),
+        )
+        .unwrap();
+        rt.fixture_append(
+            "run",
+            Body::Deferred(Deferred {
+                position: 0,
+                retry_not_before: 10000,
+                cause: serde_json::to_string(&FlowRefusal::new(
+                    RefusalReason::ResourceBusy,
+                    "mock",
+                    "send",
+                ))
+                .unwrap(),
+                audit_at: 0,
+                proven_unsent: true,
+                refund_dispatch: true,
+                attempt: None,
+            }),
+        )
+        .unwrap();
+        activation.park(&[0]).unwrap();
+        rt.shared.staged_owners.lock().unwrap().remove("run");
+        assert_eq!(rt.next_wake_at(None).unwrap(), Some(10000));
+        rt.config.clock.set(10000);
+        assert_eq!(rt.startable().unwrap().len(), 1);
+        assert_eq!(rt.run("run").unwrap().state, RunState::Pending);
+        assert_eq!(rt.next_wake_at(None).unwrap(), Some(600000));
+        rt.store().write(|tx|{tx.execute("INSERT INTO schedules(flow_id,version,spec,state,anchor_ms,next_due_ms,updated_at) VALUES('flow',1,'{}','active',0,20000,0)",[])?;Ok(())}).unwrap();
+        assert_eq!(rt.next_wake_at(None).unwrap(), Some(20000));
+        rt.store()
+            .write(|tx| {
+                tx.execute("UPDATE schedules SET state='disabled'", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(rt.next_wake_at(None).unwrap(), Some(600000));
+        rt.config.clock.set(600000);
+        assert_eq!(rt.enforce_deadlines().unwrap(), ["run"]);
+        assert_eq!(rt.next_wake_at(None).unwrap(), Some(3_600_000));
+    }
 
     #[test]
-fn completed_runs_do_not_keep_deferred_or_deadline_timers_live(){let f=fixture();pending(&f.rt);f.rt.fixture_finish("run",RunState::Failed,None,Some(("test","ended"))).unwrap();assert_eq!(f.rt.next_wake_at(None).unwrap(),Some(3_600_000));}
+    fn completed_runs_do_not_keep_deferred_or_deadline_timers_live() {
+        let f = fixture();
+        pending(&f.rt);
+        f.rt.fixture_finish("run", RunState::Failed, None, Some(("test", "ended")))
+            .unwrap();
+        assert_eq!(f.rt.next_wake_at(None).unwrap(), Some(3_600_000));
+    }
 
     #[test]
     fn next_schedule_uses_the_due_index() {
@@ -166,5 +238,4 @@ fn completed_runs_do_not_keep_deferred_or_deadline_timers_live(){let f=fixture()
             "{plan:?}"
         );
     }
-
 }

@@ -102,8 +102,7 @@ fn kv_caps_refuse_with_journaled_rejections() {
         .map(|c| c.position)
         .collect();
     assert_eq!(rejected, vec![0, 1, 4]);
-    let audit = rt.fixture_call_identities(&run_id)
-        .expect("audit");
+    let audit = rt.fixture_call_identities(&run_id).expect("audit");
     let limited: Vec<u64> = audit
         .iter()
         .filter(|r| r.outcome == "kv_limit")

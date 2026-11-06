@@ -894,10 +894,19 @@ pub fn next_commit_seq(tx: &Transaction<'_>) -> Result<u64> {
     Ok(next)
 }
 
-/// Only disposable test stores may install the staged schema before cutover.
+/// Disposable test stores may select explicit metadata. A raw SQLite fixture
+/// also needs the control-plane schema; Store::open already installs it.
 #[cfg(any(test, feature = "test-support"))]
 pub fn create_test_schema(tx: &Transaction<'_>, state: &Meta) -> Result<()> {
-    tx.execute_batch(DDL)?;
+    let installed: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='live_runs')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !installed {
+        tx.execute_batch(DDL)?;
+        crate::run_cutover::initialize_broca_fixture(tx)?;
+    }
     write_meta(tx, state)?;
     set_restore_pending(tx, false)
 }

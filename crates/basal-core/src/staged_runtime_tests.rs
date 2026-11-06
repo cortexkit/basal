@@ -275,11 +275,19 @@ fn staged_runtime_admits_executes_and_reads_without_execution_rows() {
     f.rt.store()
         .read(|c| {
             assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get::<_, u64>(0))?,
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name='runs'",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?,
                 0
             );
             assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM journal", [], |r| r.get::<_, u64>(0))?,
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name='journal'",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?,
                 0
             );
             assert_eq!(
@@ -431,18 +439,33 @@ fn retained_projection_does_not_count_an_install_gate_deferral_as_an_activation(
 }
 
 #[test]
-fn ordinary_constructor_creates_neither_run_log_nor_rig_projection() {
+fn ordinary_constructor_recovers_run_log_without_rig_projection() {
     let root = crate::test_support::timestamp_scratch("staged-runtime", "ordinary");
     let store = Arc::new(Store::open(root.join("store.db"), Durability::throwaway()).unwrap());
-    let rt = Runtime::new(store,
-    Arc::new(TestHost::default()),
-    Arc::new(MockCatalog::standard()),
-    Arc::new(NoHooks),
-    None,
-    Config::default(),).expect("runtime startup");
-    assert!(!rt.uses_run_log());
-    assert!(!root.join("run-log").exists());
-    rt.store().read(|c| { assert_eq!(c.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'rig_%' OR name='run_history'",[],|r|r.get::<_,u64>(0))?,0); Ok(()) }).unwrap();
+    let rt = Runtime::new(
+        store,
+        Arc::new(TestHost::default()),
+        Arc::new(MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        Config::default(),
+    )
+    .expect("runtime startup");
+    assert!(rt.uses_run_log());
+    assert!(root.join("run-log").exists());
+    rt.store()
+        .read(|c| {
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'rig_%'",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
 }
 
 fn target(position: u64) -> WorkerMessage {
@@ -985,14 +1008,8 @@ fn event_body_retry_deadline_and_engine_timers_read_registry_records() {
         f.rt.run(&id).unwrap().error_kind.as_deref(),
         Some("flow_audience_unavailable")
     );
-    f.rt.store()
-        .read(|c| {
-            assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM event_body_journal", [], |r| r
-                    .get::<_, u64>(0))?,
-                0
-            );
-            Ok(())
-        })
-        .unwrap();
+    assert!(
+        f.rt.fixture_state(&id).is_err(),
+        "closed runs retain no event-body actor"
+    );
 }

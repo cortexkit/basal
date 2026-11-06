@@ -296,7 +296,7 @@ fn revoked_in_core_the_next_scheduled_run_never_activates() {
     f.clock.advance(common::HOUR);
     f.module.engine.run_until_idle(20).expect("idle");
     let runs = f.module.rt.store().read(|c| {
-        let mut s = c.prepare("SELECT run_id FROM runs WHERE flow_id = ?1")?;
+        let mut s = c.prepare("SELECT run_id FROM run_identities WHERE flow_id = ?1")?;
         let ids = s
             .query_map([FLOW], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

@@ -9,8 +9,10 @@ mod types;
 
 use std::sync::Arc;
 
+pub(crate) use state::parse_unknown_reason;
 pub use state::{CallState, Claim, State};
 pub use types::*;
+mod call_state_codec;
 
 use crate::{
     CoreError, Result,
@@ -44,6 +46,8 @@ impl LogRecord for Record {
             Body::Resolution(_) => 20,
             Body::Snapshot { .. } => 21,
             Body::Closed { .. } => 22,
+            Body::CallScopeCut { .. } => 23,
+            Body::MeasuredUsage { .. } => 24,
         }
     }
     fn decode(record_type: u8, payload: &[u8]) -> run_log::Result<Self> {
@@ -241,14 +245,27 @@ impl Records {
     /// The driver registers its dispatch entrant before releasing the actor,
     /// then syncs this cut before handing anything to the host. Separating the
     /// append from the wait also permits a lock-free crash hook between them.
-    pub(crate) fn append_pending(&mut self, generation: u64, mut body: Body) -> Result<(Lsn, bool)> {
+    pub(crate) fn append_pending(
+        &mut self,
+        generation: u64,
+        mut body: Body,
+    ) -> Result<(Lsn, bool)> {
         if self.poisoned {
             return Err(CoreError::Cut);
         }
-        if let Body::Deferred(deferred)=&mut body {
-            let attempt=self.state.calls.get(&deferred.position).and_then(|c|c.intent.as_ref()).map(|i|i.attempts);
-            if deferred.attempt.is_some()&&deferred.attempt!=attempt {return Err(CoreError::Invalid("deferral names a different intent attempt".into()));}
-            deferred.attempt=attempt;
+        if let Body::Deferred(deferred) = &mut body {
+            let attempt = self
+                .state
+                .calls
+                .get(&deferred.position)
+                .and_then(|c| c.intent.as_ref())
+                .map(|i| i.attempts);
+            if deferred.attempt.is_some() && deferred.attempt != attempt {
+                return Err(CoreError::Invalid(
+                    "deferral names a different intent attempt".into(),
+                ));
+            }
+            deferred.attempt = attempt;
         }
         let sync = self.state.requires_sync(&body)?;
         // Validate before writing; failed appends must not change the overlay.
@@ -319,6 +336,14 @@ impl Records {
     }
     pub(crate) fn snapshot_synced(&mut self, lsn: Lsn) {
         self.required_start = Some(self.required_start.map_or(lsn, |old| old.max(lsn)));
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn fixture_update_state(&mut self, edit: impl FnOnce(&mut State)) -> Result<()> {
+        edit(&mut self.state);
+        let (log, lsn) = self.append_snapshot(self.state.generation)?;
+        log.sync_through(lsn)?;
+        self.snapshot_synced(lsn);
+        Ok(())
     }
     pub(crate) fn poison(&mut self) {
         self.poisoned = true;

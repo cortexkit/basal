@@ -15,6 +15,7 @@ pub(crate) fn connection() -> Connection {
     for migration in schema::MIGRATIONS {
         conn.execute_batch(migration.statements).unwrap();
     }
+    conn.execute_batch(crate::run_store_sql::DDL).unwrap();
     conn
 }
 
@@ -36,6 +37,9 @@ impl Drop for ScratchDir {
 
 impl TestRuntime {
     pub fn new() -> Self {
+        Self::with_host(Arc::new(MockHost::new()))
+    }
+    pub fn with_host(host: Arc<dyn basal_host::Host>) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "basal-regression-{}-{}",
@@ -45,12 +49,15 @@ impl TestRuntime {
         std::fs::create_dir_all(&path).unwrap();
         let store =
             Arc::new(Store::open(path.join("store.sqlite"), Durability::throwaway()).unwrap());
-        let rt = Runtime::new(store,
-        Arc::new(MockHost::new()),
-        Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
-        None,
-        Config::default(),).expect("runtime startup");
+        let rt = Runtime::new(
+            store,
+            host,
+            Arc::new(MockCatalog::standard()),
+            Arc::new(NoHooks),
+            None,
+            Config::default(),
+        )
+        .expect("runtime startup");
         Self {
             rt,
             _dir: ScratchDir(path),
@@ -170,8 +177,15 @@ fn huge_usage_settles_and_keeps_window_totals_integral() {
 
 #[test]
 fn health_does_not_hide_a_store_error() {
-    let fixture=TestRuntime::new();
-    fixture.rt.store().write(|tx|{tx.execute("DROP TABLE meta",[])?;Ok(())}).unwrap();
+    let fixture = TestRuntime::new();
+    fixture
+        .rt
+        .store()
+        .write(|tx| {
+            tx.execute("DROP TABLE meta", [])?;
+            Ok(())
+        })
+        .unwrap();
     assert!(fixture.rt.health().is_err());
 }
 

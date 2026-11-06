@@ -83,6 +83,7 @@ pub mod run_host;
 pub mod run_log;
 mod run_readers;
 pub mod run_records;
+mod run_removal;
 mod run_retention;
 pub mod run_store;
 pub mod run_store_sql;
@@ -92,9 +93,8 @@ pub mod schedule;
 #[path = "run_cutover/schema.rs"]
 pub mod schema;
 mod secret_revocation;
-mod run_removal;
 mod staged_runtime;
-#[cfg(any(test,feature="test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub use staged_runtime::fixtures::CallInspection;
 pub mod state_epoch;
 pub mod store;

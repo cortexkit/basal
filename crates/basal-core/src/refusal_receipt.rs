@@ -62,8 +62,10 @@ impl SavedRefusal {
         })
     }
 
-        pub(crate) fn refusal(&self)->Result<basal_host::flow_refusal::FlowRefusal> {
-        if serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&self.detail).is_err(){tracing::warn!(run_id=%self.run_id,position=self.position,"ignoring malformed optional refusal fields");}
+    pub(crate) fn refusal(&self) -> Result<basal_host::flow_refusal::FlowRefusal> {
+        if serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&self.detail).is_err() {
+            tracing::warn!(run_id=%self.run_id,position=self.position,"ignoring malformed optional refusal fields");
+        }
         decode_refusal(&self.detail)
     }
 }
@@ -71,10 +73,13 @@ impl SavedRefusal {
 /// Optional retry/display fields are not part of a refusal's identity. Older
 /// stored rows validated reason/provider/action but could retain malformed
 /// optional fields; discard only those fields and still validate the identity.
-pub(crate) fn decode_refusal(detail:&str)->Result<basal_host::flow_refusal::FlowRefusal> {
-    if let Ok(refusal)=serde_json::from_str(detail){return Ok(refusal);}
-    let mut value:serde_json::Value=serde_json::from_str(detail).map_err(|e|CoreError::Corrupt(e.to_string()))?;
-    value["retry_after_ms"]=serde_json::Value::Null;
-    value["detail"]=serde_json::Value::Null;
-    serde_json::from_value(value).map_err(|e|CoreError::Corrupt(e.to_string()))
+pub(crate) fn decode_refusal(detail: &str) -> Result<basal_host::flow_refusal::FlowRefusal> {
+    if let Ok(refusal) = serde_json::from_str(detail) {
+        return Ok(refusal);
+    }
+    let mut value: serde_json::Value =
+        serde_json::from_str(detail).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+    value["retry_after_ms"] = serde_json::Value::Null;
+    value["detail"] = serde_json::Value::Null;
+    serde_json::from_value(value).map_err(|e| CoreError::Corrupt(e.to_string()))
 }

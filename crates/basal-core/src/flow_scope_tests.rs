@@ -22,7 +22,7 @@ fn retirement_queries_search_only_the_requested_flows_indexes() {
         assert!(
             details
                 .iter()
-                .any(|line| line.starts_with("SEARCH runs ") || line.starts_with("SEARCH r ")),
+                .any(|line| line.starts_with("SEARCH live_runs ") || line.starts_with("SEARCH r ")),
             "{name}: {details:?}"
         );
         assert!(
@@ -30,7 +30,7 @@ fn retirement_queries_search_only_the_requested_flows_indexes() {
             "{name}: {details:?}"
         );
         assert!(
-            !details.iter().any(|line| line.starts_with("SCAN runs")
+            !details.iter().any(|line| line.starts_with("SCAN live_runs")
                 || line.starts_with("SCAN r ")
                 || line.starts_with("SCAN b ")),
             "{name}: {details:?}"
@@ -77,23 +77,76 @@ impl Host for RecordingHost {
 
 #[test]
 fn terminal_model_acknowledgement_retires_its_flow_without_a_global_sweep() {
-    let fixture = TestRuntime::new();
     let host = Arc::new(RecordingHost::default());
-    let rt = crate::Runtime::new(fixture.rt.shared.store.clone(),
-    host.clone(),
-    Arc::new(basal_host::MockCatalog::standard()),
-    Arc::new(crate::NoHooks),
-    None,
-    crate::Config::default(),).expect("runtime startup");
-    rt.store().write(|tx| {
-        tx.execute_batch("INSERT INTO flows(flow_id,removed,created_at) VALUES ('f',1,0);\
-            INSERT INTO run_snapshots(flow_id,flow_version,code_hash,script,manifest) VALUES ('f',1,zeroblob(32),'return 1','{}');\
-             INSERT INTO runs(run_id,flow_id,flow_version,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at) VALUES ('r','f',1,'t',1,'null',(SELECT snapshot_id FROM run_snapshots WHERE flow_id='f'),zeroblob(32),'cancelled',0);\
-            INSERT INTO journal(run_id,position,kind_code,args_bytes,args_digest,idempotency_key,class,dispatch,issued_generation) VALUES ('r',0,1,2,zeroblob(32),'k','query','sent',1);\
-            INSERT INTO journal_payloads VALUES ('r',0,'{}',NULL,NULL);\
-             INSERT INTO broca_calls VALUES ('k','r',0,'{\"acknowledged\":false,\"deferred\":false}');")?;
-        Ok(())
-    }).unwrap();
+    let fixture = TestRuntime::with_host(host.clone());
+    let rt = fixture.rt.clone();
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO flows(flow_id,removed,created_at) VALUES ('f',1,0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    use crate::run_records::{Arrival, ArrivalDurability, Body, CallIdentity, Intent, State};
+    use basal_proto::{CallKind, HostCall, JsonText, Primitive, Settlement};
+    rt.fixture_run("r", "f", 1, "return 1", "{}", State::new(0))
+        .unwrap();
+    rt.fixture_append(
+        "r",
+        Body::Intent(Intent {
+            call: CallIdentity::new(
+                HostCall {
+                    position: 0,
+                    kind: CallKind::Primitive(Primitive::Llm),
+                    args: JsonText::null(),
+                },
+                crate::StoredClass::Query,
+            ),
+            idempotency_key: Some("k".into()),
+            frozen_request: JsonText::null(),
+            attempts: 1,
+            dispatch_count_window: None,
+            audit_at: 0,
+            reservation: None,
+        }),
+    )
+    .unwrap();
+    rt.fixture_append(
+        "r",
+        Body::Accepted {
+            position: 0,
+            handle: "k".into(),
+        },
+    )
+    .unwrap();
+    rt.fixture_append(
+        "r",
+        Body::Arrived(Arrival {
+            position: 0,
+            arrival_seq: 0,
+            outcome: "fulfilled".into(),
+            settlement: Settlement::Fulfilled,
+            value_hash: crate::ids::payload_hash(Settlement::Fulfilled, &JsonText::null()),
+            value: JsonText::null(),
+            handle: Some("k".into()),
+            usage: None,
+            cost_micros: None,
+            kv_effect: None,
+            durability: ArrivalDurability {
+                host_callback: true,
+                ..Default::default()
+            },
+        }),
+    )
+    .unwrap();
+    rt.store().write(|tx| { tx.execute("INSERT INTO broca_calls VALUES ('k','r',0,'{\"acknowledged\":false,\"deferred\":false}')", [])?; Ok(()) }).unwrap();
+    rt.fixture_finish("r", crate::RunState::Cancelled, None, None)
+        .unwrap();
+    // Ignore route notifications from constructing the terminal fixture; the
+    // assertions below isolate maintenance and the final adapter release.
+    host.retained.lock().unwrap().clear();
     rt.flush_refusals().unwrap();
     rt.enforce_deadlines().unwrap();
     assert!(host.retained.lock().unwrap().is_empty());

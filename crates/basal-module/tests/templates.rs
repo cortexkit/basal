@@ -1501,7 +1501,7 @@ fn template_dry_run_creates_no_rows_and_uses_no_quota() {
     register(&f, &m, "return params.note;");
     let snapshot = || {
         f.module.rt.store().read(|c| {
-        Ok(c.query_row("SELECT (SELECT count(*) FROM flows),(SELECT count(*) FROM template_instances),(SELECT count(*) FROM runs),(SELECT count(*) FROM schedules),(SELECT count(*) FROM template_event_outbox)", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)))?)
+        Ok(c.query_row("SELECT (SELECT count(*) FROM flows),(SELECT count(*) FROM template_instances),(SELECT count(*) FROM run_identities),(SELECT count(*) FROM schedules),(SELECT count(*) FROM template_event_outbox)", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)))?)
     }).unwrap()
     };
     let before = snapshot();

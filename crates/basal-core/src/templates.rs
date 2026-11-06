@@ -665,17 +665,21 @@ impl crate::Runtime {
 
     pub fn end_instance(&self, flow_id: &str) -> Result<Value, TemplateError> {
         let now = self.config().clock.now_ms();
-        let mut targets=Vec::new();
+        let mut targets = Vec::new();
         let result = self.store().write(|tx| {
             if !is_instance(tx, flow_id)? {
                 return Ok(None);
             }
             let ended = end(tx, flow_id, now)?;
-            targets=crate::run_removal::capture(tx,flow_id,now)?;
+            targets = crate::run_removal::capture(tx, flow_id, now)?;
             Ok(Some(json!({"flow_id":flow_id,"ended":ended})))
         })?;
         self.shared.signal.bump();
-        if result.is_some(){self.removal_captured(&targets)?;self.resume_run_removals()?;self.flush_refusals()?;}
+        if result.is_some() {
+            self.removal_captured(&targets)?;
+            self.resume_run_removals()?;
+            self.flush_refusals()?;
+        }
         result.ok_or_else(|| refused("package_not_template", Value::Null))
     }
 }
@@ -700,7 +704,7 @@ pub(crate) fn end(tx: &rusqlite::Transaction<'_>, flow_id: &str, now: i64) -> cr
     expire_schedules(tx, now)?;
     let changed = tx.execute("UPDATE flows SET removed=1 WHERE flow_id=?1 AND removed=0 AND EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?1)", [flow_id])?;
     if changed > 0 {
-        crate::run_removal::capture(tx,flow_id,now)?;
+        crate::run_removal::capture(tx, flow_id, now)?;
         crate::template_events::enqueue(tx, flow_id, "flow_instance_ended", now)?;
         let now = jiff::Timestamp::from_millisecond(now)
             .map_err(|e| crate::CoreError::Invalid(e.to_string()))?;
@@ -708,7 +712,6 @@ pub(crate) fn end(tx: &rusqlite::Transaction<'_>, flow_id: &str, now: i64) -> cr
     }
     Ok(changed > 0)
 }
-
 
 pub(crate) fn expire_schedules(tx: &rusqlite::Transaction<'_>, now: i64) -> crate::Result<()> {
     crate::template_events::prune(tx, now)?;
@@ -727,7 +730,6 @@ pub(crate) fn expire_schedules(tx: &rusqlite::Transaction<'_>, now: i64) -> crat
     tx.execute("UPDATE schedules SET state='disabled',updated_at=?1 WHERE flow_id IN (SELECT flow_id FROM template_instances WHERE expires_at<=?1)", [now])?;
     Ok(())
 }
-
 
 struct UniqueJson(Value);
 impl<'de> Deserialize<'de> for UniqueJson {

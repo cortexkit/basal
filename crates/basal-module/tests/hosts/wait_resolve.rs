@@ -400,15 +400,9 @@ fn wait_store_refusal_defers_and_reuses_frozen_receipt() {
     let retry: i64 = f
         .module
         .rt
-        .store()
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT retry_not_before FROM journal WHERE run_id=?1",
-                [&run],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
+        .fixture_deferral(&run, 0)
+        .unwrap()
+        .retry_not_before;
     f.clock.set(retry);
     f.module.engine.run_until_idle(50).unwrap();
     assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
@@ -471,18 +465,18 @@ fn wait_repeated_unsent_refusals_reproduce_fifteen_attempt_deadline_shape_with_a
             let row = &f.module.rt.calls(&run).unwrap()[0];
             assert_eq!(row.attempts, attempt, "{code}");
             assert_eq!(row.dispatch, basal_core::DispatchState::Deferred, "{code}");
-            let (retry, cause): (i64, String) = f
-                .module
-                .rt
-                .store()
-                .read(|c| {
-                    Ok(c.query_row(
-                        "SELECT retry_not_before,last_dispatch_cause FROM journal WHERE run_id=?1",
-                        [&run],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )?)
-                })
-                .unwrap();
+            let (retry, cause): (i64, String) = {
+                let d = f.module.rt.fixture_deferral(&run, 0).unwrap();
+                (
+                    d.retry_not_before,
+                    serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&d.cause)
+                        .unwrap()
+                        .outcome()
+                        .value
+                        .as_str()
+                        .to_owned(),
+                )
+            };
             assert_eq!(serde_json::from_str::<Value>(&cause).unwrap()["code"], code);
             if attempt < sends {
                 f.clock.set(retry);
@@ -508,15 +502,22 @@ fn wait_repeated_unsent_refusals_reproduce_fifteen_attempt_deadline_shape_with_a
         assert_eq!(row.attempts, sends);
         assert!(row.outcome.is_none());
         assert!(row.handle.is_none());
-        f.module.rt.store().read(|c| {
-            let empty: i64 = c.query_row("SELECT refusal IS NULL AND refusal_detail IS NULL AND retry_not_before IS NULL AND unknown_reason IS NULL AND scope_cut=0 FROM journal WHERE run_id=?1", [&run], |r| r.get(0))?;
-            assert_eq!(empty, 1, "{code}");
-            let mailbox: String = c.query_row("SELECT value FROM mailbox WHERE run_id=?1", [&run], |r| r.get(0))?;
-            assert_eq!(serde_json::from_str::<Value>(&mailbox).unwrap()["code"], code);
-            let cause: String = c.query_row("SELECT last_dispatch_cause FROM journal WHERE run_id=?1", [&run], |r| r.get(0))?;
-            assert_eq!(serde_json::from_str::<Value>(&cause).unwrap()["code"], code);
-            Ok(())
-        }).unwrap();
+        let call = f.module.rt.fixture_call_state(&run, 0).unwrap();
+        assert!(call.deferred.is_none() && call.unknown.is_none(), "{code}");
+        let arrival = call.arrival.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(arrival.value.as_str()).unwrap()["code"],
+            code
+        );
+        assert_eq!(
+            f.module
+                .rt
+                .fixture_refusal(&run, 0)
+                .unwrap()
+                .reason
+                .as_str(),
+            code
+        );
         assert_eq!(fake.calls("sink.wait_resolve").len(), sends as usize);
     }
 }

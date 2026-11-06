@@ -1044,10 +1044,13 @@ history row records that limitation. This operation applies only to
 Cutover is a stop-the-world deploy under the store lease. A committed
 `migration_phase` makes restart resume migration rather than start traffic. Each
 phase is idempotent. Admission and activation remain held until the migration's
-post-checks and the head's release. Before any production-shaped rehearsal or
-production migration, obtain Ufuk's recorded approval and a pre-migration backup
-and rollback plan. The head owns the live-store-copy crash rehearsal, production
-deploy and release; synthetic-fixture tests do not authorize any of them.
+post-checks. Before any production-shaped rehearsal or production migration,
+the release operator must obtain the project maintainer's recorded approval and
+a pre-migration backup and rollback plan, retained with the deployment's change
+record. The supervising release operator owns the live-store-copy crash
+rehearsal and production deploy; synthetic-fixture tests do not authorize them.
+Startup serves only after all persisted post-checks pass. A failed post-check
+refuses startup and names the check; there is no separate runtime release CLI.
 
 Compare finished/live and identity counts, first-segment snapshots, failed call
 detail, broken/activation counts, accounting windows and reservations, late-work

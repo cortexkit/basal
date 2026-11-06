@@ -188,8 +188,14 @@ impl<R: RunRecords> Run<R> {
             },
         )
     }
-    pub(crate) fn close_busy(&self)->Result<bool> {
-        match self.closer.try_lock(){Ok(_)=>Ok(false),Err(std::sync::TryLockError::WouldBlock)=>Ok(true),Err(std::sync::TryLockError::Poisoned(_))=>Err(CoreError::Corrupt("run closer lock poisoned".into()))}
+    pub(crate) fn close_busy(&self) -> Result<bool> {
+        match self.closer.try_lock() {
+            Ok(_) => Ok(false),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(true),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                Err(CoreError::Corrupt("run closer lock poisoned".into()))
+            }
+        }
     }
     pub fn routing(&self) -> Routing {
         match self.routing.load(Ordering::Acquire) {

@@ -13,6 +13,74 @@ use crate::{
     runtime::ActivationEnd,
 };
 
+struct Frames {
+    messages: mpsc::Receiver<std::result::Result<WorkerMessage, ChannelError>>,
+    permit: mpsc::Sender<()>,
+    in_flight: bool,
+    finished: Arc<std::sync::atomic::AtomicBool>,
+    reader: std::thread::JoinHandle<()>,
+}
+impl Frames {
+    fn start(worker: &mut dyn WorkerChannel) -> Self {
+        let mut receiver = worker.receiver();
+        let (send, messages) = mpsc::sync_channel(1);
+        let (permit, receive) = mpsc::channel();
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended = finished.clone();
+        let reader = std::thread::spawn(move || {
+            loop {
+                if receive.recv().is_err() {
+                    break;
+                }
+                let message = receiver.recv();
+                let done = message
+                    .as_ref()
+                    .is_ok_and(|m| matches!(m, WorkerMessage::Finished { .. }));
+                if done {
+                    ended.store(true, std::sync::atomic::Ordering::Release);
+                }
+                let stop = done || message.is_err();
+                if send.send(message).is_err() || stop {
+                    break;
+                }
+            }
+        });
+        Self {
+            messages,
+            permit,
+            in_flight: false,
+            finished,
+            reader,
+        }
+    }
+    fn recv(&mut self, timeout: Duration) -> std::result::Result<WorkerMessage, ChannelError> {
+        // Read only after the driver finished the previous frame. A timeout
+        // leaves that read in flight rather than requesting another read.
+        if !self.in_flight {
+            self.permit.send(()).map_err(|_| ChannelError::Closed)?;
+            self.in_flight = true;
+        }
+        match self.messages.recv_timeout(timeout) {
+            Ok(message) => {
+                self.in_flight = false;
+                message
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(ChannelError::Timeout),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ChannelError::Closed),
+        }
+    }
+    fn stop(self, worker: &mut dyn WorkerChannel) -> Result<()> {
+        drop(self.messages);
+        drop(self.permit);
+        if !self.finished.load(std::sync::atomic::Ordering::Acquire) {
+            worker.kill();
+        }
+        self.reader
+            .join()
+            .map_err(|_| CoreError::Worker("worker receiver panicked".into()))
+    }
+}
+
 impl Activation {
     fn terminal(&self, state: RunState, effects: &Arc<dyn TerminalEffects>) -> Terminal {
         Terminal::new(
@@ -51,7 +119,11 @@ impl Activation {
         effects: Arc<dyn TerminalEffects>,
         timeout: Duration,
     ) -> Result<ActivationEnd> {
-        let result = self.drive_inner(worker, &mut request, &effects, timeout);
+        let mut frames = None;
+        let result = self.drive_inner(worker, &mut request, &effects, timeout, &mut frames);
+        if let Some(frames) = frames {
+            frames.stop(worker)?;
+        }
         let result = match result {
             Err(error)
                 if !matches!(
@@ -97,6 +169,7 @@ impl Activation {
         request: &mut ActivationRequest,
         effects: &Arc<dyn TerminalEffects>,
         timeout: Duration,
+        frames: &mut Option<Frames>,
     ) -> Result<ActivationEnd> {
         if self.deadline_passed()? {
             return self.fail(
@@ -178,6 +251,13 @@ impl Activation {
             return Ok(ActivationEnd::Requeued);
         }
         let until = Instant::now() + timeout;
+        #[cfg(any(test, feature = "test-support"))]
+        let inline = worker.fixture_inline_recv();
+        #[cfg(not(any(test, feature = "test-support")))]
+        let inline = false;
+        if !inline {
+            *frames = Some(Frames::start(worker));
+        }
         let mut awaiting = Vec::new();
         let mut reported = BTreeSet::new();
         loop {
@@ -242,11 +322,13 @@ impl Activation {
                     }
                 }
             }
-            let message = match worker.recv(
-                until
-                    .saturating_duration_since(Instant::now())
-                    .min(Duration::from_millis(100)),
-            ) {
+            let wait = until
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(100));
+            let message = match frames
+                .as_mut()
+                .map_or_else(|| worker.recv(wait), |frames| frames.recv(wait))
+            {
                 Ok(message) => message,
                 Err(ChannelError::Timeout) => continue,
                 Err(_) => {

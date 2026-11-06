@@ -366,15 +366,18 @@ fn staged_saturation_disables_with_sqlite_only_notice_and_card() {
     use basal_host::{MockCatalog, mock::MockHost};
     use serde_json::json;
     let f = Fixture::new("disable");
-    let rt = Runtime::new(f.store.clone(),
-    Arc::new(MockHost::new()),
-    Arc::new(MockCatalog::standard()),
-    Arc::new(NoHooks),
-    None,
-    Config {
-        install_gate: InstallGate::Off,
-        ..Config::default()
-    },).expect("runtime startup");
+    let rt = Runtime::new(
+        f.store.clone(),
+        Arc::new(MockHost::new()),
+        Arc::new(MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        Config {
+            install_gate: InstallGate::Off,
+            ..Config::default()
+        },
+    )
+    .expect("runtime startup");
     let installed = rt.install(&InstallRequest { script: "return 1;".into(), author: "operator".into(), loop_override: false, manifest: json!({"id":"flow","version":1,"state_epoch":1,"purpose":"Saturation test","trigger":{"schedule":{"interval":"1m"}}}).to_string() }).unwrap();
     rt.approve("flow", 1, &installed.code_hash, "approve-flow")
         .unwrap();

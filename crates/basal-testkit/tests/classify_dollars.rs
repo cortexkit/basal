@@ -1,7 +1,9 @@
 //! Classifier op grants reserve dollars in the same transaction as the journal.
 
 mod common;
-use basal_core::{Clock, Durability, InstallError, InstallRequest, NoHooks, Runtime, Store};
+use basal_core::{
+    Boundary, Clock, Durability, Hooks, InstallError, InstallRequest, Runtime, Step, Store,
+};
 use basal_host::{
     CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, TransportError,
 };
@@ -13,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 struct Provider {
-    store: Arc<Store>,
+    synced: Arc<Mutex<std::collections::BTreeMap<(String, u64), String>>>,
     calls: Mutex<Vec<CallRequest>>,
     outcome: Mutex<HostOutcome>,
     lose_reply: AtomicBool,
@@ -25,21 +27,15 @@ impl Host for Provider {
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
         assert_eq!(request.flow_id, "flow-test");
         assert!(request.flow_version.is_some());
-        self.store
-            .read(|c| {
-                let saved: String = c.query_row(
-                    "SELECT request FROM journal_payloads WHERE run_id=?1 AND position=?2",
-                    rusqlite::params![request.run_id, request.position],
-                    |r| r.get(0),
-                )?;
-                assert_eq!(
-                    saved,
-                    request.args.as_str(),
-                    "clamped request commits before sending"
-                );
-                Ok(())
-            })
-            .unwrap();
+        assert_eq!(
+            self.synced
+                .lock()
+                .unwrap()
+                .get(&(request.run_id.clone(), request.position))
+                .map(String::as_str),
+            Some(request.args.as_str()),
+            "clamped request must be synced before sending"
+        );
         self.calls.lock().unwrap().push(request.clone());
         if self.lose_reply.load(Ordering::SeqCst) {
             return Err(TransportError::maybe_sent(
@@ -58,6 +54,30 @@ impl Host for Provider {
     fn attach(&self, _: Arc<dyn CompletionSink>) {}
 }
 
+struct CaptureSynced(Arc<Mutex<std::collections::BTreeMap<(String, u64), String>>>);
+impl Hooks for CaptureSynced {
+    fn at(&self, _: &str, _: &Boundary) -> Step {
+        Step::Continue
+    }
+    fn at_run(
+        &self,
+        run: &str,
+        _: &str,
+        boundary: &Boundary,
+        _: Option<u64>,
+        state: &basal_core::run_records::State,
+    ) -> Step {
+        if let Boundary::DriverSynced { position } = boundary {
+            let intent = state.calls[position].intent.as_ref().unwrap();
+            self.0.lock().unwrap().insert(
+                (run.into(), *position),
+                intent.frozen_request.as_str().into(),
+            );
+        }
+        Step::Continue
+    }
+}
+
 fn fixture(cap: f64) -> (World, Runtime, Arc<Provider>, Value, Clock) {
     let world = World::new("classify-dollars");
     world.catalog.set_tool_contract(
@@ -68,7 +88,7 @@ fn fixture(cap: f64) -> (World, Runtime, Arc<Provider>, Value, Clock) {
     );
     let store = Arc::new(Store::open(world.store_path(), Durability::throwaway()).unwrap());
     let provider = Arc::new(Provider {
-        store: store.clone(),
+        synced: Default::default(),
         calls: Mutex::new(vec![]),
         lose_reply: AtomicBool::new(false),
         outcome: Mutex::new(HostOutcome::fulfilled(
@@ -76,15 +96,22 @@ fn fixture(cap: f64) -> (World, Runtime, Arc<Provider>, Value, Clock) {
         )),
     });
     let clock = Clock::manual(100);
-    let rt = { let runtime=Runtime::new(store,
-    provider.clone(),
-    Arc::new(world.catalog.clone()),
-    Arc::new(NoHooks),
-    Some(world.source.clone()),
-    basal_core::Config {
-        clock: clock.clone(),
-        ..config()
-    },).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
+    let rt = {
+        let runtime = Runtime::new(
+            store,
+            provider.clone(),
+            Arc::new(world.catalog.clone()),
+            Arc::new(CaptureSynced(provider.synced.clone())),
+            Some(world.source.clone()),
+            basal_core::Config {
+                clock: clock.clone(),
+                ..config()
+            },
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
+    };
     rt.recover().unwrap();
     let mut m = test_manifest();
     m["model_cost_usd"] = json!({"per_run":cap,"usd":cap,"window":"1h"});
@@ -110,9 +137,7 @@ fn run(world: &World, rt: &Runtime, m: &Value, ceiling: Option<f64>, trigger: &s
 }
 
 fn spent(rt: &Runtime, id: &str) -> f64 {
-    rt.store()
-        .read(|c| basal_core::classify_cost::spent(c, "flow", id))
-        .unwrap()
+    rt.classify_cost_spent(id).unwrap()
 }
 
 #[test]

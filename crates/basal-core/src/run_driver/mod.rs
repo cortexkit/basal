@@ -60,8 +60,15 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     /// before dispatch. It checks runtime stopping and revocation using only
     /// control-plane state, without a host call.
     fn dispatch_check(&self, tx: &rusqlite::Transaction<'_>, run: &LiveRun) -> Result<()>;
-    fn removed(&self,_run:&LiveRun)->Result<bool>{Ok(false)}
+    fn removed(&self, _run: &LiveRun) -> Result<bool> {
+        Ok(false)
+    }
     fn now_ms(&self) -> i64;
+    /// Shutdown kills worker channels without turning their closure into a
+    /// failed activation or publishing a late host reply.
+    fn stopping(&self) -> bool {
+        false
+    }
     fn saturated(&self, _: &rusqlite::Transaction<'_>, _: &LiveRun, _: &str) -> Result<()> {
         Ok(())
     }
@@ -112,6 +119,8 @@ pub enum Reply {
     Completed(Arrival),
     Deferred(crate::run_records::Deferred),
     Unknown(String),
+    ScopeCut,
+    Measured(Arrival, crate::run_records::UsageReport),
 }
 
 pub struct Driver {
@@ -177,8 +186,8 @@ fn record_revoked(
             cause: value.as_str().to_owned(),
             audit_at,
             proven_unsent: true,
-                    refund_dispatch: true,
-                    attempt: None,
+            refund_dispatch: true,
+            attempt: None,
         }),
     )?;
     records.append(
@@ -556,17 +565,36 @@ impl Activation {
                     })
             }
             Prepared::Sync { value, clock_ms } => {
-                let position=call.position;
-                let reply=self.run.activate(self.generation,|a| {
-                    let clock_ms=clock_ms.map(|sample|a.records().state().calls.values().filter_map(|c|c.sync.as_ref().and_then(|s|s.clock_ms)).max().unwrap_or(sample).max(sample));
-                    let value=clock_ms.map_or(value,|ms|JsonText::new(ms.to_string()).expect("integer JSON"));
-                    let outcome=a.records().reply_sync(self.generation,call,value,clock_ms)?;
-                    self.driver.at_run(&self.live,Boundary::DriverReleased{position},Some(position),a.records().state())?;
+                let position = call.position;
+                let reply = self.run.activate(self.generation, |a| {
+                    let clock_ms = clock_ms.map(|sample| {
+                        a.records()
+                            .state()
+                            .calls
+                            .values()
+                            .filter_map(|c| c.sync.as_ref().and_then(|s| s.clock_ms))
+                            .max()
+                            .unwrap_or(sample)
+                            .max(sample)
+                    });
+                    let value = clock_ms.map_or(value, |ms| {
+                        JsonText::new(ms.to_string()).expect("integer JSON")
+                    });
+                    let outcome = a
+                        .records()
+                        .reply_sync(self.generation, call, value, clock_ms)?;
+                    self.driver.at_run(
+                        &self.live,
+                        Boundary::DriverReleased { position },
+                        Some(position),
+                        a.records().state(),
+                    )?;
                     Ok(Issued::Reply(outcome))
                 })?;
-                self.driver.at(&self.live.run_id,Boundary::DriverReleased{position})?;
+                self.driver
+                    .at(&self.live.run_id, Boundary::DriverReleased { position })?;
                 Ok(reply)
-            },
+            }
             Prepared::Local { value, effect } => {
                 self.local(
                     call,
@@ -612,6 +640,23 @@ impl Activation {
                 records.append(
                     self.generation,
                     Body::Issued(CallIdentity::new(call, class)),
+                )?;
+            }
+            if settlement == Settlement::Rejected
+                && serde_json::from_str::<serde_json::Value>(value.as_str())
+                    .ok()
+                    .is_some_and(|v| {
+                        matches!(
+                            v["code"].as_str(),
+                            Some("no_flow_scope" | "target_flow_unsupported")
+                        )
+                    })
+            {
+                records.append(
+                    self.generation,
+                    Body::ScopeCut {
+                        deadline_exempt: true,
+                    },
                 )?;
             }
             let arrival = Arrival {
@@ -780,7 +825,9 @@ impl Activation {
                 .deadline_at;
             self.driver.at_run(
                 &self.live,
-                Boundary::DriverAppended { position: intent.call.position },
+                Boundary::DriverAppended {
+                    position: intent.call.position,
+                },
                 Some(intent.call.position),
                 a.records().state(),
             )?;
@@ -793,18 +840,29 @@ impl Activation {
         let Some((entrant, cut, deadline_at)) = authorized else {
             return Ok(None);
         };
-        self.driver
-            .at(&self.live.run_id, Boundary::DriverAppended { position: intent.call.position })?;
+        self.driver.at(
+            &self.live.run_id,
+            Boundary::DriverAppended {
+                position: intent.call.position,
+            },
+        )?;
         entrant.finish(|records| {
             records.sync_through(cut)?;
             self.driver.at_run(
                 &self.live,
-                Boundary::DriverSynced { position: intent.call.position },
+                Boundary::DriverSynced {
+                    position: intent.call.position,
+                },
                 Some(intent.call.position),
                 records.state(),
             )
         })?;
-        self.driver.at(&self.live.run_id, Boundary::DriverSynced { position: intent.call.position })?;
+        self.driver.at(
+            &self.live.run_id,
+            Boundary::DriverSynced {
+                position: intent.call.position,
+            },
+        )?;
         Ok(Some(Dispatch {
             driver: self.driver.clone(),
             live: self.live.clone(),
@@ -954,12 +1012,12 @@ impl Activation {
             if call.unknown.is_some() {
                 continue;
             }
-            if !intent.call.class.safe_to_resend()
-                && !call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
-                && !call
-                    .resolutions
-                    .last()
-                    .is_some_and(|r| r.choice == "not_applied" && r.attempts == intent.attempts)
+            if call.scope_cut
+                || (!intent.call.class.safe_to_resend()
+                    && !call.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                    && !call.resolutions.last().is_some_and(|r| {
+                        r.choice == "not_applied" && r.attempts == intent.attempts
+                    }))
             {
                 self.run.activate(self.generation, |a| {
                     if a.is_dispatching(intent.call.position)
@@ -972,7 +1030,12 @@ impl Activation {
                             self.generation,
                             Body::Unknown {
                                 position: call.identity.position,
-                                reason: "basal_restarted".into(),
+                                reason: if call.scope_cut {
+                                    "connection_lost"
+                                } else {
+                                    "basal_restarted"
+                                }
+                                .into(),
                             },
                         )
                         .map(|_| ())
@@ -984,6 +1047,20 @@ impl Activation {
                 .attempts
                 .checked_add(1)
                 .ok_or_else(|| CoreError::Corrupt("attempts exhausted".into()))?;
+            if matches!(retry.call.kind, basal_proto::CallKind::OpFor { .. }) {
+                // User arguments, target, approved version, deadline and key
+                // stay frozen. This transport control rechecks that core still
+                // includes the target in the flow's audience on replay.
+                let mut envelope: serde_json::Value =
+                    serde_json::from_str(retry.frozen_request.as_str())
+                        .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                envelope
+                    .as_object_mut()
+                    .ok_or_else(|| CoreError::Corrupt("target envelope is not an object".into()))?
+                    .insert("replay".into(), serde_json::Value::Bool(true));
+                retry.frozen_request = JsonText::new(envelope.to_string())
+                    .map_err(|e| CoreError::Invalid(e.to_string()))?;
+            }
             retry.audit_at = self.driver.services.now_ms();
             retry.dispatch_count_window = Some(crate::run_records::DispatchCount {
                 window_start: retry
@@ -1006,13 +1083,29 @@ impl Activation {
         Ok(dispatches)
     }
 
-        pub fn release(&self,awaited:&[u64])->Result<Option<Outcome>> {
-        let outcome=self.run.activate(self.generation,|a| {
-            let outcome=a.records().release_next(self.generation,awaited)?;
-            if let Some(released)=&outcome {self.driver.at_run(&self.live,Boundary::DriverReleased{position:released.position},Some(released.position),a.records().state())?;}
+    pub fn release(&self, awaited: &[u64]) -> Result<Option<Outcome>> {
+        let outcome = self.run.activate(self.generation, |a| {
+            let outcome = a.records().release_next(self.generation, awaited)?;
+            if let Some(released) = &outcome {
+                self.driver.at_run(
+                    &self.live,
+                    Boundary::DriverReleased {
+                        position: released.position,
+                    },
+                    Some(released.position),
+                    a.records().state(),
+                )?;
+            }
             Ok(outcome)
         })?;
-        if let Some(released)=&outcome {self.driver.at(&self.live.run_id,Boundary::DriverReleased{position:released.position})?;}
+        if let Some(released) = &outcome {
+            self.driver.at(
+                &self.live.run_id,
+                Boundary::DriverReleased {
+                    position: released.position,
+                },
+            )?;
+        }
         Ok(outcome)
     }
 
@@ -1061,6 +1154,9 @@ impl Activation {
     }
 
     pub fn requeue(&self, broken: bool) -> Result<()> {
+        if self.driver.services.stopping() {
+            return Err(CoreError::Cut);
+        }
         self.run.activate(self.generation, |a| {
             let broken = a
                 .records()
@@ -1075,11 +1171,20 @@ impl Activation {
     }
 
     pub fn finish(&self, mut terminal: Terminal) -> Result<()> {
+        if self.driver.services.stopping() {
+            return Err(CoreError::Cut);
+        }
         if terminal.live != self.live {
             return Err(CoreError::Invalid("terminal admission changed".into()));
         }
-        if self.driver.services.removed(&self.live)? {terminal.state=crate::RunState::Cancelled;terminal.error_kind=Some("removed".into());terminal.error_detail=Some("the flow instance was removed".into());terminal.result=None;}
-        self.driver.at(&self.live.run_id,Boundary::DriverBeforeClose)?;
+        if self.driver.services.removed(&self.live)? {
+            terminal.state = crate::RunState::Cancelled;
+            terminal.error_kind = Some("removed".into());
+            terminal.error_detail = Some("the flow instance was removed".into());
+            terminal.result = None;
+        }
+        self.driver
+            .at(&self.live.run_id, Boundary::DriverBeforeClose)?;
         self.driver.registry.close_owned(
             &self.run,
             self.generation,
@@ -1116,7 +1221,15 @@ impl Dispatch {
                                 .is_none_or(|c| c.prior_maybe_sent()))
                         })?;
                     if uncertain {
-                        let reason=self.entrant.inspect(|_,records|Ok(records.state().calls.get(&self.intent.call.position).map_or(basal_host::UnknownReason::BasalRestarted,|call|call.ambiguous_reason())))?;
+                        let reason = self.entrant.inspect(|_, records| {
+                            Ok(records
+                                .state()
+                                .calls
+                                .get(&self.intent.call.position)
+                                .map_or(basal_host::UnknownReason::BasalRestarted, |call| {
+                                    call.ambiguous_reason()
+                                }))
+                        })?;
                         Reply::Unknown(reason.as_str().into())
                     } else {
                         Reply::Revoked(reason)
@@ -1131,8 +1244,8 @@ impl Dispatch {
                 cause: "run deadline elapsed before dispatch".into(),
                 audit_at: self.intent.audit_at,
                 proven_unsent: true,
-                    refund_dispatch: true,
-                    attempt: None,
+                refund_dispatch: true,
+                attempt: None,
             })
         } else {
             match self.driver.services.dispatch(&self.live, &self.intent) {
@@ -1141,12 +1254,33 @@ impl Dispatch {
                 Err(error) => Reply::Unknown(error.to_string()),
             }
         };
-        self.driver
-            .at(&self.live.run_id, Boundary::DriverDispatched { position: self.intent.call.position })?;
+        let usage_report = match &reply {
+            Reply::Measured(_, report) => Some(*report),
+            _ => None,
+        };
+        if matches!(reply, Reply::ScopeCut) {
+            self.entrant.finish(|records| {
+                records.append(
+                    self.generation,
+                    Body::CallScopeCut {
+                        position: self.intent.call.position,
+                    },
+                )?;
+                Ok(())
+            })?;
+        }
+        self.driver.at(
+            &self.live.run_id,
+            Boundary::DriverDispatched {
+                position: self.intent.call.position,
+            },
+        )?;
         self.entrant.inspect(|_, records| {
             self.driver.at_run(
                 &self.live,
-                Boundary::DriverDispatched { position: self.intent.call.position },
+                Boundary::DriverDispatched {
+                    position: self.intent.call.position,
+                },
                 Some(self.intent.call.position),
                 records.state(),
             )
@@ -1181,8 +1315,8 @@ impl Dispatch {
                                 .map_err(|e| CoreError::Invalid(e.to_string()))?,
                             audit_at: self.intent.audit_at,
                             proven_unsent: true,
-                    refund_dispatch: true,
-                    attempt: None,
+                            refund_dispatch: true,
+                            attempt: None,
                         }),
                     )?;
                     if refusal.readiness() {
@@ -1231,10 +1365,14 @@ impl Dispatch {
                     handle = Some(h);
                     committed = true;
                 }
-                Reply::Completed(mut arrival) => {
+                Reply::Completed(mut arrival) | Reply::Measured(mut arrival, _) => {
                     arrival.position = position;
                     arrival.arrival_seq = records.state().next_arrival_seq;
                     arrival.durability.immediate_completion = true;
+                    if let Some(report) = usage_report {
+                        records
+                            .append(self.generation, Body::MeasuredUsage { position, report })?;
+                    }
                     records.append(self.generation, Body::Arrived(arrival))?;
                     committed = true;
                     arrived = true;
@@ -1242,6 +1380,15 @@ impl Dispatch {
                 Reply::Deferred(mut deferred) => {
                     deferred.position = position;
                     records.append(self.generation, Body::Deferred(deferred))?;
+                }
+                Reply::ScopeCut => {
+                    records.append(
+                        self.generation,
+                        Body::Unknown {
+                            position,
+                            reason: "connection_lost".into(),
+                        },
+                    )?;
                 }
                 Reply::Unknown(reason) => {
                     records.append(self.generation, Body::Unknown { position, reason })?;
@@ -1261,7 +1408,8 @@ impl Dispatch {
             Ok(((), accounting::rows(records.state(), &self.driver.budgets)?))
         })?;
         if committed {
-            self.driver.at(&self.live.run_id, Boundary::HostArrived { position })?;
+            self.driver
+                .at(&self.live.run_id, Boundary::HostArrived { position })?;
             if refused {
                 self.driver.services.refusal_committed(&self.live, position);
             } else {

@@ -576,3 +576,36 @@ fn released_broca_outcome_redelivers_as_duplicate_then_host_records_acknowledgem
         })
         .unwrap();
 }
+
+#[test]
+fn migrated_broca_deletion_cleans_waits_and_wakes_after_preserving_them_during_rebuild() {
+    let fixture = Fixture::new();
+    fixture.migration(Arc::new(NoHooks)).run().unwrap();
+    let store = fixture.store();
+    let counts = || {
+        store
+            .read(|c| {
+                Ok((
+                    c.query_row(
+                        "SELECT COUNT(*) FROM broca_waits WHERE send_id='key:live'",
+                        [],
+                        |r| r.get::<_, u64>(0),
+                    )?,
+                    c.query_row(
+                        "SELECT COUNT(*) FROM broca_wakes WHERE send_id='key:live'",
+                        [],
+                        |r| r.get::<_, u64>(0),
+                    )?,
+                ))
+            })
+            .unwrap()
+    };
+    assert_eq!(counts(), (1, 1));
+    store
+        .write(|tx| {
+            tx.execute("DELETE FROM broca_calls WHERE send_id='key:live'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(counts(), (0, 0));
+}

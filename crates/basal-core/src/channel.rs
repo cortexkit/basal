@@ -44,6 +44,12 @@ pub trait WorkerChannel: Send {
     /// worker. Each frame goes to whichever reader takes it first, so a caller
     /// that splits off a receiver reads only through that receiver.
     fn receiver(&mut self) -> Box<dyn WorkerReceiver>;
+    /// Scripted in-process peers may couple recv to send without a split pipe.
+    /// Real workers always use the split receiver so the parent owns deadlines.
+    #[cfg(any(test, feature = "test-support"))]
+    fn fixture_inline_recv(&self) -> bool {
+        false
+    }
     /// Ends the worker at once. Any frame it had in flight is lost, and a
     /// receive blocked on a split-off [`WorkerReceiver`] returns an error.
     fn kill(&mut self);

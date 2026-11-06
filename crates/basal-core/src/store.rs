@@ -80,6 +80,7 @@ pub struct Store {
     cut: AtomicBool,
     store_id: String,
     clock: Mutex<crate::clock::Clock>,
+    fresh: bool,
 }
 
 fn backend(e: StoreError) -> CoreError {
@@ -128,6 +129,7 @@ impl Store {
             cut: AtomicBool::new(false),
             store_id: String::new(),
             clock: Mutex::new(crate::clock::Clock::system()),
+            fresh: false,
         };
         let fresh = store.read(|c| {
             Ok(c.query_row(
@@ -136,6 +138,7 @@ impl Store {
                 |r| r.get::<_, bool>(0),
             )?)
         })?;
+        store.fresh = fresh;
         if fresh {
             crate::run_cutover::initialize_pages(&store)?;
         }
@@ -179,6 +182,10 @@ impl Store {
 
     pub fn store_id(&self) -> &str {
         &self.store_id
+    }
+
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.fresh
     }
 
     /// The held SQLite writer lease, also carried by run-log segment headers.

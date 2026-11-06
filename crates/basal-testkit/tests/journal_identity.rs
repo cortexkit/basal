@@ -36,13 +36,10 @@ fn divergence_fails_the_run_as_nondeterminism() {
     let rt = runtime(&world);
     let run_id = suspended_run(&world, &rt);
     let other = ArgsDigest::of(&basal_proto::JsonText::new("{\"n\":2}").expect("small"));
-    let hex: String = other.0.iter().map(|b| format!("{b:02x}")).collect();
-    sql(
-        &rt,
-        &format!(
-            "UPDATE journal SET args_digest = x'{hex}' WHERE run_id = '{run_id}' AND position = 0"
-        ),
-    );
+    rt.fixture_update_state(&run_id, |state| {
+        state.calls.get_mut(&0).unwrap().identity.args_digest = other
+    })
+    .unwrap();
     let run = finish(&rt, &world, &run_id);
     assert_eq!(run.state, RunState::Failed, "{run:#?}");
     assert_eq!(
@@ -69,7 +66,7 @@ fn code_hash_mismatch_is_engine_mismatch_without_replay() {
     sql(
         &rt,
         &format!(
-            "UPDATE run_snapshots SET script = script || ' ' WHERE snapshot_id = (SELECT snapshot_id FROM runs WHERE run_id = '{run_id}')"
+            "UPDATE run_snapshots SET script = script || ' ' WHERE snapshot_id = (SELECT snapshot_id FROM run_identities WHERE run_id = '{run_id}')"
         ),
     );
     let run = finish(&rt, &world, &run_id);
@@ -95,12 +92,19 @@ fn fingerprint_mismatch_is_engine_mismatch_without_replay() {
     other.engine_override = Some("quickjs-ng 9.9.9 via rquickjs 9.9.9".into());
     let other = Arc::new(other);
     let store = Arc::new(Store::open(world.store_path(), world.durability).expect("store"));
-    let rt = { let runtime=Runtime::new(store,
-    Arc::new(world.mock.clone()),
-    Arc::new(world.catalog.clone()),
-    Arc::new(NoHooks),
-    Some(other.clone()),
-    config(),).expect("runtime startup"); runtime.retain_detail_for_test().expect("rig inspection"); runtime };
+    let rt = {
+        let runtime = Runtime::new(
+            store,
+            Arc::new(world.mock.clone()),
+            Arc::new(world.catalog.clone()),
+            Arc::new(NoHooks),
+            Some(other.clone()),
+            config(),
+        )
+        .expect("runtime startup");
+        runtime.retain_detail_for_test().expect("rig inspection");
+        runtime
+    };
     let end = rt.resume(&run_id).expect("activation");
     assert!(
         matches!(end, ActivationEnd::EngineMismatch { .. }),

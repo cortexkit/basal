@@ -57,6 +57,11 @@ pub(crate) fn load(
     let state = snapshot
         .cloned()
         .unwrap_or_else(|| State::new(live.as_ref().map_or(0, |l| l.admitted_at)));
+    let unknown: Vec<_> = state.calls.values().filter(|c| c.arrival.is_none() && c.unknown.is_some()).take(5).map(|call| {
+        let reason = call.unknown.as_deref().and_then(crate::run_records::parse_unknown_reason);
+        let code = if reason == Some(basal_host::UnknownReason::ProviderLostRun) { "unknown_run" } else { reason.map_or("unknown", |r| r.as_str()) };
+        serde_json::json!({"position":call.identity.position,"code":code,"reason":reason.map(|r| r.as_str()),"handle":call.accepted.as_ref().map(|h| h.chars().take(256).collect::<String>())})
+    }).collect();
     let (trigger_id, trigger, admitted_at, admit_seq) = if let Some(h) = &history {
         (
             h.trigger_id.clone(),
@@ -131,8 +136,14 @@ pub(crate) fn load(
         error_kind: history
             .as_ref()
             .and_then(|h| h.error_kind.clone())
-            .or_else(|| history_lost.then(|| "history_lost".into())),
-        error_detail: history.as_ref().and_then(|h| h.error_detail.clone()),
+            .or_else(|| history_lost.then(|| "history_lost".into()))
+            .or_else(|| (!unknown.is_empty()).then(|| "unknown_outcome".into())),
+        error_detail: history
+            .as_ref()
+            .and_then(|h| h.error_detail.clone())
+            .or_else(|| {
+                (!unknown.is_empty()).then(|| serde_json::json!({"positions":unknown}).to_string())
+            }),
         broken: history
             .as_ref()
             .map_or(u32::try_from(state.broken).unwrap_or(u32::MAX), |h| {
@@ -192,7 +203,7 @@ pub(crate) fn call(call: &CallState) -> Result<CallRow> {
         handle: call.accepted.clone(),
         outcome,
         request: intent.map(|i| i.frozen_request.clone()),
-        scope_cut: false,
+        scope_cut: call.scope_cut,
         payload_pruned: false,
     })
 }
@@ -251,10 +262,34 @@ impl crate::Runtime {
                                 }) =>
                             {
                                 let measured = arrival.usage.as_ref().expect("matched usage");
-                                usage.input_tokens =
-                                    usage.input_tokens.saturating_add(measured.input_tokens);
-                                usage.output_tokens =
-                                    usage.output_tokens.saturating_add(measured.output_tokens);
+                                let report = call.and_then(|c| c.usage_report).unwrap_or(
+                                    crate::run_records::UsageReport {
+                                        input_tokens: Some(measured.input_tokens),
+                                        cache_write_tokens: None,
+                                        output_tokens: Some(measured.output_tokens),
+                                        cached_input_tokens: None,
+                                    },
+                                );
+                                usage.input_tokens = usage
+                                    .input_tokens
+                                    .saturating_add(report.input_tokens.unwrap_or(0));
+                                usage.cache_write_tokens = usage
+                                    .cache_write_tokens
+                                    .saturating_add(report.cache_write_tokens.unwrap_or(0));
+                                usage.output_tokens = usage
+                                    .output_tokens
+                                    .saturating_add(report.output_tokens.unwrap_or(0));
+                                usage.cached_input_tokens = usage
+                                    .cached_input_tokens
+                                    .saturating_add(report.cached_input_tokens.unwrap_or(0));
+                                let known = report
+                                    .input_tokens
+                                    .unwrap_or(0)
+                                    .saturating_add(report.cache_write_tokens.unwrap_or(0))
+                                    .saturating_add(report.output_tokens.unwrap_or(0));
+                                usage.unreported_tokens = usage
+                                    .unreported_tokens
+                                    .saturating_add(row.amount.saturating_sub(known));
                             }
                             Some(arrival) if arrival.usage.is_none() => {
                                 usage.unreported_tokens =

@@ -157,7 +157,7 @@ impl RecoveredHosts {
         budgets_for(&self.store, id, &self.budgets)
     }
 
-    fn arrived(&self, run_id: &str, position:u64) -> Result<()> {
+    fn arrived(&self, run_id: &str, position: u64) -> Result<()> {
         crate::run_store::lock_order::assert_lock_free();
         if self.hooks.at(run_id, &Boundary::HostArrived { position }) == Step::Crash {
             self.store.cut();
@@ -272,10 +272,22 @@ impl RecoveredHosts {
                                     (crate::classify_cost::charge(
                                         r.cost_micros as f64 / 1_000_000.0,
                                         Some(&value),
-                                        None,
+                                        crate::classify_cost::refusal_code(
+                                            outcome.settlement,
+                                            &value,
+                                        ),
                                     ) * 1_000_000.0)
                                         .ceil() as u64
                                 });
+                            if let Some(report) = outcome.usage {
+                                records.append(
+                                    generation,
+                                    Body::MeasuredUsage {
+                                        position,
+                                        report: report.into(),
+                                    },
+                                )?;
+                            }
                             records.append(
                                 generation,
                                 Body::Arrived(Arrival {
@@ -341,7 +353,7 @@ impl RecoveredHosts {
                         self.quarantine(run_id, position, handle, outcome, reason)?;
                     }
                     if ack == CompletionAck::Accepted {
-                        self.arrived(run_id,position)?;
+                        self.arrived(run_id, position)?;
                     }
                     return Ok(ack);
                 }
@@ -392,7 +404,7 @@ impl RecoveredHosts {
                             run_id,
                             position,
                             Some(&value),
-                            None,
+                            crate::classify_cost::refusal_code(outcome.settlement, &value),
                         )?;
                     } else {
                         crate::tokens::settle(
@@ -429,7 +441,7 @@ impl RecoveredHosts {
         })?;
         Ok(match result {
             SettleResult::Settled => {
-                self.arrived(run_id,position)?;
+                self.arrived(run_id, position)?;
                 CompletionAck::Accepted
             }
             SettleResult::Duplicate => CompletionAck::Duplicate,

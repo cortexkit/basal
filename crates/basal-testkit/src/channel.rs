@@ -85,13 +85,13 @@ impl WorkerChannel for ProcessChannel {
     }
 
     fn kill(&mut self) {
+        self.process.kill();
         let _ = self.counts.live_pid.compare_exchange(
             self.process.pid(),
             0,
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
-        self.process.kill();
     }
 }
 

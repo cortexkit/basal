@@ -1159,15 +1159,9 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             let reads = fake.calls("agent.list").len();
             let retry: i64 = module
                 .rt
-                .store()
-                .read(|c| {
-                    Ok(c.query_row(
-                        "SELECT retry_not_before FROM journal WHERE run_id=?1",
-                        [&run],
-                        |r| r.get(0),
-                    )?)
-                })
-                .unwrap();
+                .fixture_deferral(&run, 0)
+                .unwrap()
+                .retry_not_before;
             clock.set(retry);
             module.engine.run_until_idle(50).unwrap();
             assert_eq!(fake.calls("agent.list").len(), reads);
@@ -1617,7 +1611,11 @@ fn model_fixture(
             selector,
             ..common::Options::with_worker()
         },
-        |_shared,recovered| snapshots.bind_recovered(&recovered).map_err(|e| e.to_string()),
+        |_shared, recovered| {
+            snapshots
+                .bind_recovered(&recovered)
+                .map_err(|e| e.to_string())
+        },
     );
     (f, model, fake, snapshots)
 }
@@ -2034,7 +2032,16 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
                 consent: Arc::new(CoreConsent::new(wire.clone())),
                 hooks,
             };
-            let module = Module::start_with_store(config.clone(),dependencies,Arc::new(ProcessSpawner::new(&pool)),|shared,_recovered| snapshots.bind_recovered(&_recovered).map_err(|e| e.to_string()))
+            let module = Module::start_with_store(
+                config.clone(),
+                dependencies,
+                Arc::new(ProcessSpawner::new(&pool)),
+                |_shared, _recovered| {
+                    snapshots
+                        .bind_recovered(&_recovered)
+                        .map_err(|e| e.to_string())
+                },
+            )
             .unwrap();
             (module, model, snapshots)
         };

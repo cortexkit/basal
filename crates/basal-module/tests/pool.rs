@@ -705,3 +705,37 @@ fn a_wait_deadline_stops_and_reaps_its_workers() {
         "timed out waiting for a deliberately stalled pool fixture"
     );
 }
+
+#[test]
+fn killed_worker_releases_pool_capacity_while_its_activation_lease_is_still_held() {
+    use basal_core::WorkerChannel;
+    let mut config = pool_config(&Options::default());
+    config.warm_spares = 0;
+    config.max_workers = 1;
+    let clock = basal_core::Clock::manual(T0);
+    let pool = Pool::new(
+        config.clone(),
+        Arc::new(ProcessSpawner::new(&config)),
+        clock,
+        Arc::default(),
+    );
+    let mut first = pool.acquire(Binding::Flow("closing".into())).unwrap();
+    assert_eq!(pool.stats().busy, 1);
+    first.kill();
+    assert_eq!(
+        pool.stats().busy,
+        0,
+        "a closing activation must not retain its dead worker's slot"
+    );
+    let second = pool.acquire(Binding::Flow("independent".into())).unwrap();
+    assert_eq!(pool.stats().busy, 1);
+    drop(first);
+    assert_eq!(
+        pool.stats().busy,
+        1,
+        "dropping the old lease must not release another worker"
+    );
+    drop(second);
+    assert_eq!(pool.stats().busy, 0);
+    pool.stop();
+}

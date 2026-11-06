@@ -117,8 +117,10 @@ fn serve() -> ExitCode {
     let models = Arc::new(Mutex::new(None::<Models>));
     let scope_connection = basal_module::scope_connection::ScopeConnection::default();
     let host_scope_connection = scope_connection.clone();
-    let selector=Arc::new(basal_host::selector::RoutingSelector::new(transport.clone()));
-    let configured_selector=selector.clone();
+    let selector = Arc::new(basal_host::selector::RoutingSelector::new(
+        transport.clone(),
+    ));
+    let configured_selector = selector.clone();
     let built_models = models.clone();
     let initialized_models = models.clone();
     let ready_models = models;
@@ -153,7 +155,7 @@ fn serve() -> ExitCode {
                 SubcCatalog::new(transport.clone())
                     .with_daemon_capabilities(catalog_capabilities.clone()),
             );
-            let selector=selector.clone();
+            let selector = selector.clone();
             let store = Arc::new(basal_core::broca::BrocaStore::default());
             let wake = basal_host::broca::subc::PollWake::new();
             let broca_transport =
@@ -172,8 +174,8 @@ fn serve() -> ExitCode {
                 selector.clone(),
             ));
             *built_models.lock().unwrap_or_else(|p| p.into_inner()) = Some(Models {
-                store:Arc::downgrade(&store),
-                host:Arc::downgrade(&model_host),
+                store: Arc::downgrade(&store),
+                host: Arc::downgrade(&model_host),
                 wake,
             });
             Hosts {
@@ -207,7 +209,12 @@ fn serve() -> ExitCode {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
         {
-            models.store.upgrade().ok_or_else(||"model store was dropped before binding".to_owned())?.bind_recovered(&recovered).map_err(|e|e.to_string())?;
+            models
+                .store
+                .upgrade()
+                .ok_or_else(|| "model store was dropped before binding".to_owned())?
+                .bind_recovered(&recovered)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }))
@@ -217,8 +224,9 @@ fn serve() -> ExitCode {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
+            && let Some(host) = models.host.upgrade()
         {
-            if let Some(host)=models.host.upgrade(){models.wake.start(&host);}
+            models.wake.start(&host);
         }
     }));
     match run(handler, scope_connection) {

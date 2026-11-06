@@ -178,18 +178,13 @@ fn core_flow_scope_refusal_reaches_the_script_whole_and_is_never_retried() {
         row.outcome.as_ref().unwrap().settlement,
         Settlement::Rejected
     );
-    let retry: Option<i64> = f
+    let retry = f
         .module
         .rt
-        .store()
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT retry_not_before FROM journal WHERE run_id=?1",
-                [run],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
+        .fixture_call_state(run, 0)
+        .unwrap()
+        .deferred
+        .map(|d| d.retry_not_before);
     assert_eq!(retry, None);
 
     // Past the longest deferral backoff (a minute), and before the flow's

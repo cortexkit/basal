@@ -106,7 +106,8 @@ fn module_projections_read_a_real_log_backed_flow() {
         .store()
         .read(|c| {
             assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get::<_, u64>(0))?,
+                c.query_row("SELECT COUNT(*) FROM run_identities", [], |r| r
+                    .get::<_, u64>(0))?,
                 0
             );
             Ok(())

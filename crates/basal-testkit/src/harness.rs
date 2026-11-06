@@ -217,11 +217,15 @@ impl Point {
 pub type Action = Box<dyn Fn(&str, &Boundary) + Send + Sync>;
 
 /// The closed run-log boundaries have no delivery-order fields to normalise.
-pub fn point_name(boundary:&Boundary)->String {format!("{boundary:?}")}
+pub fn point_name(boundary: &Boundary) -> String {
+    format!("{boundary:?}")
+}
 
 /// Worker-message timing points were retired; no remaining boundary gets a
 /// blanket exemption from the crash campaign's reached-point assertion.
-pub fn is_repeat_prone(_point:&Point)->bool {false}
+pub fn is_repeat_prone(_point: &Point) -> bool {
+    false
+}
 
 /// Records every boundary passed, and crashes (or runs an action) at one.
 #[derive(Default)]
@@ -386,13 +390,17 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
             *per_call.entry(*p).or_insert(0) += 1;
         }
     }
-    let audit: BTreeMap<u64,String>=rt.fixture_call_identities(run_id)?.into_iter().map(|row|(row.position,row.outcome)).collect();
+    let audit: BTreeMap<u64, String> = rt
+        .fixture_call_identities(run_id)?
+        .into_iter()
+        .map(|row| (row.position, row.outcome))
+        .collect();
     let (audit_rows, kv, tokens) = rt.store().read(|c| {
         // Count independently persisted rig identities for the recovered prefix;
         // a discarded lazy tail is not part of the run's replayable call set.
         let rows: i64 = c.query_row(
             "SELECT COUNT(*) FROM rig_calls WHERE run_id=?1 AND position<?2",
-            rusqlite::params![run_id,calls.len() as i64],
+            rusqlite::params![run_id, calls.len() as i64],
             |r| r.get(0),
         )?;
         let mut stmt =
@@ -502,16 +510,23 @@ impl World {
         let store = Arc::new(Store::open(self.store_path(), self.durability)?);
         // Constructor crashes have their own migration/recovery matrix; this
         // harness starts its script-boundary campaign after initial cutover.
-        basal_core::run_cutover::Migration::new(store.clone(),self.dir.join("run-log"),Arc::new(basal_core::NoHooks)).run()?;
-        let rt = Runtime::new(store,
-        Arc::new(self.mock.clone()),
-        Arc::new(self.catalog.clone()),
-        hooks,
-        Some(self.source.clone()),
-        Config {
-            selector: self.selector.clone(),
-            ..config
-        },)?;
+        basal_core::run_cutover::Migration::new(
+            store.clone(),
+            self.dir.join("run-log"),
+            Arc::new(basal_core::NoHooks),
+        )
+        .run()?;
+        let rt = Runtime::new(
+            store,
+            Arc::new(self.mock.clone()),
+            Arc::new(self.catalog.clone()),
+            hooks,
+            Some(self.source.clone()),
+            Config {
+                selector: self.selector.clone(),
+                ..config
+            },
+        )?;
         rt.retain_detail_for_test()?;
         rt.recover()?;
         Ok(rt)

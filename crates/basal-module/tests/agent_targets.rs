@@ -145,11 +145,11 @@ fn agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run() {
             .rt
             .store()
             .read(|c| {
-                Ok(
-                    c.query_row("SELECT COUNT(*) FROM runs WHERE flow_id=?1", [id], |r| {
-                        r.get::<_, i64>(0)
-                    })?,
-                )
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM run_identities WHERE flow_id=?1",
+                    [id],
+                    |r| r.get::<_, i64>(0),
+                )?)
             })
             .expect("run count");
         assert_eq!(run_count, 0, "no real run for {id}");

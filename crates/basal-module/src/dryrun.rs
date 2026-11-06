@@ -38,8 +38,7 @@ use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
 use basal_core::manifest::{DigestAction, Manifest};
 use basal_core::schedule::{self, fire_trigger_id};
 use basal_core::{
-    ActivationEnd, Admission, CallRow, Config, InstallRequest, NoHooks, RunState,
-    Runtime,
+    ActivationEnd, Admission, CallRow, Config, InstallRequest, NoHooks, RunState, Runtime,
 };
 use basal_host::{
     CallClass, CallRequest, Catalog, CompletionSink, Dispatched, Host, HostOutcome, OpKind,
@@ -832,7 +831,9 @@ impl WorkerChannel for Recording<'_> {
                     .map(|c| c.position)
                     .collect(),
             )),
-            ParentMessage::Deliver(outcome) => self.events.push(Event::DriverReleased(outcome.position)),
+            ParentMessage::Deliver(outcome) => {
+                self.events.push(Event::DriverReleased(outcome.position))
+            }
             _ => {}
         }
         self.inner.send(message)

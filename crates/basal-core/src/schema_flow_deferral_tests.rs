@@ -258,7 +258,10 @@ fn target_scope_migration_preserves_existing_calls_and_children() {
         conn.execute_batch(m.statements).unwrap();
     }
     assert!(matches!(
-        crate::run_cutover::legacy::inspect_call(&conn, "r", 0).unwrap().unwrap().kind,
+        crate::run_cutover::legacy::inspect_call(&conn, "r", 0)
+            .unwrap()
+            .unwrap()
+            .kind,
         basal_proto::CallKind::OpFor { .. }
     ));
     assert!(

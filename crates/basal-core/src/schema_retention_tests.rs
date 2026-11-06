@@ -203,12 +203,6 @@ fn additive_retention_indexes_preserve_populated_tables_in_every_state() {
     );
 }
 
-
-
-
-
-
-
 #[test]
 fn refusal_expression_preserves_run_id_text_affinity() {
     let conn = Connection::open_in_memory().unwrap();

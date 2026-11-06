@@ -82,7 +82,10 @@ fn migration_47_preserves_populated_history_and_in_progress_replay() {
     );
     tx.commit().unwrap();
     assert_eq!(legacy::inspect_run(&conn, "active").unwrap(), before_run);
-    assert_eq!(legacy::inspect_calls(&conn, "active").unwrap(), before_calls);
+    assert_eq!(
+        legacy::inspect_calls(&conn, "active").unwrap(),
+        before_calls
+    );
     assert_eq!(
         conn.query_row(
             "SELECT payload_hash FROM journal WHERE run_id='active' AND position=0",
@@ -150,8 +153,20 @@ fn migration_47_preserves_populated_history_and_in_progress_replay() {
         "{\"frozen\":true}"
     );
     // The migration preserves an arrival without inventing script delivery.
-    assert_eq!(tx.query_row("SELECT value FROM mailbox WHERE run_id='active' AND position=1",[],|r|r.get::<_,String>(0)).unwrap(),value.as_str());
-    assert!(legacy::inspect_prefix(&tx,"active").unwrap()[1].outcome.is_none());
+    assert_eq!(
+        tx.query_row(
+            "SELECT value FROM mailbox WHERE run_id='active' AND position=1",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        value.as_str()
+    );
+    assert!(
+        legacy::inspect_prefix(&tx, "active").unwrap()[1]
+            .outcome
+            .is_none()
+    );
     tx.execute(
         "DELETE FROM journal WHERE run_id='active' AND position=1",
         [],

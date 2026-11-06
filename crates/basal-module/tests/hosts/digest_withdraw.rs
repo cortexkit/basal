@@ -259,22 +259,13 @@ fn withdrawal_journals_before_send_and_replays_identical_intent_after_cut() {
     module.rt.quiesce();
     module.pool.stop();
     assert!(probe.fired());
-    let connection = rusqlite::Connection::open_with_flags(
-        &config.store_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .unwrap();
-    let stored_text: String = connection
-        .query_row(
-            "SELECT request FROM journal_payloads WHERE run_id=?1 AND position=0",
-            [&run],
-            |row| row.get(0),
-        )
+    let intent = module
+        .rt
+        .fixture_call_state(&run, 0)
+        .unwrap()
+        .intent
         .unwrap();
-    // Close the read-only handle now: on Windows an open SQLite file blocks
-    // the store directory's removal at the end of the test.
-    drop(connection);
-    let stored: Value = serde_json::from_str(&stored_text).unwrap();
+    let stored: Value = serde_json::from_str(intent.frozen_request.as_str()).unwrap();
     assert_eq!(stored["withdraw"], true);
     assert_eq!(stored["replace_key"], "daily-report");
     assert!(stored.get("item").is_none());

@@ -247,7 +247,7 @@ pub(crate) struct Shared {
     pub(crate) staged_workers: Mutex<HashMap<(String, u64), std::thread::ThreadId>>,
     pub(crate) staged_stopped: Condvar,
     pub(crate) ready: AtomicBool,
-    pub(crate) removal_drain:Mutex<()>,
+    pub(crate) removal_drain: Mutex<()>,
     stopping: AtomicBool,
     pub(crate) store: Arc<Store>,
     pub(crate) host: Arc<dyn Host>,
@@ -318,10 +318,6 @@ struct Sink {
 impl CompletionSink for Sink {
     fn route_released(&self, run_id: &str) {
         if let Some(shared) = self.shared.upgrade() {
-            if shared.staged_hosts.is_some() {
-                shared.signal.bump();
-                return;
-            }
             let rt = Runtime {
                 shared,
                 config: self.config.clone(),
@@ -331,6 +327,7 @@ impl CompletionSink for Sink {
             {
                 let _ = rt.release_unused_flow_routes_for(&run.flow_id);
             }
+            rt.shared.signal.bump();
         }
     }
     fn complete(&self, c: &Completion) -> std::result::Result<CompletionAck, SinkError> {
@@ -449,7 +446,8 @@ impl Runtime {
     }
 
     /// Staged construction requires completed registry recovery before attach
-    /// can poll saved host work. Production keeps using `new` until cutover.
+    /// can poll saved host work. The production host bundle is built between
+    /// recovery and this constructor so its adapters see the complete registry.
     pub fn new_staged(
         hosts: Arc<crate::run_host::RecoveredHosts>,
         host: Arc<dyn Host>,
@@ -470,11 +468,15 @@ impl Runtime {
         rt.configure_staged_decisions()?;
         rt.capture_existing_removals()?;
         rt.resume_run_removals()?;
-        if !rt.removals_complete()? {return Err(CoreError::Unavailable("removed runs are still closing during startup".into()));}
+        if !rt.removals_complete()? {
+            return Err(CoreError::Unavailable(
+                "removed runs are still closing during startup".into(),
+            ));
+        }
         rt.attach_host();
         rt.flush_staged_live_refusals()?;
         rt.flush_refusals()?;
-        rt.shared.ready.store(true,Ordering::Release);
+        rt.shared.ready.store(true, Ordering::Release);
         Ok(rt)
     }
 
@@ -493,8 +495,8 @@ impl Runtime {
             staged_owners: Mutex::new(HashMap::new()),
             staged_workers: Mutex::new(HashMap::new()),
             staged_stopped: Condvar::new(),
-            ready:AtomicBool::new(false),
-            removal_drain:Mutex::new(()),
+            ready: AtomicBool::new(false),
+            removal_drain: Mutex::new(()),
             stopping: AtomicBool::new(false),
             store,
             host,
@@ -663,11 +665,15 @@ impl Runtime {
                 .calls
                 .get(&position)
                 .and_then(|c| c.unknown.as_deref())
-                .and_then(UnknownReason::parse));
+                .and_then(crate::run_records::parse_unknown_reason));
         }
         self.store().read(|c| {
             let call = crate::run_store_sql::call(c, run_id, position)?;
-            Ok(call.and_then(|c| c.detail["unknown"].as_str().and_then(UnknownReason::parse)))
+            Ok(call.and_then(|c| {
+                c.detail["unknown"]
+                    .as_str()
+                    .and_then(crate::run_records::parse_unknown_reason)
+            }))
         })
     }
 
@@ -844,7 +850,11 @@ impl Runtime {
 
     /// Starts an activation for a run made runnable, if configured to.
     pub(crate) fn wake(&self, run_id: &str) {
-        if !self.shared.ready.load(Ordering::Acquire) || self.is_stopping() || !self.config.auto_resume || self.shared.source.is_none() {
+        if !self.shared.ready.load(Ordering::Acquire)
+            || self.is_stopping()
+            || !self.config.auto_resume
+            || self.shared.source.is_none()
+        {
             return;
         }
         let rt = self.clone();
@@ -1049,7 +1059,10 @@ impl Runtime {
 
     /// Wakes the next startable run while respecting the flow slot.
     pub(crate) fn wake_flow(&self, flow_id: &str) {
-        if !self.shared.ready.load(Ordering::Acquire) || !self.config.auto_resume || self.shared.source.is_none() {
+        if !self.shared.ready.load(Ordering::Acquire)
+            || !self.config.auto_resume
+            || self.shared.source.is_none()
+        {
             return;
         }
         if let Ok(runs) = self.staged_startable()

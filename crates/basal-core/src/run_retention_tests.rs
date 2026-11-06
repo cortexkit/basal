@@ -10,8 +10,14 @@ impl Fixture {
     fn new() -> Self {
         let root = crate::test_support::timestamp_scratch("run-retention", "chunks");
         let store = Arc::new(Store::open(root.join("store.db"), Durability::default()).unwrap());
+        crate::run_cutover::Migration::new(
+            store.clone(),
+            root.join("run-log"),
+            Arc::new(crate::NoHooks),
+        )
+        .run()
+        .unwrap();
         store.write(|tx| {
-            tx.execute_batch(include_str!("schema_run_log.sql"))?;
             tx.execute("INSERT INTO run_snapshots(snapshot_id,flow_id,flow_version,code_hash,script,manifest) VALUES(1,'flow',1,zeroblob(32),'return 1','{}')", [])?;
             Ok(())
         }).unwrap();
@@ -119,14 +125,6 @@ fn broca_acknowledgement_is_rechecked_and_wait_cleanup_precedes_identity_deletio
     f.add("broca", 100);
     let ids = f.store.read(|c| candidates(c, 100, false)).unwrap();
     f.store.write(|tx| {
-        // Point finished Broca calls at run_history(run_id) for this test;
-        // the production migration chain remains unchanged.
-        tx.execute_batch("DROP TABLE broca_calls;
-            CREATE TABLE broca_calls(send_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES run_history(run_id),position INTEGER NOT NULL,snapshot TEXT NOT NULL);
-            CREATE TRIGGER broca_calls_forget_wait AFTER DELETE ON broca_calls BEGIN
-                DELETE FROM broca_waits WHERE send_id=old.send_id;
-                DELETE FROM broca_wakes WHERE send_id=old.send_id;
-            END;")?;
         tx.execute("INSERT INTO broca_calls VALUES('send','broca',0,'{\"acknowledged\":false}')", [])?;
         tx.execute("INSERT INTO broca_waits(send_id) VALUES('send')", [])?;
         tx.execute("INSERT INTO broca_wakes(send_id,event_key,kind,digest,received_at) VALUES('send','event','ended','digest',1)", [])?;

@@ -107,10 +107,7 @@ fn an_unrevoked_run_dispatches_local_and_remote_calls() {
 
 #[test]
 fn push_mid_script_stops_the_next_call_and_health_does_not_count_a_failure() {
-    let (f, hook) = fixture(
-        "push-mid-script",
-        Boundary::HostCallReceived { position: 1 },
-    );
+    let (f, hook) = fixture("push-mid-script", Boundary::DriverReleased { position: 0 });
     let script = "await ops.call('mock','echo',{}); try { await ops.call('mock','echo',{}); } catch (_) {} return await ops.call('mock','echo',{});";
     let m = manifest("push-flow");
     common::install_approved(&f, &Caller::Operator, script, &m);
@@ -202,7 +199,7 @@ fn template_and_package_instances_stop_every_call_family_without_changing_enable
         for template in [false, true] {
             let (f, hook) = fixture(
                 &format!("push-instance-{n}-{template}"),
-                Boundary::HostCallReceived { position: 1 },
+                Boundary::DriverReleased { position: 0 },
             );
             f.catalog.add_named_agent(OWNER, "Owner");
             let script = format!(

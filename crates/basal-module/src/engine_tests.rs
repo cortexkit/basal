@@ -30,15 +30,18 @@ fn engine_with_spawner(
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("store.db");
     let clock = basal_core::Clock::manual(0);
-    let rt = Runtime::new(Arc::new(Store::open(&path, Durability::throwaway()).unwrap()),
-    Arc::new(MockHost::new()),
-    Arc::new(MockCatalog::standard()),
-    Arc::new(NoHooks),
-    None,
-    Config {
-        clock: clock.clone(),
-        ..Config::default()
-    },).expect("runtime startup");
+    let rt = Runtime::new(
+        Arc::new(Store::open(&path, Durability::throwaway()).unwrap()),
+        Arc::new(MockHost::new()),
+        Arc::new(MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        Config {
+            clock: clock.clone(),
+            ..Config::default()
+        },
+    )
+    .expect("runtime startup");
     let metrics = Arc::new(Metrics::default());
     let mut config = PoolConfig::new("missing", WorkerLaunch::Plain);
     config.warm_spares = 0;
@@ -125,21 +128,7 @@ fn wake_case(event: impl FnOnce(&Engine), raw_admit: bool) {
     park.recv_timeout(Duration::from_secs(60)).unwrap();
     if raw_admit {
         let rt = &engine.inner.rt;
-        rt.store()
-            .write(|tx| {
-                basal_core::admission::admit_current(
-                    tx,
-                    rt.store().store_id(),
-                    "due",
-                    "raw",
-                    basal_proto::JsonText::null(),
-                    &basal_core::admission::AdmitContext {
-                        now_ms: 0,
-                        rate: rt.config().rate,
-                        default_deadline_ms: 600_000,
-                    },
-                )
-            })
+        rt.fixture_admit_without_wake("due", "raw", basal_proto::JsonText::null())
             .unwrap();
     }
     event(&engine);
@@ -352,13 +341,12 @@ fn a_run_deadline_wakes_before_the_fallback() {
     engine
         .inner
         .rt
-        .store()
-        .write(|tx| {
-            tx.execute(
-                "UPDATE runs SET state='suspended', deadline_at=600000 WHERE run_id=?1",
-                [&run],
-            )?;
-            Ok(())
+        .fixture_update_state(&run, |state| {
+            state.claim = Some(basal_core::run_records::Claim {
+                first_claim_ms: 0,
+                deadline_at: 600000,
+            });
+            state.parked = true;
         })
         .unwrap();
     let clock = engine.inner.rt.config().clock.clone();
@@ -414,7 +402,7 @@ fn a_schedule_wakes_at_its_due_time_before_the_fallback() {
         .rt
         .store()
         .read(|c| {
-            Ok(c.prepare("SELECT admitted_at FROM runs")
+            Ok(c.prepare("SELECT admitted_at FROM live_runs")
                 .unwrap()
                 .query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?)
@@ -525,41 +513,51 @@ fn a_deferred_call_retry_wakes_before_the_fallback() {
         .run_id()
         .unwrap()
         .to_owned();
-    engine
-        .inner
-        .rt
-        .store()
-        .write(|tx| {
-            let lease = basal_core::runs::claim(tx, &run, "owner", 0)?;
-            basal_core::journal::insert_call(
-                tx,
-                &lease,
-                "deferred",
-                &basal_core::journal::NewCall {
-                    position: 0,
-                    kind: &basal_proto::CallKind::Op {
-                        module: "mock".into(),
-                        op: "send".into(),
-                    },
-                    args: &basal_proto::JsonText::null(),
-                    class: basal_core::StoredClass::KeyedMutation,
-                    request: None,
+    use basal_core::run_records::{Body, CallIdentity, Deferred};
+    let rt = &engine.inner.rt;
+    rt.fixture_update_state(&run, |state| {
+        state.generation = 1;
+        state.claim = Some(basal_core::run_records::Claim {
+            first_claim_ms: 0,
+            deadline_at: 600_000,
+        });
+        state.activation_count = 1;
+    })
+    .unwrap();
+    rt.fixture_append(
+        &run,
+        Body::Issued(CallIdentity::new(
+            basal_proto::HostCall {
+                position: 0,
+                kind: basal_proto::CallKind::Op {
+                    module: "mock".into(),
+                    op: "send".into(),
                 },
-            )?;
-            basal_core::journal::defer(
-                tx,
-                &run,
-                0,
-                &basal_host::flow_refusal::FlowRefusal::new(
-                    basal_host::flow_refusal::RefusalReason::ResourceBusy,
-                    "mock",
-                    "send",
-                ),
-                10_000,
-            )?;
-            basal_core::runs::park(tx, &lease, &[0], 0)?;
-            Ok(())
-        })
+                args: basal_proto::JsonText::null(),
+            },
+            basal_core::StoredClass::KeyedMutation,
+        )),
+    )
+    .unwrap();
+    let refusal = basal_host::flow_refusal::FlowRefusal::new(
+        basal_host::flow_refusal::RefusalReason::ResourceBusy,
+        "mock",
+        "send",
+    );
+    rt.fixture_append(
+        &run,
+        Body::Deferred(Deferred {
+            position: 0,
+            retry_not_before: 10_000,
+            cause: serde_json::to_string(&refusal).unwrap(),
+            audit_at: 0,
+            proven_unsent: true,
+            refund_dispatch: true,
+            attempt: None,
+        }),
+    )
+    .unwrap();
+    rt.fixture_append(&run, Body::Parked { awaited: vec![0] })
         .unwrap();
     let clock = engine.inner.rt.config().clock.clone();
     let mut passes = 0;
@@ -732,15 +730,6 @@ fn panicking_activation_releases_run_and_flow_slots() {
     cleanup(engine, path);
 }
 
-#[test]
-fn journal_count_failure_is_fatal_not_zero_replayed_calls() {
-    let (engine, path) = engine(false);
-    engine.inner.rt.store().cut();
-    engine.activate("r".into(), "f".into());
-    assert!(engine.inner.fatal.get().is_some());
-    cleanup(engine, path);
-}
-
 /// Starts a whole module on a fresh store. Its worker spawner panics when
 /// `spawn_panics` is set and refuses otherwise. Returns the store path and the
 /// consent adapter, which stays attached.
@@ -813,23 +802,6 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
         }
         fn attach(&self, _: Arc<dyn basal_host::CompletionSink>) {}
     }
-    struct HoldBlocked {
-        entered: mpsc::Sender<()>,
-        release: Mutex<mpsc::Receiver<()>>,
-    }
-    impl basal_core::Hooks for HoldBlocked {
-        fn at(&self, _: &str, boundary: &basal_core::Boundary) -> basal_core::Step {
-            if *boundary == basal_core::Boundary::BlockedReceived {
-                let _ = self.entered.send(());
-                let _ = self
-                    .release
-                    .lock()
-                    .unwrap()
-                    .recv_timeout(Duration::from_secs(60));
-            }
-            basal_core::Step::Continue
-        }
-    }
     fn notices(rt: &Runtime) -> i64 {
         rt.store()
             .read(|conn| {
@@ -846,8 +818,6 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
     let clock = Clock::manual(0);
     let (called, calls) = mpsc::channel();
     let (answer, answered) = mpsc::channel();
-    let (blocked, blocks) = mpsc::channel();
-    let (resume, resumed) = mpsc::channel();
     let host = Arc::new(HeldQuery {
         entered: called,
         release: Mutex::new(answered),
@@ -858,32 +828,34 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
     // on a test kernel that provides seccomp but not Landlock.
     pool.landlock = crate::pool::LandlockPolicy::Optional;
     let mut store = None;
-    let module = crate::module::Module::start_with_store(crate::module::ModuleConfig {
-        store_path: dir.join("store.db"),
-        durability: Durability::throwaway(),
-        runtime: Config {
-            clock: clock.clone(),
-            install_gate: basal_core::InstallGate::Off,
-            max_broken_activations: 1,
-            unavailable_retries: 0,
-            ..Config::default()
+    let module = crate::module::Module::start_with_store(
+        crate::module::ModuleConfig {
+            store_path: dir.join("store.db"),
+            durability: Durability::throwaway(),
+            runtime: Config {
+                clock: clock.clone(),
+                install_gate: basal_core::InstallGate::Off,
+                max_broken_activations: 1,
+                unavailable_retries: 0,
+                ..Config::default()
+            },
+            pool: pool.clone(),
+            engine: EngineConfig::default(),
+            dry_run: crate::dryrun::DryRunConfig::new(dir.join("dry")),
         },
-        pool: pool.clone(),
-        engine: EngineConfig::default(),
-        dry_run: crate::dryrun::DryRunConfig::new(dir.join("dry")),
-    },crate::module::Hosts {
-        host,
-        transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
-        catalog: Arc::new(MockCatalog::standard()),
-        consent: Arc::new(MockConsent::new()),
-        hooks: Arc::new(HoldBlocked {
-            entered: blocked,
-            release: Mutex::new(resumed),
-        }),
-    },Arc::new(crate::pool::ProcessSpawner::new(&pool)),|opened,_recovered| {
-        store = Some(opened);
-        Ok(())
-    })
+        crate::module::Hosts {
+            host,
+            transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
+            catalog: Arc::new(MockCatalog::standard()),
+            consent: Arc::new(MockConsent::new()),
+            hooks: Arc::new(NoHooks),
+        },
+        Arc::new(crate::pool::ProcessSpawner::new(&pool)),
+        |opened, _recovered| {
+            store = Some(opened);
+            Ok(())
+        },
+    )
     .unwrap();
     let rt = module.rt.clone();
     let mut request = request("shutdown-cut");
@@ -927,7 +899,6 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
     assert_eq!(rt.flow_health().unwrap()[0].consecutive_failures, 2);
     module.engine.pass().unwrap();
     calls.recv_timeout(Duration::from_secs(60)).unwrap();
-    blocks.recv_timeout(Duration::from_secs(60)).unwrap();
     let before = rt.run(&run).unwrap();
     assert_eq!(before.state, RunState::Running);
     assert_eq!(rt.calls(&run).unwrap().len(), 1);
@@ -938,10 +909,10 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
     }));
     let shutdown = thread::spawn(move || drop(module));
     // Module shutdown has killed the leased child before joining activations.
-    // Only now release the blocked activation and the shutdown-induced RPC error.
+    // Only now release the host call and its shutdown-induced RPC error. Host
+    // entry, not the timing of the worker's Blocked frame, fixes this cut.
     joins.recv_timeout(Duration::from_secs(60)).unwrap();
     answer.send(()).unwrap();
-    resume.send(()).unwrap();
     shutdown.join().unwrap();
 
     let cut = rt.run(&run).unwrap();
@@ -965,18 +936,24 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
         "shutdown must not reject the in-flight query"
     );
     drop(rt);
-    let recovered = Runtime::new(store.take().unwrap(),
-    Arc::new(MockHost::new()),
-    Arc::new(MockCatalog::standard()),
-    Arc::new(NoHooks),
-    None,
-    Config {
-        clock,
-        auto_resume: false,
-        install_gate: basal_core::InstallGate::Off,
-        ..Config::default()
-    },).expect("runtime startup");
-    assert_eq!(recovered.recover().unwrap(), vec![run.clone()]);
+    let recovered = Runtime::new(
+        store.take().unwrap(),
+        Arc::new(MockHost::new()),
+        Arc::new(MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        Config {
+            clock,
+            auto_resume: false,
+            install_gate: basal_core::InstallGate::Off,
+            ..Config::default()
+        },
+    )
+    .expect("runtime startup");
+    assert!(
+        recovered.recover().unwrap().is_empty(),
+        "construction already recovered the run; repeat recovery is idempotent"
+    );
     let pending = recovered.run(&run).unwrap();
     assert_eq!(pending.state, RunState::Pending);
     assert_eq!(pending.error_kind, None);

@@ -220,10 +220,12 @@ pub(crate) fn fold(
                 let outcome = basal_host::HostOutcome {
                     settlement: arrival.settlement,
                     value: arrival.value.clone(),
-                    usage: arrival.usage.as_ref().map(|u| basal_host::TokenUsage {
-                        input_tokens: Some(u.input_tokens),
-                        output_tokens: Some(u.output_tokens),
-                        ..Default::default()
+                    usage: call.usage_report.map(Into::into).or_else(|| {
+                        arrival.usage.as_ref().map(|u| basal_host::TokenUsage {
+                            input_tokens: Some(u.input_tokens),
+                            output_tokens: Some(u.output_tokens),
+                            ..Default::default()
+                        })
                     }),
                 };
                 crate::tokens::settle_outcome(tx, id, call.identity.position, &outcome, now)?;
@@ -235,7 +237,7 @@ pub(crate) fn fold(
                     id,
                     call.identity.position,
                     Some(&value),
-                    None,
+                    crate::classify_cost::refusal_code(arrival.settlement, &value),
                 )?;
             } else if call.deferred.as_ref().is_some_and(|d| d.proven_unsent) {
                 crate::tokens::settle(
@@ -268,20 +270,39 @@ pub(crate) fn fold(
             .map_or(intent.audit_at, |i| i.audit_at);
         let settled = call.arrival.is_some();
         let usage = call.arrival.as_ref().and_then(|a| a.usage.as_ref());
-        let input = usage.map_or(0, |u| u.input_tokens);
-        let output = usage.map_or(0, |u| u.output_tokens);
-        let unreported = if settled && usage.is_none() {
-            reserved
+        let report = if settled {
+            call.usage_report.or_else(|| {
+                usage.map(|u| crate::run_records::UsageReport {
+                    input_tokens: Some(u.input_tokens),
+                    cache_write_tokens: None,
+                    output_tokens: Some(u.output_tokens),
+                    cached_input_tokens: None,
+                })
+            })
+        } else {
+            None
+        };
+        let input = report.and_then(|r| r.input_tokens);
+        let cache_write = report.and_then(|r| r.cache_write_tokens);
+        let output = report.and_then(|r| r.output_tokens);
+        let cached_input = report.and_then(|r| r.cached_input_tokens);
+        let charged = if settled {
+            usage.map_or(Ok(reserved), |u| add(u.input_tokens, u.output_tokens))?
         } else {
             0
         };
+        let measured = add(
+            add(input.unwrap_or(0), cache_write.unwrap_or(0))?,
+            output.unwrap_or(0),
+        )?;
+        let unreported = charged.saturating_sub(measured);
         let pending = if settled { 0 } else { reserved };
         let key = crate::ids::idempotency_key(flow, id, call.identity.position);
         if reserved > 0 {
-            tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,input_tokens,output_tokens,unreported_tokens,reserved_at,settled_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-                params![key, flow, id, integer(call.identity.position)?, budgets.token_window_ms, reservation.window_start, integer(reserved)?, if settled {"settled"} else {"reserved"}, integer(input)?, integer(output)?, integer(unreported)?, reserved_at, settled.then_some(now)])?;
-            tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved,input_tokens,output_tokens,unreported_tokens) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(flow_id,window_ms,window_start) DO UPDATE SET reserved=reserved+excluded.reserved,input_tokens=input_tokens+excluded.input_tokens,output_tokens=output_tokens+excluded.output_tokens,unreported_tokens=unreported_tokens+excluded.unreported_tokens",
-            params![flow, budgets.token_window_ms, reservation.window_start, integer(pending)?, integer(input)?, integer(output)?, integer(unreported)?])?;
+            tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,input_tokens,cache_write_tokens,output_tokens,cached_input_tokens,unreported_tokens,reserved_at,settled_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                params![key, flow, id, integer(call.identity.position)?, budgets.token_window_ms, reservation.window_start, integer(reserved)?, if settled {"settled"} else {"reserved"}, input.map(integer).transpose()?, cache_write.map(integer).transpose()?, output.map(integer).transpose()?, cached_input.map(integer).transpose()?, integer(unreported)?, reserved_at, settled.then_some(now)])?;
+            tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved,input_tokens,cache_write_tokens,output_tokens,cached_input_tokens,unreported_tokens) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(flow_id,window_ms,window_start) DO UPDATE SET reserved=reserved+excluded.reserved,input_tokens=input_tokens+excluded.input_tokens,cache_write_tokens=cache_write_tokens+excluded.cache_write_tokens,output_tokens=output_tokens+excluded.output_tokens,cached_input_tokens=cached_input_tokens+excluded.cached_input_tokens,unreported_tokens=unreported_tokens+excluded.unreported_tokens",
+            params![flow, budgets.token_window_ms, reservation.window_start, integer(pending)?, integer(input.unwrap_or(0))?, integer(cache_write.unwrap_or(0))?, integer(output.unwrap_or(0))?, integer(cached_input.unwrap_or(0))?, integer(unreported)?])?;
         }
         fold_cost(
             tx,

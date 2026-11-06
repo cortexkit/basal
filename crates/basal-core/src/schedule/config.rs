@@ -1,13 +1,10 @@
-//! Scheduler settings, the clock it reads, and the points where a test can
-//! stop it.
+//! Scheduler settings and the clock it reads.
 
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 use std::time::Duration;
 
 use jiff::{SignedDuration, Timestamp};
-
-use crate::hooks::{NoHooks, Step};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchedulerConfig {
@@ -68,28 +65,5 @@ impl ManualClock {
 impl Clock for ManualClock {
     fn now(&self) -> Timestamp {
         *self.now.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-/// A point between two scheduler commits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TickPoint {
-    /// A schedule's fires are planned and it has advanced, in one commit;
-    /// none of those fires is admitted yet.
-    Planned { flow_id: String },
-    /// One planned fire was admitted and removed from the planned fires,
-    /// in one commit.
-    Admitted { flow_id: String, trigger_id: String },
-}
-
-/// Lets a test stop the scheduler at a [`TickPoint`] as if the process
-/// died there. In production this is [`NoHooks`].
-pub trait TickHooks: Send + Sync {
-    fn at(&self, point: &TickPoint) -> Step;
-}
-
-impl TickHooks for NoHooks {
-    fn at(&self, _: &TickPoint) -> Step {
-        Step::Continue
     }
 }

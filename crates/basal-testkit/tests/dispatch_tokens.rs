@@ -248,8 +248,7 @@ fn llm_call_over_the_cap_is_a_journaled_rejection() {
     let calls = rt.calls(&run_id).expect("calls");
     let outcome = calls[0].outcome.as_ref().expect("journaled");
     assert_eq!(outcome.settlement, Settlement::Rejected);
-    let audit = rt.fixture_call_identities(&run_id)
-        .expect("audit");
+    let audit = rt.fixture_call_identities(&run_id).expect("audit");
     assert_eq!(audit[0].outcome, "token_cap");
     let usage = rt
         .token_usage("flow-test", T0)

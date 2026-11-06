@@ -30,7 +30,7 @@ use jiff::Timestamp;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use config::ManualClock;
-pub use config::{Clock, SchedulerConfig, TickHooks, TickPoint};
+pub use config::{Clock, SchedulerConfig};
 pub use due::DueError;
 pub use spec::{
     CompiledSchedule, DEFAULT_EACH_CAP, MAX_EACH_CAP, MAX_INTERVAL_SECS, MIN_INTERVAL_SECS, Missed,

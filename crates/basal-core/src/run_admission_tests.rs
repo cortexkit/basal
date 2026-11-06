@@ -75,16 +75,19 @@ impl Fixture {
                 body: basal_host::EventBody::Inline,
             },
         );
-        let rt = Runtime::new(store.clone(),
-        Arc::new(MockHost::new()),
-        Arc::new(catalog),
-        Arc::new(NoHooks),
-        None,
-        Config {
-            clock: Clock::manual(1000),
-            install_gate: InstallGate::Off,
-            ..Config::default()
-        },).expect("runtime startup");
+        let rt = Runtime::new(
+            store.clone(),
+            Arc::new(MockHost::new()),
+            Arc::new(catalog),
+            Arc::new(NoHooks),
+            None,
+            Config {
+                clock: Clock::manual(1000),
+                install_gate: InstallGate::Off,
+                ..Config::default()
+            },
+        )
+        .expect("runtime startup");
         Self {
             store,
             rt,
@@ -110,14 +113,15 @@ impl Fixture {
                             synced_lsn: synced().lsn,
                             live_starts: Default::default(),
                         },
-                        migration_phase: "create".into(),
+                        migration_phase: "done".into(),
                     },
                 )
             })
             .unwrap();
     }
     fn path(&self, hooks: Arc<dyn Hooks>) -> RunAdmission {
-        RunAdmission::new_for_test(self.store.clone(), Arc::new(Watermark(synced())), hooks)
+        let synced = self.store.read(sql::meta).unwrap().log_hwm;
+        RunAdmission::new_for_test(self.store.clone(), Arc::new(Watermark(synced)), hooks)
     }
     fn approve(&self, id: &str, version: u32, epoch: u32, trigger: Value) {
         let installed = self.rt.install(&crate::InstallRequest {
@@ -247,9 +251,14 @@ fn identity_survives_restored_counter_and_uses_full_id() {
         })
         .unwrap();
     assert_eq!(
-        f.count("runs"),
-        0,
-        "production model must not receive staged runs"
+        f.store
+            .read(|c| Ok(c.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='runs'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .unwrap(),
+        0
     );
 }
 
@@ -650,23 +659,26 @@ fn template_admission_snapshots_all_inputs_and_one_shot_end_flag() {
 }
 
 #[test]
-fn production_constructors_stay_on_original_admission() {
+fn production_constructors_use_recovered_log_admission() {
     let f = Fixture::new("production");
     f.event("flow");
     let admitted =
         f.rt.admit_trigger("flow", "manual", JsonText::null())
             .unwrap();
-    assert_eq!(
-        admitted.run_id(),
-        Some(format!("run-{}-1", f.store.store_id()).as_str())
-    );
-    assert_eq!(f.count("runs"), 1);
-    assert!(!f.dir.join("run-log").exists());
+    let id = admitted.run_id().unwrap();
+    let prefix = format!("run-{}-1-", f.store.store_id());
+    let nonce = id
+        .strip_prefix(&prefix)
+        .expect("full store and sequence identity");
+    assert_eq!(nonce.len(), 16);
+    assert!(nonce.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_eq!(f.count("live_runs"), 1);
+    assert!(f.dir.join("run-log").exists());
     f.store
         .read(|c| {
             assert_eq!(
                 c.query_row(
-                    "SELECT count(*) FROM sqlite_schema WHERE name='live_runs'",
+                    "SELECT count(*) FROM sqlite_schema WHERE name IN ('runs','journal')",
                     [],
                     |r| r.get::<_, i64>(0)
                 )?,

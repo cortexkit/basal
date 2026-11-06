@@ -19,7 +19,7 @@ use basal_proto::{
     Primitive, Settlement, Welcome, WorkerMessage,
 };
 use basal_testkit::harness::{Point, World, run_with_cuts, run_with_cuts_under, test_manifest};
-use common::{admit, config, finish, query_i64, result, runtime};
+use common::{admit, config, finish, result, runtime};
 use serde_json::{Value, json};
 
 fn rejection_code(value: &JsonText) -> Option<String> {
@@ -53,8 +53,7 @@ fn unlisted_op_is_denied_journaled_and_catchable() {
     assert_eq!(rejection_code(&refused.value).as_deref(), Some("denied"));
     // Never sent: the mock saw only the echo.
     assert_eq!(world.mock.total_sends(), 1);
-    let audit = rt.fixture_call_identities(&run_id)
-        .expect("audit");
+    let audit = rt.fixture_call_identities(&run_id).expect("audit");
     let outcomes: Vec<&str> = audit.iter().map(|r| r.outcome.as_str()).collect();
     assert_eq!(outcomes, ["denied", "allowed"]);
     assert_eq!(audit[0].op, "op (mock, unlisted)");
@@ -213,6 +212,9 @@ impl WorkerChannel for Compromised {
     fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
         panic!("the flow driver reads this worker through recv")
     }
+    fn fixture_inline_recv(&self) -> bool {
+        true
+    }
 
     fn kill(&mut self) {
         self.killed.store(true, Ordering::SeqCst);
@@ -244,7 +246,7 @@ fn a_compromised_worker_cannot_issue_sh() {
     );
     assert!(killed.load(Ordering::SeqCst), "the worker was not killed");
     assert!(rt.calls(&run_id).expect("calls").is_empty());
-    assert_eq!(query_i64(&rt, "SELECT COUNT(*) FROM call_audit"), 0);
+    assert!(rt.fixture_call_identities(&run_id).unwrap().is_empty());
     assert_eq!(world.mock.total_sends(), 0);
 }
 
@@ -275,7 +277,7 @@ fn a_compromised_worker_cannot_issue_tool() {
     );
     assert!(killed.load(Ordering::SeqCst), "the worker was not killed");
     assert!(rt.calls(&run_id).expect("calls").is_empty());
-    assert_eq!(query_i64(&rt, "SELECT COUNT(*) FROM call_audit"), 0);
+    assert!(rt.fixture_call_identities(&run_id).unwrap().is_empty());
     assert_eq!(world.mock.total_sends(), 0);
 }
 
@@ -304,7 +306,7 @@ fn a_compromised_worker_cannot_issue_sleep() {
     );
     assert!(killed.load(Ordering::SeqCst), "the worker was not killed");
     assert!(rt.calls(&run_id).expect("calls").is_empty());
-    assert_eq!(query_i64(&rt, "SELECT COUNT(*) FROM call_audit"), 0);
+    assert!(rt.fixture_call_identities(&run_id).unwrap().is_empty());
     assert_eq!(world.mock.total_sends(), 0);
 }
 
@@ -331,7 +333,7 @@ fn a_compromised_worker_cannot_send_console() {
     );
     assert!(killed.load(Ordering::SeqCst));
     assert!(rt.calls(&run_id).expect("calls").is_empty());
-    assert_eq!(query_i64(&rt, "SELECT COUNT(*) FROM call_audit"), 0);
+    assert!(rt.fixture_call_identities(&run_id).unwrap().is_empty());
     assert_eq!(world.mock.total_sends(), 0);
 }
 
@@ -412,12 +414,7 @@ fn every_call_has_one_audit_row_and_replay_writes_none() {
         matches!(first, ActivationEnd::Suspended { .. }),
         "{first:?}"
     );
-    let audited = |rt: &basal_core::Runtime| {
-        query_i64(
-            rt,
-            &format!("SELECT COUNT(*) FROM call_audit WHERE run_id = '{run_id}'"),
-        )
-    };
+    let audited = |rt: &basal_core::Runtime| rt.fixture_call_identities(&run_id).unwrap().len();
     assert_eq!(audited(&rt), 5);
     let run = finish(&rt, &world, &run_id);
     assert_eq!(result(&run), json!([1, true, 1]));
@@ -538,6 +535,9 @@ impl WorkerChannel for Scripted {
     fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
         panic!("the flow driver reads this worker through recv")
     }
+    fn fixture_inline_recv(&self) -> bool {
+        true
+    }
 
     fn kill(&mut self) {}
 }
@@ -604,8 +604,7 @@ fn placeholder_recipients_are_refused_before_dispatch() {
     );
     // Only the concrete recipient reached the host.
     assert_eq!(world.mock.total_sends(), 1);
-    let audit = rt.fixture_call_identities(&run_id)
-        .expect("audit");
+    let audit = rt.fixture_call_identities(&run_id).expect("audit");
     let outcomes: Vec<&str> = audit.iter().map(|r| r.outcome.as_str()).collect();
     assert_eq!(
         outcomes,

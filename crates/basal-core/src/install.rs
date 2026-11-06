@@ -1761,7 +1761,7 @@ impl Runtime {
         actor: &Actor,
     ) -> std::result::Result<bool, InstallError> {
         let now = self.config().clock.now_ms();
-        let mut removal_targets=Vec::new();
+        let mut removal_targets = Vec::new();
         decide(self, |tx| {
             let package: Option<Option<String>> = tx
                 .query_row(
@@ -1799,7 +1799,7 @@ impl Runtime {
                 "UPDATE flows SET removed=1, removed_by=?2, removed_at=?3 WHERE flow_id=?1",
                 params![flow_id, removed_by, now],
             )?;
-            removal_targets=crate::run_removal::capture(tx,flow_id,now)?;
+            removal_targets = crate::run_removal::capture(tx, flow_id, now)?;
             crate::secret_revocation::enqueue(tx, flow_id, None, false, now)?;
             tx.execute(
                 "UPDATE event_receipts SET state='refused' WHERE flow_id=?1 AND state='backlog'",
@@ -1808,7 +1808,8 @@ impl Runtime {
             Ok(true)
         })
         .and_then(|removed| {
-            self.removal_captured(&removal_targets).map_err(InstallError::Store)?;
+            self.removal_captured(&removal_targets)
+                .map_err(InstallError::Store)?;
             self.resume_run_removals().map_err(InstallError::Store)?;
             self.flush_refusals().map_err(InstallError::Store)?;
             if removed {

@@ -85,6 +85,36 @@ pub struct ArrivalDurability {
     pub settles_reservation: bool,
 }
 
+/// Full provider measurements, separate from the conservative budget charge in
+/// Usage. Missing measurements remain absent rather than becoming zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageReport {
+    pub input_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+}
+impl From<basal_host::TokenUsage> for UsageReport {
+    fn from(value: basal_host::TokenUsage) -> Self {
+        Self {
+            input_tokens: value.input_tokens,
+            cache_write_tokens: value.cache_write_tokens,
+            output_tokens: value.output_tokens,
+            cached_input_tokens: value.cached_input_tokens,
+        }
+    }
+}
+impl From<UsageReport> for basal_host::TokenUsage {
+    fn from(value: UsageReport) -> Self {
+        Self {
+            input_tokens: value.input_tokens,
+            cache_write_tokens: value.cache_write_tokens,
+            output_tokens: value.output_tokens,
+            cached_input_tokens: value.cached_input_tokens,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arrival {
     pub position: u64,
@@ -139,67 +169,118 @@ pub struct Deferred {
 // deferrals nested in snapshots, without shifting any old field.
 // Human-readable call detail keeps both policy fields explicit.
 impl Serialize for Deferred {
-    fn serialize<S: serde::Serializer>(&self, serializer:S)->Result<S::Ok,S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
             use serde::ser::SerializeStruct;
-            let mut value=serializer.serialize_struct("Deferred",7)?;
-            value.serialize_field("position",&self.position)?;
-            value.serialize_field("retry_not_before",&self.retry_not_before)?;
-            value.serialize_field("cause",&self.cause)?;
-            value.serialize_field("audit_at",&self.audit_at)?;
-            value.serialize_field("proven_unsent",&self.proven_unsent)?;
-            value.serialize_field("refund_dispatch",&self.refund_dispatch)?;
-            value.serialize_field("attempt",&self.attempt)?;
+            let mut value = serializer.serialize_struct("Deferred", 7)?;
+            value.serialize_field("position", &self.position)?;
+            value.serialize_field("retry_not_before", &self.retry_not_before)?;
+            value.serialize_field("cause", &self.cause)?;
+            value.serialize_field("audit_at", &self.audit_at)?;
+            value.serialize_field("proven_unsent", &self.proven_unsent)?;
+            value.serialize_field("refund_dispatch", &self.refund_dispatch)?;
+            value.serialize_field("attempt", &self.attempt)?;
             value.end()
         } else {
             use serde::ser::SerializeTuple;
-            let flags=u8::from(self.proven_unsent)|if self.refund_dispatch{0}else{2}|if self.attempt.is_some(){4}else{0};
-            let mut value=serializer.serialize_tuple(if self.attempt.is_some(){6}else{5})?;
+            let flags = u8::from(self.proven_unsent)
+                | if self.refund_dispatch { 0 } else { 2 }
+                | if self.attempt.is_some() { 4 } else { 0 };
+            let mut value =
+                serializer.serialize_tuple(if self.attempt.is_some() { 6 } else { 5 })?;
             value.serialize_element(&self.position)?;
             value.serialize_element(&self.retry_not_before)?;
             value.serialize_element(&self.cause)?;
             value.serialize_element(&self.audit_at)?;
             value.serialize_element(&flags)?;
-            if let Some(attempt)=self.attempt {value.serialize_element(&attempt)?;}
+            if let Some(attempt) = self.attempt {
+                value.serialize_element(&attempt)?;
+            }
             value.end()
         }
     }
 }
 impl<'de> Deserialize<'de> for Deferred {
-    fn deserialize<D:serde::Deserializer<'de>>(deserializer:D)->Result<Self,D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
             #[derive(Deserialize)]
             struct Human {
-                position:u64,retry_not_before:i64,cause:String,audit_at:i64,proven_unsent:bool,
-                #[serde(default="refund_by_default")]
-                refund_dispatch:bool,
+                position: u64,
+                retry_not_before: i64,
+                cause: String,
+                audit_at: i64,
+                proven_unsent: bool,
+                #[serde(default = "refund_by_default")]
+                refund_dispatch: bool,
                 #[serde(default)]
-                attempt:Option<u64>,
+                attempt: Option<u64>,
             }
-            let value=Human::deserialize(deserializer)?;
-            Ok(Self{position:value.position,retry_not_before:value.retry_not_before,cause:value.cause,audit_at:value.audit_at,proven_unsent:value.proven_unsent,refund_dispatch:value.refund_dispatch,attempt:value.attempt})
+            let value = Human::deserialize(deserializer)?;
+            Ok(Self {
+                position: value.position,
+                retry_not_before: value.retry_not_before,
+                cause: value.cause,
+                audit_at: value.audit_at,
+                proven_unsent: value.proven_unsent,
+                refund_dispatch: value.refund_dispatch,
+                attempt: value.attempt,
+            })
         } else {
             struct Binary;
             impl<'de> serde::de::Visitor<'de> for Binary {
-                type Value=Deferred;
-                fn expecting(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str("a binary deferral")}
-                fn visit_seq<A:serde::de::SeqAccess<'de>>(self,mut seq:A)->Result<Deferred,A::Error> {
+                type Value = Deferred;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a binary deferral")
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<Deferred, A::Error> {
                     use serde::de::Error;
-                    let position=seq.next_element()?.ok_or_else(||Error::missing_field("position"))?;
-                    let retry_not_before=seq.next_element()?.ok_or_else(||Error::missing_field("retry_not_before"))?;
-                    let cause=seq.next_element()?.ok_or_else(||Error::missing_field("cause"))?;
-                    let audit_at=seq.next_element()?.ok_or_else(||Error::missing_field("audit_at"))?;
-                    let flags:u8=seq.next_element()?.ok_or_else(||Error::missing_field("flags"))?;
-                    if flags>7 {return Err(Error::custom("invalid deferral flags"));}
-                    let attempt=if flags&4!=0 {Some(seq.next_element()?.ok_or_else(||Error::missing_field("attempt"))?)}else{None};
-                    Ok(Deferred{position,retry_not_before,cause,audit_at,proven_unsent:flags&1!=0,refund_dispatch:flags&2==0,attempt})
+                    let position = seq
+                        .next_element()?
+                        .ok_or_else(|| Error::missing_field("position"))?;
+                    let retry_not_before = seq
+                        .next_element()?
+                        .ok_or_else(|| Error::missing_field("retry_not_before"))?;
+                    let cause = seq
+                        .next_element()?
+                        .ok_or_else(|| Error::missing_field("cause"))?;
+                    let audit_at = seq
+                        .next_element()?
+                        .ok_or_else(|| Error::missing_field("audit_at"))?;
+                    let flags: u8 = seq
+                        .next_element()?
+                        .ok_or_else(|| Error::missing_field("flags"))?;
+                    if flags > 7 {
+                        return Err(Error::custom("invalid deferral flags"));
+                    }
+                    let attempt = if flags & 4 != 0 {
+                        Some(
+                            seq.next_element()?
+                                .ok_or_else(|| Error::missing_field("attempt"))?,
+                        )
+                    } else {
+                        None
+                    };
+                    Ok(Deferred {
+                        position,
+                        retry_not_before,
+                        cause,
+                        audit_at,
+                        proven_unsent: flags & 1 != 0,
+                        refund_dispatch: flags & 2 == 0,
+                        attempt,
+                    })
                 }
             }
-            deserializer.deserialize_tuple(6,Binary)
+            deserializer.deserialize_tuple(6, Binary)
         }
     }
 }
-fn refund_by_default()->bool {true}
+fn refund_by_default() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resolution {
@@ -274,5 +355,14 @@ pub enum Body {
     },
     Closed {
         commit_seq: u64,
+    },
+    /// A dispatched write lost its target authority. This marker is synced
+    /// before exposing the post-dispatch boundary, independently of its reply.
+    CallScopeCut {
+        position: u64,
+    },
+    MeasuredUsage {
+        position: u64,
+        report: UsageReport,
     },
 }

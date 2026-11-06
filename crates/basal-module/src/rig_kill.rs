@@ -151,7 +151,6 @@ impl RigKillHook {
         crate::fatal::kill_self();
     }
 
-
     /// The hook armed by the file `$BASAL_RIG_KILL_FILE` names, or `None`
     /// when the variable is unset or empty. `store` is filled with the
     /// store's path when the module learns it.
@@ -164,7 +163,21 @@ impl RigKillHook {
     }
 
     /// Resolve full run identity through the live/history union projection.
-fn flow_of(&self,run_id:&str)->Option<String> { let connection=Connection::open_with_flags(self.store.get()?,OpenFlags::SQLITE_OPEN_READ_ONLY|OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;connection.query_row("SELECT flow_id FROM run_identities WHERE run_id=?1",[run_id],|r|r.get(0)).optional().ok()? }
+    fn flow_of(&self, run_id: &str) -> Option<String> {
+        let connection = Connection::open_with_flags(
+            self.store.get()?,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .ok()?;
+        connection
+            .query_row(
+                "SELECT flow_id FROM run_identities WHERE run_id=?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()?
+    }
 }
 
 /// Whether `armed` names this boundary in a run of `flow_id`.
@@ -264,7 +277,10 @@ mod actor_reader_tests {
             position: Option<u64>,
             state: &basal_core::run_records::State,
         ) -> Step {
-            if matches!(boundary, Boundary::DriverSynced { .. } | Boundary::DriverReleased { .. }) {
+            if matches!(
+                boundary,
+                Boundary::DriverSynced { .. } | Boundary::DriverReleased { .. }
+            ) {
                 self.evidence.lock().unwrap().push(
                     serde_json::from_str(
                         &self
@@ -460,6 +476,4 @@ mod tests {
         );
         assert!(serde_json::from_str::<Armed>("DriverSynced").is_err());
     }
-
 }
-

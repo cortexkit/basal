@@ -107,12 +107,15 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
         install_gate: basal_core::InstallGate::Off,
         ..Config::default()
     };
-    let rt = Runtime::new(Arc::new(store),
-    Arc::new(mock.clone()),
-    Arc::new(MockCatalog::standard()),
-    probe.clone(),
-    Some(Arc::new(ProcessSource::new(&args.worker))),
-    config,).expect("runtime startup");
+    let rt = Runtime::new(
+        Arc::new(store),
+        Arc::new(mock.clone()),
+        Arc::new(MockCatalog::standard()),
+        probe.clone(),
+        Some(Arc::new(ProcessSource::new(&args.worker))),
+        config,
+    )
+    .expect("runtime startup");
     rt.recover().map_err(|e| e.to_string())?;
     // A restart finds the version it approved before and admits the same
     // trigger, which deduplicates to the run already in the store.

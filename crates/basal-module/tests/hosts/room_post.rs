@@ -693,15 +693,9 @@ fn room_store_refusal_defers_and_reuses_the_frozen_receipt() {
     let retry: i64 = f
         .module
         .rt
-        .store()
-        .read(|c| {
-            Ok(c.query_row(
-                "SELECT retry_not_before FROM journal WHERE run_id=?1",
-                [&run],
-                |r| r.get(0),
-            )?)
-        })
-        .unwrap();
+        .fixture_deferral(&run, 0)
+        .unwrap()
+        .retry_not_before;
     f.clock.set(retry);
     f.module.engine.run_until_idle(50).unwrap();
     assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);

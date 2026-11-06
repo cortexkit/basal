@@ -78,7 +78,9 @@ struct Cut(AtomicBool);
 impl Hooks for Cut {
     fn at(&self, _: &str, boundary: &Boundary) -> Step {
         lock_order::assert_lock_free();
-        if boundary == &(Boundary::HostArrived { position: 0 }) && self.0.swap(false, Ordering::SeqCst) {
+        if boundary == &(Boundary::HostArrived { position: 0 })
+            && self.0.swap(false, Ordering::SeqCst)
+        {
             Step::Crash
         } else {
             Step::Continue
@@ -654,7 +656,7 @@ pub(crate) fn arrival_before_acknowledgement_crash_recovers_the_same_outcome() {
 }
 
 #[test]
-fn broca_reads_live_registry_then_finished_history_and_leaves_the_live_fk_alone() {
+fn broca_reads_live_registry_then_finished_history_without_a_single_parent_fk() {
     let f = Fixture::new();
     f.seed(true, true);
     let broca = BrocaStore::new_staged(&f.hosts);
@@ -689,7 +691,10 @@ fn broca_reads_live_registry_then_finished_history_and_leaves_the_live_fk_alone(
             let tables = stmt
                 .query_map([], |r| r.get::<_, String>(2))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            assert!(tables.iter().any(|t| t == "journal"));
+            assert!(
+                tables.is_empty(),
+                "Broca ownership spans live and historical runs"
+            );
             Ok(())
         })
         .unwrap();

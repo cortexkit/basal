@@ -610,7 +610,7 @@ fn real_runs(f: &Fixture) -> i64 {
     f.module
         .rt
         .store()
-        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))?))
+        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM run_identities", [], |r| r.get(0))?))
         .expect("runs")
 }
 

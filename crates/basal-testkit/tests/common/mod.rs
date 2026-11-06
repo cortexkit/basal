@@ -5,8 +5,80 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
 use basal_core::{Config, Hooks, NoHooks, Run, Runtime};
+use basal_proto::{ParentMessage, Welcome, WorkerMessage};
 use basal_testkit::harness::{World, drive, test_manifest};
+
+/// Observe protocol frames at their channel boundary without adding runtime
+/// crash points for worker-message timing races.
+pub struct ObserveWorker<'a> {
+    inner: &'a mut dyn WorkerChannel,
+    welcome: Box<dyn Fn() + Send + Sync + 'a>,
+    sent: Box<dyn Fn(&ParentMessage) + Send + Sync + 'a>,
+    received: Arc<dyn Fn(&WorkerMessage) + Send + Sync>,
+}
+
+impl<'a> ObserveWorker<'a> {
+    pub fn new(inner: &'a mut dyn WorkerChannel) -> Self {
+        Self {
+            inner,
+            welcome: Box::new(|| {}),
+            sent: Box::new(|_| {}),
+            received: Arc::new(|_| {}),
+        }
+    }
+    pub fn welcoming(mut self, f: impl Fn() + Send + Sync + 'a) -> Self {
+        self.welcome = Box::new(f);
+        self
+    }
+    pub fn sending(mut self, f: impl Fn(&ParentMessage) + Send + Sync + 'a) -> Self {
+        self.sent = Box::new(f);
+        self
+    }
+    pub fn receiving(mut self, f: impl Fn(&WorkerMessage) + Send + Sync + 'static) -> Self {
+        self.received = Arc::new(f);
+        self
+    }
+}
+
+impl WorkerChannel for ObserveWorker<'_> {
+    fn welcome(&self) -> &Welcome {
+        (self.welcome)();
+        self.inner.welcome()
+    }
+    fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
+        self.inner.send(message)?;
+        (self.sent)(message);
+        Ok(())
+    }
+    fn recv(&mut self, timeout: Duration) -> Result<WorkerMessage, ChannelError> {
+        let message = self.inner.recv(timeout)?;
+        (self.received)(&message);
+        Ok(message)
+    }
+    fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
+        Box::new(ObserveReceiver {
+            inner: self.inner.receiver(),
+            received: self.received.clone(),
+        })
+    }
+    fn kill(&mut self) {
+        self.inner.kill();
+    }
+}
+
+struct ObserveReceiver {
+    inner: Box<dyn WorkerReceiver>,
+    received: Arc<dyn Fn(&WorkerMessage) + Send + Sync>,
+}
+impl WorkerReceiver for ObserveReceiver {
+    fn recv(&mut self) -> Result<WorkerMessage, ChannelError> {
+        let message = self.inner.recv()?;
+        (self.received)(&message);
+        Ok(message)
+    }
+}
 
 pub fn config() -> Config {
     Config {

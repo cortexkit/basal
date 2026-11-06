@@ -3,11 +3,18 @@ use std::collections::BTreeMap;
 use basal_proto::{ArgsDigest, HostCall, RecordedCall, RecordedOutcome};
 use serde::{Deserialize, Serialize};
 
-use super::{Arrival, Body, CallIdentity, Deferred, Intent, KvEffect, Resolution, Sync};
+use super::{
+    Arrival, Body, CallIdentity, Deferred, Intent, KvEffect, Resolution, Sync, UsageReport,
+};
 use crate::{CoreError, Result, model::StoredClass};
 
 fn corrupt(message: &str) -> CoreError {
     CoreError::Corrupt(format!("run records: {message}"))
+}
+pub(crate) fn parse_unknown_reason(value: &str) -> Option<basal_host::UnknownReason> {
+    // Host callbacks may append diagnostic text after the canonical reason.
+    // Retry policy depends only on that reason, never on the provider's prose.
+    basal_host::UnknownReason::parse(value.split_once(": ").map_or(value, |(reason, _)| reason))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,18 +23,20 @@ pub struct Claim {
     pub deadline_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallState {
     pub identity: CallIdentity,
     /// Dispatch attempts at or below this cut were already charged in SQLite
     /// before migration. New retries use normal accounting; attempts charged
     /// before migration are not added to the counters a second time.
-    #[serde(default)]
     pub pre_accounted_attempts: u64,
     /// A migrated reservation remains owned by its existing ledger row even
     /// when the call retries. Settlement updates that row instead of inserting.
-    #[serde(default)]
     pub pre_accounted_reservation: bool,
+    /// A target route ended after dispatch. Even a keyed mutation cannot be
+    /// retried against the retired authority; recovery requires reconciliation.
+    pub scope_cut: bool,
+    pub usage_report: Option<UsageReport>,
     pub intent: Option<Intent>,
     /// Older dispatch attempts still contribute accounting and audit facts.
     pub prior_intents: Vec<Intent>,
@@ -42,27 +51,55 @@ pub struct CallState {
 }
 
 impl CallState {
-    fn resolved_through(&self)->u64 {
-        self.resolutions.iter().rev().find(|r|r.choice=="not_applied").map_or(0,|r|r.attempts)
+    fn resolved_through(&self) -> u64 {
+        self.resolutions
+            .iter()
+            .rev()
+            .find(|r| r.choice == "not_applied")
+            .map_or(0, |r| r.attempts)
     }
     /// Every earlier attempt needs its own unsent proof. A later refusal cannot
     /// erase an older ambiguous send, even when a keyed retry is safe.
-    pub(crate) fn prior_maybe_sent(&self)->bool {
-        let resolved=self.resolved_through();
-        self.prior_intents.iter().filter(|i|i.attempts>resolved).any(|intent| {
-            // Older snapshots encoded a refunded, proven-unsent attempt by
-            // zeroing its dispatch count, before deferrals carried ordinals.
-            !intent.dispatch_count_window.as_ref().is_some_and(|c|c.count==0)
-                && !self.prior_deferrals.iter().any(|d|d.attempt==Some(intent.attempts)&&d.proven_unsent)
-        })
+    pub(crate) fn prior_maybe_sent(&self) -> bool {
+        let resolved = self.resolved_through();
+        self.prior_intents
+            .iter()
+            .filter(|i| i.attempts > resolved)
+            .any(|intent| {
+                // Older snapshots encoded a refunded, proven-unsent attempt by
+                // zeroing its dispatch count, before deferrals carried ordinals.
+                !intent
+                    .dispatch_count_window
+                    .as_ref()
+                    .is_some_and(|c| c.count == 0)
+                    && !self
+                        .prior_deferrals
+                        .iter()
+                        .any(|d| d.attempt == Some(intent.attempts) && d.proven_unsent)
+            })
     }
-    pub(crate) fn transport_failures(&self)->u64 {
-        let resolved=self.resolved_through();
-        self.prior_deferrals.iter().filter(|d|!d.refund_dispatch).filter_map(|d|d.attempt).filter(|a|*a>resolved).collect::<std::collections::BTreeSet<_>>().len() as u64
+    pub(crate) fn transport_failures(&self) -> u64 {
+        let resolved = self.resolved_through();
+        self.prior_deferrals
+            .iter()
+            .filter(|d| !d.refund_dispatch)
+            .filter_map(|d| d.attempt)
+            .filter(|a| *a > resolved)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as u64
     }
-    pub(crate) fn ambiguous_reason(&self)->basal_host::UnknownReason {
-        self.unknown.as_deref().and_then(basal_host::UnknownReason::parse)
-            .or_else(||self.deferred.iter().chain(self.prior_deferrals.iter().rev()).filter(|d|!d.proven_unsent&&!d.refund_dispatch).filter(|d|d.attempt.is_none_or(|a|a>self.resolved_through())).find_map(|d|basal_host::UnknownReason::parse(&d.cause)))
+    pub(crate) fn ambiguous_reason(&self) -> basal_host::UnknownReason {
+        self.unknown
+            .as_deref()
+            .and_then(parse_unknown_reason)
+            .or_else(|| {
+                self.deferred
+                    .iter()
+                    .chain(self.prior_deferrals.iter().rev())
+                    .filter(|d| !d.proven_unsent && !d.refund_dispatch)
+                    .filter(|d| d.attempt.is_none_or(|a| a > self.resolved_through()))
+                    .find_map(|d| basal_host::UnknownReason::parse(&d.cause))
+            })
             .unwrap_or(basal_host::UnknownReason::BasalRestarted)
     }
 }
@@ -131,6 +168,8 @@ impl State {
                 identity: identity.clone(),
                 pre_accounted_attempts: 0,
                 pre_accounted_reservation: false,
+                scope_cut: false,
+                usage_report: None,
                 intent: None,
                 prior_intents: Vec::new(),
                 sync: None,
@@ -208,6 +247,7 @@ impl State {
             | Body::Accepted { .. }
             | Body::Requeued { .. }
             | Body::Unknown { .. }
+            | Body::CallScopeCut { .. }
             | Body::Resolution(_)
             | Body::Snapshot { .. } => true,
             Body::Arrived(arrival) => {
@@ -312,7 +352,7 @@ impl State {
                         ));
                     }
                     let mut previous = previous.clone();
-                    let previous_attempt=previous.attempts;
+                    let previous_attempt = previous.attempts;
                     if old.deferred.as_ref().is_some_and(|d| d.refund_dispatch)
                         && let Some(count) = &mut previous.dispatch_count_window
                     {
@@ -397,16 +437,24 @@ impl State {
             }
             Body::Deferred(deferred) => {
                 let call = self.call_mut(deferred.position)?;
-                let mut deferred=deferred.clone();
-                let attempt=call.intent.as_ref().map(|i|i.attempts);
-                if deferred.attempt.is_some()&&deferred.attempt!=attempt {return Err(corrupt("deferral names a different intent attempt"));}
-                deferred.attempt=attempt;
+                let mut deferred = deferred.clone();
+                let attempt = call.intent.as_ref().map(|i| i.attempts);
+                if deferred.attempt.is_some() && deferred.attempt != attempt {
+                    return Err(corrupt("deferral names a different intent attempt"));
+                }
+                deferred.attempt = attempt;
                 if let Some(prior) = call.deferred.replace(deferred) {
                     call.prior_deferrals.push(prior);
                 }
             }
             Body::Unknown { position, reason } => {
                 self.call_mut(*position)?.unknown = Some(reason.clone());
+            }
+            Body::CallScopeCut { position } => {
+                self.call_mut(*position)?.scope_cut = true;
+            }
+            Body::MeasuredUsage { position, report } => {
+                self.call_mut(*position)?.usage_report = Some(*report);
             }
             Body::ScopeCut { deadline_exempt } => {
                 self.deadline_exempt = *deadline_exempt;

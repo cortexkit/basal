@@ -202,6 +202,8 @@ fn call(c: &Connection, row: &Row, admitted: i64) -> Result<CallState> {
         intent,
         pre_accounted_attempts: attempts,
         pre_accounted_reservation: reservation.is_some(),
+        scope_cut: integer(row, "scope_cut")? != 0,
+        usage_report: None,
         prior_intents: Vec::new(),
         sync: None,
         accepted: optional_text(row, "handle"),
@@ -267,7 +269,7 @@ fn call(c: &Connection, row: &Row, admitted: i64) -> Result<CallState> {
             audit_at: at,
             proven_unsent: class == StoredClass::Mutation,
             refund_dispatch: true,
-                    attempt: None,
+            attempt: None,
         });
     }
     Ok(state)
@@ -656,6 +658,10 @@ pub(super) fn snapshots(
 }
 
 pub(super) fn broca(tx: &Transaction<'_>) -> Result<()> {
+    rebuild_broca(tx)?;
+    audit::check_broca(tx)
+}
+pub(super) fn rebuild_broca(tx: &Transaction<'_>) -> Result<()> {
     tx.execute_batch("DROP TRIGGER IF EXISTS broca_calls_forget_wait;
         -- A single FK cannot own a call in both live_runs and run_history.
         -- The storage API validates union ownership inside its write transaction.
@@ -663,9 +669,12 @@ pub(super) fn broca(tx: &Transaction<'_>) -> Result<()> {
         INSERT INTO cutover_broca_calls SELECT * FROM broca_calls;
         DROP TABLE broca_calls;
         ALTER TABLE cutover_broca_calls RENAME TO broca_calls;
-        CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(snapshot,'$.deferred'),0)=0;")?;
-    super::check_broca_ownership(tx)?;
-    audit::check_broca(tx)
+        CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(snapshot,'$.deferred'),0)=0;
+        CREATE TRIGGER broca_calls_forget_wait AFTER DELETE ON broca_calls BEGIN
+            DELETE FROM broca_waits WHERE send_id=old.send_id;
+            DELETE FROM broca_wakes WHERE send_id=old.send_id;
+        END;")?;
+    super::check_broca_ownership(tx)
 }
 pub(super) fn drop_legacy(tx: &Transaction<'_>) -> Result<()> {
     audit::drop_dependencies(tx)?;

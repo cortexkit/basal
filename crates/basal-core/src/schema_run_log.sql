@@ -1,4 +1,4 @@
--- Staged run-log control plane. Not part of the production migration chain.
+-- Run-log control plane, installed by fresh initialization or the cutover.
 CREATE UNIQUE INDEX run_snapshots_identity ON run_snapshots(snapshot_id, flow_id, flow_version);
 
 -- Execution state belongs to the actor; history_lost survives a missing log.

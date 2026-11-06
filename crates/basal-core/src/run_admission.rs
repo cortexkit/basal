@@ -1,8 +1,8 @@
-//! Staged admission into the run-log control plane.
+//! Admission into the run-log control plane.
 //!
-//! No production constructor selects this path yet. Every field the old
-//! admission wrote has a home in `live_runs` or `run_identities`; the
-//! `AdmissionLog` and `EventWakes` traits are the seams later stages bind.
+//! Admissions publish their durable control rows before actors are registered
+//! or event receipts are acknowledged. `AdmissionLog` supplies the already
+//! synced log watermark without waiting for I/O under the SQLite connection.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -39,8 +39,7 @@ pub struct RunAdmission {
 }
 
 impl RunAdmission {
-    /// Construct log-backed admission explicitly. Production keeps using the
-    /// SQLite execution journal until the run-log schema is enabled.
+    /// Bind admission to the recovered log's published watermark.
     pub fn new_staged(
         store: Arc<Store>,
         log: Arc<dyn AdmissionLog>,
@@ -219,7 +218,16 @@ impl RunAdmission {
 
     /// Admit an explicit trigger under the currently approved flow version.
     #[cfg(test)]
-    pub(crate) fn fixture_current(&self,tx:&Transaction<'_>,flow:&str,id:&str,trigger:JsonText,ctx:&AdmitContext)->Result<Admission>{self.current(tx,flow,id,trigger,"manual",ctx)}
+    pub(crate) fn fixture_current(
+        &self,
+        tx: &Transaction<'_>,
+        flow: &str,
+        id: &str,
+        trigger: JsonText,
+        ctx: &AdmitContext,
+    ) -> Result<Admission> {
+        self.current(tx, flow, id, trigger, "manual", ctx)
+    }
     pub fn admit_trigger(
         &self,
         flow: &str,

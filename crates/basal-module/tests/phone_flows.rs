@@ -70,12 +70,57 @@ fn seed_run(
     trigger: Value,
     error: Option<&str>,
 ) {
-    f.module.rt.store().write(|tx| {
-        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,ended_at,admit_seq,error_kind,error_detail)
-            VALUES (?1,?2,?1,1,?3,?10,zeroblob(32),?4,?5,?6,?7,?8,?9)",
-            params![id,flow,trigger.to_string(),state,T0+seq,ended,seq,error.map(|_|"script"),error,basal_core::runs::snapshot(tx,flow,None,&[0;32],"SECRET SCRIPT","{}")?])?;
-        Ok(())
-    }).unwrap();
+    use basal_core::run_records::{Body, CallIdentity, State};
+    let rt = &f.module.rt;
+    rt.fixture_run(id, flow, 1, "SECRET SCRIPT", "{}", State::new(T0 + seq))
+        .unwrap();
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE live_runs SET trigger=?2,admit_seq=?3,attempt=1 WHERE run_id=?1",
+                params![id, trigger.to_string(), seq],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    if let Some(ended) = ended {
+        let now = rt.config().clock.now_ms();
+        rt.config().clock.set(ended);
+        rt.fixture_finish(
+            id,
+            basal_core::RunState::parse(state).unwrap(),
+            None,
+            error.map(|detail| ("script", detail)),
+        )
+        .unwrap();
+        rt.config().clock.set(now);
+    } else if state == "needs_reconcile" {
+        rt.fixture_append(
+            id,
+            Body::Issued(CallIdentity::new(
+                basal_proto::HostCall {
+                    position: 0,
+                    kind: basal_proto::CallKind::Op {
+                        module: "mock".into(),
+                        op: "post".into(),
+                    },
+                    args: basal_proto::JsonText::null(),
+                },
+                basal_core::StoredClass::Mutation,
+            )),
+        )
+        .unwrap();
+        rt.fixture_append(
+            id,
+            Body::Unknown {
+                position: 0,
+                reason: "basal_restarted".into(),
+            },
+        )
+        .unwrap();
+    } else {
+        assert_eq!(state, "pending");
+    }
 }
 
 fn ids(reply: &Value) -> Vec<&str> {
@@ -429,7 +474,7 @@ fn phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog() {
                     |r| r.get(0),
                 )?,
                 c.query_row(
-                    "SELECT COUNT(*) FROM runs WHERE flow_id='flow-uninstall'",
+                    "SELECT COUNT(*) FROM run_identities WHERE flow_id='flow-uninstall'",
                     [],
                     |r| r.get(0),
                 )?,

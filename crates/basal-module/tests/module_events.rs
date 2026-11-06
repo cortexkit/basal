@@ -194,16 +194,19 @@ fn runtime(path: &std::path::Path) -> Runtime {
 }
 
 fn runtime_with_catalog(path: &std::path::Path, catalog: MockCatalog) -> Runtime {
-    Runtime::new(Arc::new(Store::open(path, Durability::throwaway()).unwrap()),
-    Arc::new(MockHost::new()),
-    Arc::new(catalog),
-    Arc::new(basal_core::NoHooks),
-    None,
-    Config {
-        clock: Clock::manual(1000),
-        install_gate: InstallGate::Off,
-        ..Default::default()
-    },).expect("runtime startup")
+    Runtime::new(
+        Arc::new(Store::open(path, Durability::throwaway()).unwrap()),
+        Arc::new(MockHost::new()),
+        Arc::new(catalog),
+        Arc::new(basal_core::NoHooks),
+        None,
+        Config {
+            clock: Clock::manual(1000),
+            install_gate: InstallGate::Off,
+            ..Default::default()
+        },
+    )
+    .expect("runtime startup")
 }
 
 const DELIVERED_SUBJECT: &str = "ck.account.event.prefrontal-core.digest_delivered.v1";
@@ -267,7 +270,7 @@ async fn delivered_notice_targets_only_named_flow_and_acks_no_match() {
     let flows: Vec<String> = rt
         .store()
         .read(|c| {
-            Ok(c.prepare("SELECT flow_id FROM runs")?
+            Ok(c.prepare("SELECT flow_id FROM live_runs")?
                 .query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?)
         })
@@ -335,7 +338,7 @@ fn approve(rt: &Runtime, id: &str) {
 }
 fn run_count(rt: &Runtime) -> i64 {
     rt.store()
-        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))?))
+        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM run_identities", [], |r| r.get(0))?))
         .unwrap()
 }
 
@@ -655,7 +658,13 @@ async fn newer_version_keeps_first_approval_cutoff() {
     assert_eq!(report.skipped_before_install, 0);
     let script: String = rt
         .store()
-        .read(|c| Ok(c.query_row("SELECT script FROM runs_with_snapshots", [], |r| r.get(0))?))
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT s.script FROM live_runs r JOIN run_snapshots s USING(snapshot_id)",
+                [],
+                |r| r.get(0),
+            )?)
+        })
         .unwrap();
     assert_eq!(
         script, "return 2;",

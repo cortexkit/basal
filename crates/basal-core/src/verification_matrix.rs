@@ -48,7 +48,9 @@ fn every_post_port_boundary_has_a_crash_case() {
                 crate::run_log::tests::sqlite::restore::crash_case(boundary.clone());
                 crate::staged_runtime::tests::verification_matrix::crash_case(boundary.clone());
             }
-            Boundary::RemovalCaptured => {crate::run_removal::tests::crash_case(boundary.clone());}
+            Boundary::RemovalCaptured => {
+                crate::run_removal::tests::crash_case(boundary.clone());
+            }
             Boundary::MigrationSweepReady
             | Boundary::MigrationSweepCommitted
             | Boundary::MigrationCreateReady

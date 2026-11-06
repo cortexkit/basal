@@ -214,7 +214,9 @@ impl Scan {
         }
         let source = fs::read_to_string(&path).unwrap();
         if path.extension().is_some_and(|ext| ext == "sql") {
-            if test { return; }
+            if test {
+                return;
+            }
             self.sql(
                 &path,
                 &source,
@@ -364,11 +366,7 @@ impl Scan {
                 self.file(&path.parent().unwrap().join(&file.text), test);
             }
             if !test && !self.dropped_tables {
-                if token.text == "use"
-                    && import_contains_kv(header)
-
-                    && !safe_kv_import(header)
-                {
+                if token.text == "use" && import_contains_kv(header) && !safe_kv_import(header) {
                     self.report(
                         path,
                         source,
@@ -691,9 +689,21 @@ fn dropped_table_guard_covers_all_production_sql() {
         );
     }
     let scan = scan_runtime(root);
-    for name in ["basal-core","basal-host","basal-module","basal-launch","basal-worker","basal-proto"] {
-        let directory=root.join("crates").join(name).join("src");
-        assert!(scan.visited.iter().any(|(path,test)|!test&&path.starts_with(&directory)),"missing production crate {name}");
+    for name in [
+        "basal-core",
+        "basal-host",
+        "basal-module",
+        "basal-launch",
+        "basal-worker",
+        "basal-proto",
+    ] {
+        let directory = root.join("crates").join(name).join("src");
+        assert!(
+            scan.visited
+                .iter()
+                .any(|(path, test)| !test && path.starts_with(&directory)),
+            "missing production crate {name}"
+        );
     }
     assert!(
         scan.checked_sql > 100,
@@ -709,16 +719,37 @@ fn dropped_table_guard_covers_all_production_sql() {
 
 #[test]
 fn dropped_table_guard_planted_runtime_violations_fail() {
-    let mut paths:Vec<String>=NEW_PATH_ROOTS.iter().map(|m|format!("basal-core/src/{m}")).collect();
-    paths.extend(["basal-host","basal-module","basal-worker","basal-launch","basal-proto"].map(|name|format!("{name}/src/runtime.rs")));
+    let mut paths: Vec<String> = NEW_PATH_ROOTS
+        .iter()
+        .map(|m| format!("basal-core/src/{m}"))
+        .collect();
+    paths.extend(
+        [
+            "basal-host",
+            "basal-module",
+            "basal-worker",
+            "basal-launch",
+            "basal-proto",
+        ]
+        .map(|name| format!("{name}/src/runtime.rs")),
+    );
     for path in paths {
         for table in DROPPED_TABLES {
-            for quoted in [format!("\"{table}\""),format!("'{table}'"),format!("[{table}]"),format!("`{table}`")] {
-                let sql=format!("SELECT * FROM main.{quoted}");
-                let source=format!("pub fn planted() {{ query({sql:?}); }}");
-                let fixture=Fixture::new(&[(&path,&source)]);
-                let scan=scan_runtime(&fixture.0);
-                assert_eq!(scan.violations.len(),1,"missed {path} / {table}: {scan:?}");
+            for quoted in [
+                format!("\"{table}\""),
+                format!("'{table}'"),
+                format!("[{table}]"),
+                format!("`{table}`"),
+            ] {
+                let sql = format!("SELECT * FROM main.{quoted}");
+                let source = format!("pub fn planted() {{ query({sql:?}); }}");
+                let fixture = Fixture::new(&[(&path, &source)]);
+                let scan = scan_runtime(&fixture.0);
+                assert_eq!(
+                    scan.violations.len(),
+                    1,
+                    "missed {path} / {table}: {scan:?}"
+                );
                 assert!(scan.violations[0].contains(table));
             }
         }
@@ -727,33 +758,70 @@ fn dropped_table_guard_planted_runtime_violations_fail() {
 
 #[test]
 fn dropped_names_as_columns_and_non_sql_metadata_are_not_table_references() {
-    let fixture=Fixture::new(&[("basal-module/src/reader.rs",r#"fn read(){query("SELECT runs FROM rate_windows");query("SELECT 1 AS journal FROM run_history");json!({"runs":[]});}"#)]);
+    let fixture = Fixture::new(&[(
+        "basal-module/src/reader.rs",
+        r#"fn read(){query("SELECT runs FROM rate_windows");query("SELECT 1 AS journal FROM run_history");json!({"runs":[]});}"#,
+    )]);
     assert!(scan_runtime(&fixture.0).violations.is_empty());
 }
 
 #[test]
 fn dropped_table_guard_migration_negative_control_passes() {
-    let fixture=Fixture::new(&[
-        ("basal-core/src/lib.rs",r#"mod run_cutover; const SQL:&str=include_str!("schema_cutover.sql");"#),
-        ("basal-core/src/run_cutover.rs",r#"fn migrate(){execute("INSERT INTO run_history SELECT * FROM runs");}"#),
-        ("basal-core/src/schema_cutover.sql","DROP VIEW journal_with_payloads; DROP TABLE journal;"),
+    let fixture = Fixture::new(&[
+        (
+            "basal-core/src/lib.rs",
+            r#"mod run_cutover; const SQL:&str=include_str!("schema_cutover.sql");"#,
+        ),
+        (
+            "basal-core/src/run_cutover.rs",
+            r#"fn migrate(){execute("INSERT INTO run_history SELECT * FROM runs");}"#,
+        ),
+        (
+            "basal-core/src/schema_cutover.sql",
+            "DROP VIEW journal_with_payloads; DROP TABLE journal;",
+        ),
     ]);
     assert!(scan_runtime(&fixture.0).violations.is_empty());
-    fs::write(fixture.0.join("crates/basal-core/src/runtime_query.sql"),"SELECT * FROM mailbox").unwrap();
-    fs::write(fixture.0.join("crates/basal-core/src/lib.rs"),r#"const SQL:&str=include_str!("runtime_query.sql");"#).unwrap();
-    assert_eq!(scan_runtime(&fixture.0).violations.len(),1);
+    fs::write(
+        fixture.0.join("crates/basal-core/src/runtime_query.sql"),
+        "SELECT * FROM mailbox",
+    )
+    .unwrap();
+    fs::write(
+        fixture.0.join("crates/basal-core/src/lib.rs"),
+        r#"const SQL:&str=include_str!("runtime_query.sql");"#,
+    )
+    .unwrap();
+    assert_eq!(scan_runtime(&fixture.0).violations.len(), 1);
 }
 
 #[test]
 fn layout_maintenance_is_confined_to_cutover_and_used_by_fresh_initialization() {
-    for statement in [r#"execute("VACUUM")"#,r#"execute("PRAGMA page_size=1024")"#,r#"execute("PRAGMA journal_mode=DELETE")"#,r#"c.pragma_update(None,"page_size",1024)"#,r#"c.pragma_update(None,"journal_mode","DELETE")"#] {
-        let source=format!("pub fn maintenance(){{{statement};}}");
-        for path in ["basal-core/src/reader.rs","basal-module/src/reader.rs","basal-core/src/run_cutover/accidental_runtime.rs"] {
-            let fixture=Fixture::new(&[(path,&source)]);
-            assert_eq!(scan_runtime(&fixture.0).violations.len(),1,"{path}: {statement}");
+    for statement in [
+        r#"execute("VACUUM")"#,
+        r#"execute("PRAGMA page_size=1024")"#,
+        r#"execute("PRAGMA journal_mode=DELETE")"#,
+        r#"c.pragma_update(None,"page_size",1024)"#,
+        r#"c.pragma_update(None,"journal_mode","DELETE")"#,
+    ] {
+        let source = format!("pub fn maintenance(){{{statement};}}");
+        for path in [
+            "basal-core/src/reader.rs",
+            "basal-module/src/reader.rs",
+            "basal-core/src/run_cutover/accidental_runtime.rs",
+        ] {
+            let fixture = Fixture::new(&[(path, &source)]);
+            assert_eq!(
+                scan_runtime(&fixture.0).violations.len(),
+                1,
+                "{path}: {statement}"
+            );
         }
-        let fixture=Fixture::new(&[("basal-core/src/run_cutover/pages.rs",&source)]);
-        assert!(scan_runtime(&fixture.0).violations.is_empty(),"{statement}");
+        let fixture = Fixture::new(&[("basal-core/src/run_cutover/pages.rs", &source)]);
+        assert!(
+            scan_runtime(&fixture.0).violations.is_empty(),
+            "{statement}"
+        );
     }
 }
 
@@ -826,7 +894,8 @@ fn scan_sources(root: &Path, dropped_tables: bool) -> Scan {
     // Unlinked files and binary entry points are not silently exempt. A file
     // visited through both a test and production module is checked as production.
     for path in files {
-        if path.extension().unwrap() == "sql" && !scan.visited.iter().any(|(seen,_)|seen==&path) {
+        if path.extension().unwrap() == "sql" && !scan.visited.iter().any(|(seen, _)| seen == &path)
+        {
             let source = fs::read_to_string(&path).unwrap();
             scan.sql(
                 &path,
@@ -859,7 +928,10 @@ fn production_kv_reads_are_run_local() {
         scan.visited.iter().filter(|(_, test)| !test).count() > 100,
         "scan did not cover the production source trees"
     );
-    assert_eq!(scan.sql_reads, 0, "the retired eager kv SQL reader returned");
+    assert_eq!(
+        scan.sql_reads, 0,
+        "the retired eager kv SQL reader returned"
+    );
     assert_eq!(
         scan.run_local_reads, 1,
         "the audited run-local kv read changed"
@@ -868,10 +940,7 @@ fn production_kv_reads_are_run_local() {
         scan.terminal_overlay_writes, 3,
         "the audited terminal-overlay kv writes changed"
     );
-    assert_eq!(
-        scan.run_calls, 0,
-        "retired eager kv calls returned"
-    );
+    assert_eq!(scan.run_calls, 0, "retired eager kv calls returned");
     assert!(
         scan.violations.is_empty(),
         "production kv reader found outside a run; stop and ask before continuing:\n{}",
@@ -1105,24 +1174,36 @@ fn scan_checks_files_reachable_from_both_tests_and_production() {
 
 #[test]
 fn scan_allows_write_only_reset_and_migration_schema() {
-    let fixture=Fixture::new(&[
-        ("basal-core/src/state_epoch.rs",r#"fn reset() { execute("DELETE FROM kv WHERE flow_id=?1"); }"#),
-        ("basal-core/src/run_cutover/schema.rs",r#"const SQL:&str="CREATE TABLE kv (key TEXT);";"#),
+    let fixture = Fixture::new(&[
+        (
+            "basal-core/src/state_epoch.rs",
+            r#"fn reset() { execute("DELETE FROM kv WHERE flow_id=?1"); }"#,
+        ),
+        (
+            "basal-core/src/run_cutover/schema.rs",
+            r#"const SQL:&str="CREATE TABLE kv (key TEXT);";"#,
+        ),
     ]);
-    let scan=scan(&fixture.0);
-    assert!(scan.violations.is_empty(),"{scan:?}");
-    assert_eq!(scan.sql_reads,0);
-    assert_eq!(scan.run_calls,0);
+    let scan = scan(&fixture.0);
+    assert!(scan.violations.is_empty(), "{scan:?}");
+    assert_eq!(scan.sql_reads, 0);
+    assert_eq!(scan.run_calls, 0);
 }
 
 #[test]
 fn scan_rejects_retired_eager_kv_reader_and_former_driver_allowances() {
-    let fixture=Fixture::new(&[
-        ("basal-core/src/kv.rs",r#"fn apply(){query("SELECT value FROM kv");}"#),
-        ("basal-core/src/driver.rs",r#"use crate::kv; fn recover_calls(){kv::apply();} fn commit_local_call(){kv::apply();}"#),
+    let fixture = Fixture::new(&[
+        (
+            "basal-core/src/kv.rs",
+            r#"fn apply(){query("SELECT value FROM kv");}"#,
+        ),
+        (
+            "basal-core/src/driver.rs",
+            r#"use crate::kv; fn recover_calls(){kv::apply();} fn commit_local_call(){kv::apply();}"#,
+        ),
     ]);
-    let scan=scan(&fixture.0);
-    assert_eq!(scan.violations.len(),4,"{scan:?}");
-    assert_eq!(scan.sql_reads,0);
-    assert_eq!(scan.run_calls,0);
+    let scan = scan(&fixture.0);
+    assert_eq!(scan.violations.len(), 4, "{scan:?}");
+    assert_eq!(scan.sql_reads, 0);
+    assert_eq!(scan.run_calls, 0);
 }

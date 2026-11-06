@@ -357,11 +357,35 @@ mod tests {
     const NOW: i64 = 1_777_593_600_000;
     const SECRET: &str = "PRIVATE-provider-error-script-arguments-event-body";
 
-    fn with_store(tag: &str, test: impl FnOnce(&Store)) {
+    struct Fixture {
+        rt: basal_core::Runtime,
+    }
+    impl std::ops::Deref for Fixture {
+        type Target = Store;
+        fn deref(&self) -> &Store {
+            self.rt.store()
+        }
+    }
+    fn with_store(tag: &str, test: impl FnOnce(&Fixture)) {
         let dir = basal_testkit::harness::scratch(&format!("diagnostics-{tag}"));
         let store = Store::open(dir.join("basal.db"), basal_core::Durability::throwaway()).unwrap();
-        test(&store);
-        drop(store);
+        let fixture = Fixture {
+            rt: basal_core::Runtime::new(
+                std::sync::Arc::new(store),
+                std::sync::Arc::new(basal_host::mock::MockHost::new()),
+                std::sync::Arc::new(basal_host::MockCatalog::standard()),
+                std::sync::Arc::new(basal_core::NoHooks),
+                None,
+                basal_core::Config {
+                    clock: basal_core::Clock::manual(NOW),
+                    install_gate: basal_core::InstallGate::Off,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        };
+        test(&fixture);
+        drop(fixture);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -374,20 +398,31 @@ mod tests {
             .unwrap();
     }
 
-    fn read(store: &Store) -> Value {
+    fn read(store: &Fixture) -> Value {
         let changes = store.read(|c| Ok(c.total_changes())).unwrap();
-        let result = reply(store, NOW, DEFAULT_WINDOW_MS, None, &[]).unwrap();
+        let health = store.rt.health().unwrap();
+        let log = LogFindings {
+            flows: store.rt.flow_health().unwrap(),
+            runs: health
+                .unfinished
+                .values()
+                .flatten()
+                .map(|id| store.rt.run(id).unwrap())
+                .collect(),
+            deferred: store.rt.deferred_calls().unwrap(),
+        };
+        let result = reply_with(store, NOW, DEFAULT_WINDOW_MS, None, &[], &log).unwrap();
         assert_eq!(store.read(|c| Ok(c.total_changes())).unwrap(), changes);
         assert_contract(&json!({"result":result}));
         assert!(!result.to_string().contains(SECRET));
         result
     }
 
-    fn quiet(store: &Store) {
+    fn quiet(store: &Fixture) {
         assert_eq!(read(store)["findings"], json!([]));
     }
 
-    fn only(store: &Store, check: &str, key: &str) -> Value {
+    fn only(store: &Fixture, check: &str, key: &str) -> Value {
         let result = read(store);
         let findings = result["findings"].as_array().unwrap();
         assert_eq!(findings.len(), 1, "{result}");
@@ -400,12 +435,67 @@ mod tests {
         findings[0].clone()
     }
 
-    fn run(store: &Store, id: &str, state: &str, at: i64, seq: i64) {
-        store.write(|tx| {
-            tx.execute("INSERT INTO runs (run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,admit_seq,ended_at,error_kind) VALUES (?1,'f',?1,1,?2,?8,zeroblob(32),?3,?4,?5,?6,?7)",
-                rusqlite::params![id, SECRET, state,at,seq, if state=="failed" {Some(at+1)} else {None}, if state=="failed" {Some("script")} else {None},basal_core::runs::snapshot(tx,"f",None,&[0;32],SECRET,"{}")?])?;
-            Ok(())
-        }).unwrap();
+    fn run(store: &Fixture, id: &str, state: &str, at: i64, seq: i64) {
+        if state == "failed" {
+            store.write(|tx| {
+                let snapshot = basal_core::runs::snapshot(tx, "f", Some(1), &basal_core::ids::code_hash(SECRET,"{}"), SECRET, "{}")?;
+                tx.execute("INSERT INTO run_history(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,admitted_at,admit_seq,ended_at,state,error_kind,result_size,call_counts,writes_sent,tokens_charged,cost_microusd,broken,activation_count,script_started,phase,deadline_exempt,history_lost,commit_seq,snapshot_id) VALUES(?1,'f',1,?1,'manual',?2,?3,?4,?5,'failed','script',0,'{}',0,0,0,0,1,1,'script',0,0,1,?6)",rusqlite::params![id,json!(SECRET).to_string(),at,seq,at+1,snapshot])?;
+                Ok(())
+            }).unwrap();
+        } else {
+            store
+                .rt
+                .fixture_run(
+                    id,
+                    "f",
+                    1,
+                    SECRET,
+                    "{}",
+                    basal_core::run_records::State::new(at),
+                )
+                .unwrap();
+            store
+                .write(|tx| {
+                    tx.execute(
+                        "UPDATE live_runs SET admit_seq=?2,trigger=?3 WHERE run_id=?1",
+                        rusqlite::params![id, seq, json!(SECRET).to_string()],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            if state == "needs_reconcile" {
+                use basal_core::run_records::{Body, CallIdentity};
+                store
+                    .rt
+                    .fixture_append(
+                        id,
+                        Body::Issued(CallIdentity::new(
+                            basal_proto::HostCall {
+                                position: 0,
+                                kind: basal_proto::CallKind::Op {
+                                    module: "mock".into(),
+                                    op: "post".into(),
+                                },
+                                args: basal_proto::JsonText::null(),
+                            },
+                            basal_core::StoredClass::Mutation,
+                        )),
+                    )
+                    .unwrap();
+                store
+                    .rt
+                    .fixture_append(
+                        id,
+                        Body::Unknown {
+                            position: 0,
+                            reason: "basal_restarted".into(),
+                        },
+                    )
+                    .unwrap();
+            } else {
+                assert_eq!(state, "pending");
+            }
+        }
     }
 
     #[test]
@@ -506,31 +596,118 @@ mod tests {
     fn overdue_deadlines_and_deferred_retries_allow_a_minute_grace() {
         with_store("deadlines", |store| {
             run(store, "r", "pending", NOW - 120_000, 1);
-            seed(
-                store,
-                &format!("UPDATE runs SET deadline_at={}", NOW - 60_000 + 1),
-            );
+            store
+                .rt
+                .fixture_update_state("r", |state| {
+                    state.claim = Some(basal_core::run_records::Claim {
+                        first_claim_ms: NOW - 120_000,
+                        deadline_at: NOW - 60_000 + 1,
+                    })
+                })
+                .unwrap();
             quiet(store);
-            seed(store, "UPDATE runs SET deadline_at=deadline_at-1");
+            store
+                .rt
+                .fixture_update_state("r", |state| state.claim.as_mut().unwrap().deadline_at -= 1)
+                .unwrap();
             assert_eq!(only(store, "runs_overdue", "deadline")["count"], 1);
-            seed(store, "UPDATE runs SET deadline_at=NULL");
-            seed(
-                store,
-                &format!(
-                    "INSERT INTO journal(run_id,position,kind_code,args_bytes,args_digest,idempotency_key,class,dispatch,issued_generation,refusal,retry_not_before,refusal_detail) VALUES ('r',0,1,length(CAST('{SECRET}' AS BLOB)),zeroblob(32),'j','query','deferred',1,'scope_ended',{},'{{\"reason\":\"scope_ended\",\"provider\":\"{SECRET}\",\"action\":\"{SECRET}\"}}'); INSERT INTO journal_payloads(run_id,position,args) VALUES ('r',0,'{SECRET}')",
-                    NOW - 60_000 + 1
-                ),
+            store
+                .rt
+                .fixture_update_state("r", |state| state.claim = None)
+                .unwrap();
+            use basal_core::run_records::{Body, CallIdentity, Deferred};
+            store
+                .rt
+                .fixture_append(
+                    "r",
+                    Body::Issued(CallIdentity::new(
+                        basal_proto::HostCall {
+                            position: 0,
+                            kind: basal_proto::CallKind::Op {
+                                module: SECRET.into(),
+                                op: SECRET.into(),
+                            },
+                            args: basal_proto::JsonText::new(json!(SECRET).to_string()).unwrap(),
+                        },
+                        basal_core::StoredClass::Query,
+                    )),
+                )
+                .unwrap();
+            let refusal = basal_host::flow_refusal::FlowRefusal::new(
+                basal_host::flow_refusal::RefusalReason::ScopeEnded,
+                SECRET,
+                SECRET,
             );
+            store
+                .rt
+                .fixture_append(
+                    "r",
+                    Body::Deferred(Deferred {
+                        position: 0,
+                        retry_not_before: NOW - 60_000 + 1,
+                        cause: serde_json::to_string(&refusal).unwrap(),
+                        audit_at: NOW - 120_000,
+                        proven_unsent: true,
+                        refund_dispatch: true,
+                        attempt: None,
+                    }),
+                )
+                .unwrap();
             quiet(store);
-            seed(
-                store,
-                "UPDATE journal SET retry_not_before=retry_not_before-1",
-            );
+            store
+                .rt
+                .fixture_update_state("r", |state| {
+                    state
+                        .calls
+                        .get_mut(&0)
+                        .unwrap()
+                        .deferred
+                        .as_mut()
+                        .unwrap()
+                        .retry_not_before -= 1
+                })
+                .unwrap();
             only(store, "runs_overdue", "deferred");
-            seed(
-                store,
-                &format!("UPDATE runs SET state='succeeded',ended_at={NOW}"),
-            );
+            let value = refusal.outcome().value;
+            store
+                .rt
+                .fixture_append(
+                    "r",
+                    Body::Arrived(basal_core::run_records::Arrival {
+                        position: 0,
+                        arrival_seq: 0,
+                        outcome: "rejected".into(),
+                        settlement: basal_proto::Settlement::Rejected,
+                        value_hash: basal_core::ids::payload_hash(
+                            basal_proto::Settlement::Rejected,
+                            &value,
+                        ),
+                        value,
+                        handle: None,
+                        usage: None,
+                        cost_micros: None,
+                        kv_effect: None,
+                        durability: basal_core::run_records::ArrivalDurability {
+                            refusal_committed: true,
+                            ..Default::default()
+                        },
+                    }),
+                )
+                .unwrap();
+            store
+                .rt
+                .fixture_append(
+                    "r",
+                    Body::Released {
+                        position: 0,
+                        delivery_order: 0,
+                    },
+                )
+                .unwrap();
+            store
+                .rt
+                .fixture_close("r", basal_core::RunState::Succeeded, None, None)
+                .unwrap();
             quiet(store);
         });
     }
@@ -540,9 +717,12 @@ mod tests {
         with_store("reconcile", |store| {
             run(store, "r", "needs_reconcile", NOW - 3_600_000 + 1, 1);
             quiet(store);
-            seed(store, "UPDATE runs SET admitted_at=admitted_at-1");
+            seed(store, "UPDATE live_runs SET admitted_at=admitted_at-1");
             only(store, "reconcile_pending", "runs");
-            seed(store, "UPDATE runs SET state='pending'");
+            store
+                .rt
+                .fixture_update_state("r", |state| state.calls.clear())
+                .unwrap();
             seed(
                 store,
                 &format!(

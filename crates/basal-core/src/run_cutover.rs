@@ -114,6 +114,30 @@ impl Migration {
         phase(&self.store)
     }
     pub fn run(&self) -> Result<()> {
+        // A newly created, still-empty store has no legacy execution state to
+        // sweep or convert. Install the target control plane in one transaction;
+        // the ordinary resumable phases then create its log and finish audits.
+        if self.phase()? == Phase::Sweep
+            && self.store.is_fresh()
+            && self.store.read(|c| {
+                Ok(c.query_row(
+                    "SELECT NOT EXISTS(SELECT 1 FROM runs) AND NOT EXISTS(SELECT 1 FROM flows)",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )?)
+            })?
+        {
+            let started = Instant::now();
+            self.store.write(|tx| {
+                audit::capture(tx)?;
+                convert::create(tx, &self.store)?;
+                convert::finished(tx)?;
+                self.at(Phase::Create, false)?;
+                set_phase(tx, Phase::LiveRuns)
+            })?;
+            tracing::info!(target:"migration", phase="create", duration_ms=started.elapsed().as_millis() as u64, "fresh run-log schema initialized");
+            self.at(Phase::Create, true)?;
+        }
         while self.phase()? != Phase::Done {
             self.advance()?;
         }
@@ -209,6 +233,11 @@ impl Migration {
 /// still requires the same lease-held SQLite maintenance operation.
 pub(crate) fn initialize_pages(store: &Store) -> Result<()> {
     pages::set_pages(store, &crate::NoHooks)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn initialize_broca_fixture(tx: &Transaction<'_>) -> Result<()> {
+    convert::rebuild_broca(tx)
 }
 
 fn set_phase(tx: &Transaction<'_>, phase: Phase) -> Result<()> {

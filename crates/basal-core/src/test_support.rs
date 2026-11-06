@@ -114,6 +114,9 @@ impl crate::channel::WorkerChannel for ScriptedWorker {
     fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
         panic!("scripted peer uses timed receives")
     }
+    fn fixture_inline_recv(&self) -> bool {
+        true
+    }
     fn kill(&mut self) {
         self.killed = true;
     }

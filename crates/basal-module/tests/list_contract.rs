@@ -307,16 +307,27 @@ fn list_last_run_carries_the_failure_on_one_bounded_line() {
     );
     f.module
         .rt
-        .store()
-        .write(|tx| {
-            tx.execute(
-                "INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,snapshot_id,code_hash,state,admitted_at,ended_at,admit_seq,error_kind,error_detail)
-                 VALUES ('run-failed','a','run-failed',1,'{}',?4,zeroblob(32),'failed',?1,?2,1,'script',?3)",
-                rusqlite::params![T0, T0 + 5, detail, basal_core::runs::snapshot(tx,"a",None,&[0;32],"return 1;","{}")?],
-            )?;
-            Ok(())
-        })
+        .fixture_run(
+            "run-failed",
+            "a",
+            1,
+            "return 1;",
+            "{}",
+            basal_core::run_records::State::new(T0),
+        )
         .unwrap();
+    let now = f.clock.now_ms();
+    f.clock.set(T0 + 5);
+    f.module
+        .rt
+        .fixture_finish(
+            "run-failed",
+            basal_core::RunState::Failed,
+            None,
+            Some(("script", &detail)),
+        )
+        .unwrap();
+    f.clock.set(now);
     let raw = list(&f, &agent("A"), json!({}));
     let last = &raw["flows"][0]["last_run"];
     assert_eq!(last["run_id"], "run-failed");
