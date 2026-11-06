@@ -280,9 +280,14 @@ impl RecoveredHosts {
                 Answered::Now(CardState::Applied),
                 (state == RunState::Pending).then(|| id.into()),
             )),
-            Err(CoreError::Invalid(detail))
-                if detail == "attempt is no longer unknown"
-                    || detail == "closed runs accept only observed_result" =>
+            Err(error)
+                if matches!(
+                    &error,
+                    CoreError::WrongState {
+                        operation: "reconcile",
+                        ..
+                    }
+                ) || matches!(&error, CoreError::Invalid(detail) if detail == "attempt is no longer unknown") =>
             {
                 self.store.write(|tx| {
                     let changed = cas(tx, &card, CardState::Stale, choice, now)?;
