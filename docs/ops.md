@@ -771,6 +771,32 @@ Expiry is fixed at admission time + 41 minutes. Basal checks the returned scope'
 
 Every terminal path calls core's `codemode.run_scope.close` with `{run_id, epoch}` before exposing the result. Close replies `{closed, already_closed}`. Cancellation closes the scope before killing the worker. Startup interrupts unfinished runs, closes leftover scopes and never resends a call. If close fails, the result carries a warning and the scope's fixed expiry remains its outer bound.
 
+### Tool availability at dispatch
+
+An admitted tool is checked against the live daemon catalog when its call
+reaches dispatch, including calls that waited in the supervisor's queue. If
+its provider module is absent, or the daemon catalog cannot be read, basal
+holds the call for at most 15 seconds for the provider to reconnect. Catalog
+change notifications trigger a recheck; a fallback timer rechecks at most
+once per second. The hold occupies an in-flight slot and spends the run's
+wall budget, not its person-wait allowance. Cancellation or run termination
+releases the call without sending it.
+
+If the provider returns with the operation still declared, basal dispatches
+the call normally. If the hold expires first, the call rejects with outcome
+and code `tool_unavailable`, an explanatory message naming the module, and
+detail `{"reason":"provider_unavailable","module":"<id>","retryable":true}`.
+The run's wall budget can end the hold sooner; the run retains its normal
+wall-budget outcome and the unsent call is recorded as `tool_unavailable`.
+The fixed run deadline also bounds the hold. A module that is present but no
+longer declares the operation rejects immediately with the same outcome and
+code, a message naming the tool and module, and detail
+`{"reason":"tool_removed","module":"<id>","retryable":false}`. Neither
+case records permission to send or a timestamp for entering the provider.
+Other pre-dispatch refusal codes, such as `unknown_tool`, `invalid_input` and
+`queue_full`, are unchanged and carry readable messages rather than the bare
+code.
+
 ### Onward held calls
 
 Run tool routes declare `tool-result/v1` and `held-reply/v1` as consumer capabilities, but declarations alone do not select a result format. Admission freezes each tool's own catalog `result_format`. Only `tool-result/v1` tools use the shared tool-provider decoder, for direct replies and late `result` entries alike: `structuredContent` is the program value when present, otherwise text parts joined with newlines; `isError: true` rejects with the provider's `errorCode` and text. Legacy and unknown formats remain opaque JSON, even for a body such as `{"path":"a.txt","content":"hello"}`. An unreadable provider catalog, including a legacy provider's catalog, drops that provider's tools from the run with a `catalog_unreadable` warning whose message says retrying the run may succeed; the run's other tools still work. Basal never guesses a format.

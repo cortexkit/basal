@@ -62,6 +62,8 @@ pub trait Transport: Send + Sync {
     fn shutdown(&self) {}
 
     /// Wake durable work when a catalog read observes a different generation.
+    /// Registrations are additive. Owners should register once and use weak
+    /// captures so notifications do not keep their state alive.
     fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
 
     /// Read a caller's file under the short-lived scope core registered for this
@@ -437,9 +439,16 @@ pub struct SubcTransport {
 #[derive(Default)]
 struct CatalogChanges {
     generation: Mutex<Option<Value>>,
-    notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    notify: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
 }
 impl CatalogChanges {
+    fn subscribe(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        self.notify
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(notify);
+    }
+
     fn observe(&self, generation: Value) {
         let changed = {
             let mut previous = self.generation.lock().unwrap_or_else(|p| p.into_inner());
@@ -453,7 +462,7 @@ impl CatalogChanges {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
-            if let Some(notify) = notify {
+            for notify in notify {
                 notify();
             }
         }
@@ -1168,11 +1177,7 @@ impl Transport for SubcTransport {
         )
     }
     fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
-        *self
-            .catalog_changes
-            .notify
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(notify);
+        self.catalog_changes.subscribe(notify);
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
         self.call(
@@ -1437,13 +1442,31 @@ mod tests {
         let changes = CatalogChanges::default();
         let wakes = Arc::new(AtomicUsize::new(0));
         let count = wakes.clone();
-        *changes.notify.lock().unwrap() = Some(Arc::new(move || {
+        changes.subscribe(Arc::new(move || {
             count.fetch_add(1, Ordering::SeqCst);
         }));
         changes.observe(json!(1));
         changes.observe(json!(1));
         changes.observe(json!(2));
         assert_eq!(wakes.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn observed_catalog_generation_wakes_both_subscribers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let changes = CatalogChanges::default();
+        let wakes = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+        for count in &wakes {
+            let count = count.clone();
+            changes.subscribe(Arc::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        changes.observe(json!(1));
+        changes.observe(json!(1));
+        for count in &wakes {
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+        }
     }
 
     fn registered() -> crate::flow_scope::RegisteredScope {

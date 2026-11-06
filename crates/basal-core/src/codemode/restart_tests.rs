@@ -10,7 +10,6 @@ fn construct(f: &Fixture) -> Result<Supervisor> {
     Supervisor::new(
         f.host.store.clone(),
         f.host.clone(),
-        f.catalog.clone(),
         f.source.clone(),
         f.clock.clone(),
         PreludeHash::of("parent's codemode prelude"),
