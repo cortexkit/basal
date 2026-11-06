@@ -583,16 +583,24 @@ impl Supervisor {
             terminal.warnings = run.warnings;
             terminate(&self.0, &run.run_id, None, terminal)?;
         }
+        // A scope past its fixed expiry has already ended in core, so there is
+        // nothing left to close. Skipping it also stops a scope whose close
+        // keeps failing (its invoking session is gone) from being retried, and
+        // warned about, at every restart.
+        let now = self.0.clock.now_ms();
         let leftover = self.0.store.read(|conn| {
-            let mut statement =
-                conn.prepare("SELECT run_id FROM codemode_scopes WHERE closed=0 AND refused=0")?;
+            let mut statement = conn.prepare(
+                "SELECT run_id FROM codemode_scopes WHERE closed=0 AND refused=0 \
+                 AND (json_extract(request,'$.expires_at_ms') IS NULL \
+                      OR json_extract(request,'$.expires_at_ms') > ?1)",
+            )?;
             Ok(statement
-                .query_map([], |row| row.get::<_, String>(0))?
+                .query_map([now], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
         for id in leftover {
             if let Err(error) = super::scope::close(&self.0.store, self.0.transport.as_ref(), &id) {
-                tracing::warn!(%error, "leftover run scope relies on its fixed expiry");
+                tracing::warn!(run_id = %id, %error, "leftover run scope relies on its fixed expiry");
             }
         }
         Ok(())

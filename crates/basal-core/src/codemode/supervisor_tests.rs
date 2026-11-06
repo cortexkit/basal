@@ -2739,6 +2739,21 @@ fn restart_closes_leftover_core_scope_without_starting_worker() {
 }
 
 #[test]
+fn restart_leaves_an_expired_leftover_scope_alone() {
+    let f = Fixture::new();
+    // Never confirmed opened, and past its fixed expiry: core has already
+    // ended it. Recovery must neither re-open it to learn an epoch nor close it.
+    f.host.store.write(|tx| {
+        tx.execute("INSERT INTO codemode_scopes(run_id,request) VALUES ('r',?1)",[
+            json!({"agent_id":"agent","invoking_scope":{"ref":"agent","epoch":2},"run_id":"r","expires_at_ms":50}).to_string()])?;
+        Ok(())
+    }).unwrap();
+    f.supervisor.recover().unwrap();
+    let events = f.host.events.lock().unwrap();
+    assert!(!events.iter().any(|e| e == "core_close"), "{events:?}");
+}
+
+#[test]
 fn tool_provider_migration_preserves_calls_and_schedules_legacy_scope_close() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
