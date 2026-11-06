@@ -640,7 +640,20 @@ pub fn run_with_cuts_under(
             Some(id) => id,
             None => {
                 let spec = world.spec_with(&rt, script, manifest)?;
-                let admitted = rt.admit(&spec).map_err(|e| format!("admit: {e}"))?;
+                let admitted = match rt.admit(&spec) {
+                    Ok(admitted) => admitted,
+                    Err(CoreError::Cut) if probe.fired() => {
+                        fired.push(true);
+                        phases.push(probe.points());
+                        // Admission may have committed without returning its id.
+                        // Reusing the same trigger on recovery either admits it
+                        // or retrieves the original id through deduplication.
+                        world.mock.detach();
+                        drop(rt);
+                        continue;
+                    }
+                    Err(e) => return Err(format!("phase {phase}: admitting: {e}")),
+                };
                 run_id.insert(admitted.run_id().unwrap_or_default().to_owned())
             }
         };

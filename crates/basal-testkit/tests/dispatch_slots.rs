@@ -9,10 +9,9 @@ mod common;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use basal_core::channel::WorkerChannel;
 use basal_core::{ActivationEnd, Clock, Config, NoHooks, RunState, Runtime};
 use basal_testkit::harness::{World, wait_until};
-use common::{admit_trigger, config, finish, result};
+use common::{admit_as, admit_trigger, config, finish, result};
 use serde_json::json;
 
 const T0: i64 = 1_798_761_600_000;
@@ -67,13 +66,58 @@ fn second_run_waits_for_the_first_even_while_suspended() {
 
 #[test]
 fn deadline_fails_a_stuck_run_and_frees_the_slot() {
+    use basal_host::{CallClass, CallRequest, CompletionSink, Dispatched, Host, TransportError};
+    use basal_proto::CallKind;
+
+    struct EnteredHost {
+        mock: basal_host::mock::MockHost,
+        entered: mpsc::Sender<()>,
+    }
+    impl Host for EnteredHost {
+        fn classify(&self, kind: &CallKind) -> CallClass {
+            self.mock.classify(kind)
+        }
+        fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
+            if request.args.as_str().contains("stuck") {
+                self.entered.send(()).unwrap();
+            }
+            self.mock.dispatch(request)
+        }
+        fn attach(&self, sink: Arc<dyn CompletionSink>) {
+            self.mock.attach(sink);
+        }
+        fn now_ms(&self) -> f64 {
+            self.mock.now_ms()
+        }
+        fn random(&self) -> f64 {
+            self.mock.random()
+        }
+    }
+
     let world = World::new("slot-deadline");
-    let (rt, clock) = manual_runtime(&world);
+    let clock = Clock::manual(T0);
+    let (entered, in_host) = mpsc::channel();
+    let rt = Runtime::new(
+        Arc::new(basal_core::Store::open(world.store_path(), world.durability).unwrap()),
+        Arc::new(EnteredHost {
+            mock: world.mock.clone(),
+            entered,
+        }),
+        Arc::new(world.catalog.clone()),
+        Arc::new(NoHooks),
+        Some(world.source.clone()),
+        Config {
+            clock: clock.clone(),
+            ..config()
+        },
+    )
+    .unwrap();
+    rt.retain_detail_for_test().unwrap();
     // The first run's call never answers until the test opens its gate.
     let first = admit_trigger(
         &rt,
         &world,
-        "await ops.call('mock', 'echo', { gate: 'stuck' }); return 1;",
+        "await ops.call('mock', 'echo', { gate: 'stuck' }); await ops.call('mock', 'echo', {}); return 1;",
         "t1",
     );
     let second = admit_trigger(&rt, &world, "return 2;", "t2");
@@ -86,12 +130,9 @@ fn deadline_fails_a_stuck_run_and_frees_the_slot() {
             (end, worker)
         })
     };
-    // Wait until the first run's call is journaled and in the host: the run
-    // is running and stuck.
-    rt.wait_for(&first, Duration::from_secs(30), |_| {
-        rt.calls(&first).map(|c| c.len() == 1).unwrap_or(false)
-    })
-    .expect("wait");
+    // Observe host entry, not just Intent creation: advancing the clock before
+    // dispatch would test expiry before the host receives the call instead.
+    in_host.recv_timeout(Duration::from_secs(30)).unwrap();
     assert_eq!(rt.run(&first).expect("run").state, RunState::Running);
     assert!(matches!(
         rt.resume(&second).expect("activation"),
@@ -100,31 +141,59 @@ fn deadline_fails_a_stuck_run_and_frees_the_slot() {
 
     // Past the default ten-minute deadline.
     clock.advance(601_000);
-    rt.enforce_deadlines().expect("enforce");
-    // If a regression dispatched the mock call on the driver thread itself,
-    // killing the worker would not unblock it: the call waits on the mock's
-    // "stuck" gate. So bound the wait for the driver, and if it doesn't exit,
-    // open that gate so the driver can finish and the test can fail cleanly.
-    let waited = wait_until(
+    let enforcer = {
+        let rt = rt.clone();
+        std::thread::spawn(move || rt.enforce_deadlines())
+    };
+    let reaped = wait_until(
         Instant::now() + DRIVER_WAIT,
-        &format!("expired run {first}'s activation driver to exit"),
-        || driver.is_finished(),
+        "expired run's worker to be reaped",
+        || {
+            world
+                .source
+                .counts
+                .live_pid
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+        },
     );
-    if waited.is_err() {
-        world.mock.open_gate("stuck");
-        wait_until(
-            Instant::now() + DRIVER_WAIT,
-            "the released activation driver to exit",
-            || driver.is_finished(),
-        )
-        .expect("driver cleanup");
-    }
+    let sealed = wait_until(
+        Instant::now() + DRIVER_WAIT,
+        "expired run to be sealed Closing",
+        || rt.fixture_routing(&first) == Some(basal_core::run_store::Routing::Closing),
+    );
+    let held_slot = rt.resume(&second).expect("activation while draining");
+    let not_terminal = !rt.run(&first).unwrap().state.is_terminal();
+    let independent = admit_as(&rt, &world, "return 3;", "independent");
+    let (done, independent_done) = mpsc::channel();
+    let other_driver = {
+        let rt = rt.clone();
+        std::thread::spawn(move || done.send(rt.resume(&independent)).unwrap())
+    };
+    let independent_end = independent_done.recv_timeout(DRIVER_WAIT);
+    // Close drains authorized host calls synchronously. The worker dies at the
+    // deadline, but the run becomes terminal and releases its flow slot only
+    // after the host reply; independent flows must still progress meanwhile.
+    world.mock.open_gate("stuck");
+    wait_until(
+        Instant::now() + DRIVER_WAIT,
+        "deadline close to drain after the reply",
+        || driver.is_finished() && enforcer.is_finished() && other_driver.is_finished(),
+    )
+    .expect("bounded drain");
     let (end, mut worker) = driver.join().expect("driver thread");
-    if let Err(error) = waited {
-        worker.kill();
-        rt.quiesce();
-        panic!("{error}");
-    }
+    enforcer.join().unwrap().expect("enforce");
+    other_driver.join().unwrap();
+    reaped.expect("deadline must reap the worker before the host replies");
+    sealed.expect("deadline must seal the run before the host replies");
+    assert!(
+        not_terminal,
+        "terminal projection must wait for the entrant"
+    );
+    assert!(matches!(held_slot, ActivationEnd::Waiting {holder} if holder == first));
+    assert!(
+        matches!(independent_end.unwrap().unwrap(), ActivationEnd::Succeeded {value} if value == "3")
+    );
     let end = end.expect("activation");
     assert!(
         matches!(&end, ActivationEnd::OwnerLost)
@@ -153,9 +222,8 @@ fn deadline_fails_a_stuck_run_and_frees_the_slot() {
         "the second run did not start"
     );
 
-    // The stuck call still settles: its obligation is kept. (Its dispatch
-    // thread is still inside the host until the gate opens.)
-    world.mock.open_gate("stuck");
+    // The script was sealed at the deadline and never issued its second call.
+    assert_eq!(world.mock.total_sends(), 1);
     rt.quiesce();
     let open = rt.health().expect("health").open_obligations;
     assert!(!open.iter().any(|(r, _)| *r == first), "{open:?}");

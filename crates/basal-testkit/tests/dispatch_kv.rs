@@ -5,10 +5,11 @@
 mod common;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use basal_core::{Config, KvLimits, NoHooks, RunState};
 use basal_proto::Settlement;
-use basal_testkit::harness::{World, run_with_cuts};
+use basal_testkit::harness::{Point, Probe, World, drive, run_with_cuts};
 use common::{admit_trigger, config, finish, result};
 use serde_json::json;
 
@@ -143,4 +144,88 @@ fn kv_write_is_applied_once_across_every_cut() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn recovery_wakes_a_parked_run_after_its_arrival_append_cut() {
+    let world = World::new("kv-arrival-cut");
+    // This script's eleventh append is the long call's Arrived record, after
+    // Parked and before Woken. Assert the recovered state below so this cut
+    // cannot silently move to a different record if the journal changes.
+    let probe = Arc::new(Probe::crash_at(Point::parse("RunLogAppended#11").unwrap()));
+    let rt = world.runtime(probe.clone(), config()).unwrap();
+    let id = admit_trigger(
+        &rt,
+        &world,
+        r#"
+        await kv.set('n', 1);
+        const l = await ops.call('mock', 'long', {});
+        await kv.set('m', 2);
+        await kv.delete('gone');
+        return [await kv.get('n'), await kv.get('m'), l.done];
+    "#,
+        "t1",
+    );
+    assert!(matches!(
+        rt.resume(&id).unwrap(),
+        basal_core::ActivationEnd::Suspended { .. }
+    ));
+    world.mock.complete_all();
+    rt.quiesce();
+    assert!(probe.fired());
+    world.mock.detach();
+    drop(rt);
+    // World::runtime runs startup recovery. The callback's persisted arrival
+    // must make the run runnable without a new completion or a deadline sweep.
+    let rt = world.runtime(Arc::new(NoHooks), config()).unwrap();
+    let state = rt.fixture_state(&id).unwrap();
+    assert!(state.calls[&1].arrival.is_some());
+    assert!(state.calls[&1].delivery_order.is_none());
+    assert!(
+        !state.parked,
+        "an awaited arrival must wake a recovered run"
+    );
+    let run = drive(&rt, &world.mock, &id, Duration::from_secs(30)).unwrap();
+    assert_eq!(result(&run), json!([1, 2, true]));
+    assert_eq!(world.mock.total_sends(), 1);
+    let summary = basal_testkit::harness::summarize(&rt, &world.mock, &id).unwrap();
+    assert_eq!(json!(summary.kv), json!({"m": "2@1", "n": "1@1"}));
+    assert!(summary.audit_complete());
+}
+
+#[test]
+fn admission_cuts_keep_one_admission_and_apply_kv_once() {
+    let script = "await kv.set('only', 1); return await kv.get('only');";
+    for (boundary, committed_runs) in [("AdmissionWritten", 0), ("AdmissionCommitted", 1)] {
+        let world = World::new("kv-admission-cut");
+        let point = Point::parse(&format!("{boundary}#1")).unwrap();
+        let probe = Arc::new(Probe::crash_at(point.clone()));
+        let rt = world.runtime(probe.clone(), config()).unwrap();
+        let spec = world.spec(&rt, script).unwrap();
+        assert!(matches!(rt.admit(&spec), Err(basal_core::CoreError::Cut)));
+        assert!(probe.fired());
+        world.mock.detach();
+        drop(rt);
+
+        // Inspect durable admission before retrying: Written rolls back, while
+        // Committed retains exactly one run even though no id was returned.
+        let rt = world.runtime(Arc::new(NoHooks), config()).unwrap();
+        assert_eq!(rt.runs_for_flow("flow-test").unwrap().len(), committed_runs);
+        world.mock.detach();
+        drop(rt);
+
+        // Cut a second admission attempt through the matrix harness itself. A
+        // committed trigger is a duplicate, never a second run or kv revision.
+        let run = run_with_cuts(&world, script, &[point], &config()).unwrap();
+        assert_eq!(run.fired, vec![true], "{boundary}");
+        assert_eq!(run.summary.result, Some(json!(1)), "{boundary}");
+        assert_eq!(json!(run.summary.kv), json!({"only": "1@1"}), "{boundary}");
+        assert!(run.summary.audit_complete(), "{boundary}");
+        let rt = world.runtime(Arc::new(NoHooks), config()).unwrap();
+        assert_eq!(
+            rt.runs_for_flow("flow-test").unwrap().len(),
+            1,
+            "{boundary}"
+        );
+    }
 }

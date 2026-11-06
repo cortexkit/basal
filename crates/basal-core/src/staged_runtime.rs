@@ -447,7 +447,7 @@ impl run_driver::Services for Services {
         } else {
             rt.class_of(&call.kind, prepared.args.as_ref())
         };
-        if !matches!(class, StoredClass::Local | StoredClass::Sync)
+        if class != StoredClass::Sync
             && rt
                 .store()
                 .read(|c| crate::install::is_disabled(c, &live.flow_id))?
@@ -1406,6 +1406,12 @@ impl Runtime {
         } else {
             result
         };
+        // CloseDriver::stop_worker treats removal as permission to drain entrants.
+        // Reap an invalidated worker before publishing that it has stopped, even
+        // when ownership was lost before the activation driver started.
+        if result.is_err() {
+            worker.kill();
+        }
         self.shared
             .staged_workers
             .lock()
@@ -1451,6 +1457,12 @@ impl Runtime {
                 continue;
             }
             let (id, _, _, state) = run.reader_snapshot();
+            // A crash can retain Arrived but lose the following Woken append.
+            // Re-evaluate parked readiness even if host redelivery is a duplicate.
+            if state.parked && self.staged_driver(&id)?.wake(&id)? {
+                ids.push(id);
+                continue;
+            }
             if !state.parked && matches!(state.phase.as_str(), "claimed" | "script") {
                 run.enter()
                     .map_err(|_| CoreError::Unavailable("run is closing".into()))?
