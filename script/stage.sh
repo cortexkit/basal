@@ -404,7 +404,9 @@ update_control_of() {
 # Read the committed build input, not a possibly changed working file. SQLite's
 # read-only URI sees committed WAL data without opening the running store for writes.
 store_versions() {
-  schema=$(git -C "$ROOT" show HEAD:crates/basal-core/src/schema.rs) \
+  # The run-log cutover moved the migration chain into run_cutover/.
+  schema=$(git -C "$ROOT" show HEAD:crates/basal-core/src/run_cutover/schema.rs 2>/dev/null) \
+    || schema=$(git -C "$ROOT" show HEAD:crates/basal-core/src/schema.rs) \
     || die "cannot read the schema at HEAD"
   versions=$(printf '%s\n' "$schema" | python3 -c '
 import pathlib, re, sqlite3, sys
@@ -414,14 +416,23 @@ if not versions:
     sys.exit("no migration versions in the schema at HEAD")
 with closing(sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)) as db:
     live = db.execute("SELECT max(version) FROM cortexkit_schema_version").fetchone()[0]
+    # The run-log cutover converts the store without raising the version: a
+    # store that still has the legacy journal table has not been converted.
+    legacy = db.execute("SELECT count(*) FROM sqlite_master WHERE type = ? AND name = ?", ("table", "journal")).fetchone()[0]
 if not isinstance(live, int) or live < 0:
     sys.exit("the live store has no valid schema version")
-print(max(versions), live)
+print(max(versions), live, legacy)
 ' "$LIVE_STORE") || die "cannot compare the build and live store schema versions"
   BUILD_SCHEMA=${versions%% *}
+  LEGACY_JOURNAL=${versions##* }
   LIVE_SCHEMA=${versions#* }
+  LIVE_SCHEMA=${LIVE_SCHEMA%% *}
+  CUTOVER=0
+  if [ "$LEGACY_JOURNAL" -gt 0 ] && git -C "$ROOT" cat-file -e HEAD:crates/basal-core/src/run_cutover/convert.rs 2>/dev/null; then
+    CUTOVER=1
+  fi
   MIGRATES_ARG=""
-  if [ "$BUILD_SCHEMA" -gt "$LIVE_SCHEMA" ]; then
+  if [ "$BUILD_SCHEMA" -gt "$LIVE_SCHEMA" ] || [ "$CUTOVER" = 1 ]; then
     MIGRATES_ARG=" --migrates ~/.local/share/cortexkit/basal/store.db"
   fi
 }
@@ -641,6 +652,9 @@ if [ -n "$MIGRATES_ARG" ]; then
 - This update migrates the store. The ck-basal command below includes \`--migrates ~/.local/share/cortexkit/basal/store.db\` so place-module.sh snapshots it before placement.
 - Rollback is the old binary AND the store backup together, with both binaries restored as a pair. A binary-only rollback refuses to open the newer store: basal_core::Store::open returns "the store's schema is at version N but this build knows only up to M". Stop basal before restoring the store backup; do not let it reopen the store until both old binaries and the backup are restored.
 EOF
+  if [ "$CUTOVER" = 1 ]; then
+    say "- This build converts the store to the run log at its first start (the schema version stays $BUILD_SCHEMA). An older build cannot use a converted store, so the same backup-and-binaries rollback applies. Old builds expect the legacy journal tables, which the conversion removes." >> "$CARD"
+  fi
 else
   if [ "$STOP_THE_WORLD" = 1 ]; then
     say "- No schema rise: no migration snapshot is requested from place-module.sh. Retain the read-only backup below and roll back both binaries together with place-module.sh's --older mode." >> "$CARD"
