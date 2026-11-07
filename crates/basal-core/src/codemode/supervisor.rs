@@ -470,6 +470,12 @@ impl Supervisor {
             value["budgets"] = json!({"model_cost_usd": {"limit":limits.model_cost_usd,
                 "spent":spent,"remaining":limits.model_cost_usd - spent}});
             if let Some(result) = run.value { value["value"] = parse(&result)?; }
+            if run.status == Status::Failed
+                && run.error.as_ref().is_some_and(|error| error.code == "result_too_large")
+                && let Some(head) = run.value_head
+            {
+                value["value_head"] = head.into();
+            }
             if let Some(error) = run.error { value["error"] = json!({"code": error.code, "message": error.message}); }
             if let Some(description) = run.description { value["description"] = description.into(); }
             use rusqlite::OptionalExtension;
@@ -2641,6 +2647,7 @@ fn terminal(status: Status, value: Option<String>, error: Option<RunError>) -> T
     Terminal {
         status,
         value,
+        value_head: None,
         error,
         output: String::new(),
         warnings: "[]".into(),
@@ -2685,13 +2692,15 @@ fn activation_end(result: ActivationResult, rejections: &BTreeMap<u64, Rejection
     match result {
         ActivationResult::Completed { value } => {
             if value.as_str().len() > RESULT_BYTES {
-                failed(
+                let mut terminal = failed(
                     "result_too_large",
                     format!(
                         "return value has {} bytes; the limit is {RESULT_BYTES}. The tool calls above already ran. Return only what is needed next, such as counts, ids or the first items",
                         value.as_str().len()
                     ),
-                )
+                );
+                terminal.value_head = Some(value_head(value.as_str()));
+                terminal
             } else if serde_json::from_str::<Value>(value.as_str()).is_err() {
                 failed("result_not_json", "return value is not JSON")
             } else {
@@ -2730,6 +2739,22 @@ fn activation_end(result: ActivationResult, rejections: &BTreeMap<u64, Rejection
             failed(code, failure.to_string())
         }
     }
+}
+
+fn value_head(value: &str) -> String {
+    let marker = |shown| {
+        format!(
+            "\n… cut: {} bytes returned, the first {shown} shown",
+            value.len()
+        )
+    };
+    // Reserve the marker before cutting so the head and its byte counts fit
+    // within the return-value allowance, even at a multi-byte character.
+    let mut end = RESULT_BYTES - marker(RESULT_BYTES).len();
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &value[..end], marker(end))
 }
 
 /// A tool call's rejection as the program received it.

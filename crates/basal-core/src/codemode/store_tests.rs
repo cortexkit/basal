@@ -68,6 +68,7 @@ pub(crate) fn completed() -> Terminal {
     Terminal {
         status: Status::Completed,
         value: Some("42".into()),
+        value_head: None,
         error: None,
         output: "a 1\n".into(),
         warnings: "[]".into(),
@@ -78,6 +79,7 @@ fn cancelled() -> Terminal {
     Terminal {
         status: Status::Cancelled,
         value: None,
+        value_head: None,
         error: None,
         output: String::new(),
         warnings: "[]".into(),
@@ -105,6 +107,7 @@ fn the_migration_adds_codemode_tables_apart_from_the_flow_tables() {
         "catalog",
         "catalog_digest",
         "description",
+        "value_head",
         "output",
         "status",
         "admitted_at",
@@ -179,6 +182,7 @@ fn a_run_admitted_at_its_deadline_is_stored_already_ended() {
     let ended = Terminal {
         status: Status::BudgetExhausted(Budget::Wall),
         value: None,
+        value_head: None,
         error: Some(RunError {
             code: "budget_exhausted:wall".into(),
             message: "the run was admitted at its deadline".into(),
@@ -537,6 +541,77 @@ fn withdrawn_requires_a_sent_entered_held_call() {
     }).unwrap();
 }
 
+// Historical migration fixtures must not use insert_run, which writes columns
+// added after the schema these tests deliberately start from.
+fn insert_pre_49_run(conn: &rusqlite::Connection, id: &str) {
+    let run = new_run(id);
+    conn.execute(
+        "INSERT INTO codemode_runs(run_id,agent_id,program,catalog,catalog_digest,description,limits,scope,deadline_ms,status,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'running',?10)",
+        params![run.run_id,run.agent_id,run.program,run.catalog,run.catalog_digest,run.description,run.limits,run.scope,run.deadline_ms,run.admitted_at],
+    ).unwrap();
+}
+
+#[test]
+fn migration_49_preserves_codemode_runs_and_defaults_value_head_to_null() {
+    fn rows(conn: &rusqlite::Connection) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut statement = conn
+            .prepare("SELECT * FROM codemode_runs ORDER BY run_id")
+            .unwrap();
+        let width = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..width)
+                    .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    for migration in crate::schema::MIGRATIONS.iter().filter(|m| m.version < 49) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    assert!(
+        conn.prepare("SELECT value_head FROM codemode_runs")
+            .is_err()
+    );
+    for id in ["running", "completed", "failed", "cancelled"] {
+        insert_pre_49_run(&conn, id);
+    }
+    conn.execute_batch(
+        "UPDATE codemode_runs SET status='completed',value='{\"answer\":42}',output='kept λ',warnings='[{\"message\":\"kept warning\"}]',ended_at=110,duration_ms=10 WHERE run_id='completed';
+         UPDATE codemode_runs SET status='failed',error_code='result_too_large',error_message='old oversized return',ended_at=111,duration_ms=11 WHERE run_id='failed';
+         UPDATE codemode_runs SET status='cancelled',ended_at=112,duration_ms=12 WHERE run_id='cancelled';",
+    ).unwrap();
+    let before = rows(&conn);
+    let tx = conn.transaction().unwrap();
+    tx.execute_batch(
+        crate::schema::MIGRATIONS
+            .iter()
+            .find(|m| m.version == 49)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let mut after = rows(&conn);
+    assert_eq!(after.len(), 4);
+    for row in &mut after {
+        assert_eq!(row.pop(), Some(rusqlite::types::Value::Null));
+    }
+    assert_eq!(after, before);
+    assert!(
+        conn.execute(
+            "UPDATE codemode_runs SET value_head='not a failed return' WHERE run_id='running'",
+            [],
+        )
+        .is_err()
+    );
+}
+
 #[test]
 fn withdrawn_migration_preserves_calls_model_children_and_finality() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -545,7 +620,7 @@ fn withdrawn_migration_preserves_calls_model_children_and_finality() {
         conn.execute_batch(migration.statements).unwrap();
     }
     let tx = conn.transaction().unwrap();
-    insert_run(&tx, &new_run("old"), None).unwrap();
+    insert_pre_49_run(&tx, "old");
     insert_call(&tx, "old", 0, "model", 0, CallStart::Intent { at: 100 }).unwrap();
     record_outcome(&tx, "old", 0, Outcome::Ok, None, 110).unwrap();
     tx.execute(
@@ -633,7 +708,7 @@ fn held_migration_backfills_person_waits_and_preserves_calls_children_and_trigge
         conn.execute_batch(migration.statements).unwrap();
     }
     let tx = conn.transaction().unwrap();
-    insert_run(&tx, &new_run("old"), None).unwrap();
+    insert_pre_49_run(&tx, "old");
     for (position, tool, intent, outcome, code, duration, entered, person) in [
         (0, "model", Some(100), "ok", None, Some(10), Some(100), 0),
         (
