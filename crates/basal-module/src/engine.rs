@@ -439,6 +439,23 @@ impl Engine {
         Some(self.inner.rt.activate(run_id, &mut lease))
     }
 
+    /// An activation ended on a store failure. During shutdown that is the
+    /// planned stop, and the run resumes at the next start, so it is logged
+    /// as such rather than raised as a fault.
+    fn store_ended(&self, run_id: &str, detail: &str) {
+        if self.inner.wake.snapshot().1 {
+            tracing::info!(
+                target: "engine",
+                run = %run_id,
+                "activation stopped for shutdown; the run resumes at the next start: {detail}"
+            );
+        } else {
+            self.inner
+                .fatal
+                .raise(format!("activation of {run_id}: {detail}"));
+        }
+    }
+
     /// Handles an activation's end; returns whether anything changed.
     fn after(&self, run_id: &str, end: ActivationEnd) -> bool {
         match end {
@@ -447,17 +464,14 @@ impl Engine {
             // `running` with no activation driving it, and only recovery at
             // the next start puts it back in line.
             ActivationEnd::Failed { kind, detail } if kind == "store" => {
-                self.inner
-                    .fatal
-                    .raise(format!("activation of {run_id}: {detail}"));
+                self.store_ended(run_id, &detail);
                 false
             }
-            // The store was cut under the activation (`Store::cut`, a
-            // simulated storage failure): every later write fails.
+            // The store was cut under the activation: shutdown cuts it on
+            // purpose, and `Store::cut` simulates a storage failure. Every
+            // later write fails.
             ActivationEnd::Crashed => {
-                self.inner
-                    .fatal
-                    .raise(format!("activation of {run_id}: the store was cut"));
+                self.store_ended(run_id, "the store was cut");
                 false
             }
             ActivationEnd::Waiting { .. } | ActivationEnd::NotRunnable { .. } => false,

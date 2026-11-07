@@ -712,6 +712,23 @@ fn engine_cleanup_joins_activation_before_removing_its_store() {
 }
 
 #[test]
+fn a_store_cut_is_a_fault_only_when_the_engine_is_not_stopping() {
+    let (stopping, path) = engine(true);
+    stopping.stop();
+    stopping.after("r", ActivationEnd::Crashed);
+    assert!(
+        stopping.inner.fatal.get().is_none(),
+        "shutdown cuts the store on purpose; the run resumes at the next start"
+    );
+    cleanup(stopping, path);
+
+    let (running, path) = engine(true);
+    running.after("r", ActivationEnd::Crashed);
+    assert!(running.inner.fatal.get().is_some());
+    cleanup(running, path);
+}
+
+#[test]
 fn panicking_activation_releases_run_and_flow_slots() {
     let (engine, path) = engine(true);
     engine.active().runs.insert("r".into());
