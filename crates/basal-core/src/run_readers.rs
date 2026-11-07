@@ -420,6 +420,34 @@ impl crate::Runtime {
         self.log_runs(Some(flow))
     }
 
+    /// Runs not yet finished, in admission order. Every unfinished run is in
+    /// `live_runs`; history holds only terminal ones. Timers and deadline
+    /// checks run on every engine pass, so they must never touch history,
+    /// which grows to hundreds of thousands of rows.
+    pub(crate) fn log_live_runs(&self) -> Result<Vec<Run>> {
+        let states = self.log_states();
+        let owners = self.shared.staged_owners.lock().unwrap().clone();
+        self.store().read(|c| {
+            let mut stmt = c.prepare("SELECT run_id FROM live_runs ORDER BY admit_seq,run_id")?;
+            let ids = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.iter()
+                .map(|id| {
+                    load(
+                        c,
+                        id,
+                        states.get(id),
+                        owners.get(id).is_some_and(|(g, _)| {
+                            states.get(id).is_some_and(|s| s.generation == *g)
+                        }),
+                        owners.get(id).map_or("", |(_, owner)| owner),
+                    )
+                })
+                .collect()
+        })
+    }
+
     pub(crate) fn log_runs(&self, flow: Option<&str>) -> Result<Vec<Run>> {
         let states = self.log_states();
         let owners = self.shared.staged_owners.lock().unwrap().clone();

@@ -13,7 +13,7 @@ impl Runtime {
     /// including it here would spin while all activation slots are occupied.
     pub fn next_wake_at(&self, pool_next: Option<i64>) -> Result<Option<i64>> {
         let (deadline, retry) = {
-            let runs = self.log_runs(None)?;
+            let runs = self.log_live_runs()?;
             let states = self.log_states();
             let deadline = runs
                 .iter()

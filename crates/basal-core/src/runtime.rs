@@ -981,7 +981,7 @@ impl Runtime {
     pub fn run_ages(&self) -> Result<crate::ops::RunAges> {
         let now = self.config.clock.now_ms();
 
-        let runs = self.log_runs(None)?;
+        let runs = self.log_live_runs()?;
         let oldest = |state| {
             runs.iter()
                 .filter(|r| r.state == state)
@@ -1026,7 +1026,7 @@ impl Runtime {
         self.flush_refusals()?;
         let now = self.config.clock.now_ms();
         let mut expired = Vec::new();
-        for run in self.log_runs(None)? {
+        for run in self.log_live_runs()? {
             if matches!(
                 run.state,
                 RunState::Pending | RunState::Running | RunState::Suspended
