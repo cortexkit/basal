@@ -12,6 +12,15 @@ use crate::{
     run_store_sql as sql,
 };
 
+#[cfg(test)]
+thread_local! {
+    static LOAD_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+#[path = "run_reader_tests.rs"]
+mod tests;
+
 pub(crate) fn retirement_busy(conn: &Connection, flow: &str, version: u64) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM run_identities r WHERE r.flow_id=?1 AND r.flow_version=?2 AND (
         EXISTS(SELECT 1 FROM live_runs l WHERE l.run_id=r.run_id)
@@ -39,6 +48,30 @@ pub(crate) fn lifecycle(state: &State, active: bool) -> RunState {
     }
 }
 
+fn live_runs(
+    conn: &Connection,
+    states: &BTreeMap<String, State>,
+    owners: &std::collections::HashMap<String, (u64, String)>,
+) -> Result<Vec<Run>> {
+    let mut stmt = conn.prepare("SELECT run_id FROM live_runs ORDER BY admit_seq,run_id")?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.iter()
+        .map(|id| {
+            load(
+                conn,
+                id,
+                states.get(id),
+                owners
+                    .get(id)
+                    .is_some_and(|(g, _)| states.get(id).is_some_and(|s| s.generation == *g)),
+                owners.get(id).map_or("", |(_, owner)| owner),
+            )
+        })
+        .collect()
+}
+
 pub(crate) fn load(
     conn: &Connection,
     id: &str,
@@ -46,6 +79,8 @@ pub(crate) fn load(
     active: bool,
     owner: &str,
 ) -> Result<Run> {
+    #[cfg(test)]
+    LOAD_CALLS.with(|calls| calls.set(calls.get() + 1));
     let identity = sql::identity(conn, id)?.ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
     let (script, manifest) = conn.query_row(
         "SELECT script,manifest FROM run_snapshots WHERE snapshot_id=?1",
@@ -413,11 +448,17 @@ impl crate::Runtime {
         calls.sort_by(|a, b| (a.3, &a.0, a.2).cmp(&(b.3, &b.0, b.2)));
         Ok(calls)
     }
-    /// Ordered run projection for module readers. Finished triggers come from
-    /// history; live execution fields come only from the registry.
+    /// All runs for a flow, in ascending (admission sequence, run id) order.
+    /// Readers showing a history page should use `recent_runs_for_flow` instead.
     pub fn runs_for_flow(&self, flow: &str) -> Result<Vec<Run>> {
-        {}
-        self.log_runs(Some(flow))
+        self.log_flow_runs(flow, None)
+    }
+
+    /// The newest `limit` runs, returned in ascending (admission sequence, run
+    /// id) order, just like `runs_for_flow`. The limit is applied before loading
+    /// run details, so a history page does not materialize the flow's past.
+    pub fn recent_runs_for_flow(&self, flow: &str, limit: u32) -> Result<Vec<Run>> {
+        self.log_flow_runs(flow, Some(limit))
     }
 
     /// Runs not yet finished, in admission order. Every unfinished run is in
@@ -427,33 +468,16 @@ impl crate::Runtime {
     pub(crate) fn log_live_runs(&self) -> Result<Vec<Run>> {
         let states = self.log_states();
         let owners = self.shared.staged_owners.lock().unwrap().clone();
-        self.store().read(|c| {
-            let mut stmt = c.prepare("SELECT run_id FROM live_runs ORDER BY admit_seq,run_id")?;
-            let ids = stmt
-                .query_map([], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            ids.iter()
-                .map(|id| {
-                    load(
-                        c,
-                        id,
-                        states.get(id),
-                        owners.get(id).is_some_and(|(g, _)| {
-                            states.get(id).is_some_and(|s| s.generation == *g)
-                        }),
-                        owners.get(id).map_or("", |(_, owner)| owner),
-                    )
-                })
-                .collect()
-        })
+        self.store().read(|c| live_runs(c, &states, &owners))
     }
 
-    pub(crate) fn log_runs(&self, flow: Option<&str>) -> Result<Vec<Run>> {
+    fn log_flow_runs(&self, flow: &str, limit: Option<u32>) -> Result<Vec<Run>> {
         let states = self.log_states();
         let owners = self.shared.staged_owners.lock().unwrap().clone();
         self.store().read(|c| {
-            let mut stmt = c.prepare("SELECT run_id,admit_seq FROM live_runs WHERE (?1 IS NULL OR flow_id=?1) UNION ALL SELECT run_id,admit_seq FROM run_history WHERE (?1 IS NULL OR flow_id=?1) ORDER BY admit_seq,run_id")?;
-            let ids = stmt.query_map([flow], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut stmt = c.prepare("SELECT run_id,admit_seq FROM live_runs WHERE flow_id=?1 UNION ALL SELECT run_id,admit_seq FROM run_history WHERE flow_id=?1 ORDER BY admit_seq DESC,run_id DESC LIMIT ?2")?;
+            let mut ids = stmt.query_map(rusqlite::params![flow, limit.map_or(-1, i64::from)], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.reverse();
             ids.iter().map(|id| load(c, id, states.get(id), owners.get(id).is_some_and(|(g,_)|states.get(id).is_some_and(|s|s.generation==*g)), owners.get(id).map_or("", |(_,owner)|owner))).collect()
         })
     }
@@ -480,10 +504,18 @@ impl crate::Runtime {
     }
 
     pub(crate) fn log_health(&self) -> Result<crate::ops::Health> {
-        let runs = self.log_runs(None)?;
         let states = self.log_states();
+        let owners = self.shared.staged_owners.lock().unwrap().clone();
         self.store().read(|c| {
+            // Read both halves under one store lock: a finishing run must not
+            // appear in both the live projection and the history counts.
+            let runs = live_runs(c, &states, &owners)?;
             let mut health = crate::ops::Health::default();
+            let mut counts = c.prepare("SELECT state, count(*) FROM run_history GROUP BY state")?;
+            for row in counts.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))? {
+                let (state, count) = row?;
+                health.runs.insert(state, count);
+            }
             for run in &runs {
                 *health.runs.entry(run.state.as_str().into()).or_default() += 1;
                 if !run.state.is_terminal() { health.unfinished.entry(run.state.as_str().into()).or_default().push(run.run_id.clone()); }
