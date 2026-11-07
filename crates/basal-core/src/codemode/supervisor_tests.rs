@@ -2808,10 +2808,12 @@ fn tool_provider_migration_preserves_calls_and_schedules_legacy_scope_close() {
         conn.execute_batch(migration.statements).unwrap();
     }
     let tx = conn.transaction().unwrap();
-    let mut run = new_run("r");
-    run.scope =
-        r#"{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"legacy","epoch":7}"#;
-    store::insert_run(&tx, &run, None).unwrap();
+    super::super::store::tests::insert_pre_49_run(&tx, "r");
+    tx.execute(
+        "UPDATE codemode_runs SET scope=?1 WHERE run_id='r'",
+        [r#"{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"legacy","epoch":7}"#],
+    )
+    .unwrap();
     store::insert_call(&tx, "r", 0, "read", 4, CallStart::Intent { at: 100 }).unwrap();
     store::record_outcome(&tx, "r", 0, Outcome::Ok, None, 137).unwrap();
     store::insert_call(&tx, "r", 1, "read", 4, CallStart::Queued).unwrap();

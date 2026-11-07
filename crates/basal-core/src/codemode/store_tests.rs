@@ -543,7 +543,7 @@ fn withdrawn_requires_a_sent_entered_held_call() {
 
 // Historical migration fixtures must not use insert_run, which writes columns
 // added after the schema these tests deliberately start from.
-fn insert_pre_49_run(conn: &rusqlite::Connection, id: &str) {
+pub(crate) fn insert_pre_49_run(conn: &rusqlite::Connection, id: &str) {
     let run = new_run(id);
     conn.execute(
         "INSERT INTO codemode_runs(run_id,agent_id,program,catalog,catalog_digest,description,limits,scope,deadline_ms,status,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'running',?10)",
