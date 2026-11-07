@@ -157,6 +157,59 @@ fn cancel_racing_a_committed_group_cannot_project_or_fold_twice() {
 }
 
 #[test]
+fn an_owner_finishing_while_another_closer_runs_has_lost_the_run() {
+    // A deadline or cancel closing the run supersedes its owner. The owner's
+    // own finish must report that it lost the run, not a retryable store
+    // error, so the activation ends as OwnerLost.
+    let f = Fixture::new();
+    let (hooks, reached, resume) = pause(Boundary::RunStoreCommitted);
+    let registry = Arc::new(RunStore::new_staged(f.store.clone(), hooks));
+    let driver = Arc::new(Driver::new_staged(
+        f.store.clone(),
+        registry.clone(),
+        f.service.clone(),
+        Arc::new(NoHooks),
+        budgets(),
+    ));
+    driver
+        .register(
+            &f.live,
+            Records::new(f.live.run_id.clone(), 10, f.log.clone()),
+        )
+        .unwrap();
+    let Claim::Active(a) = driver.claim(f.live.clone(), 0).unwrap() else {
+        panic!("gate closed")
+    };
+    let terminal = f.terminal(RunState::Cancelled);
+    let (done_tx, done_rx) = mpsc::channel();
+    let canceller = {
+        let driver = driver.clone();
+        std::thread::spawn(move || done_tx.send(driver.cancel(terminal)).unwrap())
+    };
+    reached.recv_timeout(Duration::from_secs(5)).unwrap();
+    let owner_end = a.finish(f.terminal(RunState::Failed));
+    assert!(
+        matches!(owner_end, Err(CoreError::OwnerLost { .. })),
+        "{owner_end:?}"
+    );
+    resume.send(()).unwrap();
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    canceller.join().unwrap();
+    f.store
+        .read(|c| {
+            assert_eq!(
+                sql::history(c, &f.live.run_id)?.unwrap().state,
+                RunState::Cancelled
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn stale_recovery_snapshot_cannot_retry_a_completed_or_accepted_dispatch() {
     for (op, accepted) in [
         ("query", false),

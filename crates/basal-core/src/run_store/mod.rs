@@ -801,10 +801,14 @@ impl<R: RunRecords> RunStore<R> {
         driver: &dyn CloseDriver,
         generation: Option<u64>,
     ) -> Result<()> {
-        let _closer = run
-            .closer
-            .try_lock()
-            .map_err(|_| CoreError::Unavailable("another closer is active".into()))?;
+        // Another closer (a deadline, cancel or removal) supersedes the run's
+        // owner: an owned close that loses the race has lost the run, which is
+        // what the owner must report. A caller closing without ownership may
+        // retry.
+        let _closer = run.closer.try_lock().map_err(|_| match generation {
+            Some(generation) => run.owner_lost(generation),
+            None => CoreError::Unavailable("another closer is active".into()),
+        })?;
         {
             let mut actor = run.actor.lock();
             if let Some(generation) = generation {
