@@ -22,7 +22,7 @@ use crate::{
     run_store_sql::{self as sql, Receipt, SettleResult},
 };
 use basal_host::{DecisionAnswer, DecisionContext, DecisionKind, DecisionPath};
-use rusqlite::{Transaction, params};
+use rusqlite::{Connection, Transaction, params};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -107,40 +107,43 @@ impl RecoveredHosts {
 
     fn due_after(&self, now: i64, after_transaction: impl FnOnce()) -> Result<Vec<DecisionRecord>> {
         let before = self.decision_snapshots()?;
-        let candidates = self.store.write(|tx| {
+        // Calculate the same refresh in read-only mode first. Stable unknown
+        // obligations and already-raised cards must not take the SQLite writer lock
+        // on every engine pass. A required update is still rechecked in one commit.
+        let (needs_write, cards) = self.store.read(|c| {
+            let mut changed = false;
             for snapshot in &before {
-                refresh(tx, snapshot, now)?;
+                changed |= refresh(c, snapshot, now, false)?;
             }
-            refresh_closed(tx, now)?;
-            let cards = decisions::all(tx)?;
-            // A synced resolution can outlive the card commit. Finish that
-            // commit on recovery rather than asking the operator a second time.
-            for card in &cards {
-                if card.kind != DecisionKind::Reconcile || card.state != CardState::Open {
-                    continue;
-                }
-                if let Some(snapshot) = before.iter().find(|s| Some(&s.id) == card.run_id.as_ref())
-                    && let Some(call) = card.position.and_then(|p| snapshot.state.calls.get(&p))
-                    && let Some(resolution) = call.resolutions.iter().find(|r| {
-                        r.attempts == card.instance
-                            && r.choice != "cancel"
-                            && !r.elicitation_id.is_empty()
-                            && card
-                                .elicitation_id
-                                .as_ref()
-                                .is_none_or(|id| id == &r.elicitation_id)
-                    })
-                {
-                    cas(tx, card, CardState::Applied, Some(&resolution.choice), now)?;
-                }
-            }
-            Ok(decisions::all(tx)?
-                .into_iter()
-                .filter(|c| {
-                    c.state == CardState::Open && c.raised_revision.is_none_or(|r| r < c.revision)
-                })
-                .collect::<Vec<_>>())
+            changed |= refresh_closed(c, now, false)?;
+            let cards = decisions::all(c)?;
+            changed |= cards
+                .iter()
+                .any(|card| recovered_resolution(card, &before).is_some());
+            Ok((changed, cards))
         })?;
+        let cards = if needs_write {
+            self.store.write(|tx| {
+                for snapshot in &before {
+                    refresh(tx, snapshot, now, true)?;
+                }
+                refresh_closed(tx, now, true)?;
+                let cards = decisions::all(tx)?;
+                // A synced resolution can outlive the card commit. Finish that
+                // commit on recovery rather than asking the operator a second time.
+                for card in &cards {
+                    if let Some(choice) = recovered_resolution(card, &before) {
+                        cas(tx, card, CardState::Applied, Some(choice), now)?;
+                    }
+                }
+                decisions::all(tx)
+            })?
+        } else {
+            cards
+        };
+        let candidates = cards.into_iter().filter(|c| {
+            c.state == CardState::Open && c.raised_revision.is_none_or(|r| r < c.revision)
+        });
         after_transaction();
         let after = self.decision_snapshots()?;
         let mut due = Vec::new();
@@ -612,10 +615,33 @@ fn cas(
 ) -> Result<bool> {
     Ok(tx.execute("UPDATE decision_cards SET state=?3,choice=?4,answered_at=?5,elicitation_id=COALESCE(elicitation_id,?7) WHERE dedup_key=?1 AND instance=?2 AND revision=?6 AND state='open'", params![card.dedup_key, card.instance, state.as_str(), choice, now, card.revision, card.elicitation_id])? == 1)
 }
-fn refresh(tx: &Transaction<'_>, snapshot: &Snapshot, now: i64) -> Result<()> {
+fn recovered_resolution<'a>(card: &DecisionRecord, snapshots: &'a [Snapshot]) -> Option<&'a str> {
+    if card.kind != DecisionKind::Reconcile || card.state != CardState::Open {
+        return None;
+    }
+    let snapshot = snapshots
+        .iter()
+        .find(|s| Some(&s.id) == card.run_id.as_ref())?;
+    let call = card.position.and_then(|p| snapshot.state.calls.get(&p))?;
+    call.resolutions
+        .iter()
+        .find(|r| {
+            r.attempts == card.instance
+                && r.choice != "cancel"
+                && !r.elicitation_id.is_empty()
+                && card
+                    .elicitation_id
+                    .as_ref()
+                    .is_none_or(|id| id == &r.elicitation_id)
+        })
+        .map(|r| r.choice.as_str())
+}
+
+fn refresh(tx: &Connection, snapshot: &Snapshot, now: i64, apply: bool) -> Result<bool> {
     let Some(live) = sql::live(tx, &snapshot.id)? else {
-        return Ok(());
+        return Ok(false);
     };
+    let mut changed = false;
     for call in snapshot
         .state
         .calls
@@ -646,7 +672,7 @@ fn refresh(tx: &Transaction<'_>, snapshot: &Snapshot, now: i64) -> Result<()> {
                 .map(|b| format!("{b:02x}"))
                 .collect::<String>()
         );
-        upsert(
+        changed |= upsert(
             tx,
             &live.flow_id,
             live.flow_version,
@@ -656,16 +682,18 @@ fn refresh(tx: &Transaction<'_>, snapshot: &Snapshot, now: i64) -> Result<()> {
             intent.idempotency_key.as_deref(),
             body,
             now,
+            apply,
         )?;
     }
-    Ok(())
+    Ok(changed)
 }
 
-fn refresh_closed(tx: &Transaction<'_>, now: i64) -> Result<()> {
+fn refresh_closed(tx: &Connection, now: i64, apply: bool) -> Result<bool> {
     let mut stmt = tx.prepare("SELECT run_id,detail FROM obligations WHERE state='unknown'")?;
     let rows = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut changed = false;
     for (id, detail) in rows {
         // A history-lost Broca snapshot has no call identity and cannot produce
         // a per-call card. Its run-level diagnostic is the operator's entry point.
@@ -690,7 +718,7 @@ fn refresh_closed(tx: &Transaction<'_>, now: i64) -> Result<()> {
                 .map_err(|_| CoreError::Corrupt("attempt count overflow".into()))?,
             unknown_reason: reason,
         };
-        upsert(
+        changed |= upsert(
             tx,
             &history.flow_id,
             history.flow_version,
@@ -700,13 +728,14 @@ fn refresh_closed(tx: &Transaction<'_>, now: i64) -> Result<()> {
             intent.idempotency_key.as_deref(),
             decisions::context_json(&context),
             now,
+            apply,
         )?;
     }
-    Ok(())
+    Ok(changed)
 }
 #[allow(clippy::too_many_arguments)]
 fn upsert(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     flow: &str,
     version: u32,
     id: &str,
@@ -715,14 +744,24 @@ fn upsert(
     key: Option<&str>,
     body: Value,
     now: i64,
-) -> Result<()> {
+    apply: bool,
+) -> Result<bool> {
     let dedup = decisions::reconcile_key(flow, id, position);
-    tx.execute("INSERT INTO decision_cards(dedup_key,kind,flow_id,version,run_id,position,call_key,instance,card,state,created_at)
+    let body = body.to_string();
+    if !apply {
+        return Ok(tx.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM decision_cards WHERE dedup_key=?1 AND instance=?2 AND state<>'open')
+             AND NOT EXISTS(SELECT 1 FROM decision_cards WHERE dedup_key=?1 AND state='open' AND instance=?2 AND card=?3)",
+            params![dedup, instance, body],
+            |r| r.get(0),
+        )?);
+    }
+    let changed = tx.execute("INSERT INTO decision_cards(dedup_key,kind,flow_id,version,run_id,position,call_key,instance,card,state,created_at)
         SELECT ?1,'reconcile',?2,?3,?4,?5,?6,?7,?8,'open',?9
         WHERE NOT EXISTS(SELECT 1 FROM decision_cards WHERE dedup_key=?1 AND instance=?7 AND state<>'open')
         ON CONFLICT(dedup_key) WHERE state='open' DO UPDATE SET instance=excluded.instance,card=excluded.card,revision=revision+1
-        WHERE instance<>excluded.instance OR card<>excluded.card", params![dedup, flow, version, id, position, key.unwrap_or(""), instance, body.to_string(), now])?;
-    Ok(())
+        WHERE instance<>excluded.instance OR card<>excluded.card", params![dedup, flow, version, id, position, key.unwrap_or(""), instance, body, now])?;
+    Ok(changed != 0)
 }
 
 struct CancelEffects {

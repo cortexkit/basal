@@ -442,6 +442,19 @@ impl Runtime {
     /// leaving the store, so concurrent passes cannot hammer the provider.
     pub fn poll_lost_grants(&self) -> Result<usize> {
         let now = self.config.clock.now_ms();
+        let pending = self.store().read(|c| {
+            for loss in losses(c, None)? {
+                if loss.state == "polling"
+                    && (!eligible(c, &loss)? || (loss.echoable && loss.next_poll_at_ms <= now))
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })?;
+        if !pending {
+            return Ok(0);
+        }
         let due = self.store().write(|tx| {
             let mut due = Vec::new();
             for loss in losses(tx, None)? {

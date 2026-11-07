@@ -346,6 +346,22 @@ impl RunAdmission {
             now_ms: now.as_millisecond(),
             ..*ctx
         };
+        // This read is only a no-work fast path. All planning, expiry and
+        // admission checks still share the fenced commit below when work exists.
+        let due = self.store.read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM schedules WHERE state='active' AND next_due_ms<=?1)
+                 OR EXISTS(SELECT 1 FROM schedule_fires)
+                 OR EXISTS(SELECT 1 FROM template_instances t JOIN flows f USING(flow_id) WHERE t.expires_at<=?1 AND t.expiry_notified=0 AND f.removed=0)
+                 OR EXISTS(SELECT 1 FROM schedules s JOIN template_instances t USING(flow_id) WHERE t.expires_at<=?1 AND s.state<>'disabled')
+                 OR EXISTS(SELECT 1 FROM template_event_outbox WHERE published_at IS NOT NULL AND published_at<?2)",
+                params![ctx.now_ms, ctx.now_ms.saturating_sub(crate::template_events::BODY_RETENTION_MS)],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })?;
+        if !due {
+            return Ok(TickReport::default());
+        }
         self.batch(|tx| {
             crate::templates::expire_schedules(tx, ctx.now_ms)?;
             let mut report = TickReport::default();
@@ -402,6 +418,16 @@ impl RunAdmission {
     /// A bounded backlog pass rechecks current approval and preserves each
     /// flow's arrival order, using the same new-path admission transaction.
     pub fn drain_event_backlog(&self, ctx: &AdmitContext) -> Result<usize> {
+        let pending = self.store.read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })?;
+        if !pending {
+            return Ok(0);
+        }
         self.batch(|tx| {
             let pending: Vec<(i64, String, String, Option<i64>)> = tx.prepare(
                 "SELECT e.rowid,e.flow_id,e.notice,f.first_approved_at FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled' ORDER BY e.received_at,e.rowid LIMIT 128"

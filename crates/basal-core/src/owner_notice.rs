@@ -272,10 +272,21 @@ impl Runtime {
             return Ok(());
         }
         let now = self.config.clock.now_ms();
-        let stale = self.store().write(|tx| {
+        let has_stale = self.store().read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM outbox WHERE kind='flow.owner_notice' AND delivered_at IS NULL AND at<?1)",
+                [now.saturating_sub(OWNER_NOTICE_MAX_AGE_MS)],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })?;
+        let stale = if has_stale {
+            self.store().write(|tx| {
             let mut stmt = tx.prepare_cached("UPDATE outbox SET delivered_at=?1,failure_code='stale' WHERE kind='flow.owner_notice' AND delivered_at IS NULL AND at<?2 RETURNING seq,body")?;
             Ok(stmt.query_map(params![now, now.saturating_sub(OWNER_NOTICE_MAX_AGE_MS)], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
-        })?;
+        })?
+        } else {
+            Vec::new()
+        };
         for (seq, body) in &stale {
             let request = serde_json::from_str::<Value>(body).unwrap_or(Value::Null);
             let notice_id = request

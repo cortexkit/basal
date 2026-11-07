@@ -81,6 +81,8 @@ pub struct Store {
     store_id: String,
     clock: Mutex<crate::clock::Clock>,
     fresh: bool,
+    #[cfg(any(test, feature = "test-support"))]
+    write_transactions: std::sync::atomic::AtomicU64,
 }
 
 fn backend(e: StoreError) -> CoreError {
@@ -130,6 +132,8 @@ impl Store {
             store_id: String::new(),
             clock: Mutex::new(crate::clock::Clock::system()),
             fresh: false,
+            #[cfg(any(test, feature = "test-support"))]
+            write_transactions: std::sync::atomic::AtomicU64::new(0),
         };
         let fresh = store.read(|c| {
             Ok(c.query_row(
@@ -261,6 +265,8 @@ impl Store {
         self.check_cut()?;
         let mut failure = None;
         let out = self.inner.with_conn_fenced(|tx| {
+            #[cfg(any(test, feature = "test-support"))]
+            self.write_transactions.fetch_add(1, Ordering::Relaxed);
             let now = self
                 .clock
                 .lock()
@@ -289,5 +295,11 @@ impl Store {
         // died right after committing would not.
         self.check_cut()?;
         Ok(value)
+    }
+
+    /// Counts opened write transactions, including transactions later rolled back.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn write_transactions_for_test(&self) -> u64 {
+        self.write_transactions.load(Ordering::Relaxed)
     }
 }
