@@ -81,6 +81,142 @@ fn idle_engine_runs_only_startup_and_fallback_passes() {
     cleanup(engine, path);
 }
 
+#[test]
+fn idle_passes_do_not_self_wake_or_open_write_transactions() {
+    let (engine, path) = engine(false);
+    // Startup maintenance is allowed to write and arms the retention timer.
+    engine.pass().unwrap();
+    let writes = engine.inner.rt.store().write_transactions_for_test();
+    for _ in 0..32 {
+        let seen = engine.inner.wake.snapshot();
+        engine.pass().unwrap();
+        assert_eq!(
+            engine.inner.wake.snapshot(),
+            seen,
+            "idle pass self-woke ({} write transactions)",
+            engine.inner.rt.store().write_transactions_for_test() - writes
+        );
+        assert_eq!(
+            engine.inner.rt.store().write_transactions_for_test(),
+            writes
+        );
+        assert!(engine.next_wait().unwrap() > Duration::ZERO);
+    }
+    cleanup(engine, path);
+}
+
+#[test]
+fn closed_obligations_and_open_cards_do_not_spin_idle_passes() {
+    use basal_core::run_records::{Body, CallIdentity, Deferred, Intent};
+    let (engine, path) = engine(false);
+    let rt = &engine.inner.rt;
+    install_flow(rt, "closed");
+    rt.config().clock.set(60_000);
+    for i in 0..8 {
+        let run = rt
+            .admit_trigger(
+                "closed",
+                &format!("trigger-{i}"),
+                basal_proto::JsonText::null(),
+            )
+            .unwrap()
+            .run_id()
+            .unwrap()
+            .to_owned();
+        rt.fixture_append(
+            &run,
+            Body::Intent(Intent {
+                call: CallIdentity::new(
+                    basal_proto::HostCall {
+                        position: 0,
+                        kind: basal_proto::CallKind::Op {
+                            module: "mock".into(),
+                            op: "send".into(),
+                        },
+                        args: basal_proto::JsonText::null(),
+                    },
+                    basal_core::StoredClass::KeyedMutation,
+                ),
+                idempotency_key: Some(format!("key-{i}")),
+                frozen_request: basal_proto::JsonText::null(),
+                attempts: 1,
+                dispatch_count_window: None,
+                audit_at: 0,
+                reservation: None,
+            }),
+        )
+        .unwrap();
+        let body = if i < 6 {
+            Body::Deferred(Deferred {
+                position: 0,
+                retry_not_before: 10,
+                cause: "reply_timeout".into(),
+                audit_at: 0,
+                proven_unsent: false,
+                refund_dispatch: false,
+                attempt: None,
+            })
+        } else {
+            Body::Unknown {
+                position: 0,
+                reason: "basal_restarted".into(),
+            }
+        };
+        rt.fixture_append(&run, body).unwrap();
+        rt.fixture_close(
+            &run,
+            basal_core::RunState::Failed,
+            None,
+            Some(if i < 6 {
+                ("deadline", "expired")
+            } else {
+                ("script", "failed")
+            }),
+        )
+        .unwrap();
+    }
+    // The first pass durably creates and raises the two reconcile cards.
+    engine.pass().unwrap();
+    let inventory: (u64, u64, u64) = rt
+        .store()
+        .read(|c| {
+            Ok((
+                c.query_row(
+                    "SELECT COUNT(*) FROM obligations WHERE state='open'",
+                    [],
+                    |r| r.get(0),
+                )?,
+                c.query_row(
+                    "SELECT COUNT(*) FROM obligations WHERE state='unknown'",
+                    [],
+                    |r| r.get(0),
+                )?,
+                c.query_row(
+                    "SELECT COUNT(*) FROM decision_cards WHERE state='open'",
+                    [],
+                    |r| r.get(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(inventory, (6, 2, 2));
+    let writes = rt.store().write_transactions_for_test();
+    for _ in 0..32 {
+        let seen = engine.inner.wake.snapshot();
+        engine.pass().unwrap();
+        assert_eq!(
+            engine.inner.wake.snapshot(),
+            seen,
+            "idle pass self-woke ({} write transactions)",
+            rt.store().write_transactions_for_test() - writes
+        );
+        assert_eq!(rt.store().write_transactions_for_test(), writes);
+        assert!(rt.next_wake_at(None).unwrap().unwrap() > rt.config().clock.now_ms());
+        assert!(engine.next_wait().unwrap() > Duration::ZERO);
+    }
+    cleanup(engine, path);
+}
+
 struct ObserveSpawn(std::sync::mpsc::Sender<()>);
 impl Spawn for ObserveSpawn {
     fn spawn(&self) -> Result<WorkerProcess, SpawnError> {

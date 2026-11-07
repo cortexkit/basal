@@ -959,15 +959,21 @@ impl Runtime {
                     .collect::<rusqlite::Result<_>>()?,
             )
         })?;
+        let mut published = false;
         for id in ids {
             if hosts.registry().get(&id).is_none()
                 && let Some(live) = self.store().read(|c| sql::live(c, &id))?
             {
                 self.staged_driver(&id)?
                     .register(&live, Records::new(id, live.admitted_at, hosts.log.clone()))?;
+                published = true;
             }
         }
-        self.shared.signal.bump();
+        // The engine calls this after every tick and backlog drain. Signalling
+        // an unchanged registry would wake the very pass doing the scan.
+        if published {
+            self.shared.signal.bump();
+        }
         Ok(())
     }
 
