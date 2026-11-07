@@ -999,7 +999,7 @@ impl Runtime {
     pub fn flow_health(&self) -> Result<Vec<crate::ops::FlowHealth>> {
         let now = self.config.clock.now_ms();
 
-        let runs = self.log_runs(None)?;
+        let runs = self.log_live_runs()?;
         let states = self.log_states();
         self.store()
             .read(|c| crate::ops::flow_health_staged(c, now, &runs, &states))

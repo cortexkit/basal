@@ -106,7 +106,7 @@ impl Module {
         let log_reconcile = self.log_reconcile_flows()?;
         let log_runs = self
             .rt
-            .runs_for_flow(&p.flow_id)
+            .recent_runs_for_flow(&p.flow_id, limit)
             .map_err(|e| self.core_error(e))?;
         let result = self
             .rt
