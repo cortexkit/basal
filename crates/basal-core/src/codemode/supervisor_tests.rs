@@ -1873,6 +1873,10 @@ fn return_boundary_non_json_and_stalled_have_exact_terminal_codes() {
                     .unwrap()
                     .contains("16385")
             );
+            assert!(result.get("value").is_none());
+            assert!(result["value_head"].as_str().unwrap().starts_with('"'));
+        } else {
+            assert!(result.get("value_head").is_none());
         }
         f.assert_order();
     }
@@ -1886,6 +1890,46 @@ fn return_boundary_non_json_and_stalled_have_exact_terminal_codes() {
         .unwrap();
     assert_eq!(f.terminal()["error"]["code"], "stalled");
     f.assert_order();
+}
+
+#[test]
+fn oversized_return_keeps_a_utf8_head_without_becoming_a_value() {
+    let mut cut_inside_character = false;
+    for padding in ["", "x"] {
+        let value = format!("\"{padding}{}\"", "λ".repeat(RESULT_BYTES));
+        let f = Fixture::new();
+        f.standard();
+        f.finish(&value);
+        let result = f.terminal();
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["error"]["code"], "result_too_large");
+        assert_eq!(
+            result["error"]["message"],
+            format!(
+                "return value has {} bytes; the limit is {RESULT_BYTES}. The tool calls above already ran. Return only what is needed next, such as counts, ids or the first items",
+                value.len()
+            )
+        );
+        assert!(result.get("value").is_none());
+        let head = result["value_head"].as_str().expect("kept return head");
+        let (prefix, counts) = head.split_once("\n… cut: ").expect("cut marker");
+        assert!(value.starts_with(prefix));
+        assert!(value.is_char_boundary(prefix.len()));
+        assert_eq!(
+            counts,
+            format!(
+                "{} bytes returned, the first {} shown",
+                value.len(),
+                prefix.len()
+            )
+        );
+        assert!(head.len() <= RESULT_BYTES);
+        assert_eq!(value[prefix.len()..].chars().next(), Some('λ'));
+        assert!(head.len() + 'λ'.len_utf8() > RESULT_BYTES);
+        cut_inside_character |= head.len() < RESULT_BYTES;
+        f.assert_order();
+    }
+    assert!(cut_inside_character, "a character straddled the byte cap");
 }
 
 #[test]
@@ -2009,7 +2053,10 @@ fn activation_failure_table_and_engine_budgets_are_exhaustive() {
                 result: ActivationResult::Failed(failure),
             })
             .unwrap();
-        assert_eq!(f.terminal()["error"]["code"], code);
+        let result = f.terminal();
+        assert_eq!(result["error"]["code"], code);
+        assert!(result.get("value").is_none());
+        assert!(result.get("value_head").is_none());
         f.assert_order();
     }
     for (budget, status) in [

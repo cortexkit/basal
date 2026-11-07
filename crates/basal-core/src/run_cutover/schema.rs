@@ -499,6 +499,10 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 48,
         statements: "ALTER TABLE journal ADD COLUMN last_dispatch_cause TEXT;",
     },
+    Migration {
+        version: 49,
+        statements: "ALTER TABLE codemode_runs ADD COLUMN value_head TEXT CHECK (value_head IS NULL OR status = 'failed');",
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,

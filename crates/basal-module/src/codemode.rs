@@ -480,6 +480,13 @@ fn render_text(result: &mut Value) -> String {
     if let Some(error) = result.get("error") {
         text.push_str(&error_text(error));
     }
+    if let Some(head) = result.get("value_head").and_then(Value::as_str) {
+        text.push_str("\nReturn value head:\n");
+        text.push_str(head);
+        if !head.ends_with('\n') {
+            text.push('\n');
+        }
+    }
     if let Some(value) = result.get("value") {
         text.push_str(&return_value_text(value));
     }
@@ -803,6 +810,86 @@ mod result_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_failed_return_head_renders_with_calls_but_never_as_value() {
+        use basal_core::codemode::store::{
+            self, CallStart, NewRun, Outcome, RunError, Status, Terminal,
+        };
+
+        let root = std::env::temp_dir().join(format!("basal-return-head-{}", random_id().unwrap()));
+        let store =
+            Store::open(root.join("basal.db"), basal_core::Durability::throwaway()).unwrap();
+        let prefix = "{\"job_id\":\"remote-123\",\"output\":\"λ";
+        let head = format!(
+            "{prefix}\n… cut: 20843 bytes returned, the first {} shown",
+            prefix.len()
+        );
+        let message = "return value has 20843 bytes; the limit is 16384. The tool calls above already ran. Return only what is needed next, such as counts, ids or the first items";
+        store
+            .write(|tx| {
+                store::insert_run(
+                    tx,
+                    &NewRun {
+                        run_id: "r",
+                        agent_id: "agent",
+                        program: "return result;",
+                        catalog: "[]",
+                        catalog_digest: &"a".repeat(64),
+                        description: None,
+                        limits: "{}",
+                        scope: "{}",
+                        deadline_ms: 1000,
+                        admitted_at: 100,
+                    },
+                    None,
+                )?;
+                store::insert_call(tx, "r", 0, "bash", 2, CallStart::Intent { at: 100 })?;
+                store::record_outcome(tx, "r", 0, Outcome::Ok, None, 108)?;
+                store::commit_terminal(
+                    tx,
+                    "r",
+                    &Terminal {
+                        status: Status::Failed,
+                        value: None,
+                        value_head: Some(head.clone()),
+                        error: Some(RunError {
+                            code: "result_too_large".into(),
+                            message: message.into(),
+                        }),
+                        output: String::new(),
+                        warnings: "[]".into(),
+                    },
+                    110,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let run = Supervisor::result_for(&store, &Clock::manual(110), "r")
+            .unwrap()
+            .unwrap();
+        assert!(run.get("value").is_none());
+        let result = render("r", run);
+        let fields = &result["structuredContent"];
+        assert_eq!(fields["status"], "failed");
+        assert_eq!(fields["error"]["code"], "result_too_large");
+        assert_eq!(fields["error"]["message"], message);
+        assert_eq!(fields["value_head"], head);
+        assert!(fields.get("value").is_none());
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["errorCode"], "result_too_large");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains(&format!(
+            "Error (result_too_large): {message}\n\nReturn value head:\n{head}\n"
+        )));
+        assert!(text.contains("\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\nbash | ok | false | 8\n"));
+        assert!(text.find("Return value head:").unwrap() < text.find("Tool | Outcome").unwrap());
+        assert!(!text.contains("\nReturn value:\n"));
+        let decoded = serde_json::from_value(result).unwrap();
+        cortexkit_role_tool_provider::result::validate(&decoded).unwrap();
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn late_retention_bounds_each_session_then_expired_owner() {

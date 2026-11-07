@@ -175,6 +175,8 @@ pub struct Terminal {
     pub status: Status,
     /// The program's return value as JSON text, only when `Completed`.
     pub value: Option<String>,
+    /// A text prefix of an oversized return, only for `result_too_large`.
+    pub value_head: Option<String>,
     pub error: Option<RunError>,
     /// The kept `console.log` lines.
     pub output: String,
@@ -213,6 +215,7 @@ pub struct RunRecord {
     pub deadline_ms: i64,
     pub status: Status,
     pub value: Option<String>,
+    pub value_head: Option<String>,
     pub error: Option<RunError>,
     pub output: String,
     pub warnings: String,
@@ -265,8 +268,8 @@ pub fn insert_run(tx: &Transaction, run: &NewRun, ended: Option<&Terminal>) -> R
     let inserted = tx.execute(
         "INSERT INTO codemode_runs (run_id, agent_id, program, catalog, catalog_digest, description, \
          limits, scope, deadline_ms, status, value, error_code, error_message, output, warnings, \
-         admitted_at, ended_at, duration_ms) \
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18 \
+         admitted_at, ended_at, duration_ms, value_head) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19 \
          WHERE NOT EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = ?1) \
          ON CONFLICT (run_id) DO NOTHING",
         params![
@@ -288,6 +291,7 @@ pub fn insert_run(tx: &Transaction, run: &NewRun, ended: Option<&Terminal>) -> R
             run.admitted_at,
             terminal.map(|_| run.admitted_at),
             terminal.map(|_| 0_i64),
+            terminal.and_then(|t| t.value_head.as_deref()),
         ],
     )?;
     Ok(inserted == 1)
@@ -295,7 +299,7 @@ pub fn insert_run(tx: &Transaction, run: &NewRun, ended: Option<&Terminal>) -> R
 
 const RUN_COLUMNS: &str = "run_id, agent_id, program, catalog, catalog_digest, description, limits, \
      scope, deadline_ms, status, value, error_code, error_message, output, warnings, admitted_at, \
-     ended_at, duration_ms";
+     ended_at, duration_ms, value_head";
 
 fn run_record(r: &Row) -> rusqlite::Result<(RunRecord, String)> {
     let code: Option<String> = r.get(11)?;
@@ -313,6 +317,7 @@ fn run_record(r: &Row) -> rusqlite::Result<(RunRecord, String)> {
             deadline_ms: r.get(8)?,
             status: Status::Running,
             value: r.get(10)?,
+            value_head: r.get(18)?,
             error: code
                 .zip(message)
                 .map(|(code, message)| RunError { code, message }),
@@ -603,7 +608,7 @@ pub fn commit_terminal(
     settle_pending_calls(tx, run_id, at)?;
     let changed = tx.execute(
         "UPDATE codemode_runs SET status = ?2, value = ?3, error_code = ?4, error_message = ?5, \
-         output = ?6, warnings = ?7, ended_at = ?8, duration_ms = max(?8 - admitted_at, 0) \
+         output = ?6, warnings = ?7, ended_at = ?8, duration_ms = max(?8 - admitted_at, 0), value_head = ?9 \
          WHERE run_id = ?1 AND status = 'running'",
         params![
             run_id,
@@ -614,6 +619,7 @@ pub fn commit_terminal(
             terminal.output,
             terminal.warnings,
             at,
+            terminal.value_head,
         ],
     )?;
     Ok(changed == 1)

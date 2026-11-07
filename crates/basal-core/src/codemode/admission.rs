@@ -209,6 +209,7 @@ pub fn admit(
         let ended = (admitted_at >= fields.deadline_ms).then(|| Terminal {
             status: Status::BudgetExhausted(Budget::Wall),
             value: None,
+            value_head: None,
             error: Some(RunError {
                 code: "budget_exhausted:wall".into(),
                 message: "the run's deadline has already elapsed".into(),
@@ -996,6 +997,7 @@ pub fn admit_tool(
                     &Terminal {
                         status: Status::Failed,
                         value: None,
+                        value_head: None,
                         error: Some(RunError {
                             code: error["code"]
                                 .as_str()
