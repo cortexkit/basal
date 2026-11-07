@@ -893,6 +893,18 @@ fn windows_textconv_positive_control_and_builtin_suppression() {
 
 #[test]
 fn windows_contaminated_global_config_positive_control_and_isolation() {
+    // Once the alias is isolated away, Git searches the host PATH for helpers
+    // and suggestions. Check isolation, not completion within the production
+    // watchdog, for both the positive controls and the isolated command.
+    let run = |command: HardenedCommand| {
+        run_until(
+            command.into(),
+            None,
+            Duration::from_secs(300),
+            Faults::default(),
+        )
+        .unwrap()
+    };
     let tree = Tree::new();
     let repo = repository(&tree);
     let (script, marker) = marker_script(&tree, "global");
@@ -909,7 +921,7 @@ fn windows_contaminated_global_config_positive_control_and_isolation() {
     command
         .env("GIT_CONFIG_GLOBAL", &config)
         .arg("basal-poison");
-    succeeded(run_command(command).unwrap());
+    succeeded(run(command));
     assert!(
         marker.exists(),
         "contaminated global alias positive control did not run"
@@ -924,7 +936,7 @@ fn windows_contaminated_global_config_positive_control_and_isolation() {
         .env("HOME", &profile)
         .env("USERPROFILE", &profile)
         .arg("basal-poison");
-    succeeded(run_command(default_global).unwrap());
+    succeeded(run(default_global));
     assert!(
         marker.exists(),
         "default user-global config positive control did not run"
@@ -937,7 +949,7 @@ fn windows_contaminated_global_config_positive_control_and_isolation() {
         .arg("basal-poison");
     let block = environment(&command.command, true).unwrap();
     assert!(!String::from_utf16_lossy(&block).contains(config.to_str().unwrap()));
-    let result = run_command(command).unwrap();
+    let result = run(command);
     assert!(
         !result.success,
         "global alias survived isolated global config"

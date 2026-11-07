@@ -188,7 +188,9 @@ fn config(clock: &Clock) -> Config {
         install_gate: crate::InstallGate::Off,
         selector: Arc::new(basal_host::selector::FakeSelector::default()),
         deferral_retry: Duration::from_millis(10),
-        activation_deadline: Duration::from_secs(2),
+        // Deadline tests advance the manual run clock. The real-time activation
+        // watchdog must not turn ordinary worker progress into a speed test.
+        activation_deadline: Duration::from_secs(24 * 60 * 60),
         ..Default::default()
     }
 }
