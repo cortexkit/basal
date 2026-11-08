@@ -88,7 +88,7 @@ pub fn take(
     Ok(take)
 }
 
-/// Admission on the staged tables stays pure SQLite, including its notice.
+/// Admission on the control-plane tables stays pure SQLite, including its notice.
 pub(crate) fn take_staged(
     tx: &Transaction,
     flow_id: &str,

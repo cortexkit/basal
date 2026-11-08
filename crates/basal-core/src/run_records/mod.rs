@@ -1,4 +1,5 @@
-//! The staged run-log journal. Production construction remains on the SQLite path.
+//! A run's records in the run log: what each live run has issued, received and
+//! delivered.
 //! A RunStore actor owns each `Records`; only the log writer is shared across runs.
 
 mod codec;

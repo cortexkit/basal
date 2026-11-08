@@ -1532,7 +1532,7 @@ fn an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts() {
     let message = warnings[0]["message"].as_str().unwrap();
     assert_eq!(
         message,
-        "codemode can't use echo from provider mock: its tool.catalog could not be read: refused (principal_denied): provider catalog refused"
+        "codemode can't use echo from provider mock: its tool.catalog could not be read for this run: refused (principal_denied): provider catalog refused"
     );
     assert!(
         !message.contains("retrying the run may succeed"),

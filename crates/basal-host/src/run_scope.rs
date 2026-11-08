@@ -338,7 +338,7 @@ fn codemode_served(
         (
             RefusalReason::CatalogUnreadable,
             format!(
-                "its tool.catalog could not be read: {}{hint}",
+                "its tool.catalog could not be read for this run: {}{hint}",
                 catalog_read_error(error)
             ),
         )
@@ -1135,7 +1135,7 @@ mod call_mode_tests {
             );
             assert_eq!(
                 gap(&resolved).message(),
-                "codemode can't use mock_read from provider mock: its tool.catalog could not be read: refused (invalid_request): broca does not serve this route target"
+                "codemode can't use mock_read from provider mock: its tool.catalog could not be read for this run: refused (invalid_request): broca does not serve this route target"
             );
         }
     }

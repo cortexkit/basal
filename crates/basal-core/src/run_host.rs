@@ -1,5 +1,4 @@
-//! Staged host callbacks for log-backed runs. Production construction remains
-//! on the journal path until cutover. Recovery builds this value before a host
+//! Host callbacks for log-backed runs. Recovery builds this value before a host
 //! may attach, since attach can deliver saved completions synchronously.
 //!
 //! | Entry point | Locks, in acquisition order | Work after releasing those locks |

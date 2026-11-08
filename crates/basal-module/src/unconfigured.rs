@@ -1,4 +1,5 @@
-//! The hosts the production binary runs with until real adapters exist.
+//! Hosts that refuse everything, for tests and harnesses that need a module
+//! without real adapters. Production uses the adapters built in `main.rs`.
 //!
 //! Each one refuses honestly rather than pretending to work: the host
 //! refuses every dispatch as a transport failure proven never sent (so the

@@ -1,5 +1,5 @@
 //! Health retained after a readiness rejection, independently of whether the
-//! script caught it. The call's actual outcome still uses the issue log/mailbox.
+//! script caught it. The call's own outcome is recorded by the run driver.
 use crate::error::Result;
 use basal_host::flow_refusal::FlowRefusal;
 use rusqlite::{Transaction, params};

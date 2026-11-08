@@ -1,5 +1,5 @@
-//! Staged in-memory run ownership. Production construction stays on the old driver
-//! until cutover; records, terminal projections and worker control are adapters.
+//! In-memory ownership of live runs: one actor per run, owning its run-log
+//! records. Records, terminal projections and worker control are adapters.
 
 mod committer;
 pub mod lock_order;
@@ -599,7 +599,7 @@ impl RunStore<crate::run_records::Records> {
 }
 
 impl<R: RunRecords> RunStore<R> {
-    /// Creates the staged registry with log watermark maintenance for terminal
+    /// Creates the run registry with log watermark maintenance for terminal
     /// commits and late-completion settlement transactions.
     pub fn new_bound(
         store: Arc<Store>,

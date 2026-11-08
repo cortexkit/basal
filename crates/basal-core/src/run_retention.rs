@@ -1,6 +1,5 @@
 //! Retention for log-backed runs and their SQLite finished-run history.
-//! `Runtime::new` keeps its legacy retention until production construction
-//! selects the log-backed runtime. Successful log-backed runs have no payloads.
+//! Successful log-backed runs have no payloads.
 
 use std::collections::BTreeMap;
 

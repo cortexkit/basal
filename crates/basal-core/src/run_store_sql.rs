@@ -1,7 +1,7 @@
-//! Staged SQLite control plane for the run-log path.
+//! The SQLite control plane for log-backed runs: live-run rows, finished-run
+//! history, obligations and receipts.
 //!
-//! No production constructor installs this schema or calls these APIs before
-//! cutover. Mutations take a transaction so admission, terminal accounting and
+//! Mutations take a transaction so admission, terminal accounting and
 //! callback settlement can share one [`crate::Store::write`] commit, which
 //! checks the writer lease to reject writes from a replaced process.
 //! These functions do no I/O outside SQLite and never acquire a run actor.

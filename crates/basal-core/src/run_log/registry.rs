@@ -1,4 +1,5 @@
-//! SQLite binding for the staged log. Construction never installs the schema.
+//! The run log's SQLite binding: segment rows, the log watermark and the
+//! reclamation floor. Construction never installs the schema; migrations do.
 
 use super::*;
 use crate::{

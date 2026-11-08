@@ -1,6 +1,4 @@
-//! Activation driver for the staged RunStore path. No production constructor
-//! currently selects it. Unlike the SQLite driver, worker deliveries may
-//! be lazy: every value exported to a host or terminal transaction is protected
+//! The activation driver for log-backed runs. Worker deliveries may be lazy: every value exported to a host or terminal transaction is protected
 //! by a synced causal prefix, not necessarily each worker reply.
 //!
 //! Lock order at driver entry points. Host methods and ordinary crash hooks run

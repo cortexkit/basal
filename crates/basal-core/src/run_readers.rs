@@ -1,4 +1,4 @@
-//! Reader snapshots for the staged execution model. Actors are copied before
+//! Reader snapshots of log-backed runs. Actors are copied before
 //! SQLite is opened; a terminal row wins if a run closed between the two reads.
 
 use basal_proto::{JsonText, RecordedOutcome};

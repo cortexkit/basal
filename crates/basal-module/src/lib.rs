@@ -13,8 +13,7 @@
 //!   install card; [`dryrun`]: the capture-only (or operator-live) dry run.
 //! - [`fatal`]: a store failure ends the process so recovery can run.
 //! - [`metrics`]: the module's own counters.
-//! - [`unconfigured`]: the hosts the production binary runs with until real
-//!   adapters exist; [`harness`]: the same module against the mocks, driven
+//! - [`unconfigured`]: hosts that refuse everything, for tests; [`harness`]: the same module against the mocks, driven
 //!   over stdio for tests.
 //! - `windows` (Windows only): the worker started through `basal-launch`,
 //!   its kill, and the exit codes that are confinement faults.

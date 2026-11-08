@@ -3,18 +3,20 @@
 //! - [`store`]: the SQLite store, its durability settings and schema.
 //! - [`admission`]: one run per trigger, deduplicated, tombstoned after
 //!   pruning.
-//! - [`runs`]: the run state machine and activation ownership.
-//! - [`journal`]: the issue log, the mailbox of outcomes not yet released,
-//!   and the quarantine.
-//! - [`driver`] and [`runtime`]: an activation driven on a worker channel,
-//!   calls dispatched concurrently to a [`basal_host::Host`], completions
-//!   accepted from anywhere.
+//! - [`run_log`], [`run_records`] and [`run_store`]: the append-only run log,
+//!   each live run's records in it, and the in-memory actor that owns them.
+//! - [`run_store_sql`]: the SQLite control plane: live-run rows, finished-run
+//!   history, obligations and receipts.
+//! - [`runs`]: activation ownership tokens and run snapshots.
+//! - [`run_driver`] and [`runtime`]: an activation driven on a worker
+//!   channel, calls dispatched concurrently to a [`basal_host::Host`],
+//!   completions accepted from anywhere.
 //! - [`gate`]: before every activation, core is asked whether it still
 //!   stands behind the run's flow version.
 //! - [`reconcile`], [`retention`] and [`ops`]: the operator's side.
 //! - [`manifest`] and [`install`]: what a flow may do, validated against
 //!   the catalog, approved by code hash, disabled at once.
-//! - [`authorize`], [`audit`], [`tokens`], [`kv`] and [`rate`]: what
+//! - [`authorize`], [`tokens`], [`kv`] and [`rate`]: what
 //!   decides, in the parent and before dispatch, whether a call may go out
 //!   and how much a flow may spend.
 //! - [`clock`]: the time those limits read, settable in tests.
