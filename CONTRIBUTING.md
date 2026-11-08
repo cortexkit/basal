@@ -50,12 +50,14 @@ Tests are ordinary cargo tests, run per crate as above. Each Windows image, wind
 
 ## Where code goes
 
+[STRUCTURE.md](STRUCTURE.md) has the full directory map and the steps for each kind of change.
+
 | Crate | Owns |
 |---|---|
 | `basal-proto` | The parent–worker IPC protocol. A change that isn't additive needs the stop-the-world update ([docs/deploy.md](docs/deploy.md#the-update-card)). |
 | `basal-worker` | `ck-basal-worker`: the QuickJS engine and its self-confinement on each operating system ([docs/sandbox.md](docs/sandbox.md)). |
 | `basal-launch` | Windows process creation: the LPAC worker launch, job-owned child processes and the shared spawn lock. |
-| `basal-core` | The SQLite store and schema, admission, the run state machine, the journal and mailbox, manifests and authorization, the scheduler and the activation driver. |
+| `basal-core` | The SQLite store and schema, admission, the run log and in-memory run actors, manifests and authorization, the scheduler and the activation driver. |
 | `basal-host` | The `Host` boundary for flow calls, the built-ins, the adapters to the fleet's modules, and the deterministic mock. |
 | `basal-module` | `ck-basal`: the subc manifest and serving, the codemode tool-provider role, the worker pool, the flow ops, dry runs and consent cards. |
 | `basal-testkit` | Test parents, crash and cut harnesses, and benchmarks. |

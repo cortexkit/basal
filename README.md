@@ -11,7 +11,7 @@ The name comes from the basal ganglia, the part of the brain that selects action
 | `basal-proto` | The versioned IPC protocol between the parent and its worker processes. |
 | `basal-worker` | `ck-basal-worker`: the confined QuickJS engine, which checks its own confinement before reading anything ([docs/sandbox.md](docs/sandbox.md)). |
 | `basal-launch` | Windows process creation: restricted LPAC workers and job-owned child processes, with a shared spawn lock. |
-| `basal-core` | Runtime state: the SQLite store, admission, the run state machine, the journal and mailbox, manifests and authorization, the scheduler and the activation driver. |
+| `basal-core` | Runtime state: the SQLite store, admission, the run log and in-memory run actors, manifests and authorization, the scheduler and the activation driver. |
 | `basal-host` | The `Host` boundary that flow calls go through (module ops, facts, model calls, sinks, built-ins), the adapters to the fleet's modules, and a deterministic mock. |
 | `basal-module` | `ck-basal`: the supervised module, with its subc manifest, the codemode tool-provider role, the worker pool, the flow ops, dry runs and consent cards. |
 | `basal-testkit` | Test parents, crash and cut harnesses, and benchmarks. |
@@ -58,6 +58,8 @@ Tests are ordinary cargo tests, run per crate as above. [CONTRIBUTING.md](CONTRI
 
 ## Documentation
 
+- [ARCHITECTURE.md](ARCHITECTURE.md): how basal works: processes, trust boundaries, state on disk, a flow run and a codemode run end to end.
+- [STRUCTURE.md](STRUCTURE.md): the directory map and where new code goes.
 - [docs/manifest.md](docs/manifest.md): the flow manifest schema: triggers, grants, limits and the code hash.
 - [docs/script.md](docs/script.md): how a flow script runs, and two deliberate limits of the script runtime.
 - [docs/builtins.md](docs/builtins.md): the file, git and network built-ins and their scope rules.
