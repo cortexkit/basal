@@ -55,7 +55,7 @@ The daemon names the store path in HELLO_ACK. On this deployment it is `~/.local
 
 SQLite and the run log split the work. Live flow runs are in-memory actors (`run_store/`) whose every record is appended to the run log; SQLite keeps a control row per live run (`live_runs`), and every run points at its version's script and manifest, stored once per version (`run_snapshots`). When a run ends, one SQLite transaction writes its summary to `run_history` and `run_calls` and settles its accounting. A successful run keeps no call payloads. Codemode runs do not use the run log; they live in the `codemode_*` tables.
 
-Retention (`retention.rs`, `run_retention.rs`, `codemode/retention.rs`): run payloads 24 hours after a run ends, run summaries and call metadata 90 days, other history 30 days, codemode runs 24 hours. Trigger and idempotency tombstones stay forever, so a pruned trigger or run id can never run again. Anything an unsettled call, reservation or open card still needs is kept.
+Retention (`retention.rs`, `run_retention.rs`, `codemode/retention.rs`): run payloads 24 hours after a run ends, run summaries and call metadata 90 days, other history 30 days, codemode runs 24 hours. Trigger and idempotency tombstones stay forever, so a pruned trigger or run id can never run again. Anything an unsettled call, reservation or open card still needs is kept. The same pass deletes sealed run-log segments once no live run starts in them (`run_log/gc.rs`), on the first pass after start and then hourly.
 
 ## A flow, end to end
 
