@@ -115,6 +115,16 @@ impl Runtime {
             .store()
             .write(|tx| crate::events::prune_receipts(tx, now))?
             == BATCH;
+        let hosts = self
+            .shared
+            .staged_hosts
+            .as_ref()
+            .expect("recovered run registry");
+        // Copy replay anchors under actors, then release them before the log
+        // writer enters SQLite. Unlinking happens after its floor commit, with
+        // neither an actor nor a SQLite connection held by maintenance.
+        let live_starts = hosts.registry().reclaim_starts();
+        hosts.log.reclaim(live_starts)?;
         let backlog =
             payloads == BATCH || runs.pruned.len() == BATCH || history_full || events_full;
         let interval = if backlog {

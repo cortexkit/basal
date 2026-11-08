@@ -26,6 +26,9 @@ struct MemoryLog {
     synced: Mutex<usize>,
 }
 impl RecordLog for MemoryLog {
+    fn reclaim(&self, _: std::collections::BTreeMap<String, Lsn>) -> Result<usize> {
+        Ok(0)
+    }
     fn append(&self, record: Record) -> Result<Lsn> {
         let mut records = self.records.lock().unwrap();
         records.push(record);

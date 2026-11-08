@@ -7,7 +7,7 @@ mod state;
 pub(crate) mod tests;
 mod types;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 pub(crate) use state::parse_unknown_reason;
 pub use state::{CallState, Claim, State};
@@ -67,6 +67,13 @@ impl LogRecord for Record {
 pub trait RecordLog: Send + std::marker::Sync + 'static {
     fn append(&self, record: Record) -> Result<Lsn>;
     fn sync_through(&self, lsn: Lsn) -> Result<()>;
+    /// Reclaim sealed segments below every live replay anchor. The caller must
+    /// release run actors and SQLite before waiting for the writer.
+    fn reclaim(&self, live_starts: BTreeMap<String, Lsn>) -> Result<usize>;
+    #[cfg(test)]
+    fn file_log(&self) -> Option<&RunLog<Record>> {
+        None
+    }
     /// Includes group syncs requested by other runs sharing this log.
     fn synced_lsn(&self) -> Lsn {
         Lsn::default()
@@ -81,6 +88,13 @@ fn log_error(error: run_log::Error) -> CoreError {
 }
 
 impl RecordLog for RunLog<Record> {
+    fn reclaim(&self, live_starts: BTreeMap<String, Lsn>) -> Result<usize> {
+        RunLog::reclaim(self, live_starts).map_err(log_error)
+    }
+    #[cfg(test)]
+    fn file_log(&self) -> Option<&RunLog<Record>> {
+        Some(self)
+    }
     fn synced_lsn(&self) -> Lsn {
         RunLog::synced_lsn(self)
     }

@@ -1035,6 +1035,8 @@ cancelled runs retain their call detail with the history row. Open obligations
 protect history from retention; settled host receipts survive until that history
 is pruned, so a redelivery does not cause another send.
 
+Runtime maintenance reclaims eligible sealed run-log segments on its first pass and then on the retention cadence (hourly by default), preserving every live run's replay start.
+
 ### Backup and restore
 
 **Do not back up or restore `run-log/`.** Restoring that directory by any tool is

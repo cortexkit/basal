@@ -1,5 +1,6 @@
-//! Append-only run-log mechanism. Production stays on the SQLite run journal
-//! until live run state moves to an in-memory registry backed by this log.
+//! Append-only journal backing the runtime's in-memory live-run registry.
+//! Runtime maintenance reclaims sealed segments on the retention cadence,
+//! preserving every live run's start.
 //! The registry adapter owns short control-plane transactions; this module owns
 //! files and never holds a registry lock across a sync wait.
 

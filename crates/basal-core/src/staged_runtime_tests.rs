@@ -18,6 +18,9 @@ use std::{
 #[path = "staged_transport_tests.rs"]
 mod transport;
 
+#[path = "staged_reclamation_tests.rs"]
+mod reclamation;
+
 #[path = "staged_verification_tests.rs"]
 pub(crate) mod verification_matrix;
 

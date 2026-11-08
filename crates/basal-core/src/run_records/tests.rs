@@ -16,6 +16,9 @@ struct Memory {
     fail_sync: std::sync::atomic::AtomicBool,
 }
 impl RecordLog for Memory {
+    fn reclaim(&self, _: BTreeMap<String, Lsn>) -> Result<usize> {
+        Ok(0)
+    }
     fn append(&self, record: Record) -> Result<Lsn> {
         if self.fail_append.load(Ordering::SeqCst) {
             return Err(CoreError::Cut);
@@ -940,6 +943,9 @@ struct BlockingLog {
     resume: std::sync::Barrier,
 }
 impl RecordLog for BlockingLog {
+    fn reclaim(&self, _: BTreeMap<String, Lsn>) -> Result<usize> {
+        Ok(0)
+    }
     fn append(&self, record: Record) -> Result<Lsn> {
         if matches!(record.body, Body::Snapshot { .. }) {
             self.copied
