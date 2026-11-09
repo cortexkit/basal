@@ -166,6 +166,20 @@ impl CallPreparation<'_> {
             &call.kind,
             &args,
         )?;
+        if matches!(
+            call.kind,
+            CallKind::Primitive(Primitive::SinkNoticeSend | Primitive::SinkNoticeResolve)
+        ) && !self
+            .rt
+            .shared
+            .host
+            .supports_core_capability(basal_host::core_host::FLOW_NOTICE_V1)
+        {
+            return Err(Refusal::new(
+                codes::NOTICE_UNSUPPORTED,
+                "prefrontal-core does not currently advertise flow-notice/v1",
+            ));
+        }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkWaitResolve))
             && !self
                 .rt
@@ -450,6 +464,24 @@ impl CallPreparation<'_> {
                 if let Some(note) = args.get("note") {
                     value["note"] = note.clone();
                 }
+                Ok(Prepared {
+                    request: Some(
+                        JsonText::new(value.to_string())
+                            .map_err(|e| Refusal::new(codes::TOO_LARGE, e.to_string()))?,
+                    ),
+                    ..Prepared::default()
+                })
+            }
+            CallKind::Primitive(Primitive::SinkNoticeSend | Primitive::SinkNoticeResolve) => {
+                let version = self
+                    .run
+                    .flow_version
+                    .ok_or_else(|| Refusal::denied("core calls require an installed version"))?;
+                // Freeze only the supplied fields with the approved stamp. In
+                // particular, omitted body/resolution must not become null.
+                let mut value = args.clone();
+                value["stamp"] = serde_json::json!({"flow_id":self.run.flow_id,
+                    "flow_version":version, "code_hash":crate::ids::hex(&self.run.code_hash)});
                 Ok(Prepared {
                     request: Some(
                         JsonText::new(value.to_string())

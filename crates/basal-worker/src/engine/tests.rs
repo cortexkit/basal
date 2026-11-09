@@ -406,6 +406,8 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         await sink.board.retire('a');
         await sink.wait.resolve('met', 'ready');
         await sink.room.post('rm_fleet', 'daily', {mentions: ['ag_other']});
+        await sink.notice.send({title:'Build failed', severity:'attention', key:'build'});
+        await sink.notice.resolve({key:'build'});
         return null;
     "#;
     let result = run_activation(&request(Profile::Flow, script), link.clone());
@@ -440,6 +442,8 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         Primitive::SinkBoard,
         Primitive::SinkWaitResolve,
         Primitive::SinkRoomPost,
+        Primitive::SinkNoticeSend,
+        Primitive::SinkNoticeResolve,
     ];
     assert_eq!(
         link.borrow()

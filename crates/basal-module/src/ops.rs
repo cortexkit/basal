@@ -156,6 +156,9 @@ impl Module {
                 "secrets_require_flow_install",
                 ManifestError::SecretsRequireFlowInstall.to_string(),
             ),
+            InstallError::Manifest(ManifestError::Notice { code, ref reason }) => {
+                OpError::new(code, reason.clone())
+            }
             InstallError::Manifest(ManifestError::ParamsRequirePackage { ref field }) => {
                 OpError::new("params_require_package", e.to_string())
                     .with_detail(Some(json!({"field":field})))
@@ -585,6 +588,7 @@ impl Module {
     fn parse_install_manifest(&self, text: &str) -> Result<Manifest, OpError> {
         Manifest::parse_ordinary(text).map_err(|e| match e {
             e @ (ManifestError::ParamsRequirePackage { .. }
+            | ManifestError::Notice { .. }
             | ManifestError::AudienceSinkNamed
             | ManifestError::AudienceFactsRequiresGlobal
             | ManifestError::AudienceFactsPrivateText

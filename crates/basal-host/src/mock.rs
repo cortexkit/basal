@@ -576,7 +576,9 @@ impl MockHost {
                 | Primitive::SinkStatus
                 | Primitive::SinkBoard
                 | Primitive::SinkWaitResolve
-                | Primitive::SinkRoomPost => keyed,
+                | Primitive::SinkRoomPost
+                | Primitive::SinkNoticeSend
+                | Primitive::SinkNoticeResolve => keyed,
                 Primitive::KvSet | Primitive::KvDelete | Primitive::Sh => CallClass::Mutation {
                     honours_idempotency_keys: false,
                 },

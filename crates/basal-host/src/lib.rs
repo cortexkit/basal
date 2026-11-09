@@ -233,7 +233,9 @@ pub fn op_label(kind: &CallKind) -> String {
             p @ (Primitive::SinkDigest
             | Primitive::SinkStatus
             | Primitive::SinkBoard
-            | Primitive::SinkRoomPost),
+            | Primitive::SinkRoomPost
+            | Primitive::SinkNoticeSend
+            | Primitive::SinkNoticeResolve),
         ) => {
             format!("{}.{}", subc_catalog::CORE, p.name())
         }

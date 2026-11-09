@@ -296,6 +296,7 @@ impl DryRunner {
         };
         let mut manifest = parsed.map_err(|e| match e {
             e @ (basal_core::manifest::ManifestError::AudienceSinkNamed
+            | basal_core::manifest::ManifestError::Notice { .. }
             | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience
             | basal_core::manifest::ManifestError::ForTargetRequiresAudience
             | basal_core::manifest::ManifestError::RunBoundExceedsAudienceLimit) => {
@@ -548,6 +549,9 @@ impl DryRunner {
         };
         let installed = install_result.map_err(|e| match e {
             e @ (basal_core::InstallError::ForeignAgentTarget { .. }
+            | basal_core::InstallError::Manifest(
+                basal_core::manifest::ManifestError::Notice { .. },
+            )
             | basal_core::InstallError::FlowOpNotServed { .. }
             | basal_core::InstallError::FlowScopeUnsupported { .. }
             | basal_core::InstallError::ToolContractUnreadable { .. }

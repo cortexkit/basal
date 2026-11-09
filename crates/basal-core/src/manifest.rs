@@ -216,6 +216,7 @@ pub enum SinkGrant {
     Digest(DigestGrant),
     Wait(WaitGrant),
     Room(RoomGrant),
+    Notice(NoticeGrant),
 }
 
 // Choose the variant by the presence of `kind` rather than trying each in
@@ -230,6 +231,10 @@ impl<'de> Deserialize<'de> for SinkGrant {
         if value["kind"] == "room" {
             RoomGrant::deserialize(value)
                 .map(Self::Room)
+                .map_err(D::Error::custom)
+        } else if value["kind"] == "notice" {
+            NoticeGrant::deserialize(value)
+                .map(Self::Notice)
                 .map_err(D::Error::custom)
         } else if value.get("kind").is_some() {
             WaitGrant::deserialize(value)
@@ -269,6 +274,21 @@ pub struct RoomGrant {
 #[serde(rename_all = "snake_case")]
 pub enum RoomTag {
     Room,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoticeGrant {
+    pub kind: NoticeTag,
+    // Keep the written cap decodable for stored versions; apply the current
+    // info/attention policy before a grant can reach approval.
+    pub severity_max: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeTag {
+    Notice,
 }
 
 /// An agent whose digest the flow may write, and the most intrusive action
@@ -491,6 +511,10 @@ fn check_unix_root(field: &str, root: &str) -> Result<(), ManifestError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
     SecretsRequireFlowInstall,
+    Notice {
+        code: &'static str,
+        reason: String,
+    },
     TooLarge {
         bytes: usize,
         cap: usize,
@@ -535,6 +559,7 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Notice { reason, .. } => write!(f, "sinks.notice: {reason}"),
             Self::SecretsRequireFlowInstall => write!(
                 f,
                 "secrets are supported only on ordinary flow installs for now"
@@ -785,6 +810,16 @@ impl Manifest {
         // the original bytes afterwards to retain duplicate-key refusals.
         let value: serde_json::Value =
             serde_json::from_str(text).map_err(|e| ManifestError::Decode(e.to_string()))?;
+        for sink in value["sinks"].as_array().into_iter().flatten() {
+            if sink["kind"] == "notice" {
+                serde_json::from_value::<NoticeGrant>(sink.clone()).map_err(|e| {
+                    ManifestError::Notice {
+                        code: "notice_grant_invalid",
+                        reason: e.to_string(),
+                    }
+                })?;
+            }
+        }
         if let Some(providers) = value.get("private_content_providers") {
             let providers = providers.as_array().ok_or_else(|| {
                 invalid("private_content_providers", "must be an array of strings")
@@ -847,9 +882,60 @@ impl Manifest {
         Ok(())
     }
 
+    pub(crate) fn check_package_notice_eligibility(&self) -> Result<(), ManifestError> {
+        if self.notice_sink().is_some() {
+            return Err(ManifestError::Notice {
+                code: "notice_grant_invalid",
+                reason: "notices require an ordinary flow install with per-instance approval"
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+
     fn check_intake(&self, kind: IntakeKind) -> Result<(), ManifestError> {
         if matches!(kind, IntakeKind::Package) {
             self.check_package_secret_eligibility()?;
+        }
+        let notices: Vec<_> = self
+            .sinks
+            .iter()
+            .filter_map(|sink| match sink {
+                SinkGrant::Notice(grant) => Some(grant),
+                _ => None,
+            })
+            .collect();
+        if notices.len() > 1 {
+            return Err(ManifestError::Notice {
+                code: "notice_grant_invalid",
+                reason: "duplicate notice grant".into(),
+            });
+        }
+        if let Some(grant) = notices.first() {
+            match grant.severity_max.as_str() {
+                "info" | "attention" => {}
+                "urgent" => {
+                    return Err(ManifestError::Notice {
+                        code: "notice_urgent_refused",
+                        reason: "flows cannot send urgent notices".into(),
+                    });
+                }
+                _ => {
+                    return Err(ManifestError::Notice {
+                        code: "notice_grant_invalid",
+                        reason: "severity_max must be info or attention".into(),
+                    });
+                }
+            }
+            if matches!(kind, IntakeKind::Package) {
+                self.check_package_notice_eligibility()?;
+            }
+            if !matches!(self.audience, Some(Audience::Agent { .. })) {
+                return Err(ManifestError::Notice {
+                    code: "notice_requires_agent_flow",
+                    reason: "its audience must be its author agent".into(),
+                });
+            }
         }
         if self
             .ops
@@ -1336,7 +1422,7 @@ impl Manifest {
     pub fn digest_sinks(&self) -> impl Iterator<Item = &DigestGrant> {
         self.sinks.iter().filter_map(|sink| match sink {
             SinkGrant::Digest(grant) => Some(grant),
-            SinkGrant::Wait(_) | SinkGrant::Room(_) => None,
+            SinkGrant::Wait(_) | SinkGrant::Room(_) | SinkGrant::Notice(_) => None,
         })
     }
 
@@ -1349,7 +1435,7 @@ impl Manifest {
     pub fn room_sinks(&self) -> impl Iterator<Item = &RoomGrant> {
         self.sinks.iter().filter_map(|sink| match sink {
             SinkGrant::Room(grant) => Some(grant),
-            SinkGrant::Digest(_) | SinkGrant::Wait(_) => None,
+            SinkGrant::Digest(_) | SinkGrant::Wait(_) | SinkGrant::Notice(_) => None,
         })
     }
 
@@ -1360,6 +1446,13 @@ impl Manifest {
         self.room_sinks()
             .find(|room| room.room_id == room_id)
             .map(|room| room.mentions.as_slice())
+    }
+
+    pub fn notice_sink(&self) -> Option<&NoticeGrant> {
+        self.sinks.iter().find_map(|sink| match sink {
+            SinkGrant::Notice(grant) => Some(grant),
+            _ => None,
+        })
     }
 
     /// The scope the manifest grants a built-in call, or `None` when the
