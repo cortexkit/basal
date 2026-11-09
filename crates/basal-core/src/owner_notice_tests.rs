@@ -434,7 +434,6 @@ fn auto_disabled_notice_carries_the_latest_admitted_run_id() {
 fn auto_disabled_without_an_admitted_run_is_not_enqueued() {
     let f = setup();
     let logs = CapturedLogs::default();
-    let _guard = tracing::subscriber::set_default(logs.clone());
     f.rt.store()
         .write(|tx| crate::owner_notice::auto_disabled_committed(tx, "flow", 1000))
         .unwrap();
@@ -452,13 +451,37 @@ fn auto_disabled_without_an_admitted_run_is_not_enqueued() {
 
 #[test]
 fn nonfinal_refusal_persists_code_and_warns_only_when_it_changes() {
+    check_nonfinal_refusal_warnings(false);
+}
+
+fn check_nonfinal_refusal_warnings(prime_without_subscriber: bool) {
     use basal_host::transport::WireError;
     let mut f = setup();
     for n in 1..=3 {
         drive(&f, n, Some("event_not_visible"), false);
     }
     let logs = CapturedLogs::default();
-    let _guard = tracing::subscriber::set_default(logs.clone());
+    if prime_without_subscriber {
+        // The first evaluation of the delivery warning can belong to another
+        // test thread with no scoped subscriber, while this capture is alive.
+        std::thread::spawn(|| {
+            let f = setup();
+            for n in 1..=3 {
+                drive(&f, n, Some("event_not_visible"), false);
+            }
+            f.source
+                .notice_replies
+                .lock()
+                .unwrap()
+                .push(Err(WireError::Refused {
+                    code: "reloading".into(),
+                    message: "warming up".into(),
+                }));
+            drain(&f);
+        })
+        .join()
+        .unwrap();
+    }
     for (index, code) in ["reloading", "reloading", "future_refusal"]
         .into_iter()
         .enumerate()
@@ -499,6 +522,32 @@ fn nonfinal_refusal_persists_code_and_warns_only_when_it_changes() {
             .clock
             .advance(retry - f.rt.config().clock.now_ms());
     }
+}
+
+#[test]
+fn nonfinal_refusal_capture_survives_unsubscribed_first_evaluation() {
+    const CHILD: &str = "BASAL_OWNER_NOTICE_CAPTURE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        check_nonfinal_refusal_warnings(true);
+        return;
+    }
+    // A new process ensures no earlier test registered the callsite or left a
+    // global subscriber installed; scheduling the parallel suite cannot help it.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "events::tests::owner_notices::nonfinal_refusal_capture_survives_unsubscribed_first_evaluation",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "isolated capture regression failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -599,7 +648,6 @@ fn stale_notices_are_discarded_once_before_sending_fresh_health() {
         drive(&f, n, Some("event_not_visible"), false);
     }
     let logs = CapturedLogs::default();
-    let _guard = tracing::subscriber::set_default(logs.clone());
     drain(&f);
     drain(&f);
     assert_eq!(sends(&f).len(), 1);

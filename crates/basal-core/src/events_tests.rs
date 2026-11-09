@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::logs::CapturedLogs;
 use crate::{Clock, Config, Durability, InstallGate, InstallRequest, Store};
 use basal_host::{
     CallClass, CallRequest, Catalog, CompletionSink, Dispatched, Host, HostOutcome, MockCatalog,
@@ -13,39 +14,6 @@ use std::sync::{
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const BODY: &str = "{\"changed\": true}";
-
-#[derive(Clone, Default)]
-struct CapturedLogs(Arc<Mutex<Vec<(tracing::Level, String)>>>);
-
-impl tracing::Subscriber for CapturedLogs {
-    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        struct Fields(String);
-        impl tracing::field::Visit for Fields {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                self.0.push_str(&format!("{}={value:?};", field.name()));
-            }
-            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                self.0.push_str(&format!("{}={value:?};", field.name()));
-            }
-        }
-        let mut fields = Fields(String::new());
-        event.record(&mut fields);
-        self.0
-            .lock()
-            .unwrap()
-            .push((*event.metadata().level(), fields.0));
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
 
 struct Source {
     replies: Mutex<Vec<std::result::Result<Dispatched, TransportError>>>,
@@ -1222,7 +1190,6 @@ fn transient_provider_warning_is_logged_once_across_retries() {
     let manifest = Manifest::parse(&run.manifest).unwrap();
     let logs = CapturedLogs::default();
     {
-        let _subscriber = tracing::subscriber::set_default(logs.clone());
         for code in [
             "store_failure",
             "flow_audience_unavailable",
@@ -1322,7 +1289,6 @@ fn no_flow_scope_warning_is_logged_once_across_retries() {
     let manifest = Manifest::parse(&run.manifest).unwrap();
     let logs = CapturedLogs::default();
     {
-        let _subscriber = tracing::subscriber::set_default(logs.clone());
         for _ in 0..3 {
             assert!(matches!(
                 f.rt.event_preamble(&run, &manifest).unwrap(),

@@ -1,4 +1,6 @@
-//! Filesystem fixtures shared by core and module integration tests.
+//! Fixtures shared by core and module integration tests.
+
+pub mod logs;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

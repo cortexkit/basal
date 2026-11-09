@@ -4,8 +4,9 @@
 mod common;
 mod wire;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use basal_core::test_support::logs::CapturedLogs;
 use basal_core::{InstallGate, InstallRequest, NoHooks, Store, install};
 use basal_host::cingulate_consent::CingulateConsent;
 use basal_host::core_consent::{CoreConsent, decode_install_outcome};
@@ -24,39 +25,6 @@ use wire::Fake;
 const FLOW: &str = "policy-flow";
 const RULE: &str = "head-self-within-limits";
 const SCRIPT: &str = "return 1;";
-
-#[derive(Clone, Default)]
-struct CapturedLogs(Arc<Mutex<Vec<(tracing::Level, String)>>>);
-
-impl tracing::Subscriber for CapturedLogs {
-    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        struct Fields(String);
-        impl tracing::field::Visit for Fields {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                self.0.push_str(&format!("{}={value:?};", field.name()));
-            }
-            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                self.0.push_str(&format!("{}={value:?};", field.name()));
-            }
-        }
-        let mut fields = Fields(String::new());
-        event.record(&mut fields);
-        self.0
-            .lock()
-            .unwrap()
-            .push((*event.metadata().level(), fields.0));
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
 
 fn head() -> Caller {
     Caller::Agent {
@@ -1031,21 +999,19 @@ fn approving_v3_supersedes_an_older_pending_install_card() {
 fn startup_supersedes_stale_pending_card_without_checking_core_or_warning() {
     let fake = Fake::new();
     let logs = CapturedLogs::default();
-    let f = tracing::subscriber::with_default(logs.clone(), || {
-        common::fixture_with_store(
-            "recover-stale-install-card",
-            common::Options {
-                hosts: Some(hosts(&fake, false)),
-                install_gate: InstallGate::Core,
-                ..common::Options::default()
-            },
-            |store| {
-                seed(store.as_ref(), FLOW, true, true);
-                record_v3(store.as_ref(), false);
-                Ok(())
-            },
-        )
-    });
+    let f = common::fixture_with_store(
+        "recover-stale-install-card",
+        common::Options {
+            hosts: Some(hosts(&fake, false)),
+            install_gate: InstallGate::Core,
+            ..common::Options::default()
+        },
+        |store| {
+            seed(store.as_ref(), FLOW, true, true);
+            record_v3(store.as_ref(), false);
+            Ok(())
+        },
+    );
 
     let card = f.module.rt.cards(FLOW).unwrap().remove(0);
     assert_eq!(card.state, basal_core::cards::CardState::Stale);
