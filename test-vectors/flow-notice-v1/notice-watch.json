@@ -1,0 +1,71 @@
+{
+  "changes": [
+    {
+      "asOf": {
+        "incarnation": "00000000000000000000000000000000",
+        "seq": null
+      },
+      "changed": [
+        {
+          "row": {
+            "mutes": [],
+            "nextCursor": null,
+            "notices": [
+              {
+                "attachments": null,
+                "body": "The release build stopped at the link step.",
+                "createdAt": 1700000000000,
+                "id": 1,
+                "key": "watch:key",
+                "muted": false,
+                "rateLimited": "none",
+                "readAt": null,
+                "requestedSeverity": "attention",
+                "resolution": null,
+                "resolvedAt": null,
+                "senderId": "flow-watch",
+                "senderKind": "flow",
+                "senderName": "TEST (flow: Nightly build check)",
+                "severity": "attention",
+                "state": "unread",
+                "subjectAgentId": "ag_flow_author",
+                "title": "Nightly build failed on main",
+                "updatedAt": 1700000000000
+              }
+            ]
+          },
+          "version": null
+        }
+      ],
+      "cursor": {
+        "incarnation": "00000000000000000000000000000000",
+        "scope": null,
+        "seq": null
+      },
+      "ids": [
+        "notices"
+      ],
+      "kind": "changes"
+    }
+  ],
+  "consumers": [
+    "desktop",
+    "phone"
+  ],
+  "reply": {
+    "asOf": {
+      "incarnation": "00000000000000000000000000000000",
+      "seq": null
+    },
+    "cursor": {
+      "incarnation": "00000000000000000000000000000000",
+      "scope": null,
+      "seq": null
+    },
+    "kind": "resync"
+  },
+  "request": {
+    "method": "notice.watch",
+    "params": {}
+  }
+}

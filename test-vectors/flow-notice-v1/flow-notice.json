@@ -1,0 +1,216 @@
+{
+  "capability": "flow-notice/v1",
+  "samples": [
+    {
+      "method": "sink.notice.send",
+      "name": "send",
+      "params": {
+        "body": "The release build stopped at the link step.",
+        "clientId": "receipt:send:1",
+        "key": "cost:watch",
+        "severity": "attention",
+        "stamp": {
+          "code_hash": "e500a875408a9803a26823b7efc0ee69735bec94ab197d669493ff0d54f22882",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "title": "Nightly build failed on main"
+      },
+      "result": {
+        "deliveredSeverity": "attention",
+        "id": 1,
+        "outcome": "created",
+        "rateLimited": "none"
+      }
+    },
+    {
+      "method": "sink.notice.send",
+      "name": "replay",
+      "params": {
+        "body": "The release build stopped at the link step.",
+        "clientId": "receipt:send:1",
+        "key": "cost:watch",
+        "severity": "attention",
+        "stamp": {
+          "code_hash": "e500a875408a9803a26823b7efc0ee69735bec94ab197d669493ff0d54f22882",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "title": "Nightly build failed on main"
+      },
+      "result": {
+        "deliveredSeverity": "attention",
+        "id": 1,
+        "outcome": "created",
+        "rateLimited": "none"
+      }
+    },
+    {
+      "method": "notice.list",
+      "name": "app-read",
+      "params": {},
+      "result": {
+        "mutes": [],
+        "nextCursor": null,
+        "notices": [
+          {
+            "attachments": null,
+            "body": "The release build stopped at the link step.",
+            "createdAt": 1700000000000,
+            "id": 1,
+            "key": "cost:watch",
+            "muted": false,
+            "rateLimited": "none",
+            "readAt": null,
+            "requestedSeverity": "attention",
+            "resolution": null,
+            "resolvedAt": null,
+            "senderId": "flow-x",
+            "senderKind": "flow",
+            "senderName": "TEST (flow: Nightly build check)",
+            "severity": "attention",
+            "state": "unread",
+            "subjectAgentId": "ag_test",
+            "title": "Nightly build failed on main",
+            "updatedAt": 1700000000000
+          }
+        ]
+      }
+    },
+    {
+      "name": "phone-push",
+      "payload": {
+        "body": "The release build stopped at the link step.",
+        "eventAtMs": 1700000000000,
+        "kind": "notice",
+        "noticeId": 1,
+        "sender": {
+          "id": "flow-x",
+          "kind": "flow",
+          "name": "TEST (flow: Nightly build check)",
+          "subject": "ag_test"
+        },
+        "severity": "attention",
+        "title": "Nightly build failed on main"
+      }
+    },
+    {
+      "method": "sink.notice.resolve",
+      "name": "resolve",
+      "params": {
+        "clientId": "receipt:resolve:1",
+        "key": "cost:watch",
+        "resolution": "The next build passed.",
+        "stamp": {
+          "code_hash": "e500a875408a9803a26823b7efc0ee69735bec94ab197d669493ff0d54f22882",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        }
+      },
+      "result": {
+        "id": 1,
+        "resolution": "The next build passed.",
+        "state": "resolved"
+      }
+    },
+    {
+      "method": "sink.notice.resolve",
+      "name": "resolve-replay",
+      "params": {
+        "clientId": "receipt:resolve:1",
+        "key": "cost:watch",
+        "resolution": "The next build passed.",
+        "stamp": {
+          "code_hash": "e500a875408a9803a26823b7efc0ee69735bec94ab197d669493ff0d54f22882",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        }
+      },
+      "result": {
+        "id": 1,
+        "resolution": "The next build passed.",
+        "state": "resolved"
+      }
+    },
+    {
+      "error": {
+        "code": "notice_urgent_refused",
+        "message": "Flows can't send urgent notices. Send it as attention, or have the agent decide whether to send it as urgent with notify."
+      },
+      "method": "sink.notice.send",
+      "name": "urgent-refusal",
+      "params": {
+        "body": "The release build stopped at the link step.",
+        "clientId": "receipt:urgent",
+        "key": "cost:watch",
+        "severity": "urgent",
+        "stamp": {
+          "code_hash": "e500a875408a9803a26823b7efc0ee69735bec94ab197d669493ff0d54f22882",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "title": "Nightly build failed on main"
+      }
+    },
+    {
+      "error": {
+        "code": "notice_severity_above_grant",
+        "message": "This severity is above the severity_max the flow was approved with."
+      },
+      "method": "sink.notice.send",
+      "name": "above-grant-refusal",
+      "params": {
+        "body": "The release build stopped at the link step.",
+        "clientId": "receipt:above",
+        "key": "cost:watch",
+        "severity": "attention",
+        "stamp": {
+          "code_hash": "0b683fb149c4f8e091f38fc4d902b51bd6805a6167a95fb8c7f0e5922ceac5a2",
+          "flow_id": "flow-info",
+          "flow_version": 1
+        },
+        "title": "Nightly build failed on main"
+      }
+    },
+    {
+      "error": {
+        "code": "sink_flow_hash_mismatch",
+        "message": "The requested code does not match the approved flow version."
+      },
+      "method": "sink.notice.send",
+      "name": "stamp-refusal",
+      "params": {
+        "body": "The release build stopped at the link step.",
+        "clientId": "receipt:hash",
+        "key": "cost:watch",
+        "severity": "info",
+        "stamp": {
+          "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "flow_id": "flow-x",
+          "flow_version": 1
+        },
+        "title": "Nightly build failed on main"
+      }
+    },
+    {
+      "error": {
+        "code": "notice_not_granted",
+        "message": "This flow's approved manifest has no notice sink."
+      },
+      "method": "sink.notice.send",
+      "name": "no-grant-refusal",
+      "params": {
+        "body": "The release build stopped at the link step.",
+        "clientId": "receipt:no-grant",
+        "key": "cost:watch",
+        "severity": "info",
+        "stamp": {
+          "code_hash": "128dbe8a5ad4018780f3de7bca23b0402c5f7a033156a2f4d19576ee1e9738f5",
+          "flow_id": "flow-none",
+          "flow_version": 1
+        },
+        "title": "Nightly build failed on main"
+      }
+    }
+  ]
+}
