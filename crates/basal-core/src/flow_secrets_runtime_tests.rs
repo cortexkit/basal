@@ -1,3 +1,4 @@
+use crate::test_support::logs::CapturedLogs;
 use crate::{
     ChannelError, Config, Durability, InstallGate, InstallRequest, NoHooks, Runtime, Store,
     WorkerChannel,
@@ -6,7 +7,7 @@ use basal_host::{CallClass, CallRequest, Dispatched, Host, TransportError};
 use basal_proto::*;
 use serde_json::{Value, json};
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
@@ -137,33 +138,9 @@ impl WorkerChannel for Script {
     fn kill(&mut self) {}
 }
 
-struct Logs(Arc<Mutex<String>>);
-impl tracing::field::Visit for Logs {
-    fn record_debug(&mut self, _: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        use std::fmt::Write;
-        write!(self.0.lock().unwrap(), "{value:?}").unwrap();
-    }
-}
-impl tracing::Subscriber for Logs {
-    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        event.record(&mut Logs(self.0.clone()));
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
-
 #[test]
 fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_never_releases_again() {
-    let logs = Arc::new(Mutex::new(String::new()));
-    tracing::subscriber::set_global_default(Logs(logs.clone())).unwrap();
+    let logs = CapturedLogs::all_threads();
     let path = std::env::temp_dir().join(format!("basal-secret-journal-{}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     let store = Arc::new(Store::open(path.join("store.sqlite"), Durability::throwaway()).unwrap());
@@ -239,7 +216,13 @@ fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_neve
         recorded.as_str(),
         first.result.as_ref().unwrap().as_str(),
         replay.result.as_ref().unwrap().as_str(),
-        &logs.lock().unwrap(),
+        &logs
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, fields)| fields.as_str())
+            .collect::<String>(),
     ] {
         assert!(!text.contains(KEY));
         assert!(!text.contains(ENCODED));
