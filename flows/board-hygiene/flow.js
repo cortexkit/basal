@@ -515,8 +515,12 @@ async function run() {
             Number.isFinite(terminal) &&
             now >= Math.max(terminal, Number.isFinite(item.changed_at_ms) ? item.changed_at_ms : terminal) + 30 * MINUTE,
           terminal, 0, agent);
+        // A wait-derived date belongs to the wait, not its blocked owner.
+        // The owner cannot move that date; once the wait ends, wait_ended
+        // owns the reminder, so an overdue-ETA nudge would duplicate it.
         await check('eta_passed', agent, lane, item,
-          item.state !== 'done' && Number.isFinite(item.eta_ms) && !itemRef(item.wait),
+          item.state !== 'done' && Number.isFinite(item.eta_ms) &&
+            item.eta_source !== 'wait' && !itemRef(item.wait),
           item.eta_ms, 0, peerWait(item.wait) ?? agent);
         // A blocked item whose wait has not changed for a day, with no ETA to
         // bound it, may be waiting on something that went silent (a worker that
