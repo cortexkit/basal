@@ -65,6 +65,8 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
         Ok(false)
     }
     fn now_ms(&self) -> i64;
+    #[cfg(test)]
+    fn before_worker_release(&self) {}
     /// Shutdown kills worker channels without turning their closure into a
     /// failed activation or publishing a late host reply.
     fn stopping(&self) -> bool {
@@ -1092,7 +1094,14 @@ impl Activation {
 
     pub fn release(&self, awaited: &[u64]) -> Result<Option<Outcome>> {
         let outcome = self.run.activate(self.generation, |a| {
-            let outcome = a.records().release_next(self.generation, awaited)?;
+            let records = a.records();
+            // A dispatch can record a control refusal after the worker loop's
+            // check. Once recorded, it seals all further deliveries, including
+            // the refusal itself. Check under the same actor lock as release.
+            if control_failure(records.state()).is_some() {
+                return Ok(None);
+            }
+            let outcome = records.release_next(self.generation, awaited)?;
             if let Some(released) = &outcome {
                 self.driver.at_run(
                     &self.live,

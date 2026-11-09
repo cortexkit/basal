@@ -299,6 +299,8 @@ impl Activation {
                 );
             }
             if !awaiting.is_empty() {
+                #[cfg(test)]
+                self.driver.services.before_worker_release();
                 if let Some(outcome) = self.release(&awaiting)? {
                     awaiting.clear();
                     if worker.send(&ParentMessage::Deliver(outcome)).is_err() {

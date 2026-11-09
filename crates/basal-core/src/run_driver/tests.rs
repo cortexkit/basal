@@ -89,6 +89,8 @@ struct Service {
     closed: AtomicBool,
     stopped: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     file_log: Mutex<Option<Arc<crate::run_log::RunLog<Record>>>>,
+    dispatch_revoked: AtomicBool,
+    before_release: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 impl CloseDriver for Service {
     fn stop_worker(&self, _: &str) -> Result<()> {
@@ -228,7 +230,16 @@ impl Services for Service {
     }
     fn dispatch_check(&self, tx: &rusqlite::Transaction<'_>, _: &LiveRun) -> Result<()> {
         tx.execute("UPDATE meta SET value=value WHERE key='store_id'", [])?;
+        if self.dispatch_revoked.load(Ordering::Acquire) {
+            return Err(CoreError::Invalid("version revoked".into()));
+        }
         Ok(())
+    }
+    fn before_worker_release(&self) {
+        let hook = self.before_release.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
     fn now_ms(&self) -> i64 {
         self.now.load(Ordering::Acquire)
@@ -377,6 +388,107 @@ fn request() -> basal_proto::ActivationRequest {
         budgets: basal_proto::Budgets::default(),
         prefix: Vec::new(),
     }
+}
+
+fn control_failure_between_check_and_release(kind: &'static str) {
+    use basal_proto::{ParentMessage, WorkerMessage};
+
+    let f = Fixture::new();
+    let a = f.claim(0);
+    let Issued::Dispatch(dispatch) = a.issue(call(0, "query")).unwrap() else {
+        panic!("expected a dispatch");
+    };
+    if kind == "agent_retired" {
+        f.service
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Reply::Refused(Box::new(
+                basal_host::flow_refusal::FlowRefusal::new(
+                    basal_host::flow_refusal::RefusalReason::AgentRetired,
+                    "test",
+                    "query",
+                ),
+            )));
+    } else {
+        assert_eq!(kind, "version_revoked");
+        f.service.dispatch_revoked.store(true, Ordering::Release);
+    }
+    assert!(control_failure(&a.state().unwrap()).is_none());
+    let log = f.log.clone();
+    *f.service.before_release.lock().unwrap() = Some(Box::new(move || {
+        // The worker has checked for control failures, but has not taken the
+        // actor lock to release an awaited arrival. Finish the held dispatch
+        // here so its refusal lands deterministically inside that gap.
+        dispatch.send().unwrap();
+        let records = log.records.lock().unwrap();
+        let synced = *log.synced.lock().unwrap();
+        assert!(records[..synced].iter().any(|record| {
+            matches!(&record.body, Body::Arrived(arrival) if arrival.position == 0)
+        }));
+    }));
+    let mut worker = Worker::new(vec![
+        WorkerMessage::Blocked { awaiting: vec![0] },
+        WorkerMessage::Blocked { awaiting: vec![0] },
+    ]);
+    let end = a
+        .drive(
+            &mut worker,
+            request(),
+            Arc::new(Effects),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert!(matches!(end, crate::ActivationEnd::Failed { kind: actual, .. } if actual == kind));
+    assert!(f.service.before_release.lock().unwrap().is_none());
+    f.store
+        .read(|conn| {
+            let calls = crate::run_readers::calls(conn, &f.live.run_id, None)?;
+            assert_eq!(calls.len(), 1);
+            assert!(
+                calls[0].outcome.is_none(),
+                "a control refusal must stay unreleased"
+            );
+            let stored = sql::call(conn, &f.live.run_id, 0)?.unwrap();
+            assert_eq!(stored.outcome, sql::CallOutcome::Rejected);
+            assert_eq!(stored.error_code.as_deref(), Some(kind));
+            let state: crate::run_records::CallState =
+                serde_json::from_value(stored.detail).unwrap();
+            assert!(state.delivery_order.is_none());
+            let refusal = state.arrival.unwrap();
+            assert_eq!(refusal.settlement, Settlement::Rejected);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(refusal.value.as_str()).unwrap()["code"],
+                kind
+            );
+            assert!(state.deferred.unwrap().proven_unsent);
+            let history = sql::history(conn, &f.live.run_id)?.unwrap();
+            assert_eq!(history.state, RunState::Failed);
+            assert_eq!(history.error_kind.as_deref(), Some(kind));
+            assert_eq!(history.call_counts["outcome"]["rejected"], 1);
+            Ok(())
+        })
+        .unwrap();
+    assert!(worker.killed);
+    assert!(
+        !worker
+            .sent
+            .iter()
+            .any(|message| matches!(message, ParentMessage::Deliver(_)))
+    );
+    if kind == "version_revoked" {
+        assert!(f.service.sent.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn version_revoked_between_check_and_release_stays_unreleased() {
+    control_failure_between_check_and_release("version_revoked");
+}
+
+#[test]
+fn agent_retired_between_check_and_release_stays_unreleased() {
+    control_failure_between_check_and_release("agent_retired");
 }
 
 #[test]
@@ -532,6 +644,8 @@ impl Fixture {
             closed: AtomicBool::new(false),
             stopped: Mutex::new(None),
             file_log: Mutex::new(None),
+            dispatch_revoked: AtomicBool::new(false),
+            before_release: Mutex::new(None),
         });
         let cut = Arc::new(Cut(Mutex::new(None)));
         let registry = Arc::new(RunStore::new_staged(store.clone(), Arc::new(NoHooks)));
