@@ -102,7 +102,7 @@ fn live_snapshot_is_core_only_and_keeps_expired_not_ended_instances() {
         .unwrap();
     assert_eq!(
         reply,
-        json!({"instances":[{"flow_id":id(&a),"template":"watch","version":1,"agent_id":OWNER,"expires_at":a["expires_at"],"seq":2}]})
+        json!({"instances":[{"flow_id":id(&a),"template":"watch","version":1,"agent_id":OWNER,"expires_at":a["expires_at"],"seq":2,"next_fire_at_ms":null}]})
     );
     assert_eq!(
         f.module

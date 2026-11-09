@@ -27,8 +27,31 @@ impl OutboxEvent {
     }
 }
 
-fn snapshot(c: &rusqlite::Connection, flow_id: &str) -> Result<Value> {
-    Ok(c.query_row("SELECT f.flow_id,f.package,f.approved_version,f.owner,t.expires_at,t.seq FROM template_instances t JOIN flows f USING(flow_id) WHERE flow_id=?1", [flow_id], |r| Ok(json!({"flow_id":r.get::<_,String>(0)?,"template":r.get::<_,String>(1)?,"version":r.get::<_,u32>(2)?,"agent_id":r.get::<_,String>(3)?,"expires_at":r.get::<_,i64>(4)?,"seq":r.get::<_,i64>(5)?})))?)
+pub(crate) fn next_fire_at_ms(
+    c: &rusqlite::Connection,
+    flow_id: &str,
+    now: i64,
+) -> Result<Option<i64>> {
+    // Disabled schedules retain their due time, including after expiry or when
+    // the scheduler disables corrupt schedule data. Revocation can leave the
+    // schedule active but stop admission.
+    Ok(c.query_row(
+        "SELECT s.next_due_ms FROM schedules s JOIN flows f USING(flow_id) \
+             JOIN template_instances t USING(flow_id) WHERE s.flow_id=?1 \
+             AND s.state='active' AND f.state='enabled' AND f.removed=0 \
+             AND t.expires_at>?2 AND f.approved_version IS NOT NULL \
+             AND NOT EXISTS(SELECT 1 FROM instance_revocations r \
+                 WHERE r.flow_id=f.flow_id AND r.version=f.approved_version)",
+        params![flow_id, now],
+        |r| r.get(0),
+    )
+    .optional()?
+    .flatten())
+}
+
+fn snapshot(c: &rusqlite::Connection, flow_id: &str, now: i64) -> Result<Value> {
+    let next_fire = next_fire_at_ms(c, flow_id, now)?;
+    Ok(c.query_row("SELECT f.flow_id,f.package,f.approved_version,f.owner,t.expires_at,t.seq FROM template_instances t JOIN flows f USING(flow_id) WHERE flow_id=?1", [flow_id], |r| Ok(json!({"flow_id":r.get::<_,String>(0)?,"template":r.get::<_,String>(1)?,"version":r.get::<_,u32>(2)?,"agent_id":r.get::<_,String>(3)?,"expires_at":r.get::<_,i64>(4)?,"seq":r.get::<_,i64>(5)?,"next_fire_at_ms":next_fire})))?)
 }
 
 /// The caller's state change, sequence increment and immutable body commit in
@@ -38,7 +61,7 @@ pub(crate) fn enqueue(tx: &Transaction<'_>, flow_id: &str, event: &str, now: i64
         "UPDATE template_instances SET seq=seq+1 WHERE flow_id=?1",
         [flow_id],
     )?;
-    let mut body = snapshot(tx, flow_id)?;
+    let mut body = snapshot(tx, flow_id, now)?;
     if event == "flow_instance_expired" {
         let text: String = tx.query_row(
             "SELECT params FROM template_instances WHERE flow_id=?1",
@@ -62,10 +85,11 @@ pub(crate) fn prune(tx: &Transaction<'_>, now: i64) -> Result<()> {
 
 impl Runtime {
     pub fn live_instances(&self) -> Result<Value> {
+        let now = self.config().clock.now_ms();
         self.store().read(|c| {
             let mut stmt = c.prepare("SELECT t.flow_id FROM template_instances t JOIN flows f USING(flow_id) WHERE f.removed=0 ORDER BY t.flow_id")?;
             let ids = stmt.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            let instances = ids.iter().map(|id| snapshot(c, id)).collect::<Result<Vec<_>>>()?;
+            let instances = ids.iter().map(|id| snapshot(c, id, now)).collect::<Result<Vec<_>>>()?;
             Ok(json!({"instances":instances}))
         })
     }
