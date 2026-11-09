@@ -300,13 +300,25 @@ jobs:
       # the launcher; worker deaths from a confinement fault (an invalid
       # handle or access violation) counted apart from other crashes; and
       # the store directory and database readable by their owner only.
-      # basal-core's tests run with them: the module's store and runtime
-      # are basal-core's.
-      - name: Test the module and the core
+      # basal-core's tests run here too: the module's store and runtime are
+      # basal-core's. The build and each package's run get their own time
+      # limit, so a slow hosted runner's compile time can't eat the tests'.
+      - name: Build the module and core tests
         if: matrix.suite == 'module-core-testkit-rig'
+        id: build-module
+        timeout-minutes: 30
+        run: cargo test -p basal-module -p basal-core --locked --no-run 2>&1 | tee "$RUNNER_TEMP/windows-baseline/build-basal-module.log"
+      - name: Test the core
+        if: matrix.suite == 'module-core-testkit-rig'
+        id: test-core
+        timeout-minutes: 20
+        run: cargo test -p basal-core --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-core.log"
+      # Runs even when the core's tests failed, so one run reports both.
+      - name: Test the module
+        if: ${{ !cancelled() && matrix.suite == 'module-core-testkit-rig' && steps.build-module.outcome == 'success' }}
         id: test-module
-        timeout-minutes: 40
-        run: cargo test -p basal-module -p basal-core --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-module.log"
+        timeout-minutes: 35
+        run: cargo test -p basal-module --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-module.log"
       - name: Test the shared test kit on its own
         if: matrix.suite == 'module-core-testkit-rig'
         id: test-testkit
@@ -357,7 +369,9 @@ jobs:
             echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
             echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"
             echo "- cargo test -p basal-launch --features deviations --locked: ${{ steps.test-launch.outcome }}"
-            echo "- cargo test -p basal-module -p basal-core --locked --no-fail-fast: ${{ steps.test-module.outcome }}"
+            echo "- cargo test -p basal-module -p basal-core --locked --no-run: ${{ steps.build-module.outcome }}"
+            echo "- cargo test -p basal-core --locked --no-fail-fast: ${{ steps.test-core.outcome }}"
+            echo "- cargo test -p basal-module --locked --no-fail-fast: ${{ steps.test-module.outcome }}"
             echo "- cargo test -p basal-worker --locked: ${{ steps.test-worker.outcome }}"
             echo "- cargo test -p basal-worker --features deviations --locked: ${{ steps.test-worker-deviations.outcome }}"
             echo "- cargo test -p basal-testkit --locked --no-fail-fast: ${{ steps.test-testkit.outcome }}"
