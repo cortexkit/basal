@@ -584,6 +584,9 @@ impl crate::Runtime {
         manifest
             .check_package_secret_eligibility()
             .map_err(|e| refused("secrets_require_flow_install", Value::String(e.to_string())))?;
+        manifest
+            .check_package_notice_eligibility()
+            .map_err(|e| refused("notice_grant_invalid", Value::String(e.to_string())))?;
         let limits = policy(&manifest).map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
         // The registry read pages core's agent list over the network, so it
         // runs here, before the store's write lock is taken below. A failed

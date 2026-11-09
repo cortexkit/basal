@@ -164,7 +164,9 @@ impl ScriptHost {
                 Primitive::SinkDigest
                 | Primitive::SinkStatus
                 | Primitive::SinkBoard
-                | Primitive::SinkWaitResolve => {
+                | Primitive::SinkWaitResolve
+                | Primitive::SinkNoticeSend
+                | Primitive::SinkNoticeResolve => {
                     ready(Settlement::Fulfilled, text(&json!({"accepted": true})))
                 }
                 Primitive::SinkRoomPost => ready(

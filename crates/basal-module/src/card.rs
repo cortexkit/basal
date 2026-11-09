@@ -140,6 +140,9 @@ pub fn fields(input: &CardInput<'_>) -> Value {
         "trigger": trigger,
         "sinks": m.sinks.iter().map(|s| match s {
             basal_core::manifest::SinkGrant::Wait(_) => json!({"kind":"wait"}),
+            basal_core::manifest::SinkGrant::Notice(n) => json!({
+                "kind":"notice", "severity_max":n.severity_max,
+            }),
             basal_core::manifest::SinkGrant::Room(r) => json!({
             "kind": "room",
             "room_id": r.room_id,

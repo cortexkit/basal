@@ -86,6 +86,10 @@ pub mod codes {
     /// why they are refused here rather than sent for core to judge.
     pub const ROOM_POST_INVALID: &str = "sink_item_invalid";
     pub const ROOM_ALL_MENTION_REFUSED: &str = "room_all_mention_refused";
+    pub const NOTICE_UNSUPPORTED: &str = "notice_unsupported";
+    /// A notice argument the script built wrong: an invalid key, title,
+    /// severity, or a field outside the send/resolve API.
+    pub const NOTICE_INVALID: &str = "sink_item_invalid";
 }
 
 /// The most members one post may mention.
@@ -530,6 +534,76 @@ pub fn check(
                         "wait resolution needs met or failed and an optional note of at most 500 UTF-8 bytes without control characters",
                     ))
                 }
+            }
+            Primitive::SinkNoticeSend | Primitive::SinkNoticeResolve => {
+                let send = *p == Primitive::SinkNoticeSend;
+                let Some(object) = args.as_object() else {
+                    return Err(Refusal::new(
+                        codes::NOTICE_INVALID,
+                        "notice arguments must be an object",
+                    ));
+                };
+                for field in object.keys() {
+                    if !(field == "key"
+                        || if send {
+                            matches!(field.as_str(), "title" | "body" | "severity")
+                        } else {
+                            field == "resolution"
+                        })
+                    {
+                        return Err(Refusal::new(
+                            codes::NOTICE_INVALID,
+                            format!("unknown notice field {field}"),
+                        ));
+                    }
+                }
+                if !args["key"].as_str().is_some_and(|key| {
+                    (1..=128).contains(&key.len())
+                        && key
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
+                }) {
+                    return Err(Refusal::new(
+                        codes::NOTICE_INVALID,
+                        "key must be 1–128 ASCII letters, digits or ._:-",
+                    ));
+                }
+                let grant = manifest.notice_sink().ok_or_else(|| {
+                    Refusal::new("notice_not_granted", "the manifest grants no notice sink")
+                })?;
+                if send {
+                    if !args["title"]
+                        .as_str()
+                        .is_some_and(|title| !title.is_empty())
+                    {
+                        return Err(Refusal::new(
+                            codes::NOTICE_INVALID,
+                            "title must be a non-empty string",
+                        ));
+                    }
+                    match args["severity"].as_str() {
+                        Some("urgent") => {
+                            return Err(Refusal::new(
+                                "notice_urgent_refused",
+                                "flows cannot send urgent notices",
+                            ));
+                        }
+                        Some("attention") if grant.severity_max == "info" => {
+                            return Err(Refusal::new(
+                                "notice_severity_above_grant",
+                                "severity exceeds severity_max",
+                            ));
+                        }
+                        Some("info" | "attention") => {}
+                        _ => {
+                            return Err(Refusal::new(
+                                codes::NOTICE_INVALID,
+                                "severity must be info or attention",
+                            ));
+                        }
+                    }
+                }
+                Ok(())
             }
             Primitive::SinkRoomPost => {
                 // The script supplies only these three; identity, receipt and

@@ -325,6 +325,46 @@ receipt, up to the run deadline, and a lost grant or an expired call records the
 typed unsent refusal. Capture and live dry runs record that the flow would post,
 with the room and any mentions, and never send the post.
 
+## Sending notices to the user
+
+An approved flow with a notice grant can send, update and resolve its own keyed
+notices. The audience must be the flow's author agent. Grant
+`{"kind":"notice","severity_max":"attention"}` (or `"info"`) in `sinks`:
+
+```js
+const sent = await sink.notice.send({
+  title: 'Nightly build failed on main',
+  body: 'The release build stopped at the link step.',
+  severity: 'attention',
+  key: 'build:main',
+});
+await sink.notice.resolve({ key: 'build:main', resolution: 'The next build passed.' });
+```
+
+`key` is required for both operations: 1–128 ASCII letters, digits or `._:-`.
+It belongs to this flow, not to its author or any other flow. Sending again with
+the same key updates or reopens that notice. `title` is a non-empty string;
+`severity` is `info` or `attention`, no higher than the approved cap. Flows can
+never send `urgent`. `body` and `resolution` are optional; omitted fields stay
+omitted on the wire. Only the fields shown for each operation are accepted.
+Core validates all other content and target rules, and applies the author's
+shared notice budget and severity demotion. Results return unchanged from core.
+
+Basal freezes the approved install stamp and arguments before dispatching over
+its attested `reserved:basal` carrier. It supplies the call's journaled receipt
+as `clientId`, which scripts cannot choose. A retry reuses that receipt; core
+returns the first successful reply rather than sending another notice or
+charging the budget again. Send and resolve calls have distinct receipts.
+
+Refusals expose core's code as `error.code` (also `error.data.code`), including
+`notice_not_granted`, `notice_urgent_refused`, `notice_severity_above_grant`,
+`sink_flow_not_installed` and `sink_flow_hash_mismatch`. Malformed script
+arguments are refused unsent with `sink_item_invalid`. Only `sink_store_failed`
+is deferred with bounded backoff; all other core refusals are final. If core's
+live catalog lacks `flow-notice/v1`, the call is refused unsent with
+`notice_unsupported`. Capture and live dry runs read that same capability and
+capture the notice calls, never sending them.
+
 ## Board lanes
 
 `sink.board` writes only the flow's own lane on an agent's board:

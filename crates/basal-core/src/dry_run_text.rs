@@ -363,8 +363,20 @@ fn capture_stop(run: &Value) -> Option<&Value> {
 fn is_write(call: &Value) -> bool {
     match call["kind"].as_str() {
         Some(
-            "sink.digest" | "sink.status" | "sink.board" | "sink.wait.resolve" | "sink.room.post"
-            | "fs.write" | "instance.end" | "llm" | "classify" | "sh" | "kv.set" | "kv.delete"
+            "sink.digest"
+            | "sink.status"
+            | "sink.board"
+            | "sink.wait.resolve"
+            | "sink.room.post"
+            | "sink.notice.send"
+            | "sink.notice.resolve"
+            | "fs.write"
+            | "instance.end"
+            | "llm"
+            | "classify"
+            | "sh"
+            | "kv.set"
+            | "kv.delete"
             | "unsupported_tool",
         ) => true,
         Some("net.fetch") => !matches!(fetch_method(call).as_str(), "GET" | "HEAD"),
@@ -483,6 +495,12 @@ fn describe(manifest: &Manifest, call: &Value) -> Option<String> {
             "Resolve its board waits as {}",
             quote(&string_or(args, "outcome"))
         ),
+        "sink.notice.send" => format!(
+            "Send the user a notice at {}: {}",
+            quote(&string_or(args, "severity")),
+            quote(&string_or(args, "title"))
+        ),
+        "sink.notice.resolve" => format!("Resolve its notice {}", quote(&string_or(args, "key"))),
         "sink.room.post" => match text_field(args, &["room_id"]) {
             Some(room) => {
                 let mentioned = call["args"]["mentions"]

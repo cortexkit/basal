@@ -148,6 +148,8 @@ pub enum Primitive {
     SinkBoard,
     SinkWaitResolve,
     SinkRoomPost,
+    SinkNoticeSend,
+    SinkNoticeResolve,
     KvGet,
     KvSet,
     KvDelete,
@@ -175,7 +177,7 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    pub const ALL: [Primitive; 26] = [
+    pub const ALL: [Primitive; 28] = [
         Self::Now,
         Self::Random,
         Self::Facts,
@@ -186,6 +188,8 @@ impl Primitive {
         Self::SinkBoard,
         Self::SinkWaitResolve,
         Self::SinkRoomPost,
+        Self::SinkNoticeSend,
+        Self::SinkNoticeResolve,
         Self::KvGet,
         Self::KvSet,
         Self::KvDelete,
@@ -233,6 +237,8 @@ impl Primitive {
             Self::SinkWaitResolve => 26,
             Self::Sleep => 27,
             Self::SinkRoomPost => 28,
+            Self::SinkNoticeSend => 29,
+            Self::SinkNoticeResolve => 30,
         }
     }
 
@@ -252,6 +258,8 @@ impl Primitive {
             Self::SinkBoard => "sink.board",
             Self::SinkWaitResolve => "sink.wait.resolve",
             Self::SinkRoomPost => "sink.room.post",
+            Self::SinkNoticeSend => "sink.notice.send",
+            Self::SinkNoticeResolve => "sink.notice.resolve",
             Self::KvGet => "kv.get",
             Self::KvSet => "kv.set",
             Self::KvDelete => "kv.delete",

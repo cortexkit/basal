@@ -14,6 +14,7 @@ pub const FLOW_DIGEST_WITHDRAW_V1: &str = "flow-digest-withdraw/v1";
 pub const FLOW_OWNER_NOTICE_V1: &str = "flow-owner-notice/v1";
 pub const FLOW_WAIT_RESOLVE_V1: &str = "flow-wait-resolve/v1";
 pub const FLOW_ROOM_POST_V1: &str = "flow-room-post/v1";
+pub const FLOW_NOTICE_V1: &str = "flow-notice/v1";
 
 /// Manifest-declared ops that core accepts from `reserved:basal`, checking a
 /// `{flow_id, flow_version, code_hash}` stamp against the approved install.
@@ -312,7 +313,9 @@ impl Host for CoreHost {
                 | Primitive::SinkStatus
                 | Primitive::SinkBoard
                 | Primitive::SinkWaitResolve
-                | Primitive::SinkRoomPost,
+                | Primitive::SinkRoomPost
+                | Primitive::SinkNoticeSend
+                | Primitive::SinkNoticeResolve,
             ) => CallClass::Mutation {
                 honours_idempotency_keys: true,
             },
@@ -332,6 +335,12 @@ impl Host for CoreHost {
             CallKind::Primitive(Primitive::SinkRoomPost) => {
                 (Primitive::SinkRoomPost, "sink.room.post")
             }
+            CallKind::Primitive(Primitive::SinkNoticeSend) => {
+                (Primitive::SinkNoticeSend, "sink.notice.send")
+            }
+            CallKind::Primitive(Primitive::SinkNoticeResolve) => {
+                (Primitive::SinkNoticeResolve, "sink.notice.resolve")
+            }
             CallKind::Primitive(Primitive::Facts) => (Primitive::Facts, "agent.facts"),
             _ => return outcome(Err(WireError::NeverSent("not a core call".into()))),
         };
@@ -347,6 +356,13 @@ impl Host for CoreHost {
             return outcome(Err(WireError::Refused {
                 code: "room_post_unsupported".into(),
                 message: "core does not advertise flow-room-post/v1".into(),
+            }));
+        }
+        let notice = matches!(p, Primitive::SinkNoticeSend | Primitive::SinkNoticeResolve);
+        if notice && !self.supports_capability(FLOW_NOTICE_V1) {
+            return outcome(Err(WireError::Refused {
+                code: "notice_unsupported".into(),
+                message: "core does not advertise flow-notice/v1".into(),
             }));
         }
         let params = serde_json::from_str(request.args.as_str())
@@ -367,6 +383,23 @@ impl Host for CoreHost {
             ) {
                 v["receipt_key"] = json!(request.idempotency_key);
             }
+            if notice {
+                // Core requires 1–128 printable ASCII bytes. Never dispatch an
+                // invalid journal key, even when recovering an older call.
+                if request.idempotency_key.is_empty()
+                    || request.idempotency_key.len() > 128
+                    || !request
+                        .idempotency_key
+                        .bytes()
+                        .all(|b| (0x20..=0x7e).contains(&b))
+                {
+                    return Err(WireError::Refused {
+                        code: "sink_item_invalid".into(),
+                        message: "clientId must be 1–128 printable ASCII bytes".into(),
+                    });
+                }
+                v["clientId"] = json!(request.idempotency_key);
+            }
             let withdrawal = p == Primitive::SinkDigest && v["withdraw"] == true;
             let operation = v["operation"]["op"].as_str().map(str::to_owned);
             self.transport
@@ -379,6 +412,8 @@ impl Host for CoreHost {
                         wait_refusal(e)
                     } else if p == Primitive::SinkRoomPost {
                         room_refusal(e)
+                    } else if notice {
+                        notice_refusal(e, op)
                     } else {
                         e
                     }
@@ -390,6 +425,8 @@ impl Host for CoreHost {
                         validate_wait_reply(v)
                     } else if p == Primitive::SinkRoomPost {
                         validate_room_reply(v)
+                    } else if notice {
+                        Ok(v)
                     } else {
                         validate_reply(p, v, withdrawal)
                     }
@@ -472,6 +509,21 @@ fn room_refusal(error: WireError) -> WireError {
                 crate::flow_refusal::RefusalReason::SinkStoreFailed,
                 CORE,
                 "sink.room.post",
+            ))
+        }
+        _ => error,
+    }
+}
+
+fn notice_refusal(error: WireError, op: &str) -> WireError {
+    match &error {
+        WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. }
+            if code == "sink_store_failed" =>
+        {
+            WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                crate::flow_refusal::RefusalReason::SinkStoreFailed,
+                CORE,
+                op,
             ))
         }
         _ => error,

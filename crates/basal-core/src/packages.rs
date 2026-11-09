@@ -259,6 +259,8 @@ impl Runtime {
             }
             manifest.check_package_secret_eligibility()
                 .map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
+            manifest.check_package_notice_eligibility()
+                .map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
             match known_agent {
                 Ok(true) => {}
                 Ok(false) => return Err(refused("agent_unknown")),

@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
-        assert_eq!(PROTOCOL_VERSION, 13);
+        assert_eq!(PROTOCOL_VERSION, 14);
         // Checked at run time, not in a const block, so lowering the ceiling
         // fails this test instead of the build.
         let ceiling = std::hint::black_box(CODEMODE_ADDRESS_SPACE_BYTES);
@@ -92,6 +92,8 @@ mod tests {
         assert_eq!(Primitive::Sh.code(), 11);
         for (kind, code) in [
             (CallKind::Primitive(Primitive::Sh), 11),
+            (CallKind::Primitive(Primitive::SinkNoticeSend), 29),
+            (CallKind::Primitive(Primitive::SinkNoticeResolve), 30),
             (
                 CallKind::Tool {
                     name: "echo".into(),

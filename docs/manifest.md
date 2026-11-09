@@ -419,6 +419,22 @@ Core also checks that the agent is still a member of the room, and posts carry
 core's per-flow, per-room rate limit. JavaScript is not statically inspected;
 calling the sink for a room without a grant is refused unsent at runtime.
 
+A notice grant authorizes [`sink.notice.send` and `sink.notice.resolve`](script.md#sending-notices-to-the-user):
+
+```json
+{ "sinks": [{ "kind": "notice", "severity_max": "attention" }] }
+```
+
+`severity_max` is required and must be `info` or `attention`; `urgent` is refused
+with `notice_urgent_refused`, and unknown values or malformed grants with
+`notice_grant_invalid`, before approval. Only one notice grant is allowed, with
+no other fields. The flow must be authored by the same agent its
+`{"kind":"agent","id":"ag_…"}` audience names; operator-owned, global,
+workspace and foreign-agent flows are refused with `notice_requires_agent_flow`.
+The grant is independent of other sinks and needs no `ops` line. Packages and
+templates cannot carry a notice grant in v1: registration and instance creation
+refuse it because they have no per-instance notice approval.
+
 ### Board lane grant
 
 `"board": [{"agent": "SYNAPSE", "title": "Build work"}]` authorizes the flow to

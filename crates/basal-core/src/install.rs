@@ -799,6 +799,14 @@ pub(crate) fn validate_inner(
     package: bool,
 ) -> std::result::Result<Validation, InstallError> {
     validate_audience(manifest, catalog)?;
+    if manifest.notice_sink().is_some()
+        && !matches!(&manifest.audience, Some(crate::manifest::Audience::Agent { id }) if id == author)
+    {
+        return Err(InstallError::Manifest(ManifestError::Notice {
+            code: "notice_requires_agent_flow",
+            reason: "its audience must be its author agent".into(),
+        }));
+    }
     let mut warnings = Vec::new();
     let mut tool_policies = crate::classify_cost::ToolPolicies::new();
     let audience = agentless_audience_label(manifest);

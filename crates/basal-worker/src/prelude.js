@@ -28,7 +28,7 @@
     GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21, INSTANCE_END = 24,
     SINK_BOARD = 25,
     SINK_WAIT_RESOLVE = 26,
-    SINK_ROOM_POST = 28;
+    SINK_ROOM_POST = 28, SINK_NOTICE_SEND = 29, SINK_NOTICE_RESOLVE = 30;
 
   const G = globalThis;
   const ObjectDefineProperty = Object.defineProperty;
@@ -97,6 +97,9 @@
     const error = new ErrorCtor(message);
     ObjectDefineProperty(error, 'name', { value: 'HostError', writable: true, enumerable: false, configurable: true });
     ObjectDefineProperty(error, 'data', { value: data, writable: true, enumerable: true, configurable: true });
+    if (data !== null && typeof data === 'object' && typeof data.code === 'string') {
+      ObjectDefineProperty(error, 'code', { value: data.code, writable: true, enumerable: true, configurable: true });
+    }
     ReflectApply(weakMapSet, hostRejections, [error, position]);
     return error;
   }
@@ -376,6 +379,14 @@
             mentions = stringList(options.mentions, 'mentions');
           }
           return callPrimitive(SINK_ROOM_POST, { room_id: roomId, text, mentions });
+        },
+      },
+      notice: {
+        send(request) {
+          return callPrimitive(SINK_NOTICE_SEND, request);
+        },
+        resolve(request) {
+          return callPrimitive(SINK_NOTICE_RESOLVE, request);
         },
       },
     },
