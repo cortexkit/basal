@@ -37,7 +37,9 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `net` | `{fetch}` list of `{host, methods?}` | no | none | Hosts `net.fetch` may reach over HTTPS on port 443 only, including redirect hops. `methods` defaults to `GET` and `HEAD`; others must be listed. Wildcard and IP-literal hosts are refused. |
 | `secrets` | list of `{name, target, methods?}` | no | absent | 1–16 distinct vault references, approved with this exact flow version and install. No secret values belong in the manifest. See below. |
 | `params` | object of bounded parameter declarations | packages only | absent | Declares a [template](templates.md): at most 16 typed parameters with required bounds. Whole-string placeholders may only narrow the documented grants and timing slots. |
-| `template` | `{max_per_agent, max_live?, max_lifetime}` | with `params` | absent | Instance quotas and mandatory expiry ceiling; part of the approved exact bytes. Ordinary install and dry run refuse either field with `params_require_package`. |
+| `template` | `{max_per_agent, max_live?, max_lifetime, fire_is_due?}` | with `params` | absent | Instance quotas and mandatory expiry ceiling; part of the approved exact bytes. Ordinary install and dry run refuse either field with `params_require_package`. |
+
+The optional boolean `template.fire_is_due` is permitted only in a template package's `template` block, defaults to `false` when absent, and declares whether its next fire time is the awaited due date rather than a poll; ordinary flow intake refuses the block with `params_require_package`.
 | `placement` | string | no | none | Where the flow runs, such as `"machine:studio"`. 1 to 128 bytes, no control characters. Shown on the card. |
 | `concurrency` | integer | no | `1` | Only `1`: runs of a flow run one at a time, in trigger order. |
 | `deadline` | duration | no | the runtime's default (10 minutes) | The per-run wall-clock deadline, from `"1s"` to `"24h"`; an audience limits it to `"12h"`. |

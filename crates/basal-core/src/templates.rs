@@ -31,6 +31,8 @@ pub struct Template {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_live: Option<u32>,
     pub max_lifetime: String,
+    #[serde(default)]
+    pub fire_is_due: bool,
 }
 
 fn bound(field: impl Into<String>, reason: impl Into<String>) -> ManifestError {
@@ -658,9 +660,9 @@ impl crate::Runtime {
             else if reopen { crate::schedule::table::enable(tx,&id,time)?; }
             // Snapshot the schedule after approval and any disable or reopen,
             // so the event and reply describe the state this commit leaves.
-            if let Some(event) = event { crate::template_events::enqueue(tx, &id, event, now)?; }
+            if let Some(event) = event { crate::template_events::enqueue_with_manifest(tx, &id, event, now, Some(&effective_manifest))?; }
             let next_fire = crate::template_events::next_fire_at_ms(tx, &id, now)?;
-            Ok(json!({"flow_id":id,"template":template,"version":version,"agent_id":agent,"params":values,"expires_at":expiry,"new":existing.is_none(),"next_fire_at_ms":next_fire}))
+            Ok(json!({"flow_id":id,"template":template,"version":version,"agent_id":agent,"params":values,"expires_at":expiry,"new":existing.is_none(),"next_fire_at_ms":next_fire,"fire_is_due":effective_manifest.fire_is_due()}))
         })?;
         if let Some(error) = refusal {
             return Err(error);

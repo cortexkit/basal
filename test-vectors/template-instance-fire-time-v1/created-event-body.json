@@ -1,1 +1,1 @@
-{"agent_id":"agent_47120287c700722b","expires_at":1777680000000,"flow_id":"remind-at_53b85c5dbc69c29b","next_fire_at_ms":1777597200000,"seq":1,"template":"remind-at","version":4}
+{"agent_id":"agent_47120287c700722b","expires_at":1777680000000,"fire_is_due":true,"flow_id":"remind-at_53b85c5dbc69c29b","next_fire_at_ms":1777597200000,"seq":1,"template":"remind-at","version":5}

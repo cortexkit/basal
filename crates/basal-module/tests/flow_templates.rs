@@ -313,8 +313,8 @@ impl Test {
 
     fn create(&self, template: &str, params: Value) -> Value {
         let version = match template {
-            "watch-github" => 5,
-            "remind-at" | "watch-file" | "watch-git" => 4,
+            "watch-github" | "remind-at" => 5,
+            "watch-file" | "watch-git" => 4,
             "github-ci-watch" => 2,
             _ => 2,
         };
@@ -678,7 +678,7 @@ fn published_templates_declare_exact_bounds_and_self_only_grants() {
         let m: Value = serde_json::from_str(manifest).unwrap();
         assert_eq!(m["id"], name);
         let expected_version = match name {
-            "watch-github" => 5,
+            "watch-github" | "remind-at" => 5,
             "github-ci-watch" => 2,
             _ => 4,
         };
@@ -715,10 +715,11 @@ fn published_templates_declare_exact_bounds_and_self_only_grants() {
             m["params"]["note"],
             json!({"type":"string","max_bytes":if name == "github-ci-watch" { 1024 } else { 4096 }})
         );
-        assert_eq!(
-            m["template"],
-            json!({"max_per_agent":100,"max_lifetime":"365d"})
-        );
+        let mut expected_template = json!({"max_per_agent":100,"max_lifetime":"365d"});
+        if name == "remind-at" {
+            expected_template["fire_is_due"] = json!(true);
+        }
+        assert_eq!(m["template"], expected_template);
         let expected_sinks = if matches!(
             name,
             "remind-at" | "watch-file" | "watch-git" | "watch-github"
@@ -1342,7 +1343,7 @@ fn reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation() {
             .to_string(),
     ] {
         let error = t.f.module.handle(&agent(OWNER), "flow.instantiate", json!({
-            "template":"remind-at","version":4,"params":{"at":at,"note":"Never delivered"},"expires_in":"365d",
+            "template":"remind-at","version":5,"params":{"at":at,"note":"Never delivered"},"expires_in":"365d",
         })).unwrap_err();
         assert_eq!(error.code, "param_out_of_bounds");
         assert_eq!(error.detail.unwrap()["param"], "at");
