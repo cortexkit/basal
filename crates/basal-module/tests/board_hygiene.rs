@@ -325,7 +325,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 18);
+    assert_eq!(value["version"], 19);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -977,6 +977,66 @@ fn eta_passed_digest_shows_other_utc_dates() {
         digest["item"]["body"],
         "Mark each done, or set a new ETA.\n- \"Release\": \"Ship\" (item1): ETA passed 01-14 08:00Z"
     );
+}
+
+#[test]
+fn eta_source_wait_ask_is_not_overdue() {
+    let mut waiting = item("blocked", BASE);
+    waiting["eta_ms"] = json!(BASE);
+    waiting["eta_source"] = json!("wait");
+    waiting["wait"] = json!({"on":"user","ref":"ask:question","ref_state":"open","since_ms":BASE});
+    let mut t = Test::new(vec![board("ag_a", vec![waiting])]);
+    assert!(t.run(BASE + HOUR).is_empty());
+    assert!(t.keys().is_empty());
+}
+
+#[test]
+fn eta_source_wait_flow_is_not_overdue() {
+    let mut waiting = item("blocked", BASE);
+    waiting["eta_ms"] = json!(BASE);
+    waiting["eta_source"] = json!("wait");
+    waiting["wait"] = json!({"on":"flow","ref":"flow:timer","ref_state":"pending","since_ms":BASE});
+    let mut t = Test::new(vec![board("ag_a", vec![waiting])]);
+    assert!(t.run(BASE + HOUR).is_empty());
+    assert!(t.keys().is_empty());
+}
+
+#[test]
+fn eta_source_other_or_absent_keeps_hand_set_eta_overdue() {
+    for source in [None, Some("manual"), Some("WAIT")] {
+        let mut waiting = item("blocked", BASE);
+        waiting["eta_ms"] = json!(BASE);
+        if let Some(source) = source {
+            waiting["eta_source"] = json!(source);
+        }
+        waiting["wait"] =
+            json!({"on":"flow","ref":"flow:timer","ref_state":"pending","since_ms":BASE});
+        let mut t = Test::new(vec![board("ag_a", vec![waiting])]);
+        let writes = t.run(BASE + HOUR);
+        assert_eq!(writes.len(), 1, "source {source:?}");
+        assert_eq!(rule(&writes, "eta_passed").len(), 1, "source {source:?}");
+    }
+}
+
+#[test]
+fn eta_source_wait_terminal_only_reports_wait_ended() {
+    for reference in [
+        "ask:question",
+        "flow:timer",
+        "work:task",
+        "consult:question",
+    ] {
+        let mut waiting = item("blocked", BASE);
+        waiting["eta_ms"] = json!(BASE);
+        waiting["eta_source"] = json!("wait");
+        waiting["wait"] = json!({"on":"wait","ref":reference,"ref_state":"terminal",
+            "since_ms":BASE,"ref_terminal_at_ms":BASE});
+        let mut t = Test::new(vec![board("ag_a", vec![waiting])]);
+        let writes = t.run(BASE + HOUR);
+        assert_eq!(writes.len(), 1, "ref {reference}");
+        assert_eq!(rule(&writes, "wait_ended").len(), 1, "ref {reference}");
+        assert!(rule(&writes, "eta_passed").is_empty(), "ref {reference}");
+    }
 }
 
 #[test]
