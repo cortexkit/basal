@@ -453,6 +453,16 @@ fn render_text(result: &mut Value) -> String {
         .replace("budget_exhausted:", "budget_exhausted: ");
     let calls = result["calls"].as_array().cloned().unwrap_or_default();
     let mut warnings = result["warnings"].as_array().cloned().unwrap_or_default();
+    // Catalog diagnostics stay in the run record, but only belong in the
+    // reply when the program called one of the affected tools.
+    let called = |tool: &Value| calls.iter().any(|call| call.get("tool") == Some(tool));
+    warnings.retain(|warning| match warning["code"].as_str() {
+        Some("tools_unavailable") => warning["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(called)),
+        Some("tool_entry_invalid") => called(&warning["tool"]),
+        _ => true,
+    });
     if result["keyless"] == true {
         warnings.push(json!({"code":"keyless","message":"This call had no key and can't be recovered if its reply is lost."}));
     }

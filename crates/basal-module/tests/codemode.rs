@@ -42,7 +42,7 @@ struct Core {
     two_providers: AtomicBool,
     store: Mutex<Option<Arc<basal_core::Store>>>,
     held_provider: AtomicBool,
-    format_unreadable: AtomicBool,
+    unreadable_catalog: Mutex<Option<String>>,
     extra_entries: Mutex<Vec<basal_host::run_scope::CatalogEntry>>,
     consent_provider: AtomicBool,
     onward_keys: Mutex<Vec<String>>,
@@ -344,7 +344,7 @@ impl Transport for Core {
             .lock()
             .unwrap()
             .push(identity.clone());
-        if self.format_unreadable.load(Ordering::SeqCst) {
+        if self.unreadable_catalog.lock().unwrap().as_deref() == Some(module) {
             // A permanent refusal, which retrying the run does not change.
             return Err(WireError::Refused {
                 code: "principal_denied".into(),
@@ -480,6 +480,18 @@ fn call(rig: &Rig, key: &str, code: &str, wait: Duration) -> Value {
             wait,
         )
         .unwrap()
+}
+
+fn recorded_warnings(rig: &Rig, result: &Value) -> Vec<Value> {
+    let run_id = result["structuredContent"]["run_id"].as_str().unwrap();
+    let store = rig.core.store.lock().unwrap().as_ref().unwrap().clone();
+    let basal_core::codemode::store::Lookup::Found(run) = store
+        .read(|conn| basal_core::codemode::store::lookup(conn, run_id))
+        .unwrap()
+    else {
+        panic!("missing run {run_id}");
+    };
+    serde_json::from_str(&run.warnings).unwrap()
 }
 
 fn held_context() -> Context {
@@ -1497,12 +1509,55 @@ fn consent_approval_rejects_not_started_and_the_program_chooses_a_new_call() {
 }
 
 #[test]
+fn catalog_warnings_for_an_untouched_provider_stay_in_run_diagnostics() {
+    let rig = rig("unused-unreadable-catalog", false);
+    rig.core.two_providers.store(true, Ordering::SeqCst);
+    *rig.core.unreadable_catalog.lock().unwrap() = Some("aft".into());
+    let result = call(
+        &rig,
+        "unused-unreadable-catalog",
+        "return await tools.cerebellum_recall({n:42});",
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(result["structuredContent"]["value"], json!({"n":42}));
+    assert_eq!(
+        result["structuredContent"]["calls"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        result["structuredContent"]["calls"][0]["tool"],
+        "cerebellum_recall"
+    );
+    assert_eq!(result["structuredContent"]["warnings"], json!([]));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("Warning:"), "{text}");
+    assert!(!text.contains("provider catalog refused"), "{text}");
+    let warnings = recorded_warnings(&rig, &result);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["code"], "tools_unavailable");
+    assert_eq!(warnings[0]["module"], "aft");
+    assert_eq!(warnings[0]["tools"], json!(["aft_read"]));
+    assert_eq!(warnings[0]["reason"], "catalog_unreadable");
+    assert_eq!(
+        warnings[0]["message"],
+        "codemode can't use aft_read from provider aft: its tool.catalog could not be read for this run: refused (principal_denied): provider catalog refused"
+    );
+}
+
+#[test]
 fn an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts() {
     let rig = rig("legacy-format-unreadable", false);
-    rig.core.format_unreadable.store(true, Ordering::SeqCst);
+    *rig.core.unreadable_catalog.lock().unwrap() = Some("mock".into());
     let program = r#"
         try { await tools.echo({n:1}); }
-        catch (error) { return [error.code, error.detail.reason, error.detail.module]; }
+        catch (error) { return [error.code, error.detail.reason, error.detail.module, error.message]; }
         return "sent";
     "#;
     let result = call(&rig, "unreadable-format", program, Duration::from_secs(10));
@@ -1512,7 +1567,12 @@ fn an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts() {
     );
     assert_eq!(
         result["structuredContent"]["value"],
-        json!(["tool_unavailable", "catalog_unreadable", "mock"])
+        json!([
+            "tool_unavailable",
+            "catalog_unreadable",
+            "mock",
+            "codemode can't use echo from provider mock: its tool.catalog could not be read for this run: refused (principal_denied): provider catalog refused"
+        ])
     );
     assert_eq!(
         result["structuredContent"]["calls"][0]["outcome"],
@@ -1551,7 +1611,7 @@ fn an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts() {
 }
 
 #[test]
-fn a_bad_catalog_entry_does_not_stop_valid_tool_calls_and_renders_a_warning() {
+fn a_bad_catalog_entry_does_not_stop_valid_tool_calls_and_stays_in_run_diagnostics() {
     let rig = rig("bad-catalog-entry", false);
     for name in [
         "llm.classify/v1",
@@ -1591,17 +1651,61 @@ fn a_bad_catalog_entry_does_not_stop_valid_tool_calls_and_renders_a_warning() {
         json!({"echo":{"n":42}, "reachable":[]})
     );
     assert_eq!(rig.core.state.lock().unwrap().0, 1);
-    let warnings = result["structuredContent"]["warnings"].as_array().unwrap();
+    assert_eq!(result["structuredContent"]["warnings"], json!([]));
+    let warnings = recorded_warnings(&rig, &result);
     assert_eq!(warnings.len(), 6, "{warnings:?}");
     let warning = &warnings[0];
     assert_eq!(warning["code"], "tool_entry_invalid");
     assert_eq!(warning["module"], "mock");
     assert_eq!(warning["tool"], "llm.classify/v1");
     assert_eq!(warning["reason"], "invalid tool name");
+    assert_eq!(
+        warning["message"],
+        "Catalog entry \"llm.classify/v1\" was dropped: invalid tool name."
+    );
     let text = result["content"][0]["text"].as_str().unwrap();
-    assert!(
-        text.contains("Warning: Catalog entry \"llm.classify/v1\" was dropped: invalid tool name."),
-        "{text}"
+    assert!(!text.contains("Warning:"), "{text}");
+    assert!(!text.contains("Catalog entry"), "{text}");
+}
+
+#[test]
+fn an_unused_duplicate_catalog_entry_stays_in_run_diagnostics() {
+    let rig = rig("unused-duplicate-catalog-entry", false);
+    for _ in 0..2 {
+        rig.core
+            .extra_entries
+            .lock()
+            .unwrap()
+            .push(basal_host::run_scope::CatalogEntry {
+                tool: "duplicated".into(),
+                module: "mock".into(),
+                op: "echo".into(),
+            });
+    }
+    rig.core.release();
+    let result = call(
+        &rig,
+        "unused-duplicate-catalog-entry",
+        "return await tools.echo({n:42});",
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(result["structuredContent"]["value"], json!({"n":42}));
+    assert_eq!(rig.core.state.lock().unwrap().0, 1);
+    assert_eq!(result["structuredContent"]["warnings"], json!([]));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("Warning:"), "{text}");
+    let warnings = recorded_warnings(&rig, &result);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["code"], "tool_entry_invalid");
+    assert_eq!(warnings[0]["tool"], "duplicated");
+    assert_eq!(warnings[0]["reason"], "duplicate tool name");
+    assert_eq!(
+        warnings[0]["message"],
+        "Catalog entry \"duplicated\" was dropped: duplicate tool name."
     );
 }
 
@@ -1623,7 +1727,7 @@ fn a_duplicate_catalog_name_is_unavailable_and_never_sent() {
         "duplicate-catalog-entry",
         r#"
         try { await tools.echo({n:42}); }
-        catch (error) { return [error.code, error.detail.reason, error.detail.module]; }
+        catch (error) { return [error.code, error.detail.reason, error.detail.module, error.message]; }
         return "sent";
     "#,
         Duration::from_secs(10),
@@ -1634,10 +1738,21 @@ fn a_duplicate_catalog_name_is_unavailable_and_never_sent() {
     );
     assert_eq!(
         result["structuredContent"]["value"],
-        json!(["tool_unavailable", "duplicate tool name", "mock"])
+        json!([
+            "tool_unavailable",
+            "duplicate tool name",
+            "mock",
+            "Catalog entry \"echo\" was dropped: duplicate tool name."
+        ])
     );
     assert_eq!(rig.core.state.lock().unwrap().0, 0);
     let warnings = result["structuredContent"]["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0]["reason"], "duplicate tool name");
+    assert_eq!(warnings, &recorded_warnings(&rig, &result));
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("Warning: Catalog entry \"echo\" was dropped: duplicate tool name."),
+        "{text}"
+    );
 }
