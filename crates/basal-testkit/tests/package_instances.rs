@@ -543,6 +543,7 @@ fn schedules_and_resource_windows_stay_per_instance_across_changes() {
     for version in [1, 2] {
         let mut m = manifest(version);
         m["trigger"] = json!({"schedule":{"interval":"15m"}});
+        basal_core::test_support::describe_test_upgrade(&rt, &mut m, true);
         rt.register_package("return 1;", &m.to_string()).unwrap();
     }
     let id = rt.ensure_instance("dark-wake", 1, OWNER, 1).unwrap()["flow_id"]

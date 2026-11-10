@@ -51,9 +51,6 @@ impl TestFlow {
             "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "A scheduled test flow.",
             "trigger": { "schedule": self.spec },
         });
-        if self.version > 1 {
-            manifest["changes"] = json!("Changes the schedule for newly admitted runs.");
-        }
         manifest.to_string()
     }
 }
@@ -129,9 +126,13 @@ impl Fixture {
     /// Installs and approves a version; returns what happened to its
     /// schedule.
     fn try_approve(&self, flow: &TestFlow) -> Result<Option<Approval>, InstallError> {
+        // Whether a version needs `changes` depends on the stored history, and
+        // some tests install a version above one first.
+        let mut manifest: serde_json::Value = serde_json::from_str(&flow.manifest()).unwrap();
+        basal_core::test_support::describe_test_upgrade(self.rt(), &mut manifest, false);
         let installed = self.rt().install(&InstallRequest {
             script: flow.script.clone(),
-            manifest: flow.manifest(),
+            manifest: manifest.to_string(),
             author: "ALF".into(),
             loop_override: false,
         })?;

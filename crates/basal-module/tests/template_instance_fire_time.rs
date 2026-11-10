@@ -34,6 +34,11 @@ fn recurring(interval: &str, version: u32) -> Value {
     m["params"] = json!({"note":{"type":"string","max_bytes":4096}});
     m["template"] = json!({"max_per_agent":10,"max_lifetime":"1d"});
     m["trigger"] = json!({"schedule":{"interval":interval}});
+    // Every test registers versions in order, so a later one has an earlier
+    // version stored and intake requires it to say what changed.
+    if version > 1 {
+        m["changes"] = json!("Test upgrade of the recurring template.");
+    }
     m
 }
 
