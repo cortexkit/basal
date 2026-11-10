@@ -101,7 +101,7 @@ fn manifest_refuses_unknown_fields() {
             other => panic!("accepted an unknown field: {other:?}"),
         }
     }
-    let duplicate = r#"{"id":"a","id":"b","version":1,"purpose":"p","trigger":{"schedule":{}}}"#;
+    let duplicate = r#"{"id":"a","id":"b","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"p","trigger":{"schedule":{}}}"#;
     assert!(matches!(
         Manifest::parse(duplicate),
         Err(ManifestError::Decode(_))
@@ -324,6 +324,8 @@ fn loop_install_rule_needs_the_operator_override() {
         json!([{"module": "plexus", "op": "pr.label"}, {"module": "plexus", "op": "pr.get"}]),
     );
     echoing["version"] = json!(2);
+    echoing["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     install(&rt, &echoing, false).expect("cause echo satisfies the rule");
 }
 
@@ -336,6 +338,9 @@ fn reacting(version: u32) -> Value {
         json!([{"module": "plexus", "op": "react"}]),
     );
     m["version"] = json!(version);
+    if version > 1 {
+        m["changes"] = json!("Exercises a new version with the same event-loop exemption.");
+    }
     m
 }
 
@@ -457,7 +462,15 @@ fn new_version_applies_to_newly_admitted_triggers_only() {
     let world = World::new("manifest-versions");
     let rt = runtime(&world);
     let script = |v: u32| format!("const l = await ops.call('mock', 'long', {{}}); return {v};");
-    let manifest = |v: u32| manifest_with(|m| m["version"] = json!(v)).to_string();
+    let manifest = |v: u32| {
+        manifest_with(|m| {
+            m["version"] = json!(v);
+            if v > 1 {
+                m["changes"] = json!("Returns the new version only for newly admitted triggers.");
+            }
+        })
+        .to_string()
+    };
     let request = |v: u32| InstallRequest {
         script: script(v),
         manifest: manifest(v),

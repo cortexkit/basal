@@ -164,14 +164,9 @@ impl Test {
                 ..Options::with_worker()
             },
         );
-        let registered = f
-            .module
-            .handle(
-                &Caller::Operator,
-                "package.register",
-                json!({"manifest":MANIFEST,"script":SCRIPT}),
-            )
+        basal_core::test_support::seed_stored_version(&f.module.rt, SCRIPT, MANIFEST, true)
             .unwrap();
+        let registered = f.module.rt.get_package("review-findings", 1).unwrap();
         assert_eq!(registered["package"], "review-findings");
         let stored = f.module.rt.get_package("review-findings", 1).unwrap();
         assert_eq!(stored["manifest"], MANIFEST);
@@ -558,6 +553,17 @@ fn script_ignores_non_owner_name_repo_patterns() {
 #[test]
 fn normal_validation_and_capture_dry_run_accept_the_template() {
     let t = Test::new();
+    let mut intake: Value = serde_json::from_str(&common::authored_manifest(MANIFEST)).unwrap();
+    intake["id"] = json!("review-findings-intake");
+    let registered =
+        t.f.module
+            .handle(
+                &Caller::Operator,
+                "package.register",
+                json!({"manifest":intake.to_string(),"script":SCRIPT}),
+            )
+            .unwrap();
+    assert_eq!(registered["package"], "review-findings-intake");
     let sends = t.host.mock.total_sends();
     let reply =
         t.f.module

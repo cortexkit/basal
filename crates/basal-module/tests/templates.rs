@@ -126,6 +126,8 @@ fn lifecycle_sequence_changes_only_for_committed_changes_across_kinds() {
     create(&f, OWNER, json!({"note":"a"}), 1, "1m").unwrap();
     let mut m2 = m;
     m2["version"] = json!(2);
+    m2["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     register(&f, &m2, "return 2;");
     create(&f, OWNER, json!({"note":"a"}), 2, "1m").unwrap();
     let extended = create(&f, OWNER, json!({"note":"a"}), 2, "2m").unwrap();
@@ -344,6 +346,8 @@ fn package_template_exclusion_and_ordinary_install_dry_run_refusals() {
     persona.as_object_mut().unwrap().remove("params");
     persona.as_object_mut().unwrap().remove("template");
     persona["version"] = json!(2);
+    persona["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     register(&f, &persona, "return 1;");
     assert_eq!(
         create(&f, OWNER, json!({}), 2, "1h").unwrap_err().code,
@@ -387,6 +391,8 @@ fn idempotent_creation_moves_version_extends_never_shortens_and_keeps_state() {
     assert_eq!(short["expires_at"], first["expires_at"]);
     let mut next = m.clone();
     next["version"] = json!(2);
+    next["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     register(&f, &next, "return 2;");
     let moved = create(&f, OWNER, json!({"note":"a"}), 2, "2h").unwrap();
     assert_eq!(moved["flow_id"], first["flow_id"]);
@@ -788,6 +794,8 @@ fn path_and_repo_values_resolve_symlinks_and_future_ancestors_before_bounds() {
     symlink(&repo, inside.join("repo-alias")).unwrap();
     let mut next = m;
     next["version"] = json!(2);
+    next["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     next["params"] = json!({"repo":{"type":"repo","under":[inside]}});
     next.as_object_mut().unwrap().remove("fs");
     next["git"] = json!({"read":["$params.repo"]});
@@ -1685,6 +1693,8 @@ fn instance_dry_run_uses_bound_values_owner_grants_and_approved_version() {
     );
     let instance = create(&f, OWNER, json!({"note":"bound","path":target}), 1, "1h").unwrap();
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     register(&f, &m, "return 'newest';");
     for caller in [agent(OWNER), Caller::Operator] {
         let reply = dry(&f, &caller, json!({"flow_id":id(&instance),"trigger":{}})).unwrap();

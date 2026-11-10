@@ -526,6 +526,10 @@ async fn all_flow_actions_reuse_ops_and_return_tool_result_v1() {
     let operator = management(&subject, &live, &operator).await;
     for version in [1, 2] {
         template["version"] = json!(version);
+        if version > 1 {
+            template["changes"] =
+                json!("Exercises explicit selection of the newer template version.");
+        }
         response(&operator, json!({"method":"package.register","params":{"script":"return 1;","manifest":template.to_string()}})).await;
     }
     live.core.approval_capability.store(true, Ordering::SeqCst);

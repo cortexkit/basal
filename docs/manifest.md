@@ -19,6 +19,8 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `state_epoch` | integer | no | `1` | From 1 to 2147483647. Declares which stored-value layout this version reads; valid for ordinary flows, packages and templates. Part of the hashed manifest and approval card. |
 | `title` | string | no | absent | Short, literal name for the install card, e.g. `"Build server health check"`. 1 to 80 Unicode scalar values, no control characters (including newline), not only whitespace, and no leading or trailing whitespace; refused rather than trimmed. |
 | `purpose` | string | yes | | 1 to 1024 bytes, no control characters except newline. Shown on the card. |
+| `explanation` | string | for new intake | absent in older stored versions | 1 to 1500 Unicode scalar values, plain text, not blank or whitespace-only; no control characters except newline. The author's explanation, shown as **What it does** on the approval card. |
+| `changes` | string | for a subsequent version | absent on a first version | 1 to 600 Unicode scalar values, with the same character rules as `explanation`. What changed from the previous version and why, shown as **What changed** on the approval card. Refused on a first version. |
 | `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
 | `audience` | `{kind, id?}` | no | none | Approved delivery reach: global, workspace or agent. See below. |
 | `private_content_providers` | list of provider ids (strings) | no | `[]` | Extra model providers approved to receive private content, beyond local models and Anthropic. At most 16 distinct ids; see below. |
@@ -47,6 +49,26 @@ The optional boolean `template.fire_is_due` is permitted only in a template pack
 Names: module ids use `a-z`, `0-9`, `-`, `_`; op names add `A-Z` and `.` (`browser.read_page`; the module id and complete op name identify the op, without splitting the op name at dots); event names are 1–4 nonempty dot-separated NATS subject tokens (for example, `run.started`), each using `a-z`, `0-9`, `_`, with no token consisting of `v` followed only by digits (`v2`); source kinds are one token using `a-z`, `0-9`, `_`; agent names use letters, digits, `-` and `_`. Every name is 1 to 128 bytes, including the dots in an event name.
 
 A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d` (`"90s"`, `"10m"`, `"6h"`, `"1d"`).
+
+### Approval explanations
+
+Every new flow, template or package version must include `explanation`: one to a
+few sentences in the operator's terms saying what it watches, who it wakes and
+when, what it reads or writes, and why it exists. The approval card labels this
+text **What it does**. Missing text is refused with `explanation_required`.
+
+When basal already stores an earlier version of the same flow id, template name
+or package name, in any state, the new version must also include `changes`:
+what this version changes from the previous one, and why. The card labels it
+**What changed**. Missing text is refused with `changes_required`; supplying it
+when there is no earlier stored version is refused with `changes_on_first_version`.
+These rules also apply to dry runs. Both fields count Unicode scalar values,
+not bytes, allow newlines, and reject other control characters and whitespace-only
+text.
+
+These are intake rules, not a migration of approved manifests. Stored versions
+without either field keep decoding and running unchanged. Add the texts on the
+next real change; do not submit a text-only version of an already approved flow.
 
 ### `secrets`
 
@@ -570,6 +592,7 @@ This example is parsed, round-tripped and installed by `dispatch_manifest::docum
   "version": 3,
   "state_epoch": 1,
   "purpose": "Walk the operator's x.com feed for inference news and send hits to Synapse.",
+  "explanation": "Reads the operator's x.com feed on schedule and sends inference-news hits to Synapse, so the operator can keep up without checking the feed manually.",
   "trigger": { "schedule": { "cron": "*/30 * * * *", "tz": "Europe/Madrid", "missed": "once" } },
   "sinks": [ { "agent": "SYNAPSE", "digest_max": "piggyback", "break_through": false } ],
   "status": [ "SYNAPSE" ],

@@ -59,7 +59,7 @@ fn arm(f: &common::Fixture, hook: &RevokeAt, flow: &str, hash: &str) {
 }
 
 fn manifest(id: &str) -> Value {
-    json!({"id":id,"version":2,"purpose":"Verify live revocation","trigger":{"schedule":{"interval":"1h"}},
+    json!({"id":id,"version":2,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Verify live revocation","trigger":{"schedule":{"interval":"1h"}},
         "ops":[{"module":"mock","op":"echo"},{"module":"mock","op":"send"}]})
 }
 

@@ -3,7 +3,7 @@ use basal_core::templates::{canonical_params, effective, instance_id, validate_v
 use serde_json::{Value, json};
 
 fn base() -> Value {
-    json!({"id":"watch","version":1,"purpose":"Watch a condition.",
+    json!({"id":"watch","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Watch a condition.",
         "trigger":{"schedule":{"interval":"1m"}},
         "params":{},"template":{"max_per_agent":2,"max_live":3,"max_lifetime":"7d"}})
 }

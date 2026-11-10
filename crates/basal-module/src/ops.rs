@@ -152,6 +152,15 @@ impl Module {
             return OpError::new("store_failure", text);
         }
         match e {
+            InstallError::Manifest(ref error @ ManifestError::ExplanationRequired) => {
+                OpError::new("explanation_required", error.to_string())
+            }
+            InstallError::Manifest(ref error @ ManifestError::ChangesRequired) => {
+                OpError::new("changes_required", error.to_string())
+            }
+            InstallError::Manifest(ref error @ ManifestError::ChangesOnFirstVersion) => {
+                OpError::new("changes_on_first_version", error.to_string())
+            }
             InstallError::Manifest(ManifestError::SecretsRequireFlowInstall) => OpError::new(
                 "secrets_require_flow_install",
                 ManifestError::SecretsRequireFlowInstall.to_string(),
@@ -588,6 +597,9 @@ impl Module {
     fn parse_install_manifest(&self, text: &str) -> Result<Manifest, OpError> {
         Manifest::parse_ordinary(text).map_err(|e| match e {
             e @ (ManifestError::ParamsRequirePackage { .. }
+            | ManifestError::ExplanationRequired
+            | ManifestError::ChangesRequired
+            | ManifestError::ChangesOnFirstVersion
             | ManifestError::Notice { .. }
             | ManifestError::AudienceSinkNamed
             | ManifestError::AudienceFactsRequiresGlobal

@@ -351,7 +351,7 @@ mod actor_reader_tests {
             false,
         )
         .unwrap();
-        let manifest = serde_json::json!({"id":"actor-reader","version":1,"purpose":"Capture locked registry evidence","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}]});
+        let manifest = serde_json::json!({"id":"actor-reader","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Capture locked registry evidence","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}]});
         let installed = rt
             .install(&InstallRequest {
                 script: "return 7;".into(),

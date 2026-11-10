@@ -516,6 +516,8 @@ fn approve_second_version(f: &Fixture, shared: bool) {
     let mut manifest = test_manifest();
     manifest.as_object_mut().unwrap().remove("llm");
     manifest["version"] = json!(2);
+    manifest["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     manifest["ops"] = json!([{"module":"mock","op":"send"}]);
     let installed =
         f.rt.install(&InstallRequest {
@@ -919,6 +921,8 @@ fn flow_scope_required_from_multiple_targets_fails_unsent_without_retry() {
         let mut manifest = test_manifest();
         manifest.as_object_mut().unwrap().remove("llm");
         manifest["version"] = json!(2);
+        manifest["changes"] =
+            json!("Changes the test behavior to exercise an upgrade while retaining its state.");
         manifest["ops"] =
             json!([{"module":module,"op":if module=="mock" {"send"} else {"pr.comment"}}]);
         let op = if module == "mock" {
@@ -1634,6 +1638,8 @@ fn install_target_manifest(f: &Fixture, modify: impl FnOnce(&mut Value)) {
     }
     let mut manifest = test_manifest();
     manifest["version"] = json!(2);
+    manifest["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     manifest["audience"] = json!({"kind":"global"});
     manifest["sinks"] = json!([]);
     manifest["status"] = json!([]);

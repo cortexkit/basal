@@ -80,7 +80,7 @@ fn worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_li
             ..Options::with_worker()
         },
     );
-    let manifest=json!({"id":"flow","version":1,"purpose":"Receive verified body","trigger":{"events":[{"module":"plexus","name":"github_pr_changed","version":1}]},"ops":[{"module":"plexus","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string();
+    let manifest=json!({"id":"flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Receive verified body","trigger":{"events":[{"module":"plexus","name":"github_pr_changed","version":1}]},"ops":[{"module":"plexus","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string();
     let installed = f
         .module
         .rt
@@ -204,7 +204,7 @@ fn delivered_body_flow_mismatch_fails_run_before_script() {
         );
         let installed = f.module.rt.install(&InstallRequest {
             script: "await kv.set('script-ran', true); return trigger.event.body.flow_id;".into(),
-            manifest: json!({"id":"flow","version":1,"purpose":"Receive digest delivery",
+            manifest: json!({"id":"flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Receive digest delivery",
                 "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1}]},
                 "ops":[{"module":"prefrontal-core","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
             author: "operator".into(), loop_override: false,

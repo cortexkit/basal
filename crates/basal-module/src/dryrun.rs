@@ -179,6 +179,7 @@ fn failed(e: impl std::fmt::Display) -> DryRunError {
 
 /// Runs dry runs.
 pub struct DryRunner {
+    intake_runtime: Runtime,
     catalog: Arc<dyn Catalog>,
     live_host: Arc<dyn Host>,
     pool: Pool,
@@ -190,6 +191,7 @@ pub struct DryRunner {
 
 impl DryRunner {
     pub fn new(
+        intake_runtime: Runtime,
         catalog: Arc<dyn Catalog>,
         live_host: Arc<dyn Host>,
         pool: Pool,
@@ -198,6 +200,7 @@ impl DryRunner {
         metrics: Arc<Metrics>,
     ) -> Self {
         Self {
+            intake_runtime,
             catalog,
             live_host,
             pool,
@@ -287,15 +290,16 @@ impl DryRunner {
             trigger,
             now_ms,
         };
-        let parsed = if request.stored {
+        let parsed = if request.stored || request.template.is_some() {
             Manifest::parse_stored(&request.install.manifest)
-        } else if request.template.is_some() {
-            Manifest::parse(&request.install.manifest)
         } else {
             Manifest::parse_ordinary(&request.install.manifest)
         };
         let mut manifest = parsed.map_err(|e| match e {
             e @ (basal_core::manifest::ManifestError::AudienceSinkNamed
+            | basal_core::manifest::ManifestError::ExplanationRequired
+            | basal_core::manifest::ManifestError::ChangesRequired
+            | basal_core::manifest::ManifestError::ChangesOnFirstVersion
             | basal_core::manifest::ManifestError::Notice { .. }
             | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience
             | basal_core::manifest::ManifestError::ForTargetRequiresAudience
@@ -304,6 +308,15 @@ impl DryRunner {
             }
             other => DryRunError::Invalid(format!("manifest: {other}")),
         })?;
+        if !request.stored && request.template.is_none() {
+            // Version history belongs to basal's durable store. The disposable
+            // replay store is empty even when this is an upgrade.
+            self.intake_runtime
+                .store()
+                .read(|conn| Ok(basal_core::install::check_version_text(conn, &manifest)))
+                .map_err(failed)?
+                .map_err(DryRunError::InstallRefused)?;
+        }
         if let Some(template) = request.template {
             basal_core::templates::effective(&mut manifest, &template.params);
             basal_core::authorize::resolve_self(&mut manifest, &template.agent_id);
@@ -510,9 +523,10 @@ impl DryRunner {
                     Ok(installed)
                 })
                 .map_err(basal_core::InstallError::from)
-        } else if request.stored {
-            // Replay still checks current catalog authority, but these exact
-            // manifest bytes were accepted when the version was installed.
+        } else {
+            // Replay still checks current catalog authority. New manifest
+            // intake and real version history were checked before creating
+            // the scratch store; stored bytes skip current intake policy.
             let cap = basal_proto::MAX_SCRIPT_BYTES;
             if request.install.script.len() > cap {
                 return Err(DryRunError::Invalid(format!(
@@ -544,8 +558,6 @@ impl DryRunner {
                     })
                     .map_err(basal_core::InstallError::from)
             })
-        } else {
-            rt.install(request.install)
         };
         let installed = install_result.map_err(|e| match e {
             e @ (basal_core::InstallError::ForeignAgentTarget { .. }

@@ -312,6 +312,8 @@ fn a_local_caller_installs_only_its_own_flows_with_a_digest_sink() {
     assert_eq!(card.fields["author"], LOCAL_AUTHOR);
     let mut v2_local = events_manifest("flow-local");
     v2_local["version"] = json!(2);
+    v2_local["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     install_as(&local, json!({}), &v2_local).expect("a second version of its own flow");
     // An agent cannot install a version of the local caller's flow.
     let r = install_as(&agent(OWNER), json!({}), &v2_local);

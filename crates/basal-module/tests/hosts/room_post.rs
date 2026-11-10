@@ -46,7 +46,7 @@ fn published(name: &str) -> Value {
 }
 
 fn room_manifest() -> Value {
-    let mut manifest = json!({"id":"host-flow","version":1,"purpose":"Post a daily summary",
+    let mut manifest = json!({"id":"host-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Post a daily summary",
         "audience":{"kind":"agent","id":"ag_synapse"},
         "trigger":{"schedule":{"interval":"1h"}}});
     manifest["sinks"] = vector("manifest-grant.json")["sinks"].clone();

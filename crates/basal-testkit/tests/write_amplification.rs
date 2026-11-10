@@ -265,7 +265,7 @@ fn measure(
             script,
             &json!({
                 "id": format!("cpu-watch-{instance:02}"), "version": 1,
-                "purpose": "Measure scheduled small-run storage writes.",
+                "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Measure scheduled small-run storage writes.",
                 "trigger": { "schedule": { "interval": if batch { "5m" } else { "1m" } } },
                 "ops": [{"module": "mock", "op": "echo"}],
                 "sinks": [{"agent": "ALF", "digest_max": "piggyback"}]

@@ -27,11 +27,13 @@ fn manifest(version: u32) -> Value {
     m
 }
 fn register(f: &Fixture, version: u32) -> Value {
+    let mut manifest = manifest(version);
+    basal_core::test_support::describe_test_upgrade(&f.module.rt, &mut manifest, true);
     f.module
         .handle(
             &Caller::Core,
             "package.register",
-            json!({"script":"return 1;","manifest":manifest(version).to_string()}),
+            json!({"script":"return 1;","manifest":manifest.to_string()}),
         )
         .unwrap()
 }

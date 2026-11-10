@@ -96,6 +96,8 @@ fn legacy_approved_manifest_remains_readable_and_upgradeable() {
 
     let mut next = legacy_manifest();
     next["version"] = json!(2);
+    next["explanation"] = json!("Reads boards to report work to Synapse.");
+    next["changes"] = json!("Declares the board-read grant required for newly installed versions.");
     next["board_read"] = json!(["SYNAPSE"]);
     let installed = common::install(&f, &Caller::Operator, SCRIPT, &next);
     assert_eq!(installed["version"], 2);
@@ -120,6 +122,7 @@ fn new_install_still_requires_board_read_coupling() {
         (json!([]), Some(json!(["SYNAPSE"]))),
     ] {
         let mut manifest = legacy_manifest();
+        manifest["explanation"] = json!("Reads boards to report work to Synapse.");
         manifest["ops"] = ops;
         if let Some(board_read) = board_read {
             manifest["board_read"] = board_read;

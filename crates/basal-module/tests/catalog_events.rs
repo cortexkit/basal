@@ -54,7 +54,7 @@ fn fixture(entry: Value, capabilities: Arc<DaemonCapabilities>) -> (Fixture, Arc
 
 fn manifest(name: &str, version: u32) -> Value {
     json!({
-        "id":"catalog-event-flow","version":1,"purpose":"Validate a declared event",
+        "id":"catalog-event-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Validate a declared event",
         "trigger":{"events":[{"module":"plexus","name":name,"version":version}]},
         "ops":[{"module":"plexus","op":"events_get"}]
     })

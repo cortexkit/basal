@@ -48,7 +48,7 @@ fn fixture_at(dir: std::path::PathBuf) -> Fixture {
     }
 }
 fn manifest(version: u32, epoch: Option<u32>) -> String {
-    let mut m = json!({"id":"flow","version":version,"purpose":"Store values.","trigger":{"schedule":{"interval":"1m"}}});
+    let mut m = json!({"id":"flow","version":version,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Store values.","trigger":{"schedule":{"interval":"1m"}}});
     if let Some(epoch) = epoch {
         m["state_epoch"] = json!(epoch);
     }
@@ -60,9 +60,11 @@ fn approve(f: &Fixture, version: u32, epoch: Option<u32>) {
         .unwrap();
 }
 fn install(f: &Fixture, version: u32, epoch: Option<u32>) -> [u8; 32] {
+    let mut manifest: Value = serde_json::from_str(&manifest(version, epoch)).unwrap();
+    crate::test_support::describe_test_upgrade(&f.rt, &mut manifest, false);
     f.rt.install(&basal_core::install::InstallRequest {
         script: "return 1;".into(),
-        manifest: manifest(version, epoch),
+        manifest: manifest.to_string(),
         author: "operator".into(),
         loop_override: false,
     })
@@ -418,6 +420,8 @@ fn template_instances_reset_independently_on_first_admission() {
     seed(&f, a);
     seed(&f, b);
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     m["state_epoch"] = json!(2);
     let bytes = m.to_string();
     f.rt.register_package("return 1;", &bytes).unwrap();

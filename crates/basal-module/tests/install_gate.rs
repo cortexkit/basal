@@ -26,7 +26,7 @@ const FLOW: &str = "gate-flow";
 const SCRIPT: &str = "return 1;";
 
 fn manifest() -> Value {
-    json!({"id":FLOW,"version":1,"purpose":"Report to Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"ops":[{"module":"mock","op":"echo"}]})
+    json!({"id":FLOW,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Report to Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"ops":[{"module":"mock","op":"echo"}]})
 }
 
 /// A module whose host reaches the fake core over the wire, with the
@@ -337,6 +337,8 @@ fn a_core_revoke_raises_no_reenable_card_and_a_new_approval_brings_the_flow_back
 
     let mut v2 = manifest();
     v2["version"] = json!(2);
+    v2["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     let reply = common::install(&f, &Caller::Operator, "return 2;", &v2);
     let card = fake.calls("flow.install_request")[1]["params"]["flow_install"].clone();
     assert_eq!(card["version"], 2);

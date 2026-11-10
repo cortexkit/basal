@@ -118,6 +118,8 @@ fn audience_op_reads_approved_version_not_pending() {
     install_approved(&f, &Caller::Operator, "return 1;", &m);
     let mut v2 = audience_manifest("versions", json!({"kind":"global"}));
     v2["version"] = json!(2);
+    v2["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     let pending = install(&f, &Caller::Operator, "return 2;", &v2);
     assert_eq!(
         f.module

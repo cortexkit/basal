@@ -33,7 +33,7 @@ fn module_projections_read_a_real_log_backed_flow() {
         false,
     )
     .unwrap();
-    let manifest = json!({"id":"reader","version":1,"purpose":"Read staged flow projections","trigger":{"schedule":{"interval":"1h"}}});
+    let manifest = json!({"id":"reader","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Read staged flow projections","trigger":{"schedule":{"interval":"1h"}}});
     let installed = f
         .module
         .rt
@@ -121,6 +121,7 @@ fn staged_dry_run_uses_its_own_log_and_retains_success_call_detail() {
     let f = fixture("log-scratch", Options::default());
     let scratch = f.dir.join("log-dry-runs");
     let runner = DryRunner::new(
+        f.module.rt.clone(),
         Arc::new(f.catalog.clone()),
         Arc::new(f.mock.clone()),
         f.module.pool.clone(),
@@ -128,7 +129,7 @@ fn staged_dry_run_uses_its_own_log_and_retains_success_call_detail() {
         f.module.rt.config().clone(),
         f.module.metrics.clone(),
     );
-    let manifest = json!({"id":"scratch-reader","version":1,"purpose":"Read retained dry-run calls","trigger":{"schedule":{"interval":"1h"}}});
+    let manifest = json!({"id":"scratch-reader","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Read retained dry-run calls","trigger":{"schedule":{"interval":"1h"}}});
     let reply = runner
         .run(&DryRunRequest {
             script: "await kv.set('x', 7); return await kv.get('x');".into(),

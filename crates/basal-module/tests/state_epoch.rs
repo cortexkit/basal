@@ -24,6 +24,8 @@ fn old_worker_finishes_its_kv_writes_before_new_epoch_admission() {
     f.module.engine.pass().unwrap();
     assert!(f.module.engine.wait_active(&old, Duration::from_secs(60)));
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     m["state_epoch"] = json!(2);
     install_approved(&f, &Caller::Operator, "return await kv.get('late');", &m);
     assert_eq!(
@@ -113,6 +115,8 @@ fn flow_epoch_list_health_and_dry_run_report_recorded_state() {
     );
     let mut m = m;
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     m["state_epoch"] = json!(2);
     install_approved(&f, &Caller::Operator, "return 1;", &m);
     assert_eq!(dry(2)["state_reset"], true);
@@ -177,6 +181,8 @@ fn template_dry_run_and_package_get_show_every_instance_epoch() {
     let a = create(1, "a")["flow_id"].as_str().unwrap().to_owned();
     let b = create(1, "b")["flow_id"].as_str().unwrap().to_owned();
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     m["state_epoch"] = json!(2);
     register(&m);
     create(2, "a");

@@ -73,7 +73,7 @@ impl TestRuntime {
 fn facts_include_must_be_an_array() {
     let manifest = Manifest::parse(
         &json!({
-            "id":"facts", "version":1, "purpose":"test", "trigger":{"schedule":{"interval":"1m"}},
+            "id":"facts", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"test", "trigger":{"schedule":{"interval":"1m"}},
             "facts":{"targets":["ALF"], "text":false}
         })
         .to_string(),
@@ -116,7 +116,7 @@ fn facts_include_must_be_an_array() {
 fn instance_collision_cannot_change_a_regular_flow() {
     let fixture = TestRuntime::new();
     let rt = &fixture.rt;
-    rt.register_package("return 1", &json!({"id":"package","version":1,"purpose":"test","trigger":{"schedule":{"interval":"1m"}}}).to_string()).unwrap();
+    rt.register_package("return 1", &json!({"id":"package","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"test","trigger":{"schedule":{"interval":"1m"}}}).to_string()).unwrap();
     let id = packages::instance_id("package", "ALF");
     rt.store().write(|tx| {
         tx.execute("INSERT INTO flows(flow_id,owner,approved_version,created_at) VALUES (?1,'operator',99,1)", [&id])?;

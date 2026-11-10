@@ -273,7 +273,7 @@ impl Rig {
     }
     fn install(&self, flow: &str) {
         let installed = self.m().rt.install(&basal_core::InstallRequest {
-            script: "return 1;".into(), manifest: json!({"id":flow,"version":1,"purpose":"Consent path test","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),
+            script: "return 1;".into(), manifest: json!({"id":flow,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Consent path test","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),
             author: "SYNAPSE".into(), loop_override: false,
         }).unwrap();
         self.m()

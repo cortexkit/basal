@@ -287,12 +287,15 @@ impl Test {
             },
         );
         for (_, manifest, script) in TEMPLATES {
+            basal_core::test_support::seed_stored_version(&f.module.rt, script, manifest, true)
+                .unwrap();
+            let parsed: Value = serde_json::from_str(manifest).unwrap();
             let registered = f
                 .module
-                .handle(
-                    &Caller::Operator,
-                    "package.register",
-                    json!({"manifest":manifest,"script":script}),
+                .rt
+                .get_package(
+                    parsed["id"].as_str().unwrap(),
+                    parsed["version"].as_u64().unwrap() as u32,
                 )
                 .unwrap();
             let stored = f
@@ -1198,7 +1201,7 @@ fn one_shot_helpers_deliver_before_a_deferred_resolution_and_await_it_before_end
             "{}\nasync function finishResolvedWatch{helper}\n}}\nawait finishResolvedWatch('Ready', {{ready:true}});",
             template.split("// END boundedDigest").next().unwrap()
         );
-        let manifest = json!({"id":"completion-helper","version":2,"purpose":"Test one-shot completion ordering",
+        let manifest = json!({"id":"completion-helper","version":2,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Test one-shot completion ordering",
             "trigger":{"schedule":{"interval":"1h"}},
             "sinks":[{"agent":"$self","digest_max":"wake"},{"kind":"wait"}],
             "params":{"note":{"type":"string","max_bytes":4096}},
@@ -1417,7 +1420,7 @@ fn reminder_dry_run_text_matches_its_committed_fixture() {
     let reply = t.dry("remind-at", params.clone(), Value::Null);
     // The same effective manifest the template dry run replays.
     let (_, manifest, _) = TEMPLATES[3];
-    let mut manifest = basal_core::Manifest::parse(manifest).unwrap();
+    let mut manifest = basal_core::Manifest::parse_stored(manifest).unwrap();
     let values = basal_core::templates::validate_values(&manifest, &params, now).unwrap();
     basal_core::templates::effective(&mut manifest, &values);
     basal_core::authorize::resolve_self(&mut manifest, OWNER);
@@ -1510,7 +1513,7 @@ fn digest_helper_bounds_escaped_note_long_metadata_and_links_on_every_platform()
             json!(url),
         );
         let manifest = json!({
-            "id":"digest-helper","version":2,"purpose":"Exercise the published digest helper",
+            "id":"digest-helper","version":2,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Exercise the published digest helper",
             "trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"$self","digest_max":"wake"}],
             "params":{"note":{"type":"string","max_bytes":4096}},
             "template":{"max_per_agent":100,"max_lifetime":"365d"},

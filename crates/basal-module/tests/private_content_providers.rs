@@ -87,6 +87,8 @@ fn providers_op_reads_current_approval_not_pending_version() {
         "operator"
     ));
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     m["private_content_providers"] = json!(["cloudflare-workers-ai"]);
     let second = install(&f, &Caller::Operator, "return 2;", &m);
     assert_eq!(
@@ -177,6 +179,8 @@ fn providers_op_reads_template_version_not_instance_params() {
         )
         .unwrap();
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     m["private_content_providers"] = json!(["openai"]);
     f.module
         .rt

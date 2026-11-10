@@ -160,7 +160,7 @@ fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_neve
         },
     )
     .expect("runtime startup");
-    let manifest = json!({"id":"secret-journal","version":1,"purpose":"Journal security regression",
+    let manifest = json!({"id":"secret-journal","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Journal security regression",
         "trigger":{"schedule":{"interval":"1h"}},"net":{"fetch":[{"host":"x.test","methods":["GET"]}]},
         "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/repos/a"},"methods":["GET"]}]}).to_string();
     let installed = rt
@@ -247,7 +247,7 @@ fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_neve
 fn review_single_stale_secret_card_queues_cleanup_in_its_transaction() {
     let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
     let rt = &fixture.rt;
-    let manifest = json!({"id":"stale-secret","version":1,"purpose":"stale cleanup",
+    let manifest = json!({"id":"stale-secret","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"stale cleanup",
         "trigger":{"schedule":{"interval":"1h"}},"secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/"},"methods":["GET"]}]}).to_string();
     let installed = rt
         .install(&InstallRequest {
@@ -325,7 +325,7 @@ fn second_review_abandonment_rechecks_confirmation_after_unlocked_probe() {
         });
     let host = probe.unwrap();
     let rt = &fixture.rt;
-    let manifest = json!({"id":"guarded-secret","version":1,"purpose":"guarded cleanup","trigger":{"schedule":{"interval":"1h"}},
+    let manifest = json!({"id":"guarded-secret","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"guarded cleanup","trigger":{"schedule":{"interval":"1h"}},
         "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/"},"methods":["GET"]}]}).to_string();
     let installed = rt
         .install(&InstallRequest {

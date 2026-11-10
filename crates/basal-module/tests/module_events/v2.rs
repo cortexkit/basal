@@ -174,7 +174,7 @@ async fn declared_v3_uses_header_key_and_refuses_mismatched_id() {
 fn approve_version(rt: &Runtime, id: &str, version: u32) {
     let installed = rt.install(&InstallRequest {
         script: "return 1;".into(),
-        manifest: json!({"id":id,"version":1,"purpose":"Consume versioned events",
+        manifest: json!({"id":id,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Consume versioned events",
             "trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":version}]}}).to_string(),
         author: "local:unverified".into(),
         loop_override: false,

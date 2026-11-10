@@ -253,6 +253,7 @@ impl Module {
             scheduler,
         );
         let dry = DryRunner::new(
+            rt.clone(),
             hosts.catalog.clone(),
             hosts.host.clone(),
             pool.clone(),

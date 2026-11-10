@@ -2,6 +2,84 @@
 
 pub mod logs;
 
+/// Seeds exact historical bytes that were approved before current intake rules.
+/// Production intake must never call this helper: it exists only to keep tests
+/// of deployed scripts independent of policy added after their approval.
+pub fn seed_stored_version(
+    rt: &crate::Runtime,
+    script: &str,
+    text: &str,
+    package: bool,
+) -> crate::Result<[u8; 32]> {
+    let manifest = crate::Manifest::parse_stored(text)
+        .map_err(|error| crate::CoreError::Invalid(error.to_string()))?;
+    let hash = crate::ids::code_hash(script, text);
+    if package {
+        let policies = crate::classify_cost::snapshot(&manifest, rt.catalog())
+            .map_err(|error| crate::CoreError::Invalid(error.to_string()))?;
+        rt.store().write(|tx| {
+            tx.execute(
+                "INSERT INTO package_versions (package,version,script,manifest,code_hash,registered_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                rusqlite::params![manifest.id, manifest.version, script, text, hash.as_slice(), rt.config().clock.now_ms()],
+            )?;
+            crate::classify_cost::record_package(tx, &manifest.id, manifest.version, &policies)
+        })?;
+    } else {
+        let validation = crate::install::validate_with_policies(
+            &manifest,
+            "operator",
+            rt.catalog(),
+            &rt.config().shell_denylist,
+            false,
+        )
+        .map_err(|error| crate::CoreError::Invalid(error.to_string()))?;
+        let request = crate::InstallRequest {
+            script: script.into(),
+            manifest: text.into(),
+            author: "operator".into(),
+            loop_override: false,
+        };
+        rt.store().write(|tx| {
+            crate::install::record(
+                tx,
+                &manifest,
+                &request,
+                validation,
+                rt.config().clock.now_ms(),
+            )
+            .map_err(|error| crate::CoreError::Invalid(error.to_string()))
+        })?;
+        rt.approve(
+            &manifest.id,
+            manifest.version,
+            &hash,
+            "historical-test-approval",
+        )
+        .map_err(|error| crate::CoreError::Invalid(error.to_string()))?;
+    }
+    Ok(hash)
+}
+
+/// Supplies version notes for synthetic upgrade fixtures using actual history,
+/// including fixtures whose first stored version is numbered above one.
+pub fn describe_test_upgrade(rt: &crate::Runtime, manifest: &mut serde_json::Value, package: bool) {
+    let id = manifest["id"].as_str().unwrap();
+    let version = manifest["version"].as_u64().unwrap();
+    let sql = if package {
+        "SELECT EXISTS(SELECT 1 FROM package_versions WHERE package=?1 AND version<?2)"
+    } else {
+        "SELECT EXISTS(SELECT 1 FROM installs WHERE flow_id=?1 AND version<?2)"
+    };
+    let earlier: bool = rt
+        .store()
+        .read(|conn| Ok(conn.query_row(sql, rusqlite::params![id, version], |row| row.get(0))?))
+        .unwrap();
+    if earlier && manifest.get("changes").is_none() {
+        manifest["changes"] =
+            serde_json::json!("Updates the test flow's behavior to exercise a version transition.");
+    }
+}
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);

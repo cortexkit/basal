@@ -10,7 +10,7 @@ fn vector(name: &str) -> Value {
 }
 
 fn wait_manifest() -> Value {
-    let mut manifest = json!({"id":"host-flow","version":1,"purpose":"Resolve waits",
+    let mut manifest = json!({"id":"host-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Resolve waits",
         "trigger":{"schedule":{"interval":"1h"}}});
     manifest["sinks"] = vector("manifest-grant.json")["sinks"].clone();
     manifest

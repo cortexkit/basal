@@ -24,9 +24,13 @@ const DIRECTORY: &str = concat!(
 );
 
 fn manifest(version: u32) -> Value {
-    json!({"id":FLOW,"version":version,"purpose":"Read an authenticated API without exposing its key",
+    let mut value = json!({"id":FLOW,"version":version,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Read an authenticated API without exposing its key",
         "trigger":{"schedule":{"interval":"1h"}},"net":{"fetch":[{"host":"x.test","methods":["GET"]}]},
-        "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/repos/a"},"methods":["GET"]}]})
+        "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/repos/a"},"methods":["GET"]}]});
+    if version > 1 {
+        value["changes"] = json!("Updates the authenticated flow for the version transition.");
+    }
+    value
 }
 
 fn capability(fake: &Fake) {

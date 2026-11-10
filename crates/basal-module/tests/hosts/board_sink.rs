@@ -1,7 +1,7 @@
 use super::*;
 
 fn board_manifest() -> Value {
-    json!({"id":"host-flow","version":1,"purpose":"Track work",
+    json!({"id":"host-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Track work",
         "trigger":{"schedule":{"interval":"1h"}},
         "board":[{"agent":"SYNAPSE","title":"Work"}]})
 }
@@ -58,7 +58,7 @@ fn board_target_refusal_is_unsent_and_final_refusals_reach_script() {
         &f,
         &Caller::Operator,
         "return await sink.board.append('SYNAPSE','work').catch(e => e.data.code);",
-        &json!({"id":"host-flow","version":1,"purpose":"No board grant","trigger":{"schedule":{"interval":"1h"}}}),
+        &json!({"id":"host-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"No board grant","trigger":{"schedule":{"interval":"1h"}}}),
     );
     approve(&fake, &f.module);
     let run = common::admit(&f, "host-flow", "board-refused");

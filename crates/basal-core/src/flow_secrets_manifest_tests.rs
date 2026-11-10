@@ -2,7 +2,7 @@ use super::Manifest;
 use serde_json::{Value, json};
 
 fn manifest() -> Value {
-    json!({"id":"secret-flow","version":1,"purpose":"Read an authenticated API",
+    json!({"id":"secret-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Read an authenticated API",
         "trigger":{"schedule":{"interval":"1h"}},
         "net":{"fetch":[{"host":"x.test","methods":["GET"]}]},
         "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/repos/a"},"methods":["GET"]}]})

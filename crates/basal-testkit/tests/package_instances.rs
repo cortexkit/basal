@@ -31,8 +31,9 @@ fn runtime(world: &World, gate: InstallGate) -> basal_core::Runtime {
         .unwrap()
 }
 fn ensure(rt: &basal_core::Runtime, script: &str, version: u32, generation: i64) -> String {
-    rt.register_package(script, &manifest(version).to_string())
-        .unwrap();
+    let mut manifest = manifest(version);
+    basal_core::test_support::describe_test_upgrade(rt, &mut manifest, true);
+    rt.register_package(script, &manifest.to_string()).unwrap();
     rt.ensure_instance("dark-wake", version, OWNER, generation)
         .unwrap()["flow_id"]
         .as_str()
@@ -68,6 +69,8 @@ fn package_tool_policies_follow_the_runs_version_after_instance_upgrade() {
         .catalog
         .set_tool_contract("mock", "echo", json!({"modes":["flow"]}));
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     rt.register_package("return 2", &m.to_string()).unwrap();
     rt.ensure_instance("dark-wake", 2, OWNER, 2).unwrap();
     let reads = world.catalog.tool_contract_reads().len();
