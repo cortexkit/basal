@@ -7,11 +7,42 @@ Typical templates:
 - a git commit, tag or branch moves;
 - a URL's content changes;
 - a pull request or issue changes state;
+- review findings arrive on a repository's pull requests;
 - a time is reached.
 
 A template is a flow package ([packages.md](packages.md)) whose manifest declares parameters. Package rules still apply: the registry preserves each version's exact script and manifest bytes, the operator approves each version once, `$self` names the creating agent, and each instance keeps its own flow state. This document adds parameters, the bounds that check them, the operations agents and core call, and the lifecycle synchronization contract.
 
 Template manifests also accept the optional install-card `title` with the [manifest limits](manifest.md#fields); it is literal, not a `$params` substitution slot.
+
+## Review feedback: `review-findings`
+
+The published [`review-findings`](../templates/review-findings/manifest.json)
+template is a standing, event-only watch for one repository. After its version
+is registered and approved, an agent creates an instance for its repository:
+
+```json
+{
+  "template": "review-findings",
+  "version": 1,
+  "params": { "repo": "owner/name" },
+  "expires_in": "365d"
+}
+```
+
+`repo` is the only parameter: a required string of at most 200 bytes, without
+control characters. Creation also validates it as an event-header pattern; the
+script ignores values that are not an `owner/name` pair. Each creating agent
+may have up to 100 instances, each lasting at most 365 days.
+
+Inline review comments wake the creating agent with the PR number, file, line
+(or an outdated-line marker), finding and comment link. Submitted reviews wake
+for people and for bots requesting changes; other bot summaries are skipped to
+avoid repeating their inline findings. The repository's own bot is skipped using
+Plexus's `github_read` action `github.bindings.list`, cached for ten minutes.
+If bindings cannot be read or no bot is bound, delivery continues, skipping only
+logins ending in `-alfonso[bot]`. Both review event subscriptions discard notices
+older than six hours to avoid flooding after an outage. The instance stays live
+after delivery until it expires or is ended.
 
 ## Parameters in the manifest
 

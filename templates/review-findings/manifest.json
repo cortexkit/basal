@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "id": "review-findings",
+  "version": 1,
+  "purpose": "Wake the creating agent for actionable PR review feedback in one repository.",
+  "trigger": {
+    "events": [
+      { "module": "plexus", "name": "github_pr_review_comment_created", "version": 1, "match": { "repo": "$params.repo" }, "max_age": "6h" },
+      { "module": "plexus", "name": "github_pr_review_submitted", "version": 1, "match": { "repo": "$params.repo" }, "max_age": "6h" }
+    ]
+  },
+  "ops": [
+    { "module": "plexus", "op": "events_get" },
+    { "module": "plexus", "op": "github_read" }
+  ],
+  "sinks": [{ "agent": "$self", "digest_max": "wake" }],
+  "params": {
+    "repo": { "type": "string", "max_bytes": 200 }
+  },
+  "template": { "max_per_agent": 100, "max_lifetime": "365d" }
+}
