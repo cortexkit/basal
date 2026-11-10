@@ -124,7 +124,7 @@ impl Fixture {
                 Ok(())
             })
             .unwrap();
-        self.rt.fixture_run(id,"flow",1,"return 1;",r#"{"id":"flow","version":1,"purpose":"Test runtime transitions","trigger":{"schedule":{"interval":"1h"}}}"#,State::new(0)).unwrap();
+        self.rt.fixture_run(id,"flow",1,"return 1;",r#"{"id":"flow","version":1,"purpose":"Test runtime transitions","explanation":"Exercises runtime transitions for a test, without additional effects.","trigger":{"schedule":{"interval":"1h"}}}"#,State::new(0)).unwrap();
     }
 
     fn call(&self, id: &str, class: StoredClass) -> Lease {
