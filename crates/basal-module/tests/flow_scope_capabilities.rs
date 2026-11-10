@@ -133,7 +133,8 @@ fn work_unsettled_installs_without_core_flow_scopes() {
     let mut manifest: serde_json::Value =
         serde_json::from_str(include_str!("../../../flows/board-hygiene/manifest.json")).unwrap();
     manifest["id"] = json!("work-unsettled-only");
-    manifest["explanation"] = json!("Reads unsettled deliveries for a test, without other effects.");
+    manifest["explanation"] =
+        json!("Reads unsettled deliveries for a test, without other effects.");
     manifest["ops"] = json!([{"module":"prefrontal-core","op":"work.unsettled"}]);
     manifest.as_object_mut().unwrap().remove("board_read");
     f.module
