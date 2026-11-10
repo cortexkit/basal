@@ -6,6 +6,7 @@ fn audience_flow(id: &str, audience: Value) -> Flow {
         version: 1,
         manifest: json!({"format":1,"id":id,"version":1,
             "purpose":"Exercise install policy without dispatching any host calls.",
+            "explanation":"Watches the clock without reading or writing external data or waking anyone, to exercise the install policy.",
             "trigger":{"schedule":{"cron":"0 0 1 1 *"}},"audience":audience})
         .to_string(),
         script: "return 42;".into(),

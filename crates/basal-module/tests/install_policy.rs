@@ -34,7 +34,11 @@ fn head() -> Caller {
 }
 
 fn manifest(id: &str, version: u32) -> String {
-    json!({"id":id,"version":version,"purpose":"Report to Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"ops":[{"module":"mock","op":"echo"}]}).to_string()
+    let mut value = json!({"id":id,"version":version,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Report to Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"ops":[{"module":"mock","op":"echo"}]});
+    if version > 1 {
+        value["changes"] = json!("Updates the flow for the policy version-transition test.");
+    }
+    value.to_string()
 }
 
 fn audience_manifest(audience: Value) -> String {

@@ -155,6 +155,10 @@ impl Test {
     }
 
     fn with_flow(script: &str, manifest: &str, events: &[&str]) -> Self {
+        Self::build(script, manifest, events, false)
+    }
+
+    fn build(script: &str, manifest: &str, events: &[&str], intake: bool) -> Self {
         let host = Arc::new(GithubHost::default());
         let catalog = MockCatalog::standard();
         catalog.set_op(
@@ -220,15 +224,22 @@ impl Test {
                 ..Options::with_worker()
             },
         );
-        let reply = common::install(
-            &f,
-            &Caller::Operator,
-            script,
-            &serde_json::from_str(manifest).unwrap(),
-        );
-        let card_id = reply["card_id"].as_str().unwrap();
-        let card = consent.card(card_id).unwrap().fields;
-        assert!(consent.decide(card_id, basal_host::CardDecision::Approve, "operator"));
+        let card = if intake {
+            let reply = common::install(
+                &f,
+                &Caller::Operator,
+                script,
+                &serde_json::from_str(&common::authored_manifest(manifest)).unwrap(),
+            );
+            let card_id = reply["card_id"].as_str().unwrap();
+            let card = consent.card(card_id).unwrap().fields;
+            assert!(consent.decide(card_id, basal_host::CardDecision::Approve, "operator"));
+            card
+        } else {
+            basal_core::test_support::seed_stored_version(&f.module.rt, script, manifest, false)
+                .unwrap();
+            Value::Null
+        };
         Self { f, host, card }
     }
 
@@ -353,7 +364,7 @@ fn pinned_reaction(kind: &str, event: usize) -> String {
 
 #[test]
 fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
-    Manifest::parse(MANIFEST).unwrap();
+    Manifest::parse_stored(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(manifest["version"], 9);
     // The manifest declares only a trigger, a global audience sink, and three operations.
@@ -393,9 +404,9 @@ fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant
 
 #[test]
 fn install_admits_github_react_by_plexus_declaring_it_emits_no_events() {
-    // `Test::new` installs without the loop override; the card shows which
+    // The synthetic intake copy installs without the loop override; its card shows which
     // op passed the loop rule by declaration rather than by cause echo.
-    let test = Test::new();
+    let test = Test::build(SCRIPT, MANIFEST, &EVENTS, true);
     let react = test.card["ops"]
         .as_array()
         .unwrap()

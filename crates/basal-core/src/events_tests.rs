@@ -150,7 +150,7 @@ impl Fixture {
         }
     }
     fn request(&self, id: &str) -> InstallRequest {
-        InstallRequest { script: "return trigger.event.body;".into(), author: "local:unverified".into(), loop_override: false, manifest: json!({"id":id,"version":1,"purpose":"Receive a module event", "trigger":{"events":[{"module":"plexus","name":"github_pr_changed","version":1}]}, "ops":[{"module":"plexus","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string() }
+        InstallRequest { script: "return trigger.event.body;".into(), author: "local:unverified".into(), loop_override: false, manifest: json!({"id":id,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Receive a module event", "trigger":{"events":[{"module":"plexus","name":"github_pr_changed","version":1}]}, "ops":[{"module":"plexus","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string() }
     }
     fn approve(&self, id: &str) {
         self.approve_version(id, 1);
@@ -1466,6 +1466,8 @@ fn package_instance_first_approval_survives_version_changes() {
     f.rt.config.clock.set(3_000);
     let mut manifest: serde_json::Value = serde_json::from_str(&first.manifest).unwrap();
     manifest["version"] = json!(2);
+    manifest["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     f.rt.register_package("return 2;", &manifest.to_string())
         .unwrap();
     f.rt.ensure_instance("pkg", 2, "owner", 2).unwrap();
@@ -1578,7 +1580,7 @@ fn journaled_flow_targeted_body_is_checked_against_run() {
     );
     let request = InstallRequest {
         script: "return trigger.event.body.flow_id;".into(), author: "operator".into(), loop_override: false,
-        manifest: json!({"id":"flow","version":1,"purpose":"Replay delivered events",
+        manifest: json!({"id":"flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Replay delivered events",
             "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1}]},
             "ops":[{"module":"prefrontal-core","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
     };

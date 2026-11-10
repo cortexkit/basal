@@ -239,7 +239,7 @@ fn delivered_runtime(path: &std::path::Path) -> Runtime {
     for id in ["a", "b"] {
         let installed = rt.install(&InstallRequest {
             script: "return 1;".into(), author: "operator".into(), loop_override: false,
-            manifest: json!({"id":id,"version":1,"purpose":"Receive digest delivery",
+            manifest: json!({"id":id,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Receive digest delivery",
                 "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1}]},
                 "ops":[{"module":"prefrontal-core","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
         }).unwrap();
@@ -333,7 +333,7 @@ async fn delivered_notice_missing_flow_header_is_malformed_and_acked() {
     assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
 }
 fn approve(rt: &Runtime, id: &str) {
-    let installed=rt.install(&InstallRequest {script:"return 1;".into(), manifest:json!({"id":id,"version":1,"purpose":"Consume retained events","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),author:"local:unverified".into(),loop_override:false}).unwrap();
+    let installed=rt.install(&InstallRequest {script:"return 1;".into(), manifest:json!({"id":id,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Consume retained events","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),author:"local:unverified".into(),loop_override:false}).unwrap();
     rt.approve(id, 1, &installed.code_hash, "test").unwrap();
 }
 fn run_count(rt: &Runtime) -> i64 {
@@ -388,7 +388,7 @@ async fn header_filtered_notice_is_acked_without_receipt_and_redelivery_stays_id
     let installed = rt
         .install(&InstallRequest {
             script: "return 1;".into(),
-            manifest: json!({"id":"flow","version":1,"purpose":"Filter repository notices",
+            manifest: json!({"id":"flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Filter repository notices",
             "trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1,
             "match":{"repo":"cortexkit/*"}}]}})
             .to_string(),
@@ -648,7 +648,7 @@ async fn newer_version_keeps_first_approval_cutoff() {
     rt.config().clock.set(between + 1);
     let installed = rt.install(&InstallRequest {
         script: "return 2;".into(),
-        manifest: json!({"id":"flow","version":2,"purpose":"Consume events after an upgrade","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),
+        manifest: json!({"id":"flow","version":2,"changes":"Consumes events under the upgraded version while preserving prior approval time.","explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Consume events after an upgrade","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),
         author: "local:unverified".into(), loop_override: false,
     }).unwrap();
     rt.approve("flow", 2, &installed.code_hash, "test-v2")

@@ -196,6 +196,8 @@ fn list_reply_decodes_against_documented_shape_and_health_state() {
     f.module.engine.run_until_idle(50).unwrap();
     let mut update = owned_manifest("a", "A");
     update["version"] = json!(2);
+    update["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     install(&f, &agent("A"), "return 2;", &update);
     let doc = include_str!("../../../docs/ops.md");
     let section = doc

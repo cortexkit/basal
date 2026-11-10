@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 fn manifest(audience: Option<Value>) -> Value {
     let mut m = json!({
-        "id": "audience-test", "version": 1, "purpose": "Delivery reach",
+        "id": "audience-test", "version": 1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Delivery reach",
         "trigger": {"schedule": {"interval": "1h"}},
         "sinks": [{"agent": "SYNAPSE", "digest_max": "piggyback"}],
         "status": ["SYNAPSE"]

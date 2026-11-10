@@ -464,6 +464,8 @@ fn phone_uninstall_stops_events_and_reinstall_does_not_replay_backlog() {
     );
     let mut m2 = m.clone();
     m2["version"] = json!(2);
+    m2["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     let pending = install(&f, &Caller::Operator, "return 2;", &m2);
     assert_eq!(
         op(&f, "flow.details", json!({"flow_id":"flow-uninstall"}))["state"],

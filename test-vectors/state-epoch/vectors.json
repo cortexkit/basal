@@ -4,36 +4,36 @@
     {
       "name": "first-install-defaults-to-one",
       "kind": "flow",
-      "manifest": "{\"id\":\"epoch-first\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}]}",
+      "manifest": "{\"id\":\"epoch-first\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "previous_manifest": null,
       "reset": false
     },
     {
       "name": "absent-and-explicit-one-are-equal",
       "kind": "flow",
-      "manifest": "{\"id\":\"epoch-default-equals-one\",\"version\":2,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1}",
-      "previous_manifest": "{\"id\":\"epoch-default-equals-one\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}]}",
+      "manifest": "{\"id\":\"epoch-default-equals-one\",\"version\":2,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1,\"explanation\":\"Exercises state layout compatibility without additional effects.\",\"changes\":\"Changes the state layout declaration to exercise compatibility behavior.\"}",
+      "previous_manifest": "{\"id\":\"epoch-default-equals-one\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "reset": false
     },
     {
       "name": "one-to-two-resets",
       "kind": "flow",
-      "manifest": "{\"id\":\"epoch-one-to-two\",\"version\":2,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":2}",
-      "previous_manifest": "{\"id\":\"epoch-one-to-two\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1}",
+      "manifest": "{\"id\":\"epoch-one-to-two\",\"version\":2,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":2,\"explanation\":\"Exercises state layout compatibility without additional effects.\",\"changes\":\"Changes the state layout declaration to exercise compatibility behavior.\"}",
+      "previous_manifest": "{\"id\":\"epoch-one-to-two\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1,\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "reset": true
     },
     {
       "name": "two-to-one-resets",
       "kind": "flow",
-      "manifest": "{\"id\":\"epoch-two-to-one\",\"version\":2,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1}",
-      "previous_manifest": "{\"id\":\"epoch-two-to-one\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":2}",
+      "manifest": "{\"id\":\"epoch-two-to-one\",\"version\":2,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1,\"explanation\":\"Exercises state layout compatibility without additional effects.\",\"changes\":\"Changes the state layout declaration to exercise compatibility behavior.\"}",
+      "previous_manifest": "{\"id\":\"epoch-two-to-one\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":2,\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "reset": true
     },
     {
       "name": "template-resets-only-old-instance",
       "kind": "template",
-      "manifest": "{\"id\":\"epoch-template\",\"version\":2,\"purpose\":\"Pin template instance epochs.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"$self\",\"digest_max\":\"piggyback\"}],\"params\":{\"note\":{\"type\":\"string\",\"max_bytes\":32}},\"template\":{\"max_per_agent\":2,\"max_live\":2,\"max_lifetime\":\"1d\"},\"state_epoch\":2}",
-      "previous_manifest": "{\"id\":\"epoch-template\",\"version\":1,\"purpose\":\"Pin template instance epochs.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"$self\",\"digest_max\":\"piggyback\"}],\"params\":{\"note\":{\"type\":\"string\",\"max_bytes\":32}},\"template\":{\"max_per_agent\":2,\"max_live\":2,\"max_lifetime\":\"1d\"},\"state_epoch\":1}",
+      "manifest": "{\"id\":\"epoch-template\",\"version\":2,\"purpose\":\"Pin template instance epochs.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"$self\",\"digest_max\":\"piggyback\"}],\"params\":{\"note\":{\"type\":\"string\",\"max_bytes\":32}},\"template\":{\"max_per_agent\":2,\"max_live\":2,\"max_lifetime\":\"1d\"},\"state_epoch\":2,\"explanation\":\"Exercises state layout compatibility without additional effects.\",\"changes\":\"Changes the state layout declaration to exercise compatibility behavior.\"}",
+      "previous_manifest": "{\"id\":\"epoch-template\",\"version\":1,\"purpose\":\"Pin template instance epochs.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"$self\",\"digest_max\":\"piggyback\"}],\"params\":{\"note\":{\"type\":\"string\",\"max_bytes\":32}},\"template\":{\"max_per_agent\":2,\"max_live\":2,\"max_lifetime\":\"1d\"},\"state_epoch\":1,\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "instances": [
         {
           "name": "current",
@@ -62,7 +62,7 @@
     {
       "name": "epoch-zero-is-refused",
       "kind": "refusal",
-      "manifest": "{\"id\":\"epoch-reject-zero\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":0}",
+      "manifest": "{\"id\":\"epoch-reject-zero\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":0,\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "previous_manifest": null,
       "refusal": {
         "code": "install_refused",
@@ -72,7 +72,7 @@
     {
       "name": "epoch-above-maximum-is-refused",
       "kind": "refusal",
-      "manifest": "{\"id\":\"epoch-reject-above-max\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":2147483648}",
+      "manifest": "{\"id\":\"epoch-reject-above-max\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":2147483648,\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "previous_manifest": null,
       "refusal": {
         "code": "install_refused",
@@ -82,7 +82,7 @@
     {
       "name": "fractional-epoch-is-refused",
       "kind": "refusal",
-      "manifest": "{\"id\":\"epoch-reject-fraction\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1.5}",
+      "manifest": "{\"id\":\"epoch-reject-fraction\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1.5,\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "previous_manifest": null,
       "refusal": {
         "code": "install_refused",
@@ -92,7 +92,7 @@
     {
       "name": "string-epoch-is-refused",
       "kind": "refusal",
-      "manifest": "{\"id\":\"epoch-reject-string\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":\"2\"}",
+      "manifest": "{\"id\":\"epoch-reject-string\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":\"2\",\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "previous_manifest": null,
       "refusal": {
         "code": "install_refused",
@@ -102,7 +102,7 @@
     {
       "name": "negative-epoch-is-refused",
       "kind": "refusal",
-      "manifest": "{\"id\":\"epoch-reject-negative\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":-1}",
+      "manifest": "{\"id\":\"epoch-reject-negative\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":-1,\"explanation\":\"Exercises state layout compatibility without additional effects.\"}",
       "previous_manifest": null,
       "refusal": {
         "code": "install_refused",

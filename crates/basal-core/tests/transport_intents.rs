@@ -130,7 +130,7 @@ impl Fixture {
             },
         )
         .unwrap();
-        let manifest=json!({"id":"retry","version":1,"purpose":"Exercise counted durable transport retries","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"act"}]}).to_string();
+        let manifest=json!({"id":"retry","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Exercise counted durable transport retries","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"act"}]}).to_string();
         let installed = rt
             .install(&InstallRequest {
                 script: "return 7;".into(),

@@ -13,6 +13,12 @@ Typical templates:
 A template is a flow package ([packages.md](packages.md)) whose manifest declares parameters. Package rules still apply: the registry preserves each version's exact script and manifest bytes, the operator approves each version once, `$self` names the creating agent, and each instance keeps its own flow state. This document adds parameters, the bounds that check them, the operations agents and core call, and the lifecycle synchronization contract.
 
 Template manifests also accept the optional install-card `title` with the [manifest limits](manifest.md#fields); it is literal, not a `$params` substitution slot.
+New template versions require the literal `explanation` (1–1500 Unicode scalar
+values), shown as **What it does** on the approval card. They also require
+`changes` (1–600 scalars), shown as **What changed**, if an earlier version of
+the same template name is stored in any state; `changes` is refused on a first
+version. Both are nonblank plain text, allow newlines but no other controls,
+and follow the [manifest intake rules](manifest.md#approval-explanations).
 
 ## Review feedback: `review-findings`
 

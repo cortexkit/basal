@@ -757,7 +757,7 @@ fn manifest(id: &str, schedule: Value) -> String {
     json!({
         "id": id,
         "version": 1,
-        "purpose": "Tell SYNAPSE every hour.",
+        "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Tell SYNAPSE every hour.",
         "trigger": { "schedule": schedule },
         "sinks": [ { "agent": "SYNAPSE", "digest_max": "piggyback" } ],
         "ops": [ { "module": "mock", "op": "echo" } ]
@@ -863,7 +863,7 @@ fn a_schedule_flow_reads_a_file_and_a_git_log_fetches_and_writes_a_digest() {
     let manifest = json!({
         "id": "flow-builtins",
         "version": 1,
-        "purpose": "Digest a file, a repository and a release page.",
+        "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Digest a file, a repository and a release page.",
         "trigger": { "schedule": { "cron": "0 * * * *", "missed": "once" } },
         "sinks": [ { "agent": "SYNAPSE", "digest_max": "piggyback" } ],
         "fs": { "read": [files.display().to_string()] },
@@ -1062,7 +1062,7 @@ fn a_broca_llm_suspends_survives_module_kill_and_settles_after_restart() {
     let _directory = Directory(dir.clone());
     let mut h = Harness::start(&dir, &["--broca"]);
     let manifest = json!({
-        "id": "flow-model", "version": 1, "purpose": "Obtain one model answer.",
+        "id": "flow-model", "version": 1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Obtain one model answer.",
         "trigger": {"schedule": {"cron": "0 * * * *", "missed": "once"}},
         "llm": {"iq": 0, "token_cap": {"tokens": 10000, "window": "1h"}, "max_output": 32}
     })

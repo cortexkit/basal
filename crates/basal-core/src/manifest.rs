@@ -26,6 +26,10 @@ pub const MAX_NAME_BYTES: usize = basal_proto::MAX_NAME_BYTES;
 pub const MAX_PURPOSE_BYTES: usize = 1024;
 /// The longest display title, in Unicode scalar values.
 pub const MAX_TITLE_CHARS: usize = 80;
+/// The longest approval explanation, in Unicode scalar values.
+pub const MAX_EXPLANATION_CHARS: usize = 1500;
+/// The longest version-change explanation, in Unicode scalar values.
+pub const MAX_CHANGES_CHARS: usize = 600;
 /// The largest token cap per window.
 pub const MAX_TOKEN_CAP: u64 = 1_000_000_000;
 /// The largest per-call output ceiling.
@@ -61,10 +65,24 @@ pub struct Manifest {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "decode_title"
+        deserialize_with = "decode_string"
     )]
     pub title: Option<String>,
     pub purpose: String,
+    /// The author's plain-language explanation shown on the approval card.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_string"
+    )]
+    pub explanation: Option<String>,
+    /// What changed from an earlier stored version, and why.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_string"
+    )]
+    pub changes: Option<String>,
     pub trigger: Trigger,
     /// Bounded values supplied by a template instance's creator.
     #[serde(
@@ -145,7 +163,7 @@ pub struct Manifest {
     pub deadline: Option<String>,
 }
 
-fn decode_title<'de, D: serde::Deserializer<'de>>(
+fn decode_string<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
     String::deserialize(deserializer).map(Some)
@@ -507,9 +525,12 @@ fn check_unix_root(field: &str, root: &str) -> Result<(), ManifestError> {
     Ok(())
 }
 
-/// Why a manifest was refused before any catalog lookup.
+/// Why a manifest was refused by structural or intake policy checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
+    ExplanationRequired,
+    ChangesRequired,
+    ChangesOnFirstVersion,
     SecretsRequireFlowInstall,
     Notice {
         code: &'static str,
@@ -559,6 +580,18 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ExplanationRequired => write!(
+                f,
+                "add `explanation`: one to a few sentences, in plain words, saying what this flow watches, who it wakes and when, what it reads or writes, and why it exists. The operator reads it on the approval card."
+            ),
+            Self::ChangesRequired => write!(
+                f,
+                "add `changes`: in plain words, say what this version changes from the previous one, and why. The operator reads it as What changed on the approval card."
+            ),
+            Self::ChangesOnFirstVersion => write!(
+                f,
+                "remove `changes`: basal has no earlier stored version to compare against. Describe what the flow does in `explanation` instead."
+            ),
             Self::Notice { reason, .. } => write!(f, "sinks.notice: {reason}"),
             Self::SecretsRequireFlowInstall => write!(
                 f,
@@ -636,6 +669,22 @@ fn invalid(field: impl Into<String>, reason: impl Into<String>) -> ManifestError
         field: field.into(),
         reason: reason.into(),
     }
+}
+
+fn check_approval_text(field: &str, text: &str, max_chars: usize) -> Result<(), ManifestError> {
+    if text.trim().is_empty() {
+        return Err(invalid(field, "must not be empty or only whitespace"));
+    }
+    if text.chars().count() > max_chars {
+        return Err(invalid(
+            field,
+            format!("longer than {max_chars} Unicode scalar values"),
+        ));
+    }
+    if text.chars().any(|c| c.is_control() && c != '\n') {
+        return Err(invalid(field, "contains a control character"));
+    }
+    Ok(())
 }
 
 fn check_name(
@@ -894,6 +943,14 @@ impl Manifest {
     }
 
     fn check_intake(&self, kind: IntakeKind) -> Result<(), ManifestError> {
+        let explanation = self
+            .explanation
+            .as_deref()
+            .ok_or(ManifestError::ExplanationRequired)?;
+        check_approval_text("explanation", explanation, MAX_EXPLANATION_CHARS)?;
+        if let Some(changes) = &self.changes {
+            check_approval_text("changes", changes, MAX_CHANGES_CHARS)?;
+        }
         if matches!(kind, IntakeKind::Package) {
             self.check_package_secret_eligibility()?;
         }
@@ -988,6 +1045,19 @@ impl Manifest {
             ));
         }
         Ok(())
+    }
+
+    /// Version history is checked by intake callers with access to the store,
+    /// never when decoding an already approved manifest.
+    pub(crate) fn check_version_text(
+        &self,
+        has_earlier_version: bool,
+    ) -> Result<(), ManifestError> {
+        match (has_earlier_version, self.changes.is_some()) {
+            (true, false) => Err(ManifestError::ChangesRequired),
+            (false, true) => Err(ManifestError::ChangesOnFirstVersion),
+            _ => Ok(()),
+        }
     }
 
     fn check_stored(&self) -> Result<(), ManifestError> {
@@ -1579,6 +1649,10 @@ impl Manifest {
 }
 
 #[cfg(test)]
+#[path = "approval_text_manifest_tests.rs"]
+mod approval_text_tests;
+
+#[cfg(test)]
 #[path = "private_content_providers_tests.rs"]
 mod private_content_providers_tests;
 
@@ -1600,7 +1674,7 @@ mod tests {
 
     fn title_manifest() -> serde_json::Value {
         serde_json::json!({
-            "id":"health", "version":1, "purpose":"Check the build server's health",
+            "id":"health", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Check the build server's health",
             "trigger":{"events":[{"module":"broca","name":"run.started","version":1}]}
         })
     }
@@ -1709,7 +1783,7 @@ mod tests {
     #[test]
     fn event_names_accept_one_to_four_tokens_within_total_byte_limit() {
         let mut value = serde_json::json!({
-            "id":"names", "version":1, "purpose":"Receive hierarchical events",
+            "id":"names", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Receive hierarchical events",
             "trigger":{"events":[{"module":"broca","name":"run.started","version":1}]}
         });
         for name in [
@@ -1749,7 +1823,7 @@ mod tests {
     #[test]
     fn event_names_refuse_five_tokens() {
         let value = serde_json::json!({
-            "id":"names", "version":1, "purpose":"Bound hierarchical event names",
+            "id":"names", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Bound hierarchical event names",
             "trigger":{"events":[{"module":"broca","name":"run.task.step.work.started","version":1}]}
         });
         assert!(matches!(
@@ -1761,7 +1835,7 @@ mod tests {
     #[test]
     fn event_names_refuse_version_shaped_tokens() {
         let mut value = serde_json::json!({
-            "id":"names", "version":1, "purpose":"Unambiguous event names",
+            "id":"names", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Unambiguous event names",
             "trigger":{"events":[{"module":"broca","name":"run.started","version":1}]}
         });
         for name in [
@@ -1832,7 +1906,7 @@ mod tests {
     #[test]
     fn event_max_age_is_a_bounded_literal_duration_including_in_templates() {
         let mut value = serde_json::json!({
-            "id":"ages", "version":1, "purpose":"Ignore stale notices",
+            "id":"ages", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Ignore stale notices",
             "trigger":{"events":[{"module":"plexus","name":"changed","version":1}]}
         });
         let no_limit = Manifest::parse(&value.to_string()).unwrap();
@@ -1904,7 +1978,7 @@ mod tests {
     #[test]
     fn event_header_filters_validate_keys_patterns_and_placeholder_types() {
         let mut value = serde_json::json!({
-            "id":"filters", "version":1, "purpose":"Skip unrelated events",
+            "id":"filters", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Skip unrelated events",
             "trigger":{"events":[{"module":"plexus","name":"changed","version":1}]}
         });
         for filters in [
@@ -1935,7 +2009,7 @@ mod tests {
         }
         value["trigger"]["events"][0]["match"] = serde_json::json!({"repo":"$params.repo"});
         assert!(Manifest::parse(&value.to_string()).is_err());
-        assert!(Manifest::parse(r#"{"id":"filters","version":1,"purpose":"test","trigger":{"events":[{"module":"plexus","name":"changed","version":1,"match":{"repo":"a","repo":"b"}}]}}"#).is_err());
+        assert!(Manifest::parse(r#"{"id":"filters","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"test","trigger":{"events":[{"module":"plexus","name":"changed","version":1,"match":{"repo":"a","repo":"b"}}]}}"#).is_err());
         value["template"] = serde_json::json!({"max_per_agent":10,"max_lifetime":"1d"});
         for decl in [
             serde_json::json!({"type":"string","max_bytes":4096}),
@@ -1982,7 +2056,7 @@ mod tests {
     #[test]
     fn status_group_is_one_to_four_uppercase_ascii_letters() {
         let mut value = serde_json::json!({
-            "id":"counts", "version":1, "purpose":"Report counts",
+            "id":"counts", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Report counts",
             "trigger":{"schedule":{"interval":"1h"}},
             "sinks":[{"agent":"SYNAPSE","digest_max":"silent"}]
         });
@@ -2020,7 +2094,7 @@ mod tests {
         let parse = |root: &str| {
             Manifest::parse(
                 &serde_json::json!({
-                    "id":"roots", "version":1, "purpose":"test",
+                    "id":"roots", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"test",
                     "trigger":{"events":[{"module":"echo","name":"tick","version":1}]},
                     "fs": {"read": [root]}
                 })
@@ -2042,7 +2116,7 @@ mod tests {
             assert_eq!(duration_ms(text), None, "window {text:?}");
             for field in ["deadline", "token_window", "schedule_interval"] {
                 let mut value = serde_json::json!({
-                    "id":"unicode", "version":1, "purpose":"test",
+                    "id":"unicode", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"test",
                     "trigger":{"events":[{"module":"echo","name":"tick","version":1}]}
                 });
                 match field {

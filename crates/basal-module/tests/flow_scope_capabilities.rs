@@ -101,7 +101,7 @@ fn board_hygiene_manifest_installs_without_core_flow_scopes() {
             "flow.install",
             json!({
                 "script": include_str!("../../../flows/board-hygiene/flow.js"),
-                "manifest": include_str!("../../../flows/board-hygiene/manifest.json"),
+                "manifest": common::authored_manifest(include_str!("../../../flows/board-hygiene/manifest.json")),
             }),
         )
         .unwrap();

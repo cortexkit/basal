@@ -45,13 +45,16 @@ fn flow(id: &str, version: u32, spec: Value) -> TestFlow {
 impl TestFlow {
     /// The version's manifest: only its schedule trigger matters here.
     fn manifest(&self) -> String {
-        json!({
+        let mut manifest = json!({
             "id": self.id,
             "version": self.version,
-            "purpose": "A scheduled test flow.",
+            "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "A scheduled test flow.",
             "trigger": { "schedule": self.spec },
-        })
-        .to_string()
+        });
+        if self.version > 1 {
+            manifest["changes"] = json!("Changes the schedule for newly admitted runs.");
+        }
+        manifest.to_string()
     }
 }
 
@@ -682,7 +685,8 @@ fn removing_a_schedule_stops_it_and_drops_its_planned_fires() {
     let events = json!({
         "id": "f",
         "version": 2,
-        "purpose": "Now triggered by events.",
+        "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Now triggered by events.",
+        "changes": "Replaces the schedule with an event trigger so planned fires are dropped.",
         "trigger": { "events": [ { "module": "plexus", "name": "pull_request_review", "version": 1 } ] },
     })
     .to_string();

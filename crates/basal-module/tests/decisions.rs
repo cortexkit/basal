@@ -40,7 +40,7 @@ const POST: &str = "try { await ops.call('mock','post',{n:1}); return 'ran'; } \
                     catch (e) { return e.data.code; }";
 
 fn manifest() -> Value {
-    json!({"id":FLOW,"version":1,"purpose":"Post for Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"ops":[{"module":"mock","op":"echo"},{"module":"mock","op":"post"}]})
+    json!({"id":FLOW,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Post for Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"ops":[{"module":"mock","op":"echo"},{"module":"mock","op":"post"}]})
 }
 
 /// A sink that takes nothing, attached before a module is dropped so the

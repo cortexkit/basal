@@ -153,7 +153,11 @@ pub(crate) fn check(manifest: &Manifest) -> Result<(), ManifestError> {
         decls: &BTreeMap<String, Parameter>,
     ) -> Result<(), ManifestError> {
         match value {
-            Value::String(text) if text.contains("$params.") => {
+            // Approval explanations are literal author text, not substitution
+            // slots, even when they describe a parameter by its written name.
+            Value::String(text)
+                if text.contains("$params.") && !matches!(field, "explanation" | "changes") =>
+            {
                 let name = text
                     .strip_prefix("$params.")
                     .ok_or_else(|| placeholder(field))?;

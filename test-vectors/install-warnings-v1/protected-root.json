@@ -1,5 +1,5 @@
 {
-  "args_digest": "9dd2b8d0ae07e7c675e8eef937b6305c2f156da210f32982c88a060c2fdc132d",
+  "args_digest": "06ea61a2e788a50a81fdbf9b907dff26779c0365b2e4c3452c66b4ab9460bc9d",
   "dedup_key": "flow_install:protected-root-sample:1",
   "default": "decline",
   "expires_in_ms": 86400000,
@@ -8,7 +8,7 @@
     "author": {
       "operator": true
     },
-    "code_hash": "9dd2b8d0ae07e7c675e8eef937b6305c2f156da210f32982c88a060c2fdc132d",
+    "code_hash": "06ea61a2e788a50a81fdbf9b907dff26779c0365b2e4c3452c66b4ab9460bc9d",
     "dry_run_summary": {
       "mode": "capture",
       "partial": false,
@@ -47,7 +47,7 @@
       }
     },
     "flow_id": "protected-root-sample",
-    "manifest_json": "{\"fs\":{\"read\":[\"~/Documents/notes\"]},\"id\":\"protected-root-sample\",\"purpose\":\"Sample flow reading notes under a protected folder\",\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"trigger\":{\"schedule\":{\"interval\":\"1h\"}},\"version\":1}",
+    "manifest_json": "{\"explanation\":\"Exercises the declared trigger and grants for a test, without additional effects.\",\"fs\":{\"read\":[\"~/Documents/notes\"]},\"id\":\"protected-root-sample\",\"purpose\":\"Sample flow reading notes under a protected folder\",\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"trigger\":{\"schedule\":{\"interval\":\"1h\"}},\"version\":1}",
     "script": "return 1;\n",
     "token_usage": {
       "cache_read": 0,

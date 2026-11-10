@@ -35,7 +35,7 @@ async fn hierarchical_names_install_decode_admit_and_dedupe_by_full_subject() {
         let installed = rt
             .install(&InstallRequest {
                 script: "return trigger.event.body;".into(),
-                manifest: json!({"id":id,"version":1,"purpose":"Receive hierarchical events",
+                manifest: json!({"id":id,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Receive hierarchical events",
                 "trigger":{"events":[{"module":"broca","name":name,"version":1,
                     "match":{"repo":"cortexkit/*"}}]}})
                 .to_string(),

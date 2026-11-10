@@ -79,6 +79,7 @@ pub fn refused(r: &Result<Value, String>) -> bool {
 pub fn events_v2(flow: &str) -> Value {
     let mut manifest = events_manifest(flow);
     manifest["version"] = json!(2);
+    manifest["changes"] = json!("Updates the event flow for a new approval.");
     manifest
 }
 
@@ -269,7 +270,7 @@ pub fn events_manifest(id: &str) -> Value {
     json!({
         "id": id,
         "version": 1,
-        "purpose": "A test flow.",
+        "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "A test flow.",
         "trigger": { "events": [ { "module": "plexus", "name": "pull_request_review", "version": 1 } ] },
         "sinks": [ { "agent": "SYNAPSE", "digest_max": "piggyback" } ],
         "ops": [
@@ -291,6 +292,15 @@ pub fn agent(name: &str) -> Caller {
         agent_id: name.to_owned(),
         scope_ref: format!("scope-of-{name}"),
     }
+}
+
+/// Creates a synthetic intake copy without changing the deployed source bytes.
+/// Existing purpose text describes the fixture; preserve every other byte so
+/// install-request tests can keep checking the exact submitted bytes and hash.
+pub fn authored_manifest(text: &str) -> String {
+    let value: Value = serde_json::from_str(text).unwrap();
+    let explanation = &value["purpose"];
+    text.replacen('{', &format!("{{\"explanation\":{explanation},"), 1)
 }
 
 /// Installs a version as `caller` and returns the op's reply.

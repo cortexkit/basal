@@ -2,7 +2,7 @@ use super::*;
 use serde_json::{Value, json};
 
 fn manifest() -> Value {
-    json!({"id":"providers","version":1,"purpose":"Check provider grants",
+    json!({"id":"providers","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Check provider grants",
         "trigger":{"schedule":{"cron":"* * * * *"}}})
 }
 
@@ -85,7 +85,7 @@ fn provider_lists_reject_non_arrays_and_non_strings() {
 
 #[test]
 fn provider_lists_reject_duplicate_json_keys() {
-    let text = r#"{"id":"providers","version":1,"purpose":"Check provider grants",
+    let text = r#"{"id":"providers","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Check provider grants",
         "trigger":{"schedule":{"cron":"* * * * *"}},
         "private_content_providers":["openai"],"private_content_providers":["typesafe"]}"#;
     assert!(matches!(

@@ -89,7 +89,7 @@ pub fn test_manifest() -> Value {
     json!({
         "id": TEST_FLOW,
         "version": 1,
-        "purpose": "Exercise the runtime against the mock host.",
+        "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Exercise the runtime against the mock host.",
         "trigger": { "events": [ { "module": "plexus", "name": "pull_request_review", "version": 1 } ] },
         "sinks": [ { "agent": "ALF", "digest_max": "wake" } ],
         "status": [ "ALF" ],
@@ -125,6 +125,7 @@ pub fn approve_spec(
     let with_version = |v: u32| -> Result<String, String> {
         let mut m = manifest.clone();
         m["version"] = json!(v);
+        basal_core::test_support::describe_test_upgrade(rt, &mut m, false);
         serde_json::to_string(&m).map_err(|e| e.to_string())
     };
     let approved = rt

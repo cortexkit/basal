@@ -18,7 +18,7 @@ fn sample(name: &str) -> Value {
 }
 
 fn manifest() -> Value {
-    json!({"id":"host-flow","version":1,"purpose":"Report build health",
+    json!({"id":"host-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Report build health",
         "audience":{"kind":"agent","id":"ag_synapse"},
         "trigger":{"schedule":{"interval":"1h"}},
         "sinks":[{"kind":"notice","severity_max":"attention"}]})

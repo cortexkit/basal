@@ -160,10 +160,11 @@ impl Fixture {
         }
     }
     fn install(&self, id: &str, version: u32, extra: Value) {
-        let mut manifest = json!({"id":id,"version":version,"purpose":"Exercise staged runtime readers","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}]});
+        let mut manifest = json!({"id":id,"version":version,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Exercise staged runtime readers","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}]});
         for (key, value) in extra.as_object().unwrap() {
             manifest[key] = value.clone();
         }
+        crate::test_support::describe_test_upgrade(&self.rt, &mut manifest, false);
         let installed = self
             .rt
             .install(&crate::InstallRequest {
@@ -918,7 +919,7 @@ fn catalog_readiness_missing_op_is_still_final_denied() {
 fn catalog_readiness_intake_refuses_unavailable_provider_with_clear_reason() {
     let f = Fixture::new(true);
     let manifest = Manifest::parse_ordinary(
-        &json!({"id":"intake","version":1,"purpose":"Check catalog readiness at intake",
+        &json!({"id":"intake","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Check catalog readiness at intake",
             "trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}]})
         .to_string(),
     )

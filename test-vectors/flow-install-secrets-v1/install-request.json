@@ -1,5 +1,5 @@
 {
-  "args_digest": "26555f5ccf6fec5877dc1898e208f4af44159ec9f2dec6362ccfe00ba1b0612f",
+  "args_digest": "00d5a5a63090667bc540cc2eb51fe4e3012b8f971ba27e454a949590407954a2",
   "dedup_key": "flow_install:secret-sample:1",
   "default": "decline",
   "expires_in_ms": 86400000,
@@ -8,7 +8,7 @@
     "author": {
       "operator": true
     },
-    "code_hash": "26555f5ccf6fec5877dc1898e208f4af44159ec9f2dec6362ccfe00ba1b0612f",
+    "code_hash": "00d5a5a63090667bc540cc2eb51fe4e3012b8f971ba27e454a949590407954a2",
     "dry_run_summary": {
       "mode": "capture",
       "partial": false,
@@ -29,12 +29,12 @@
     },
     "flow_id": "secret-sample",
     "install_id": "secret_sample_v1",
-    "manifest_json": "{\"id\":\"secret-sample\",\"net\":{\"fetch\":[{\"host\":\"x.test\",\"methods\":[\"GET\"]}]},\"purpose\":\"Read an authenticated API without exposing its key\",\"secrets\":[{\"methods\":[\"GET\"],\"name\":\"key\",\"target\":{\"host\":\"x.test\",\"path\":\"/repos/a\",\"scheme\":\"https\"}}],\"trigger\":{\"schedule\":{\"interval\":\"1h\"}},\"version\":1}",
+    "manifest_json": "{\"explanation\":\"Exercises the declared trigger and grants for a test, without additional effects.\",\"id\":\"secret-sample\",\"net\":{\"fetch\":[{\"host\":\"x.test\",\"methods\":[\"GET\"]}]},\"purpose\":\"Read an authenticated API without exposing its key\",\"secrets\":[{\"methods\":[\"GET\"],\"name\":\"key\",\"target\":{\"host\":\"x.test\",\"path\":\"/repos/a\",\"scheme\":\"https\"}}],\"trigger\":{\"schedule\":{\"interval\":\"1h\"}},\"version\":1}",
     "script": "return 1;\n",
     "secrets": [
       {
         "request_id": "01JBZ7X3QK5N8R2T4V6W9Y0M1A",
-        "statement_b64url": "eyJkdXJhdGlvbnMiOlsidmVyc2lvbiJdLCJmbG93Ijp7ImNvZGVfaGFzaCI6IjI2NTU1ZjVjY2Y2ZmVjNTg3N2RjMTg5OGUyMDhmNGFmNDQxNTllYzlmMmRlYzYzNjJjY2ZlMDBiYTFiMDYxMmYiLCJmbG93X2lkIjoic2VjcmV0LXNhbXBsZSIsImluc3RhbGxfaWQiOiJzZWNyZXRfc2FtcGxlX3YxIiwidmVyc2lvbiI6MX0sIm1lbWJlcl9pZCI6ImZlZC1jb21wdXRlcjppbGx1c3RyYXRpdmUiLCJyZXF1ZXN0X2V4cGlyZXNfYXRfbXMiOjIwMDAwMDAwMDAwMDAsInJlcXVlc3RfaWQiOiIwMUpCWjdYM1FLNU44UjJUNFY2VzlZME0xQSIsInNlY3JldCI6eyJpbmNhcm5hdGlvbiI6ImlsbHVzdHJhdGl2ZS1pbmNhcm5hdGlvbi0xIiwia2luZCI6ImFnZW50X2FwaV9rZXkiLCJuYW1lIjoia2V5In0sInVzZSI6eyJob3N0IjoieC50ZXN0IiwibG9jYXRpb24iOiJoZWFkZXI6WC1BcGktS2V5IiwibWV0aG9kcyI6WyJHRVQiXSwicGF0aF9wcmVmaXgiOiIvcmVwb3MvYSJ9LCJ2IjoiY2stc2VjcmV0LWZsb3ctc3RhdGVtZW50L3YxIn0"
+        "statement_b64url": "eyJkdXJhdGlvbnMiOlsidmVyc2lvbiJdLCJmbG93Ijp7ImNvZGVfaGFzaCI6IjAwZDVhNWE2MzA5MDY2N2JjNTQwY2MyZWI1MWZlNGUzMDEyYjhmOTcxYmEyN2U0NTRhOTQ5NTkwNDA3OTU0YTIiLCJmbG93X2lkIjoic2VjcmV0LXNhbXBsZSIsImluc3RhbGxfaWQiOiJzZWNyZXRfc2FtcGxlX3YxIiwidmVyc2lvbiI6MX0sIm1lbWJlcl9pZCI6ImZlZC1jb21wdXRlcjppbGx1c3RyYXRpdmUiLCJyZXF1ZXN0X2V4cGlyZXNfYXRfbXMiOjIwMDAwMDAwMDAwMDAsInJlcXVlc3RfaWQiOiIwMUpCWjdYM1FLNU44UjJUNFY2VzlZME0xQSIsInNlY3JldCI6eyJpbmNhcm5hdGlvbiI6ImlsbHVzdHJhdGl2ZS1pbmNhcm5hdGlvbi0xIiwia2luZCI6ImFnZW50X2FwaV9rZXkiLCJuYW1lIjoia2V5In0sInVzZSI6eyJob3N0IjoieC50ZXN0IiwibG9jYXRpb24iOiJoZWFkZXI6WC1BcGktS2V5IiwibWV0aG9kcyI6WyJHRVQiXSwicGF0aF9wcmVmaXgiOiIvcmVwb3MvYSJ9LCJ2IjoiY2stc2VjcmV0LWZsb3ctc3RhdGVtZW50L3YxIn0"
       }
     ],
     "token_usage": {

@@ -256,7 +256,7 @@ fn transport_certainty_and_tool_key_are_explicit() {
     );
 }
 fn manifest() -> Value {
-    json!({"id":"host-flow","version":1,"purpose":"Report facts to Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"status":["SYNAPSE"],"facts":{"targets":["SYNAPSE"],"text":false},"ops":[{"module":"mock","op":"echo"},{"module":"mock","op":"post"},{"module":"mock","op":"send"}]})
+    json!({"id":"host-flow","version":1,"explanation":"Reads facts and reports to Synapse for a test.","purpose":"Report facts to Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"status":["SYNAPSE"],"facts":{"targets":["SYNAPSE"],"text":false},"ops":[{"module":"mock","op":"echo"},{"module":"mock","op":"post"},{"module":"mock","op":"send"}]})
 }
 fn hosts(f: Arc<Fake>, consent: Arc<CoreConsent>) -> Hosts {
     let cat = Arc::new(SubcCatalog::new(f.clone()));
@@ -514,7 +514,8 @@ fn board_read_install_request_preserves_manifest_bytes_and_hash() {
     let consent = Arc::new(CoreConsent::new(fake.clone()));
     let f = fixture(fake.clone(), consent, "board-read-bytes");
     let script = "return 1;\n";
-    let manifest = include_str!("../../../flows/board-hygiene/manifest.json");
+    let manifest =
+        common::authored_manifest(include_str!("../../../flows/board-hygiene/manifest.json"));
     let reply = f
         .module
         .handle(
@@ -532,7 +533,7 @@ fn board_read_install_request_preserves_manifest_bytes_and_hash() {
     assert_eq!(install["manifest_json"], manifest);
     let parsed: Value = serde_json::from_str(install["manifest_json"].as_str().unwrap()).unwrap();
     assert_eq!(parsed["board_read"], json!(["$audience"]));
-    let expected = basal_core::ids::hex(&basal_core::ids::code_hash(script, manifest));
+    let expected = basal_core::ids::hex(&basal_core::ids::code_hash(script, &manifest));
     assert_eq!(install["code_hash"], expected);
     assert_eq!(reply["code_hash"], expected);
     let without = manifest.replace("  \"board_read\": [\"$audience\"],\n", "");

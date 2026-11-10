@@ -39,7 +39,7 @@ fn protected_root_manifest() -> Value {
     json!({
         "id": "protected-root-sample",
         "version": 1,
-        "purpose": "Sample flow reading notes under a protected folder",
+        "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Sample flow reading notes under a protected folder",
         "trigger": {"schedule": {"interval": "1h"}},
         "sinks": [{"agent": "SYNAPSE", "digest_max": "piggyback"}],
         "fs": {"read": ["~/Documents/notes"]},

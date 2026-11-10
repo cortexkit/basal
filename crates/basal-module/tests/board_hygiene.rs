@@ -256,17 +256,22 @@ impl Test {
                 ..Options::with_worker()
             },
         );
-        let reply = common::install(
-            &f,
-            &Caller::Operator,
-            SCRIPT,
-            &serde_json::from_str(MANIFEST).unwrap(),
-        );
-        assert!(consent.decide(
-            reply["card_id"].as_str().unwrap(),
-            basal_host::CardDecision::Approve,
-            "operator"
-        ));
+        if dry_run_max_fires == Some(0) {
+            basal_core::test_support::seed_stored_version(&f.module.rt, SCRIPT, MANIFEST, false)
+                .unwrap();
+        } else {
+            let reply = common::install(
+                &f,
+                &Caller::Operator,
+                SCRIPT,
+                &serde_json::from_str(&common::authored_manifest(MANIFEST)).unwrap(),
+            );
+            assert!(consent.decide(
+                reply["card_id"].as_str().unwrap(),
+                basal_host::CardDecision::Approve,
+                "operator"
+            ));
+        }
         Self {
             f,
             host,
@@ -322,7 +327,7 @@ fn rule(writes: &[Value], name: &str) -> Vec<Value> {
 
 #[test]
 fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
-    let manifest = Manifest::parse(MANIFEST).unwrap();
+    let manifest = Manifest::parse_stored(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
     assert_eq!(value["version"], 19);

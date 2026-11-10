@@ -104,7 +104,7 @@ impl Fixture {
             },
         )
         .unwrap();
-        let manifest=json!({"id":"watch","version":1,"purpose":"Fence removed template runs from replacements","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}],"sinks":[{"agent":"$self","digest_max":"wake"}],"params":{},"template":{"max_per_agent":2,"max_lifetime":"1d"}}).to_string();
+        let manifest=json!({"id":"watch","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Fence removed template runs from replacements","trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}],"sinks":[{"agent":"$self","digest_max":"wake"}],"params":{},"template":{"max_per_agent":2,"max_lifetime":"1d"}}).to_string();
         rt.register_package("return 7;", &manifest).unwrap();
         let flow = rt.instantiate("watch", 1, OWNER, &json!({}), "2h").unwrap()["flow_id"]
             .as_str()
@@ -448,6 +448,8 @@ fn live_dispatch_and_closed_obligation_hold_routes_and_retired_secret_grants() {
         at.recv_timeout(Duration::from_secs(10)).unwrap();
         let mut next: Value = serde_json::from_str(&f.manifest).unwrap();
         next["version"] = json!(2);
+        next["changes"] =
+            json!("Changes the test behavior to exercise an upgrade while retaining its state.");
         f.rt()
             .register_package("return 7;", &next.to_string())
             .unwrap();

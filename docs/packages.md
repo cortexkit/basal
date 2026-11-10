@@ -14,6 +14,15 @@ A package manifest is a flow manifest ([`manifest.md`](manifest.md)) with three 
 - Every agent field names `$self` and nothing else: `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]`. `$self` stands for the agent an instance runs as. `$` is outside the agent-name alphabet, so `$self` can never be a real agent's name.
 - `flow.install` refuses a manifest that contains `$self`, with `self_requires_package`. A package reaches only its own agent. An ordinary flow that must reach other agents may request a workspace or global audience regardless of its author; global reach requires approval on core's card.
 
+New package versions require `explanation` (1–1500 Unicode scalar values), shown
+as **What it does** on the approval card. They also require `changes` (1–600
+scalars), shown as **What changed**, if an earlier version of the same package
+name is stored in any state; `changes` is refused on a first version. Both are
+nonblank plain text, allow newlines but no other controls, and follow the
+[manifest intake rules](manifest.md#approval-explanations). Stored versions
+without these fields remain readable; the code-hash vector below retains its
+original bytes.
+
 The code hash is the ordinary code hash ([`manifest.md`](manifest.md)), taken over the exact manifest bytes, `$self` included. So one hash, and one approval, covers every instance of a package version.
 
 Code-hash test vector: the script `"// package script bytes\n"` and the manifest

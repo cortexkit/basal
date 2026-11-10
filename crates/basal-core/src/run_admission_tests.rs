@@ -124,10 +124,17 @@ impl Fixture {
         RunAdmission::new_for_test(self.store.clone(), Arc::new(Watermark(synced)), hooks)
     }
     fn approve(&self, id: &str, version: u32, epoch: u32, trigger: Value) {
-        let installed = self.rt.install(&crate::InstallRequest {
-            script: "return 1;".into(), author: "operator".into(), loop_override: false,
-            manifest: json!({"id":id,"version":version,"state_epoch":epoch,"purpose":"Admission test","trigger":trigger}).to_string(),
-        }).unwrap();
+        let mut manifest = json!({"id":id,"version":version,"state_epoch":epoch,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Admission test","trigger":trigger});
+        crate::test_support::describe_test_upgrade(&self.rt, &mut manifest, false);
+        let installed = self
+            .rt
+            .install(&crate::InstallRequest {
+                script: "return 1;".into(),
+                author: "operator".into(),
+                loop_override: false,
+                manifest: manifest.to_string(),
+            })
+            .unwrap();
         self.rt
             .approve(
                 id,
@@ -599,7 +606,7 @@ fn admission_epoch_fence_failure_never_acknowledges() {
 fn template_admission_snapshots_all_inputs_and_one_shot_end_flag() {
     let f = Fixture::new("template-inputs");
     f.schema();
-    let manifest = json!({"id":"package","version":1,"purpose":"Admission inputs",
+    let manifest = json!({"id":"package","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Admission inputs",
         "params":{"at":{"type":"timestamp","max_ahead":"1d"},"note":{"type":"string","max_bytes":4096}},
         "template":{"max_per_agent":2,"max_lifetime":"1d"},
         "trigger":{"schedule":{"at":"$params.at"}}

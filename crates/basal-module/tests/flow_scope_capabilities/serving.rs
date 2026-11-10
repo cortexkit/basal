@@ -65,7 +65,7 @@ fn fixture(tag: &str) -> (common::Fixture, Arc<Fake>) {
 }
 
 fn manifest(op: &str) -> Value {
-    json!({"id":"serving-flow","version":1,"purpose":"Check flow admission",
+    json!({"id":"serving-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Check flow admission",
         "trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"mock","op":op}]})
 }
 

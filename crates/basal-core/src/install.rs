@@ -579,7 +579,7 @@ mod protected_root_warning_tests {
         let mut value = json!({
             "id": "protected-root-test",
             "version": 1,
-            "purpose": "Check protected-root warnings",
+            "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "Check protected-root warnings",
             "trigger": {"events": []},
             "fs": {"read": fs_read, "write": fs_write},
             "git": {"read": git_read},
@@ -1065,6 +1065,22 @@ fn validate_audience(
 
 fn version_i64(v: u32) -> i64 {
     i64::from(v)
+}
+
+/// Checks new intake against all earlier versions, including unapproved and
+/// revoked ones. Scratch replay must use the real store, not its empty copy.
+pub fn check_version_text(
+    conn: &Connection,
+    manifest: &Manifest,
+) -> std::result::Result<(), InstallError> {
+    let has_earlier_version = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM installs WHERE flow_id=?1 AND version<?2)",
+        params![manifest.id, manifest.version],
+        |row| row.get(0),
+    )?;
+    manifest
+        .check_version_text(has_earlier_version)
+        .map_err(InstallError::Manifest)
 }
 
 /// Records a validated version. Installing the identical version again is
@@ -1719,7 +1735,10 @@ impl Runtime {
             request.loop_override,
         )?;
         let now = self.config().clock.now_ms();
-        decide(self, |tx| record(tx, &manifest, request, validation, now))
+        decide(self, |tx| {
+            check_version_text(tx, &manifest)?;
+            record(tx, &manifest, request, validation, now)
+        })
     }
 
     /// Approves an installed version, bound to its code hash. New triggers

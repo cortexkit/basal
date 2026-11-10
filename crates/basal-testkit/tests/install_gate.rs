@@ -423,6 +423,9 @@ fn approving_a_new_version_lifts_cores_disable() {
 
     let mut manifest = test_manifest();
     manifest["version"] = serde_json::json!(2);
+    manifest["changes"] = serde_json::json!(
+        "Changes the test behavior to exercise an upgrade while retaining its state."
+    );
     let manifest = manifest.to_string();
     let installed = rt
         .install(&InstallRequest {

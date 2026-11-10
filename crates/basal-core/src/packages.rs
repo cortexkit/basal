@@ -185,6 +185,14 @@ impl Runtime {
         .map_err(PackageError::Install)?;
         let hash = code_hash(script, text);
         decide(self, |tx| {
+            let has_earlier_version = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM package_versions WHERE package=?1 AND version<?2)",
+                params![manifest.id, manifest.version],
+                |row| row.get(0),
+            )?;
+            manifest
+                .check_version_text(has_earlier_version)
+                .map_err(|error| PackageError::Install(InstallError::Manifest(error)))?;
             let existing = get(tx, &manifest.id, manifest.version)?;
             if existing.as_ref().is_some_and(|p| p.code_hash != hash) {
                 return Err(refused("package_version_conflict"));

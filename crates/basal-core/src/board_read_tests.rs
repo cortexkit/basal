@@ -2,7 +2,7 @@ use super::*;
 use serde_json::{Value, json};
 
 fn manifest() -> Value {
-    json!({"id":"boards","version":1,"purpose":"Read boards",
+    json!({"id":"boards","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Read boards",
         "trigger":{"schedule":{"cron":"* * * * *"}},
         "ops":[{"module":"prefrontal-core","op":"board.read"}],
         "board_read":["SYNAPSE"]})

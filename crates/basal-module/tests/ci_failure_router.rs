@@ -247,17 +247,8 @@ impl Test {
                 ..Options::with_worker()
             },
         );
-        let reply = common::install(
-            &f,
-            &Caller::Operator,
-            SCRIPT,
-            &serde_json::from_str(MANIFEST).unwrap(),
-        );
-        assert!(consent.decide(
-            reply["card_id"].as_str().unwrap(),
-            basal_host::CardDecision::Approve,
-            "operator"
-        ));
+        basal_core::test_support::seed_stored_version(&f.module.rt, SCRIPT, MANIFEST, false)
+            .unwrap();
         Self { f, host }
     }
     fn notice(&self, body: Value, repo: &str, branch: &str, admitted: bool) -> Option<String> {
@@ -384,7 +375,7 @@ fn completed_at(t: &Test, age_ms: i64) -> String {
 
 #[test]
 fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants() {
-    Manifest::parse(MANIFEST).unwrap();
+    Manifest::parse_stored(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(value["version"], 18);

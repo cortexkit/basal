@@ -101,11 +101,13 @@ fn live(f: &Fixture) -> Value {
 }
 
 fn remind(f: &Fixture) -> Value {
-    register(
-        f,
-        &serde_json::from_str(include_str!("../../../templates/remind-at/manifest.json")).unwrap(),
+    basal_core::test_support::seed_stored_version(
+        &f.module.rt,
         include_str!("../../../templates/remind-at/flow.js"),
-    );
+        include_str!("../../../templates/remind-at/manifest.json"),
+        true,
+    )
+    .unwrap();
     create(
         f,
         "remind-at",
@@ -153,11 +155,13 @@ fn fire_is_due_remind_at_v5_reply_live_and_lifecycle_events() {
 fn fire_is_due_watch_file_and_older_template_default_false() {
     let f = setup("fire-is-due-watch-file");
     std::fs::create_dir_all(basal_host::builtins::expand_home("~/Work").unwrap()).unwrap();
-    register(
-        &f,
-        &serde_json::from_str(include_str!("../../../templates/watch-file/manifest.json")).unwrap(),
+    basal_core::test_support::seed_stored_version(
+        &f.module.rt,
         include_str!("../../../templates/watch-file/flow.js"),
-    );
+        include_str!("../../../templates/watch-file/manifest.json"),
+        true,
+    )
+    .unwrap();
     let file_watch = create(
         &f,
         "watch-file",
@@ -509,6 +513,8 @@ fn next_fire_at_cron_and_unscheduled_templates_use_schedule_rows() {
         T0 + 300_000
     );
     m["version"] = json!(2);
+    m["changes"] =
+        json!("Changes the test behavior to exercise an upgrade while retaining its state.");
     m["trigger"] = events_manifest("watch")["trigger"].clone();
     register(&f, &m, "return 2;");
     let unscheduled = watch(&f, 2, "1h");

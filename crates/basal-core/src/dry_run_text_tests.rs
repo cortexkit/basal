@@ -9,7 +9,7 @@ fn manifest(value: Value) -> Manifest {
 
 fn board_manifest() -> Manifest {
     manifest(
-        json!({"id":"board-hygiene","version":3,"purpose":"Nudge board owners",
+        json!({"id":"board-hygiene","version":3,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Nudge board owners",
         "trigger":{"schedule":{"cron":"*/5 * * * *","tz":"UTC","missed":"skip"}},
         "audience":{"kind":"global"},
         "ops":[{"module":"prefrontal-core","op":"board.read"}],
@@ -21,7 +21,7 @@ fn board_manifest() -> Manifest {
 
 fn hourly_manifest() -> Manifest {
     manifest(
-        json!({"id":"morning","version":1,"purpose":"Summarise the night",
+        json!({"id":"morning","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Summarise the night",
         "trigger":{"schedule":{"interval":"1h"}},
         "facts":{"targets":["SYNAPSE"]},
         "sinks":[{"agent":"SYNAPSE","digest_max":"wake"}]}),
@@ -121,7 +121,7 @@ fn an_empty_cron_schedule_summary_does_not_nest_parentheses() {
     let scheduled = manifest(json!({
         "id":"annual",
         "version":1,
-        "purpose":"Run annually",
+        "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Run annually",
         "trigger":{"schedule":{"cron":"0 0 1 1 *"}}
     }));
     let text = render(&scheduled, &summary(day_window(0, 0), vec![]));
@@ -359,7 +359,7 @@ fn a_captured_rejection_alone_never_becomes_a_problem() {
 #[test]
 fn an_event_triggered_flow_names_its_events_and_says_none_were_replayed() {
     let m = manifest(
-        json!({"id":"watch","version":1,"purpose":"Watch pull requests",
+        json!({"id":"watch","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Watch pull requests",
         "trigger":{"events":[
             {"module":"plexus","name":"github_pr_changed","version":1},
             {"module":"plexus","name":"github_issue_changed","version":1}]},
@@ -379,7 +379,7 @@ fn an_event_triggered_flow_names_its_events_and_says_none_were_replayed() {
 
 #[test]
 fn event_age_limits_are_shown_in_approval_dry_run_text() {
-    let mut value = json!({"id":"watch","version":1,"purpose":"Watch recent events",
+    let mut value = json!({"id":"watch","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Watch recent events",
         "trigger":{"events":[
             {"module":"plexus","name":"changed","version":1,"max_age":"6h"},
             {"module":"plexus","name":"ended","version":2,"max_age":"6h"}]}});
@@ -481,8 +481,10 @@ fn summary_is_cut_to_three_hundred_bytes_on_a_char_boundary() {
     let events: Vec<Value> = (0..30)
         .map(|i| json!({"module":"plexus","name":format!("event_{i:02}_with_a_rather_long_name"),"version":1}))
         .collect();
-    let m = manifest(json!({"id":"many","version":1,"purpose":"Many events",
-        "trigger":{"events":events},"sinks":[{"agent":"SYNAPSE","digest_max":"wake"}]}));
+    let m = manifest(
+        json!({"id":"many","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Many events",
+        "trigger":{"events":events},"sinks":[{"agent":"SYNAPSE","digest_max":"wake"}]}),
+    );
     let text = render(
         &m,
         &summary(json!({"kind":"events","covered":null}), vec![]),
@@ -550,9 +552,11 @@ fn a_dry_run_that_could_not_run_says_so_as_its_only_problem() {
 
 #[test]
 fn a_one_shot_reminder_names_its_time() {
-    let m = manifest(json!({"id":"remind","version":1,"purpose":"Remind",
+    let m = manifest(
+        json!({"id":"remind","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Remind",
         "trigger":{"schedule":{"interval":"1h"}},
-        "sinks":[{"agent":"SYNAPSE","digest_max":"wake"}]}));
+        "sinks":[{"agent":"SYNAPSE","digest_max":"wake"}]}),
+    );
     let window = json!({"kind":"at","at":"2026-05-02T09:30:00Z","replayed":1,"dry_run":true});
     let ended = call(1, "instance.end", json!({}), captured(), "captured");
     let runs = vec![run(&due(0), "succeeded", Value::Null, false, vec![ended])];

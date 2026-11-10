@@ -89,7 +89,7 @@ struct Fixture {
     dir: std::path::PathBuf,
 }
 fn manifest(version: u32, targets: Value) -> String {
-    json!({"id":"flow","version":version,"purpose":"restoration test","trigger":{"events":[{"module":"mock","name":"changed","version":1}]},"status":targets}).to_string()
+    json!({"id":"flow","version":version,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"restoration test","trigger":{"events":[{"module":"mock","name":"changed","version":1}]},"status":targets}).to_string()
 }
 fn absence(grant: Value) -> FlowRefusal {
     let mut r = FlowRefusal::new(RefusalReason::ModuleGrantAbsent, "plexus", "github");

@@ -5,7 +5,7 @@ use basal_proto::{CallKind, Primitive};
 use serde_json::{Value, json};
 
 fn manifest() -> Value {
-    json!({"id":"board-flow","version":1,"purpose":"Track work",
+    json!({"id":"board-flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Track work",
         "trigger":{"schedule":{"interval":"1h"}},
         "board":[{"agent":"SYNAPSE","title":"Work"}]})
 }

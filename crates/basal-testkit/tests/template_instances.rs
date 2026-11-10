@@ -32,8 +32,9 @@ fn runtime(world: &World, gate: InstallGate) -> basal_core::Runtime {
     world.runtime(Arc::new(NoHooks), config(gate)).unwrap()
 }
 fn create(rt: &basal_core::Runtime, version: u32, script: &str) -> String {
-    rt.register_package(script, &manifest(version).to_string())
-        .unwrap();
+    let mut manifest = manifest(version);
+    basal_core::test_support::describe_test_upgrade(rt, &mut manifest, true);
+    rt.register_package(script, &manifest.to_string()).unwrap();
     rt.instantiate("watch", version, OWNER, &json!({"note":"remember"}), "1h")
         .unwrap()["flow_id"]
         .as_str()

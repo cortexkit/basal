@@ -204,7 +204,7 @@ async fn fixture(server: &Server) -> (Runtime, Arc<BlockingTransport>) {
     tokio::task::spawn_blocking(move || {
         let installed = install_rt.install(&InstallRequest {
             script: "return 1;".into(),
-            manifest: json!({"id":"reader", "version":1, "purpose":"Consume declared v2 events",
+            manifest: json!({"id":"reader", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Consume declared v2 events",
                 "trigger":{"events":[{"module":"plexus", "name":"pull_request_review", "version":2}]},
                 "ops":[{"module":"plexus", "op":"events_get"}]}).to_string(),
             author: "local:unverified".into(),
