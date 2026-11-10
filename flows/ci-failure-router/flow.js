@@ -43,17 +43,20 @@ async function routing(now) {
 // END BINDINGS
 
 // Ignore workflows and jobs that generate routine failures without actionable
-// owner work. An entry is a name (ignored on every branch) or
-// {name, unless_branch}: ignored except on branches matching a pattern there,
-// where a failure is real breakage and still wakes the owner.
+// owner work. The '*' repository applies fleet-wide. An entry is a name or
+// {name, case_insensitive?, unless_branch?}: ignored except on branches matching
+// an unless_branch pattern, where a failure still wakes the owner.
 // magic-context's design gate blocks contributor PRs until their issue is
 // labelled design-approved, which is expected, not a CI failure.
 const MC_DESIGN_GATE_BRANCHES = ['master', 'train/*'];
 const IGNORED_WORKFLOWS = {
+  // Review findings stays red while threads are open; its own flow reports them.
+  '*': [{ name: 'Review findings', case_insensitive: true }, 'review-findings'],
   'cortexkit/aft': ['Design gate'],
   'cortexkit/magic-context': [{ name: 'design-gate', unless_branch: MC_DESIGN_GATE_BRANCHES }],
 };
 const IGNORED_JOBS = {
+  '*': ['review-findings'],
   'cortexkit/aft': ['design-gate'],
   'cortexkit/magic-context': [
     { name: 'design-gate', unless_branch: MC_DESIGN_GATE_BRANCHES },
@@ -62,8 +65,12 @@ const IGNORED_JOBS = {
 };
 
 function ignoredName(entries, name, branch) {
-  return (entries ?? []).some(entry => typeof entry === 'string' ? entry === name :
-    entry.name === name && !entry.unless_branch.some(pattern => matches(pattern, branch)));
+  return (entries ?? []).some(entry => {
+    if (typeof entry === 'string') return entry === name;
+    const same = entry.case_insensitive ? typeof name === 'string' &&
+      entry.name.toLowerCase() === name.toLowerCase() : entry.name === name;
+    return same && !(entry.unless_branch ?? []).some(pattern => matches(pattern, branch));
+  });
 }
 
 // Branches whose failures always wake the owner, besides the default branch.
@@ -263,6 +270,25 @@ async function saveMemory(memory) {
   await kv.set('ci-router', memory);
 }
 
+function silentBranchDigest(memory, repo, branch) {
+  // Reuse the bounded run-attempt history: jobs and completions update one
+  // attempt, not the count. Age pruning and byte eviction also bound this view.
+  const runs = Object.values(memory.runs)
+    .filter(run => run.silentSummary?.repo === repo && run.branch === branch)
+    .sort((a, b) => b.completed - a.completed || b.silentSummary.order - a.silentSummary.order);
+  const recent = runs.slice(0, 4).map(run => run.silentSummary);
+  const summaries = recent.map(run => run.body).join('\n\n');
+  const item = boundedDigest(recent[0].title, {
+    repo, branch, run_count: runs.length, recent_runs: summaries,
+  }, recent.flatMap(run => run.links).slice(0, 4));
+  item.body = `${runs.length} recent run attempt${runs.length === 1 ? '' : 's'} on ${short(branch, 400)}\n` +
+    `Newest ${recent.length} shown; history limited to 14 days and the retained byte budget.\n\n${summaries}`;
+  // JSON escaping can exceed the item cap even when the UTF-8 body fits.
+  while (item.links.length && bytes(JSON.stringify(item)) > 16384) item.links.pop();
+  while (bytes(JSON.stringify(item)) > 16384) item.body = short(item.body, Math.floor(bytes(item.body) / 2));
+  return item;
+}
+
 const event = trigger.event;
 if (!event || event.module !== 'plexus' || event.version !== 2) return;
 const jobEvent = event.name === 'github_ci_job_failed';
@@ -287,7 +313,7 @@ if (stale) {
   return;
 }
 const workflowName = jobEvent ? body.workflow_name : body.name;
-if (ignoredName(IGNORED_WORKFLOWS[repo], workflowName, body.head_branch)) {
+if (ignoredName([...IGNORED_WORKFLOWS['*'], ...(IGNORED_WORKFLOWS[repo] ?? [])], workflowName, body.head_branch)) {
   await saveMemory(memory);
   return;
 }
@@ -299,7 +325,8 @@ if (!owner) {
 const runId = body.run_id ?? (jobEvent ? null : body.id);
 const attempt = body.run_attempt;
 // When run identity is incomplete, remember the event key to suppress repeats.
-// Omit replace_key so unrelated unknown runs cannot overwrite one another.
+// Per-run notices omit replace_key when identity is unknown. Silent branch
+// digests can still group them by their repository and branch.
 const identified = runId != null && attempt != null;
 const key = identified ? `ci:${repo}:${runId}:${attempt}` : `ci-event:${repo}:${event.event_key}`;
 if (Number.isFinite(completed)) memory.newest = Math.max(memory.newest, completed);
@@ -353,7 +380,7 @@ run.completed = Math.max(run.completed, Number.isFinite(completed) ? completed :
 run.branch = body.head_branch ?? 'unknown';
 run.sha = typeof body.head_sha === 'string' ? body.head_sha.slice(0, 12) : 'unknown';
 run.conclusion = body.conclusion ?? 'unknown';
-if (jobEvent && ignoredName(IGNORED_JOBS[repo], body.name, body.head_branch)) {
+if (jobEvent && ignoredName([...IGNORED_JOBS['*'], ...(IGNORED_JOBS[repo] ?? [])], body.name, body.head_branch)) {
   // Run completions have no job list; retain ignored failures so they cannot
   // later masquerade as a red run whose failed jobs have not arrived yet.
   run.ignoredFailures = true;
@@ -393,17 +420,16 @@ const firstWakeJobIds = new Set(hasFirstNotice ? run.firstWakeJobIds : []);
 const jobsSinceFirstNotice = hasFirstNotice ?
   Object.keys(run.jobs).filter(id => !firstWakeJobIds.has(id)) : [];
 const newNames = jobsSinceFirstNotice.map(id => run.jobs[id]);
-const titlePrefix = green ? `${repo}: CI green again on ` : names.length ? `${repo}: CI failed on ` :
-  `${repo}: CI run on `;
-const titleSuffix = green || names.length ? '' : ` ended ${run.conclusion}`;
-const branchLimit = Math.max(1, 80 - Array.from(titlePrefix).length - Array.from(titleSuffix).length);
+const workflow = short(knownWorkflow ? workflowName : 'CI', Math.max(4, 60 - Array.from(repo).length));
+const titlePrefix = green ? `${repo}: ${workflow} green again on ` : `${repo}: ${workflow} failed on `;
+const branchLimit = Math.max(1, 80 - Array.from(titlePrefix).length);
 const branch = Array.from(run.branch ?? 'unknown');
 const titleBranch = branch.length > branchLimit ?
   `${branch.slice(0, Math.max(0, branchLimit - 1)).join('')}…` : branch.join('');
-const title = `${titlePrefix}${titleBranch}${titleSuffix}`;
+const title = `${titlePrefix}${titleBranch}`;
 const links = run.url ? [run.url, ...run.links.filter(url => url !== run.url).slice(0, 3)] : run.links.slice(0, 3);
 const item = boundedDigest(title, {
-  repo, run_id: runId, run_attempt: attempt, branch: run.branch, head_sha: body.head_sha,
+  repo, workflow: workflowName, run_id: runId, run_attempt: attempt, branch: run.branch, head_sha: body.head_sha,
   conclusion: run.conclusion, failed_jobs: names.join(', '),
   failed_jobs_since_first_notice: !jobEvent && hasFirstNotice ? newNames.join(', ') : '',
   status: run.finished ?? 'jobs arriving',
@@ -423,6 +449,7 @@ const bodyStatus = run.finished ?
   (run.finished === 'now green' ? 'finished green (success)' : run.finished.replace(/^run /, '')) :
   'jobs arriving';
 const bodyLines = [
+  `Workflow ${knownWorkflow ? short(workflowName, 240) : 'unknown'}`,
   short(failedJobsLine, 1400),
   short(`Run ${runId ?? 'unknown'}, attempt ${attempt ?? 'unknown'}, ${bodyStatus}`, 240),
   `Commit ${run.sha}`,
@@ -512,9 +539,27 @@ for (const id of bodyJobIds) {
 }
 item.body = bodyLines.join('\n');
 while (item.links.length && bytes(JSON.stringify(item)) > 16384) item.links.pop();
+let digestItem = item;
+let replaceKey = identified && bytes(key) <= 200 ? key : undefined;
+const branchKey = `ci-branch:${repo}:${run.branch}`;
+if (action === 'silent' && !hasFirstNotice && bytes(branchKey) <= 200) {
+  // Already-woken runs keep their per-run key, including later silent updates.
+  // Only silent-only attempts share a branch item; never shorten an oversized
+  // branch key into a colliding identity, falling back to the per-run key.
+  // The sequence breaks equal completion timestamps by latest observation.
+  memory.silentSequence = Math.min(Number.MAX_SAFE_INTEGER, (memory.silentSequence ?? 0) + 1);
+  run.silentSummary = {
+    repo, order: memory.silentSequence, title: item.title, body: short(item.body, 850), links: item.links.slice(0, 1),
+  };
+  memory.runs[key] = run;
+  digestItem = silentBranchDigest(memory, repo, run.branch);
+  replaceKey = branchKey;
+} else {
+  delete run.silentSummary;
+}
 let digestSucceeded = false;
 try {
-  await sink.digest(owner, item, action, identified && bytes(key) <= 200 ? { replace_key: key } : undefined);
+  await sink.digest(owner, digestItem, action, replaceKey ? { replace_key: replaceKey } : undefined);
   digestSucceeded = true;
 } catch (error) {
   // Audience recipients are checked by core at delivery time. A retired or
