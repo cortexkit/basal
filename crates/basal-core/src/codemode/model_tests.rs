@@ -16,7 +16,7 @@ struct Routing {
 }
 impl Transport for Routing {
     fn catalog(&self) -> std::result::Result<Value, WireError> {
-        unreachable!()
+        Ok(json!({"modules":[{"module_id":"prefrontal-routing"}]}))
     }
     fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> std::result::Result<Value, WireError> {
         panic!("no tool route")

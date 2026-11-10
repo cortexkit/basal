@@ -9,6 +9,10 @@ use std::sync::Arc;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
+#[cfg(test)]
+#[path = "selector_tests.rs"]
+mod tests;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionRequest {
     /// A shared routing category such as "flow" or "codemode", not an agent ID.
@@ -110,12 +114,52 @@ pub struct RoutingSelector {
 }
 impl fmt::Debug for RoutingSelector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("RoutingSelector(prefrontal-routing)")
+        f.write_str("RoutingSelector(prefrontal-routing/striatum)")
     }
 }
 impl RoutingSelector {
     pub fn new(transport: Arc<dyn Transport>) -> Self {
         Self { transport }
+    }
+
+    fn routing_module(&self) -> Result<&'static str, WireError> {
+        let catalog = self.transport.catalog()?;
+        let registered = |id: &str| {
+            catalog["modules"]
+                .as_array()
+                .is_some_and(|modules| modules.iter().any(|module| module["module_id"] == id))
+        };
+        Ok(
+            if !registered("prefrontal-routing") && registered("striatum") {
+                "striatum"
+            } else {
+                "prefrontal-routing"
+            },
+        )
+    }
+
+    fn management(&self, op: &str, params: Value) -> Result<Value, WireError> {
+        let module = self.routing_module()?;
+        let result = self
+            .transport
+            .management_with_route_refusals(module, op, params.clone());
+        // A rename can race the catalog read. Refresh once on a route miss,
+        // retrying only if the id changed: at most two ordinary management
+        // calls and one catalog refresh, each with its normal timeout.
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.refusal_code(),
+                Some("unknown_module" | "target_unavailable")
+            )
+        }) {
+            let refreshed = self.routing_module()?;
+            if refreshed != module {
+                return self
+                    .transport
+                    .management_with_route_refusals(refreshed, op, params);
+            }
+        }
+        result
     }
 }
 pub fn select_params(request: &SelectionRequest) -> Value {
@@ -157,8 +201,7 @@ pub fn decode_selection(reply: Value) -> Result<ModelSelection, SelectionError> 
 impl ModelSelector for RoutingSelector {
     fn select(&self, request: &SelectionRequest) -> Result<ModelSelection, SelectionError> {
         decode_selection(
-            self.transport
-                .management("prefrontal-routing", "route.select", select_params(request))
+            self.management("route.select", select_params(request))
                 .map_err(error)?,
         )
     }
@@ -168,9 +211,7 @@ impl ModelSelector for RoutingSelector {
         outcome: ModelOutcome,
     ) -> Result<(), SelectionError> {
         let reply = self
-            .transport
             .management(
-                "prefrontal-routing",
                 "route.set_decision_outcome",
                 json!({"decisionID":decision_id,"outcome":outcome}),
             )
