@@ -648,7 +648,6 @@ impl crate::Runtime {
             } else if existing.as_ref().is_some_and(|e|e.2 != Some(version) || e.5 != Some(expiry)) {
                 Some("flow_instance_extended")
             } else { None };
-            if let Some(event) = event { crate::template_events::enqueue(tx, &id, event, now)?; }
             let time = jiff::Timestamp::from_millisecond(now).map_err(|e|crate::CoreError::Invalid(e.to_string()))?;
             if existing.as_ref().and_then(|e|e.2) != Some(version) {
                 if let Some(spec) = effective_manifest.trigger.schedule.clone() {
@@ -657,7 +656,11 @@ impl crate::Runtime {
             }
             if crate::install::is_disabled(tx,&id)? { crate::schedule::table::disable(tx,&id,time)?; }
             else if reopen { crate::schedule::table::enable(tx,&id,time)?; }
-            Ok(json!({"flow_id":id,"template":template,"version":version,"agent_id":agent,"params":values,"expires_at":expiry,"new":existing.is_none()}))
+            // Snapshot the schedule after approval and any disable or reopen,
+            // so the event and reply describe the state this commit leaves.
+            if let Some(event) = event { crate::template_events::enqueue(tx, &id, event, now)?; }
+            let next_fire = crate::template_events::next_fire_at_ms(tx, &id, now)?;
+            Ok(json!({"flow_id":id,"template":template,"version":version,"agent_id":agent,"params":values,"expires_at":expiry,"new":existing.is_none(),"next_fire_at_ms":next_fire}))
         })?;
         if let Some(error) = refusal {
             return Err(error);

@@ -230,6 +230,8 @@ The retrievable body is the JSON object:
 
 `flow_instance_expired` also includes `params`, the instance's canonical parameter object, so core can tell the instance's owning agent which watch parameters have expired.
 
+`flow.instantiate` replies, lifecycle bodies and `flow.instance.live` snapshots also include `next_fire_at_ms`: the schedule's next due time in integer epoch milliseconds, or `null` when the instance has no active schedule, is disabled, revoked, ended or expired, or its one-shot has already fired.
+
 ### Body retrieval: `events_get`
 
 Caller: prefrontal-core only. Request `{"event_key":"<flow_id>:<seq>","event_name":"flow_instance_expired","version":1}`. The integer `version` may be omitted for v1; lifecycle bodies have no other representation, so any other version receives `event_not_visible`. Reply `{"body":"<exact canonical JSON bytes>","digest":"<bare lowercase SHA-256 hex>","event_key":"<flow_id>:<seq>","event_name":"flow_instance_expired","published_at":1793001600000}`. `body` is a JSON string, not a parsed object. `published_at` is Unix milliseconds when basal recorded the publish acknowledgement; it is `null` while that local acknowledgement is pending, including after a crash between the server acknowledgement and its local recording. A notice's body is retrievable in that gap too. An unknown key and any non-core caller receive the same `event_not_visible` refusal with message `event not visible`. For core, an existing key with a different `event_name` is refused as `event_name_mismatch`, with message `event_name mismatch: expected <stored>, got <given>`. Non-core callers receive `event_not_visible` even when the name mismatches, so they learn nothing about the stored event.
