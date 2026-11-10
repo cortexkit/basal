@@ -227,6 +227,11 @@ fn plan_flow_in(
          WHERE flow_id = ?1",
         params![flow_id, scan.next.map(to_ms), last_fired, at],
     )?;
+    // Version replacement reports its final schedule in the extended event,
+    // rather than announcing the old version's intermediate due time.
+    if staged && scan.next != row.next_due {
+        crate::template_events::enqueue_rescheduled(tx, flow_id, at)?;
+    }
     Ok(Some(Planned {
         flow_id: flow_id.to_owned(),
         fires,

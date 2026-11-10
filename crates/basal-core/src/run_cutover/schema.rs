@@ -503,6 +503,10 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 49,
         statements: "ALTER TABLE codemode_runs ADD COLUMN value_head TEXT CHECK (value_head IS NULL OR status = 'failed');",
     },
+    Migration {
+        version: 50,
+        statements: include_str!("../schema_template_events_v50.sql"),
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,
@@ -1834,3 +1838,7 @@ END;
 #[cfg(test)]
 #[path = "../schema_payload_tests.rs"]
 mod payload_tests;
+
+#[cfg(test)]
+#[path = "../schema_template_event_tests.rs"]
+mod template_event_tests;

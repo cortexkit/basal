@@ -210,7 +210,7 @@ When core refuses a sink write with `sink_instance_expired` or `sink_flow_not_in
 
 ## Lifecycle events
 
-An instance can end or expire without any reply passing through the component that tracks it: an operator ends it, or its expiry passes. So basal publishes a module event of module `basal` on each change, and declares all four in its daemon manifest:
+An instance can end, expire or advance its schedule without any reply passing through the component that tracks it. So basal publishes a module event of module `basal` on each change below, and declares all five in its daemon manifest:
 
 | Event | Published when |
 |---|---|
@@ -218,6 +218,7 @@ An instance can end or expire without any reply passing through the component th
 | `flow_instance_extended` | a repeat `flow.instantiate` moves its version or extends its expiry |
 | `flow_instance_ended` | it is ended, or its one-shot fire has run |
 | `flow_instance_expired` | its `expires_at` passes |
+| `flow_instance_rescheduled` | a schedule advance changes `next_fire_at_ms` for an instance whose approved manifest grants the `wait` sink; a consumed one-shot uses its ended event instead |
 
 Each is published on `ck.<account>.event.basal.<event>.v1`, version 1, as a notice with an empty payload. The `Nats-Msg-Id` is `<flow_id>:<seq>`; `Ck-Content-Digest` is bare lowercase SHA-256 hex over the body's canonical JSON bytes. Notice headers `flow_id`, `agent` (the instance's `agent_id`) and `seq` let core discard stale notices without fetching a body. Lifecycle event bodies stay off the NATS bus because parameters can contain an agent's private note text.
 
@@ -240,11 +241,11 @@ Changes, sequence increments and immutable event bodies commit together in a dur
 
 ### Ordering and recovery
 
-`seq` strictly increases with every change to that instance, across all four events, so a reader drops any event whose `seq` is at or below the last one it applied for that `flow_id`. That makes redelivery and reordering harmless: the bus delivers at least once and can reorder across a reconnect. The message id (`Nats-Msg-Id`) is `<flow_id>:<seq>`, so the bus deduplicates a republished change.
+`seq` strictly increases with every change to that instance, across all five events, so a reader drops any event whose `seq` is at or below the last one it applied for that `flow_id`. That makes redelivery and reordering harmless: the bus delivers at least once and can reorder across a reconnect. The message id (`Nats-Msg-Id`) is `<flow_id>:<seq>`, so the bus deduplicates a republished change.
 
 The events don't enforce expiry; they confirm it:
 - **A reader enforces `expires_at` itself, on its own clock,** refusing an instance's writes at the deadline whether or not `flow_instance_expired` has arrived, so a lagging bus can never extend a write window.
-- **After a restart, a reader rebuilds from basal, not from the stream:** it subscribes to the four events first, then calls `flow.instance.live`, then applies buffered and later events whose `seq` is above the snapshot's. Subscribing first closes the gap where a change between the two would be missed. An instance the reader still tracks that is absent from the snapshot is treated as ended. The stream's retention therefore never matters.
+- **After a restart, a reader rebuilds from basal, not from the stream:** it subscribes to the five events first, then calls `flow.instance.live`, then applies buffered and later events whose `seq` is above the snapshot's. Subscribing first closes the gap where a change between the two would be missed. An instance the reader still tracks that is absent from the snapshot is treated as ended. The stream's retention therefore never matters.
 
 ## Test vectors
 

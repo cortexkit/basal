@@ -37,6 +37,15 @@ fn recurring(interval: &str, version: u32) -> Value {
     m
 }
 
+fn waitable(interval: &str, version: u32) -> Value {
+    let mut m = recurring(interval, version);
+    m["sinks"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind":"wait"}));
+    m
+}
+
 fn create(f: &Fixture, template: &str, version: u32, params: Value, lifetime: &str) -> Value {
     let reply = f
         .module
@@ -132,9 +141,19 @@ fn next_fire_at_remind_at_reply_created_live_and_vectors_agree() {
     );
 
     // Preserve the real handlers' canonical JSON bytes, with one file newline.
+    let repeating = setup("next-fire-rescheduled-vector");
+    register(&repeating, &waitable("1m", 1), "return 1;");
+    let instance = watch(&repeating, 1, "1h");
+    repeating.clock.advance(60_000);
+    repeating.module.rt.scheduler().unwrap().tick().unwrap();
+    let rescheduled_bytes = body_bytes(&repeating, id(&instance), 2, "flow_instance_rescheduled");
     let samples = [
         ("instantiate-reply.json", format!("{reply}\n")),
         ("created-event-body.json", format!("{created_bytes}\n")),
+        (
+            "rescheduled-event-body.json",
+            format!("{rescheduled_bytes}\n"),
+        ),
     ];
     let sums = samples
         .iter()
@@ -158,6 +177,103 @@ fn next_fire_at_remind_at_reply_created_live_and_vectors_agree() {
         std::fs::read_to_string(format!("{DIRECTORY}/SHA256SUMS")).unwrap(),
         sums
     );
+}
+
+#[test]
+fn next_fire_at_waitable_interval_reschedules_once_per_advance() {
+    let f = setup("next-fire-rescheduled-interval");
+    register(&f, &waitable("1m", 1), "return 1;");
+    let first = watch(&f, 1, "1h");
+    // A newer unapproved package must not remove the instance's wait grant.
+    register(&f, &recurring("1m", 2), "return 2;");
+    let scheduler = f.module.rt.scheduler().unwrap();
+    for advance in 1..=2 {
+        f.clock.set(T0 + advance * 60_000);
+        assert_eq!(scheduler.tick().unwrap().planned.len(), 1);
+        assert!(scheduler.tick().unwrap().planned.is_empty());
+        let events = f.module.rt.pending_template_events(32).unwrap();
+        let rescheduled: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_name == "flow_instance_rescheduled")
+            .collect();
+        assert_eq!(rescheduled.len(), advance as usize);
+        let event = rescheduled.last().unwrap();
+        assert_eq!(event.seq, advance + 1);
+        let snapshot = body(&f, id(&first), event.seq, "flow_instance_rescheduled");
+        assert_eq!(
+            snapshot,
+            json!({
+                "flow_id":id(&first),"template":"watch","version":1,"agent_id":OWNER,
+                "expires_at":T0+3_600_000,"seq":advance+1,
+                "next_fire_at_ms":T0+(advance+1)*60_000
+            })
+        );
+        assert_eq!(live(&f), snapshot);
+    }
+}
+
+#[test]
+fn next_fire_at_without_wait_grant_emits_no_rescheduled_event() {
+    let f = setup("next-fire-no-wait");
+    register(&f, &recurring("1m", 1), "return 1;");
+    let first = watch(&f, 1, "1h");
+    // A newer package's grant does not authorize notices for the approved one.
+    register(&f, &waitable("1m", 2), "return 2;");
+    for advance in 1..=2 {
+        f.clock.set(T0 + advance * 60_000);
+        f.module.rt.scheduler().unwrap().tick().unwrap();
+        assert_eq!(live(&f)["next_fire_at_ms"], T0 + (advance + 1) * 60_000);
+        let events = f.module.rt.pending_template_events(32).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_name, "flow_instance_created");
+        assert_eq!(events[0].flow_id, id(&first));
+        assert_eq!(live(&f)["seq"], 1);
+    }
+}
+
+#[test]
+fn next_fire_at_waitable_cron_reschedules_after_catch_up() {
+    let f = setup("next-fire-rescheduled-cron");
+    let mut m = waitable("1m", 1);
+    m["trigger"] = json!({"schedule":{"cron":"*/5 * * * *","tz":"UTC"}});
+    register(&f, &m, "return 1;");
+    let first = watch(&f, 1, "1h");
+    f.clock.advance(960_000);
+    f.module.rt.scheduler().unwrap().tick().unwrap();
+    assert_eq!(
+        body(&f, id(&first), 2, "flow_instance_rescheduled")["next_fire_at_ms"],
+        T0 + 1_200_000
+    );
+    assert_eq!(f.module.rt.pending_template_events(32).unwrap().len(), 2);
+}
+
+#[test]
+fn next_fire_at_unchanged_outbox_snapshot_is_not_rescheduled_again() {
+    let f = setup("next-fire-rescheduled-unchanged");
+    register(&f, &waitable("1m", 1), "return 1;");
+    let first = watch(&f, 1, "1h");
+    f.clock.advance(60_000);
+    let scheduler = f.module.rt.scheduler().unwrap();
+    scheduler.tick().unwrap();
+    assert_eq!(
+        body(&f, id(&first), 2, "flow_instance_rescheduled")["seq"],
+        2
+    );
+    // Replaying an old due time must not reannounce an already queued snapshot.
+    f.module
+        .rt
+        .store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE schedules SET next_due_ms=?2 WHERE flow_id=?1",
+                rusqlite::params![id(&first), T0 + 60_000],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    scheduler.tick().unwrap();
+    assert_eq!(f.module.rt.pending_template_events(32).unwrap().len(), 2);
+    assert_eq!(live(&f)["seq"], 2);
 }
 
 #[test]
@@ -297,6 +413,14 @@ fn next_fire_at_one_shot_consumed_or_dropped_and_revoked_is_null() {
         assert_eq!(tick.new_runs().len(), usize::from(!revoked));
         assert_eq!(scheduler.dropped().unwrap().len(), usize::from(revoked));
         assert_eq!(live(&f)["next_fire_at_ms"], Value::Null);
+        assert!(
+            f.module
+                .rt
+                .pending_template_events(32)
+                .unwrap()
+                .iter()
+                .all(|event| event.event_name != "flow_instance_rescheduled")
+        );
         assert_eq!(
             scheduler.schedule(id(&first)).unwrap().unwrap().next_due,
             None
