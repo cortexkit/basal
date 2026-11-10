@@ -56,6 +56,7 @@ fn create(f: &Fixture, template: &str, version: u32, params: Value, lifetime: &s
         )
         .unwrap();
     assert!(reply.get("next_fire_at_ms").is_some());
+    assert!(reply["fire_is_due"].is_boolean());
     reply
 }
 
@@ -84,6 +85,7 @@ fn body_bytes(f: &Fixture, flow_id: &str, seq: i64, event: &str) -> String {
 fn body(f: &Fixture, flow_id: &str, seq: i64, event: &str) -> Value {
     let body: Value = serde_json::from_str(&body_bytes(f, flow_id, seq, event)).unwrap();
     assert!(body.get("next_fire_at_ms").is_some());
+    assert!(body["fire_is_due"].is_boolean());
     body
 }
 
@@ -94,6 +96,7 @@ fn live(f: &Fixture) -> Value {
         .unwrap()["instances"][0]
         .clone();
     assert!(instance.get("next_fire_at_ms").is_some());
+    assert!(instance["fire_is_due"].is_boolean());
     instance
 }
 
@@ -106,10 +109,138 @@ fn remind(f: &Fixture) -> Value {
     create(
         f,
         "remind-at",
-        4,
+        5,
         json!({"at":"2026-05-01T01:00:00Z","note":"Review the release"}),
         "1d",
     )
+}
+
+#[test]
+fn fire_is_due_remind_at_v5_reply_live_and_lifecycle_events() {
+    let f = setup("fire-is-due-reminder");
+    let first = remind(&f);
+    assert_eq!(first["version"], 5);
+    assert_eq!(first["fire_is_due"], true);
+    assert_eq!(live(&f)["fire_is_due"], true);
+    assert_eq!(
+        body(&f, id(&first), 1, "flow_instance_created")["fire_is_due"],
+        true
+    );
+    let renewed = create(&f, "remind-at", 5, first["params"].clone(), "2d");
+    assert_eq!(renewed["fire_is_due"], true);
+    assert_eq!(
+        body(&f, id(&first), 2, "flow_instance_extended")["fire_is_due"],
+        true
+    );
+    f.module.rt.end_instance(id(&first)).unwrap();
+    assert_eq!(
+        body(&f, id(&first), 3, "flow_instance_ended")["fire_is_due"],
+        true
+    );
+
+    let expired = setup("fire-is-due-expired");
+    let first = remind(&expired);
+    expired.clock.set(first["expires_at"].as_i64().unwrap());
+    expired.module.rt.scheduler().unwrap().tick().unwrap();
+    assert_eq!(live(&expired)["fire_is_due"], true);
+    assert_eq!(
+        body(&expired, id(&first), 2, "flow_instance_expired")["fire_is_due"],
+        true
+    );
+}
+
+#[test]
+fn fire_is_due_watch_file_and_older_template_default_false() {
+    let f = setup("fire-is-due-watch-file");
+    std::fs::create_dir_all(basal_host::builtins::expand_home("~/Work").unwrap()).unwrap();
+    register(
+        &f,
+        &serde_json::from_str(include_str!("../../../templates/watch-file/manifest.json")).unwrap(),
+        include_str!("../../../templates/watch-file/flow.js"),
+    );
+    let file_watch = create(
+        &f,
+        "watch-file",
+        4,
+        json!({
+            "note":"Watch for the release", "path":"~/Work/release.txt",
+            "condition":"exists", "text":"", "every":"5m"
+        }),
+        "1d",
+    );
+    assert_eq!(file_watch["fire_is_due"], false);
+    assert_eq!(
+        body(&f, id(&file_watch), 1, "flow_instance_created")["fire_is_due"],
+        false
+    );
+    assert_eq!(live(&f)["fire_is_due"], false);
+
+    let old = setup("fire-is-due-older");
+    let manifest = waitable("1m", 1);
+    let stored = basal_core::Manifest::parse_stored(&manifest.to_string()).unwrap();
+    assert!(!stored.fire_is_due());
+    assert!(stored.template.unwrap().get("fire_is_due").is_none());
+    register(&old, &manifest, "return 1;");
+    let first = watch(&old, 1, "1h");
+    assert_eq!(first["fire_is_due"], false);
+    old.clock.advance(60_000);
+    old.module.rt.scheduler().unwrap().tick().unwrap();
+    assert_eq!(
+        body(&old, id(&first), 2, "flow_instance_rescheduled")["fire_is_due"],
+        false
+    );
+}
+
+#[test]
+fn fire_is_due_ordinary_intake_refuses_template_block() {
+    let f = setup("fire-is-due-ordinary");
+    let mut manifest = events_manifest("ordinary");
+    manifest["template"] = json!({"max_per_agent":10,"max_lifetime":"1d","fire_is_due":true});
+    let error = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({
+                "manifest":manifest.to_string(),"script":"return 1;"
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "params_require_package");
+    assert!(matches!(
+        basal_core::Manifest::parse_ordinary(&manifest.to_string()),
+        Err(basal_core::ManifestError::ParamsRequirePackage { field }) if field == "template"
+    ));
+    for invalid in [Value::Null, json!("true"), json!(1)] {
+        let mut template = waitable("1m", 1);
+        template["template"]["fire_is_due"] = invalid;
+        assert!(basal_core::Manifest::parse(&template.to_string()).is_err());
+    }
+}
+
+#[test]
+fn fire_is_due_rescheduled_uses_approved_version_then_upgrade() {
+    let f = setup("fire-is-due-approved");
+    let mut manifest = waitable("1m", 1);
+    manifest["template"]["fire_is_due"] = json!(true);
+    register(&f, &manifest, "return 1;");
+    let first = watch(&f, 1, "1h");
+    assert_eq!(first["fire_is_due"], true);
+    register(&f, &waitable("1m", 2), "return 2;");
+    f.clock.advance(60_000);
+    f.module.rt.scheduler().unwrap().tick().unwrap();
+    assert_eq!(
+        body(&f, id(&first), 2, "flow_instance_rescheduled")["fire_is_due"],
+        true
+    );
+    assert_eq!(live(&f)["fire_is_due"], true);
+    let upgraded = watch(&f, 2, "1h");
+    assert_eq!(upgraded["fire_is_due"], false);
+    assert_eq!(
+        body(&f, id(&first), 3, "flow_instance_extended")["fire_is_due"],
+        false
+    );
+    assert_eq!(live(&f)["fire_is_due"], false);
 }
 
 #[test]
@@ -117,15 +248,18 @@ fn next_fire_at_remind_at_reply_created_live_and_vectors_agree() {
     let f = setup("next-fire-reminder");
     let reply = remind(&f);
     assert_eq!(reply["next_fire_at_ms"], T0 + 3_600_000);
+    assert_eq!(reply["fire_is_due"], true);
     let created_bytes = body_bytes(&f, id(&reply), 1, "flow_instance_created");
     let created: Value = serde_json::from_str(&created_bytes).unwrap();
     assert_eq!(created["next_fire_at_ms"], reply["next_fire_at_ms"]);
+    assert_eq!(created["fire_is_due"], true);
     assert_eq!(live(&f), created);
     let mut old_reply = reply.clone();
     old_reply.as_object_mut().unwrap().remove("next_fire_at_ms");
+    old_reply.as_object_mut().unwrap().remove("fire_is_due");
     assert_eq!(
         old_reply,
-        json!({"flow_id":id(&reply),"template":"remind-at","version":4,"agent_id":OWNER,
+        json!({"flow_id":id(&reply),"template":"remind-at","version":5,"agent_id":OWNER,
             "params":{"at":"2026-05-01T01:00:00Z","note":"Review the release"},
             "expires_at":T0+86_400_000,"new":true})
     );
@@ -134,9 +268,10 @@ fn next_fire_at_remind_at_reply_created_live_and_vectors_agree() {
         .as_object_mut()
         .unwrap()
         .remove("next_fire_at_ms");
+    old_created.as_object_mut().unwrap().remove("fire_is_due");
     assert_eq!(
         old_created,
-        json!({"flow_id":id(&reply),"template":"remind-at","version":4,"agent_id":OWNER,
+        json!({"flow_id":id(&reply),"template":"remind-at","version":5,"agent_id":OWNER,
             "expires_at":T0+86_400_000,"seq":1})
     );
 
@@ -160,6 +295,10 @@ fn next_fire_at_remind_at_reply_created_live_and_vectors_agree() {
         .map(|(name, bytes)| format!("{:x}  {name}\n", Sha256::digest(bytes)))
         .collect::<String>();
     if std::env::var_os("BASAL_WRITE_VECTORS").is_some() {
+        println!(
+            "remind-at v5 code_hash: {}",
+            f.module.rt.get_package("remind-at", 5).unwrap()["code_hash"]
+        );
         std::fs::create_dir_all(DIRECTORY).unwrap();
         for (name, bytes) in &samples {
             std::fs::write(format!("{DIRECTORY}/{name}"), bytes).unwrap();
@@ -185,7 +324,9 @@ fn next_fire_at_waitable_interval_reschedules_once_per_advance() {
     register(&f, &waitable("1m", 1), "return 1;");
     let first = watch(&f, 1, "1h");
     // A newer unapproved package must not remove the instance's wait grant.
-    register(&f, &recurring("1m", 2), "return 2;");
+    let mut newer = recurring("1m", 2);
+    newer["template"]["fire_is_due"] = json!(true);
+    register(&f, &newer, "return 2;");
     let scheduler = f.module.rt.scheduler().unwrap();
     for advance in 1..=2 {
         f.clock.set(T0 + advance * 60_000);
@@ -205,7 +346,7 @@ fn next_fire_at_waitable_interval_reschedules_once_per_advance() {
             json!({
                 "flow_id":id(&first),"template":"watch","version":1,"agent_id":OWNER,
                 "expires_at":T0+3_600_000,"seq":advance+1,
-                "next_fire_at_ms":T0+(advance+1)*60_000
+                "next_fire_at_ms":T0+(advance+1)*60_000,"fire_is_due":false
             })
         );
         assert_eq!(live(&f), snapshot);
@@ -393,14 +534,14 @@ fn next_fire_at_one_shot_consumed_or_dropped_and_revoked_is_null() {
                 .rt
                 .store()
                 .write(|tx| {
-                    basal_core::install::revoke(tx, id(&first), 4, "revoked", T0)?;
+                    basal_core::install::revoke(tx, id(&first), 5, "revoked", T0)?;
                     Ok(())
                 })
                 .unwrap();
             // Package revocation retains an active schedule and its stale due
             // time, but it prevents that version from admitting another run.
             assert_eq!(live(&f)["next_fire_at_ms"], Value::Null);
-            let renewed = create(&f, "remind-at", 4, first["params"].clone(), "2d");
+            let renewed = create(&f, "remind-at", 5, first["params"].clone(), "2d");
             assert_eq!(renewed["next_fire_at_ms"], Value::Null);
             assert_eq!(
                 body(&f, id(&first), 2, "flow_instance_extended")["next_fire_at_ms"],

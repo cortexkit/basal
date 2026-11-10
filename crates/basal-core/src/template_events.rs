@@ -50,19 +50,50 @@ pub(crate) fn next_fire_at_ms(
     .flatten())
 }
 
-fn snapshot(c: &rusqlite::Connection, flow_id: &str, now: i64) -> Result<Value> {
+fn snapshot(
+    c: &rusqlite::Connection,
+    flow_id: &str,
+    now: i64,
+    approved_manifest: Option<&crate::manifest::Manifest>,
+) -> Result<Value> {
     let next_fire = next_fire_at_ms(c, flow_id, now)?;
-    Ok(c.query_row("SELECT f.flow_id,f.package,f.approved_version,f.owner,t.expires_at,t.seq FROM template_instances t JOIN flows f USING(flow_id) WHERE flow_id=?1", [flow_id], |r| Ok(json!({"flow_id":r.get::<_,String>(0)?,"template":r.get::<_,String>(1)?,"version":r.get::<_,u32>(2)?,"agent_id":r.get::<_,String>(3)?,"expires_at":r.get::<_,i64>(4)?,"seq":r.get::<_,i64>(5)?,"next_fire_at_ms":next_fire})))?)
+    let fire_is_due = match approved_manifest {
+        Some(manifest) => manifest.fire_is_due(),
+        None => {
+            // Ended and revoked instances still describe their approved version,
+            // even though that version can no longer admit runs.
+            let text: String = c.query_row(
+                "SELECT p.manifest FROM flows f JOIN package_versions p \
+                 ON p.package=f.package AND p.version=f.approved_version WHERE f.flow_id=?1",
+                [flow_id],
+                |r| r.get(0),
+            )?;
+            crate::manifest::Manifest::parse_stored(&text)
+                .map_err(|e| crate::CoreError::Corrupt(e.to_string()))?
+                .fire_is_due()
+        }
+    };
+    Ok(c.query_row("SELECT f.flow_id,f.package,f.approved_version,f.owner,t.expires_at,t.seq FROM template_instances t JOIN flows f USING(flow_id) WHERE flow_id=?1", [flow_id], |r| Ok(json!({"flow_id":r.get::<_,String>(0)?,"template":r.get::<_,String>(1)?,"version":r.get::<_,u32>(2)?,"agent_id":r.get::<_,String>(3)?,"expires_at":r.get::<_,i64>(4)?,"seq":r.get::<_,i64>(5)?,"next_fire_at_ms":next_fire,"fire_is_due":fire_is_due})))?)
 }
 
 /// The caller's state change, sequence increment and immutable body commit in
 /// one transaction. A failed insert therefore rolls back the state change too.
 pub(crate) fn enqueue(tx: &Transaction<'_>, flow_id: &str, event: &str, now: i64) -> Result<()> {
+    enqueue_with_manifest(tx, flow_id, event, now, None)
+}
+
+pub(crate) fn enqueue_with_manifest(
+    tx: &Transaction<'_>,
+    flow_id: &str,
+    event: &str,
+    now: i64,
+    approved_manifest: Option<&crate::manifest::Manifest>,
+) -> Result<()> {
     tx.execute(
         "UPDATE template_instances SET seq=seq+1 WHERE flow_id=?1",
         [flow_id],
     )?;
-    let mut body = snapshot(tx, flow_id, now)?;
+    let mut body = snapshot(tx, flow_id, now, approved_manifest)?;
     if event == "flow_instance_expired" {
         let text: String = tx.query_row(
             "SELECT params FROM template_instances WHERE flow_id=?1",
@@ -106,7 +137,14 @@ pub(crate) fn enqueue_rescheduled(tx: &Transaction<'_>, flow_id: &str, now: i64)
             return Ok(());
         }
     }
-    enqueue(tx, flow_id, "flow_instance_rescheduled", now)
+    // Reuse the approved manifest already parsed for the wait grant check.
+    enqueue_with_manifest(
+        tx,
+        flow_id,
+        "flow_instance_rescheduled",
+        now,
+        Some(&manifest),
+    )
 }
 
 pub(crate) fn prune(tx: &Transaction<'_>, now: i64) -> Result<()> {
@@ -123,7 +161,7 @@ impl Runtime {
         self.store().read(|c| {
             let mut stmt = c.prepare("SELECT t.flow_id FROM template_instances t JOIN flows f USING(flow_id) WHERE f.removed=0 ORDER BY t.flow_id")?;
             let ids = stmt.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            let instances = ids.iter().map(|id| snapshot(c, id, now)).collect::<Result<Vec<_>>>()?;
+            let instances = ids.iter().map(|id| snapshot(c, id, now, None)).collect::<Result<Vec<_>>>()?;
             Ok(json!({"instances":instances}))
         })
     }

@@ -1432,6 +1432,14 @@ impl Manifest {
             .any(|sink| matches!(sink, SinkGrant::Wait(_)))
     }
 
+    pub fn fire_is_due(&self) -> bool {
+        self.template
+            .as_ref()
+            .and_then(|template| template.get("fire_is_due"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
     pub fn room_sinks(&self) -> impl Iterator<Item = &RoomGrant> {
         self.sinks.iter().filter_map(|sink| match sink {
             SinkGrant::Room(grant) => Some(grant),

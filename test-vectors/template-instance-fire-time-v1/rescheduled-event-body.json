@@ -1,1 +1,1 @@
-{"agent_id":"agent_47120287c700722b","expires_at":1777597200000,"flow_id":"watch_387449e01c6c797a","next_fire_at_ms":1777593720000,"seq":2,"template":"watch","version":1}
+{"agent_id":"agent_47120287c700722b","expires_at":1777597200000,"fire_is_due":false,"flow_id":"watch_387449e01c6c797a","next_fire_at_ms":1777593720000,"seq":2,"template":"watch","version":1}
