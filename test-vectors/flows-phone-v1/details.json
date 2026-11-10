@@ -20,6 +20,7 @@
     "outcome": "failed"
   },
   "manifest": {
+    "explanation": "Exercises the declared trigger and grants for a test, without additional effects.",
     "id": "flow-phone-owned",
     "ops": [
       {

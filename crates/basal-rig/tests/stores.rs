@@ -170,7 +170,7 @@ fn rig_readers_observe_a_real_retained_staged_run() {
         true,
     )
     .unwrap();
-    let manifest = json!({"id":"rig-reader","version":1,"purpose":"Read staged run evidence","trigger":{"schedule":{"interval":"1h"}}});
+    let manifest = json!({"id":"rig-reader","version":1,"purpose":"Read staged run evidence","explanation":"Produces a staged run for the rig readers to observe; it has no other effects.","trigger":{"schedule":{"interval":"1h"}}});
     let installed = rt
         .install(&InstallRequest {
             script: "return 9;".into(),
