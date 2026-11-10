@@ -1434,6 +1434,10 @@ impl Dispatch {
                     .dispatch_committed(&self.live, position, handle.as_deref());
             }
         }
+        #[cfg(test)]
+        self.driver
+            .hooks
+            .before_dispatch_drop(&self.live.run_id, position);
         Ok(())
     }
 }

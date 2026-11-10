@@ -111,6 +111,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new(retain: bool) -> Self {
+        Self::with_hooks(retain, Arc::new(NoHooks))
+    }
+    fn with_hooks(retain: bool, hooks: Arc<dyn crate::Hooks>) -> Self {
         let root = crate::test_support::timestamp_scratch("staged-runtime", "reader");
         let store = Arc::new(Store::open(root.join("store.db"), Durability::default()).unwrap());
         let host = Arc::new(TestHost::default());
@@ -142,7 +145,7 @@ impl Fixture {
             store,
             host.clone(),
             catalog.clone(),
-            Arc::new(NoHooks),
+            hooks,
             None,
             config(&clock),
             retain,
