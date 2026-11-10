@@ -226,6 +226,25 @@ Headers are publisher hints, **not authority**: a publisher may label wrongly.
 A filter only reduces cost; scripts must still check the verified body before
 deciding what to do. It never grants access to an otherwise invisible body.
 
+## Module catalog readiness
+
+Before each `ops.call(module, op, args)`, basal checks the live catalog. An op
+missing from a catalogued provider is a final `denied`, as is a shell-capable
+op. A provider missing from the current catalog is different: the module may
+be restarting, so basal journals a provably unsent deferral with
+`provider_not_catalogued`. If the catalog cannot be read or decoded, the
+deferral reason is `catalog_unavailable` instead.
+
+Both readiness reasons retry authorization with durable exponential backoff
+until the provider returns or the run deadline expires. Waiting does not spend
+the flow's dispatch budget or advance its failing-run count. At the deadline,
+the call settles as a typed unsent rejection with its last readiness code; the
+expired run counts as one deadline failure, like other deferred calls. These
+rules also apply to targeted calls made with `{for: "agent"}` as the fourth
+argument. Install intake and ordinary dry runs still refuse an op they cannot
+resolve. They report catalog unavailability rather than claiming that an
+uncatalogued provider removed the op.
+
 ## Module calls for a target agent
 
 `ops.call(module, op, args)` uses the flow's own daemon scope. A manifest with

@@ -201,8 +201,10 @@ impl SubcCatalog {
             .iter()
             .find(|e| e.get("module_id").and_then(Value::as_str) == Some(module))
         else {
-            return Err(WireError::NeverSent(format!(
-                "provider {module} is not currently catalogued"
+            return Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                crate::flow_refusal::RefusalReason::ProviderNotCatalogued,
+                module,
+                op,
             )));
         };
         let roles: Vec<ProviderRole> = serde_json::from_value(
@@ -494,10 +496,11 @@ impl Catalog for SubcCatalog {
         declared_event(&catalog_event_declarations(entry)?, name, version)
     }
     fn op(&self, module: &str, op: &str) -> Option<OpDecl> {
+        self.lookup_op(module, op).ok().flatten()
+    }
+    fn lookup_op(&self, module: &str, op: &str) -> Result<Option<OpDecl>, WireError> {
         self.resolve(module, op)
-            .ok()
-            .flatten()
-            .map(|o| o.declaration)
+            .map(|decl| decl.map(|o| o.declaration))
     }
     fn emits_events(&self, module: &str, op: &str) -> Result<Option<bool>, WireError> {
         self.tool_emits_events(module, op)
@@ -623,6 +626,56 @@ mod event_tests {
         assert!(declared_event(&events, "github_issue_changed", 1).is_none());
         assert!(declared_event(&events, "github_pr_changed", 2).is_none());
         assert!(declared_event(&[], "github_pr_changed", 1).is_none());
+    }
+}
+
+#[cfg(test)]
+mod op_lookup_tests {
+    use super::*;
+    use crate::flow_refusal::RefusalReason;
+    use std::sync::Mutex;
+
+    struct Daemon(Mutex<Result<Value, WireError>>);
+    impl Transport for Daemon {
+        fn catalog(&self) -> Result<Value, WireError> {
+            self.0.lock().unwrap().clone()
+        }
+        fn management(&self, _: &str, _: &str, _: Value) -> Result<Value, WireError> {
+            panic!("authorization must not dispatch management calls")
+        }
+        fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+            panic!("authorization must not dispatch tools")
+        }
+    }
+
+    #[test]
+    fn op_lookup_distinguishes_missing_provider_missing_op_and_unreadable_catalog() {
+        let daemon = Arc::new(Daemon(Mutex::new(Ok(json!({"modules":[]})))));
+        let catalog = SubcCatalog::new(daemon.clone());
+        let Err(WireError::Typed(refusal)) = catalog.lookup_op("provider", "query") else {
+            panic!("a missing provider must remain a typed readiness error")
+        };
+        assert_eq!(refusal.reason, RefusalReason::ProviderNotCatalogued);
+        assert_eq!(refusal.provider, "provider");
+        assert_eq!(refusal.action, "query");
+        assert!(refusal.readiness());
+
+        *daemon.0.lock().unwrap() = Ok(json!({"modules":[{
+            "module_id":"provider","roles":[],"capabilities":{"provides":[]}
+        }]}));
+        assert_eq!(catalog.lookup_op("provider", "query"), Ok(None));
+        *daemon.0.lock().unwrap() = Ok(json!({"modules":[{
+            "module_id":"provider","capabilities":{"provides":[]},
+            "roles":[{"role":"management_surface","operations":[{"name":"query","kind":"query"}],
+                "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]
+        }]}));
+        let declaration = catalog.lookup_op("provider", "query").unwrap().unwrap();
+        assert_eq!(declaration.kind, Some(OpKind::Query));
+        assert!(!declaration.shell_capable);
+
+        let failure = WireError::Unreadable("daemon disconnected".into());
+        *daemon.0.lock().unwrap() = Err(failure.clone());
+        assert_eq!(catalog.lookup_op("provider", "query"), Err(failure));
     }
 }
 

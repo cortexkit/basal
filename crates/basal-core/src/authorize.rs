@@ -187,25 +187,54 @@ impl ShellDenylist {
 }
 
 /// Whether a flow may never call (module, op): on the denylist, marked
-/// shell-capable in the catalog, or absent from it (basal never sends an
-/// op it cannot classify).
+/// shell-capable in the catalog, or absent from a catalogued provider. Catalog
+/// unavailability is a readiness refusal: basal cannot classify the op yet.
 pub fn shell_or_unknown(
     denylist: &ShellDenylist,
     catalog: &dyn Catalog,
     module: &str,
     op: &str,
 ) -> Option<Refusal> {
+    checked_op(denylist, catalog, module, op).err()
+}
+
+fn checked_op(
+    denylist: &ShellDenylist,
+    catalog: &dyn Catalog,
+    module: &str,
+    op: &str,
+) -> Result<basal_host::catalog::OpDecl, Refusal> {
     if denylist.contains(module, op) {
-        return Some(Refusal::denied(format!(
+        return Err(Refusal::denied(format!(
             "op ({module}, {op}) can run commands and is never available to flows"
         )));
     }
-    match catalog.op(module, op) {
-        Some(decl) if decl.shell_capable => Some(Refusal::denied(format!(
+    let decl = catalog.lookup_op(module, op).map_err(|error| {
+        use basal_host::flow_refusal::RefusalReason;
+        let (reason, message) = match error {
+            basal_host::transport::WireError::Typed(ref refusal)
+                if refusal.reason == RefusalReason::ProviderNotCatalogued =>
+            {
+                (
+                    RefusalReason::ProviderNotCatalogued,
+                    format!("provider {module} is not currently catalogued"),
+                )
+            }
+            _ => (
+                RefusalReason::CatalogUnavailable,
+                format!("cannot read the catalog for op ({module}, {op}): {error:?}"),
+            ),
+        };
+        let mut refusal = Refusal::new(reason.as_str(), message);
+        refusal.module = Some(module.into());
+        refusal
+    })?;
+    match decl {
+        Some(decl) if decl.shell_capable => Err(Refusal::denied(format!(
             "op ({module}, {op}) is marked shell-capable and is never available to flows"
         ))),
-        Some(_) => None,
-        None => Some(Refusal::denied(format!(
+        Some(decl) => Ok(decl),
+        None => Err(Refusal::denied(format!(
             "op ({module}, {op}) is not in the catalog"
         ))),
     }
@@ -344,18 +373,14 @@ pub fn check(
             }
             // The shell check comes first, so a shell-capable op is refused
             // the same way whether or not the manifest lists it.
-            if let Some(refusal) = shell_or_unknown(denylist, catalog, module, op) {
-                return Err(refusal);
-            }
+            let declaration = checked_op(denylist, catalog, module, op)?;
             if !manifest.lists_op(module, op) {
                 return Err(Refusal::denied(format!(
                     "op ({module}, {op}) is not in the flow's manifest"
                 )));
             }
             if matches!(kind, CallKind::OpFor { .. })
-                && catalog
-                    .op(module, op)
-                    .is_none_or(|d| d.kind != Some(basal_host::catalog::OpKind::Query))
+                && declaration.kind != Some(basal_host::catalog::OpKind::Query)
                 && !manifest.ops.iter().any(|grant| {
                     grant.module == *module
                         && grant.op == *op

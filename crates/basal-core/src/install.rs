@@ -101,6 +101,12 @@ pub enum InstallError {
         module: String,
         op: String,
     },
+    /// Intake cannot validate an op while its provider or catalog is unavailable.
+    OpCatalogUnavailable {
+        module: String,
+        op: String,
+        reason: String,
+    },
     /// The module did not say whether the op only reads.
     UnmarkedOp {
         module: String,
@@ -790,6 +796,29 @@ pub fn validate_with_policies(
     validate_inner(manifest, author, catalog, denylist, loop_override, false)
 }
 
+fn op_for_install(
+    catalog: &dyn Catalog,
+    module: &str,
+    op: &str,
+) -> std::result::Result<Option<basal_host::catalog::OpDecl>, InstallError> {
+    catalog.lookup_op(module, op).map_err(|error| {
+        let reason = match &error {
+            basal_host::transport::WireError::Typed(refusal)
+                if refusal.reason
+                    == basal_host::flow_refusal::RefusalReason::ProviderNotCatalogued =>
+            {
+                format!("provider {module} is not currently catalogued; retry after it registers")
+            }
+            _ => format!("catalog unavailable: {error:?}"),
+        };
+        InstallError::OpCatalogUnavailable {
+            module: module.into(),
+            op: op.into(),
+            reason,
+        }
+    })
+}
+
 pub(crate) fn validate_inner(
     manifest: &Manifest,
     author: &str,
@@ -831,7 +860,7 @@ pub(crate) fn validate_inner(
                 }
             }
             if let EventBody::Resolved { resolve_op } = &decl.body {
-                let kind = catalog.op(&e.module, resolve_op).and_then(|d| d.kind);
+                let kind = op_for_install(catalog, &e.module, resolve_op)?.and_then(|d| d.kind);
                 if kind != Some(OpKind::Query) {
                     return Err(InstallError::ResolveOpNotQuery {
                         module: e.module.clone(),
@@ -856,7 +885,7 @@ pub(crate) fn validate_inner(
             let (module, op) = pair();
             return Err(InstallError::ShellCapable { module, op });
         }
-        let Some(decl) = catalog.op(module, op) else {
+        let Some(decl) = op_for_install(catalog, module, op)? else {
             let (module, op) = pair();
             return Err(InstallError::UnknownOp { module, op });
         };

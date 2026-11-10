@@ -15,6 +15,8 @@ pub enum RefusalReason {
     ScopeChanged,
     ScopeUnsupported,
     TargetFlowUnsupported,
+    ProviderNotCatalogued,
+    CatalogUnavailable,
     ResourceBusy,
     ConsentUnavailable,
     ModuleGrantAbsent,
@@ -45,6 +47,8 @@ impl RefusalReason {
             Self::ScopeChanged => "scope_changed",
             Self::ScopeUnsupported => "scope_unsupported",
             Self::TargetFlowUnsupported => "target_flow_unsupported",
+            Self::ProviderNotCatalogued => "provider_not_catalogued",
+            Self::CatalogUnavailable => "catalog_unavailable",
             Self::ResourceBusy => "resource_busy",
             Self::ConsentUnavailable => "consent_unavailable",
             Self::ModuleGrantAbsent => "module_grant_absent",
@@ -118,12 +122,19 @@ impl FlowRefusal {
     pub fn readiness(&self) -> bool {
         matches!(
             self.reason,
-            RefusalReason::NoFlowScope | RefusalReason::TargetFlowUnsupported
+            RefusalReason::NoFlowScope
+                | RefusalReason::TargetFlowUnsupported
+                | RefusalReason::ProviderNotCatalogued
+                | RefusalReason::CatalogUnavailable
         )
     }
     pub fn message(&self) -> &'static str {
         match self.reason {
             RefusalReason::NoFlowScope => "waiting for core to register the flow scope",
+            RefusalReason::ProviderNotCatalogued => {
+                "the provider is not currently catalogued; waiting for it to register"
+            }
+            RefusalReason::CatalogUnavailable => "the daemon catalog is temporarily unavailable",
             // The daemon refuses this both for a module that never declared
             // flow-scopes/v1 and for one that has not finished registering
             // after a restart, so the text must not assert which.
