@@ -39,6 +39,15 @@ pub enum WireError {
 }
 
 impl WireError {
+    /// The refusal's machine-readable code, without inspecting its message.
+    pub fn refusal_code(&self) -> Option<&str> {
+        match self {
+            Self::Refused { code, .. } | Self::RefusedDetails { code, .. } => Some(code),
+            Self::Typed(refusal) => Some(refusal.reason.as_str()),
+            _ => None,
+        }
+    }
+
     /// Why the call's outcome is unknown, or `None` when it provably never
     /// left or was answered with a refusal.
     pub fn unknown_reason(&self) -> Option<crate::UnknownReason> {
@@ -200,6 +209,16 @@ pub trait Transport: Send + Sync {
     }
     fn catalog(&self) -> Result<Value, WireError>;
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError>;
+    /// Preserve route-open miss codes for callers that can rediscover a renamed
+    /// module. Ordinary management calls retain their NeverSent retry behavior.
+    fn management_with_route_refusals(
+        &self,
+        module: &str,
+        op: &str,
+        params: Value,
+    ) -> Result<Value, WireError> {
+        self.management(module, op, params)
+    }
     fn tool(
         &self,
         module: &str,
@@ -735,6 +754,17 @@ impl SubcTransport {
         bytes: Vec<u8>,
         management: bool,
     ) -> Result<Value, WireError> {
+        self.call_as_with_route_refusals(target, identity, bytes, management, false)
+    }
+
+    fn call_as_with_route_refusals(
+        &self,
+        target: RouteTarget,
+        identity: BindIdentity,
+        bytes: Vec<u8>,
+        management: bool,
+        preserve_route_refusals: bool,
+    ) -> Result<Value, WireError> {
         // The client caches routes by target and identity and only retries a
         // dead channel when the daemon proves it was not forwarded.
         let response = self
@@ -748,7 +778,17 @@ impl SubcTransport {
                     ..Default::default()
                 },
             ))
-            .map_err(map_error)?;
+            .map_err(|error| {
+                // Management callers can rediscover a renamed module only if
+                // route-open misses retain their code instead of becoming prose.
+                if preserve_route_refusals
+                    && let Some(body) = error.route_open_refusal()
+                    && matches!(body.code.as_str(), "unknown_module" | "target_unavailable")
+                {
+                    return refusal(body.clone());
+                }
+                map_error(error)
+            })?;
         decode_response(&response, management)
     }
 }
@@ -1185,6 +1225,23 @@ impl Transport for SubcTransport {
                 module_id: module.into(),
             },
             management_body(op, params),
+            true,
+        )
+    }
+    fn management_with_route_refusals(
+        &self,
+        module: &str,
+        op: &str,
+        params: Value,
+    ) -> Result<Value, WireError> {
+        self.call_as_with_route_refusals(
+            RouteTarget::ManagementSurface {
+                module_id: module.into(),
+            },
+            self.identity.clone(),
+            serde_json::to_vec(&management_body(op, params))
+                .map_err(|e| WireError::NeverSent(e.to_string()))?,
+            true,
             true,
         )
     }
@@ -1740,10 +1797,27 @@ mod tests {
                     entered.send(()).unwrap();
                     release.await.unwrap();
                 }
+                if body["op"] == "route.open"
+                    && let Some(code) = body["target"]["module_id"].as_str().and_then(|id| id.strip_prefix("refuse-"))
+                {
+                    records.lock().unwrap().push(body.clone());
+                    let error = Frame::build(
+                        FrameType::Error,
+                        Flags::new(false, Priority::Passive, false),
+                        frame.header.channel,
+                        frame.header.epoch,
+                        frame.header.corr,
+                        serde_json::to_vec(&json!({"code":code,"message":"opaque route refusal"})).unwrap(),
+                    ).unwrap();
+                    write_frame(&mut stream, &error).await.unwrap();
+                    continue;
+                }
                 let reply = if body["op"] == "route.open" {
                     let mut records = records.lock().unwrap();
                     records.push(body);
                     json!({"op":"route.open","route_channel":10+records.len(),"route_epoch":1})
+                } else if body["op"] == "catalog.list" {
+                    json!({"op":"catalog.list","generation":1,"modules":[],"subc_ops":[]})
                 } else if body["method"] == "grants.would_ask" {
                     json!({"result":{"items":[{"grant":body["params"]["items"][0]["grant"],"verdict":"yes","reason":"allowed"}]}})
                 } else if body["method"] == "refuse" {
@@ -2453,6 +2527,31 @@ mod tests {
             assert_eq!(opens.lock().unwrap().len(), 2, "a fresh route was opened");
             assert_eq!(requests_named(&calls, "echo"), 3);
             transport.configure_flow("codemode:run", None);
+        });
+    }
+
+    #[test]
+    fn management_route_misses_preserve_the_daemon_refusal_code() {
+        with_paused_open_timeout(None, Duration::from_millis(50), |transport, opens, _, _| {
+            for code in ["unknown_module", "target_unavailable"] {
+                let error = transport
+                    .management_with_route_refusals(&format!("refuse-{code}"), "echo", json!({}))
+                    .unwrap_err();
+                assert!(matches!(error, WireError::Refused { code: actual, message }
+                    if actual == code && message == "opaque route refusal"));
+            }
+            assert!(opens.lock().unwrap().len() >= 2);
+        });
+    }
+
+    #[test]
+    fn management_route_misses_keep_ordinary_never_sent_mapping() {
+        with_paused_open_timeout(None, Duration::from_millis(50), |transport, opens, _, _| {
+            let error = transport
+                .management("refuse-unknown_module", "echo", json!({}))
+                .unwrap_err();
+            assert!(matches!(error, WireError::NeverSent(_)));
+            assert!(!opens.lock().unwrap().is_empty());
         });
     }
 
