@@ -9,7 +9,11 @@ fn main() {
     // Cargo's stable artifact dependencies cannot yet provide another package's
     // executable. Build it here, once for this testkit fingerprint, rather than
     // in every test process. A separate target directory avoids waiting on the
-    // outer Cargo process's build lock.
+    // outer Cargo process's build lock. `--target-dir` doesn't move a build
+    // folder set through `CARGO_BUILD_BUILD_DIR`, which the nested Cargo would
+    // inherit from the outer one's environment: both would then share one
+    // build folder and its lock, and this build would wait on its parent
+    // forever. Build servers set that variable per checkout.
     for path in [
         "Cargo.toml",
         "Cargo.lock",
@@ -21,6 +25,7 @@ fn main() {
     let target = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("worker-target");
     let output = Command::new(std::env::var_os("CARGO").unwrap())
         .current_dir(&root)
+        .env_remove("CARGO_BUILD_BUILD_DIR")
         .args([
             "build",
             "--locked",
