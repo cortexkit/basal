@@ -185,6 +185,10 @@ pub enum Step {
 
 pub trait Hooks: Send + Sync {
     fn at(&self, run_id: &str, boundary: &Boundary) -> Step;
+    /// The reply is recorded, but the dispatch remains registered as in flight
+    /// until `Dispatch::send` returns and drops its registration.
+    #[cfg(test)]
+    fn before_dispatch_drop(&self, _run_id: &str, _position: u64) {}
     /// Observe records while the run's actor mutex is held and its activation
     /// generation has been checked. Implementations must not call hosts or take
     /// another actor; production's NoHooks does nothing.

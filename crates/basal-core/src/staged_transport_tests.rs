@@ -95,7 +95,31 @@ fn ambiguous_unkeyed_transport_is_not_retried_and_readers_show_reconciliation() 
 
 #[test]
 fn exhausted_query_transport_is_a_typed_rejection_not_an_unknown_write() {
-    let f = Fixture::new(true);
+    struct HoldDispatch {
+        reached: std::sync::mpsc::Sender<()>,
+        resume: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl crate::Hooks for HoldDispatch {
+        fn at(&self, _: &str, _: &crate::Boundary) -> crate::Step {
+            crate::Step::Continue
+        }
+        fn before_dispatch_drop(&self, _: &str, _: u64) {
+            let resume = self.resume.lock().unwrap().take();
+            if let Some(resume) = resume {
+                self.reached.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        }
+    }
+    let (reached, at) = std::sync::mpsc::channel();
+    let (resume, wait) = std::sync::mpsc::channel();
+    let f = Fixture::with_hooks(
+        true,
+        Arc::new(HoldDispatch {
+            reached,
+            resume: Mutex::new(Some(wait)),
+        }),
+    );
     f.install("unavailable", 1, json!({}));
     let id = f.admit("unavailable", "first");
     for _ in 0..=f.rt.config.unavailable_retries {
@@ -119,19 +143,57 @@ fn exhausted_query_transport_is_a_typed_rejection_not_an_unknown_write() {
         messages.push(if last { finished() } else { suspended(vec![0]) });
         let mut worker = ScriptedWorker::new(messages);
         let end = f.rt.activate(&id, &mut worker).unwrap();
+        if attempt == 0 {
+            at.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
         if !last {
             assert_eq!(end, ActivationEnd::Suspended { awaited: vec![0] });
-            f.clock.set(
-                f.rt.fixture_call_state(&id, 0)
-                    .unwrap()
-                    .deferred
-                    .unwrap()
-                    .retry_not_before,
-            );
+            let deferred = f.rt.fixture_call_state(&id, 0).unwrap().deferred.unwrap();
+            if attempt == 0 {
+                // Deferred is visible while the old send is still registered
+                // as in flight. An activation in that gap cannot start the due
+                // retry, but must requeue instead of parking with ready work.
+                f.clock.set(deferred.retry_not_before);
+                let mut early = ScriptedWorker::new(vec![
+                    WorkerMessage::Blocked { awaiting: vec![0] },
+                    suspended(vec![0]),
+                ]);
+                assert_eq!(
+                    f.rt.activate(&id, &mut early).unwrap(),
+                    ActivationEnd::Requeued,
+                );
+                assert_eq!(f.host.sent.lock().unwrap().len(), 1);
+                let call = f.rt.fixture_call_state(&id, 0).unwrap();
+                assert_eq!(call.deferred, Some(deferred.clone()));
+                assert!(call.arrival.is_none());
+                assert!(call.unknown.is_none());
+                resume.send(()).unwrap();
+            }
+            // A suspension records the deferral, not dispatch-thread exit.
+            // Join the old dispatch before expecting the next activation to
+            // send another attempt and suspend on its new, future deferral.
+            f.rt.quiesce();
+            f.clock.set(deferred.retry_not_before);
         } else {
             assert!(matches!(end, ActivationEnd::Succeeded { .. }), "{end:?}");
+            assert!(worker.sent.iter().any(|message| matches!(
+                message,
+                basal_proto::ParentMessage::Deliver(outcome)
+                    if outcome.position == 0 && outcome.settlement == Settlement::Rejected
+            )));
         }
     }
+    f.rt.quiesce();
+    assert_eq!(
+        f.host
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.attempt)
+            .collect::<Vec<_>>(),
+        (1..=f.rt.config.unavailable_retries + 1).collect::<Vec<_>>()
+    );
     let calls = f.rt.calls(&id).unwrap();
     let outcome = calls[0].outcome.as_ref().unwrap();
     assert_eq!(outcome.settlement, Settlement::Rejected);
