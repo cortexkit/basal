@@ -45,7 +45,7 @@ fn flow(id: &str, version: u32, spec: Value) -> TestFlow {
 impl TestFlow {
     /// The version's manifest: only its schedule trigger matters here.
     fn manifest(&self) -> String {
-        let mut manifest = json!({
+        let manifest = json!({
             "id": self.id,
             "version": self.version,
             "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose": "A scheduled test flow.",
