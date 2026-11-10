@@ -375,12 +375,12 @@ fn completed_at(t: &Test, age_ms: i64) -> String {
 
 #[test]
 fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants() {
-    Manifest::parse_stored(MANIFEST).unwrap();
+    Manifest::parse_ordinary(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 18);
+    assert_eq!(value["version"], 19);
     println!(
-        "ci-failure-router v18 code hash: {}",
+        "ci-failure-router v19 code hash: {}",
         basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &value.to_string()))
     );
     assert!(
@@ -413,6 +413,8 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     assert_eq!(value["deadline"], "2m");
     assert!(value.get("params").is_none());
     assert!(value.get("template").is_none());
+    assert!((1..=1500).contains(&value["explanation"].as_str().unwrap().chars().count()));
+    assert!(value["changes"].as_str().unwrap().chars().count() <= 600);
 }
 
 #[test]
@@ -582,6 +584,186 @@ fn ignored_workflow_run_is_dropped() {
 }
 
 #[test]
+fn review_findings_workflows_and_jobs_are_ignored_fleet_wide() {
+    for repo in [
+        "cortexkit/basal",
+        "cortexkit/magic-context",
+        "cortexkit/plexus",
+    ] {
+        for name in ["Review findings", "rEvIeW FiNdInGs", "review-findings"] {
+            let t = Test::new();
+            let mut failed = job(repo, 101);
+            failed["workflow_name"] = json!(name);
+            failed["head_branch"] = json!("train/review");
+            t.ci(failed);
+            let mut finished = run(repo, "failure");
+            finished["name"] = json!(name);
+            finished["head_branch"] = json!("train/review");
+            t.ci(finished);
+            assert!(t.writes().is_empty(), "{repo}: {name}");
+            assert!(t.reads().is_empty());
+            assert!(t.job_log_reads().is_empty());
+        }
+
+        // A shared job can appear inside a differently named workflow.
+        let t = Test::new();
+        let mut failed = job(repo, 101);
+        failed["workflow_name"] = json!("CI");
+        failed["name"] = json!("review-findings");
+        t.ci(failed);
+        t.ci(run(repo, "failure"));
+        assert!(t.writes().is_empty(), "{repo}: review-findings job");
+        assert!(t.reads().is_empty());
+        assert!(t.job_log_reads().is_empty());
+
+        // Similar names still describe ordinary, actionable checks.
+        let mut other = job(repo, 102);
+        other["workflow_name"] = json!("Review findings integration");
+        other["name"] = json!("review-findings-tests");
+        other["head_branch"] = json!("train/review");
+        t.ci(other);
+        assert_eq!(t.writes()[0]["action"], "wake");
+    }
+}
+
+#[test]
+fn workflow_titles_and_bodies_name_the_actual_workflow() {
+    let t = Test::new();
+    let mut failed = job("cortexkit/basal", 101);
+    failed["workflow_name"] = json!("Smoke");
+    t.ci(failed);
+    for conclusion in ["failure", "success"] {
+        let mut finished = run("cortexkit/basal", conclusion);
+        finished["name"] = json!("Smoke");
+        t.ci(finished);
+    }
+    let writes = t.writes();
+    for write in &writes {
+        assert!(
+            write["item"]["body"]
+                .as_str()
+                .unwrap()
+                .contains("Workflow Smoke")
+        );
+        assert_eq!(write["item"]["data"]["observed"]["workflow"], "Smoke");
+        assert_eq!(write["replace_key"], "ci:cortexkit/basal:42:1");
+    }
+    assert_eq!(
+        writes[0]["item"]["title"],
+        "cortexkit/basal: Smoke failed on main"
+    );
+    assert_eq!(
+        writes[1]["item"]["title"],
+        "cortexkit/basal: Smoke failed on main"
+    );
+    assert_eq!(
+        writes[2]["item"]["title"],
+        "cortexkit/basal: Smoke green again on main"
+    );
+    assert_eq!(writes[0]["action"], "wake");
+    assert!(writes[1..].iter().all(|write| write["action"] == "silent"));
+}
+
+#[test]
+fn silent_runs_share_one_branch_digest_with_a_count_and_newest_attempts() {
+    let t = Test::new();
+    let repo = "cortexkit/magic-context";
+    let branch = "feat/embedding-dimensions-405";
+    for id in 42..=47 {
+        let mut failed = job(repo, id + 1000);
+        failed["run_id"] = json!(id);
+        failed["workflow_name"] = json!(format!("Smoke {id}"));
+        failed["head_branch"] = json!(branch);
+        failed["completed_at"] = json!("2027-01-01T12:00:00Z");
+        t.ci(failed.clone());
+        // Duplicate job deliveries and a completion do not inflate the count.
+        t.ci(failed.clone());
+        let mut finished = run(repo, "failure");
+        finished["run_id"] = json!(id);
+        finished["name"] = failed["workflow_name"].clone();
+        finished["head_branch"] = json!(branch);
+        finished["completed_at"] = failed["completed_at"].clone();
+        t.ci(finished);
+    }
+    let writes = t.writes();
+    assert_eq!(writes.len(), 12);
+    let mut pending = BTreeMap::new();
+    for write in &writes {
+        assert_eq!(write["action"], "silent");
+        assert_eq!(write["replace_key"], format!("ci-branch:{repo}:{branch}"));
+        pending.insert(write["replace_key"].as_str().unwrap(), &write["item"]);
+    }
+    assert_eq!(pending.len(), 1);
+    let newest = &writes.last().unwrap()["item"];
+    assert_eq!(newest["data"]["observed"]["run_count"], 6);
+    assert_eq!(
+        newest["title"],
+        format!("{repo}: Smoke 47 failed on {branch}")
+    );
+    let body = newest["body"].as_str().unwrap();
+    assert!(
+        body.starts_with(&format!("6 recent run attempts on {branch}")),
+        "{body}"
+    );
+    assert!(body.find("Run 47,").unwrap() < body.find("Run 46,").unwrap());
+    assert!(body.contains("Run 44,"));
+    assert!(!body.contains("Run 43,"));
+    assert!(!body.contains("Run 42,"));
+    assert!(t.reads().is_empty());
+    assert!(t.job_log_reads().is_empty());
+
+    // An older completion delivered last must not displace the newest summary.
+    let mut older = run(repo, "failure");
+    older["run_id"] = json!(41);
+    older["head_branch"] = json!(branch);
+    older["completed_at"] = json!("2027-01-01T11:00:00Z");
+    t.ci(older);
+    let writes = t.writes();
+    let last = writes.last().unwrap();
+    assert_eq!(last["item"]["data"]["observed"]["run_count"], 7);
+    assert_eq!(last["item"]["title"], newest["title"]);
+
+    for (repo, branch) in [(repo, "feat/other"), ("cortexkit/plexus", branch)] {
+        let mut other = run(repo, "failure");
+        other["head_branch"] = json!(branch);
+        t.ci(other);
+        let writes = t.writes();
+        let last = writes.last().unwrap();
+        assert_eq!(last["replace_key"], format!("ci-branch:{repo}:{branch}"));
+        assert_eq!(last["item"]["data"]["observed"]["run_count"], 1);
+    }
+}
+
+#[test]
+fn wake_branches_keep_separate_run_keys_and_silent_updates() {
+    for branch in ["main", "release/v19", "feat/owner"] {
+        let t = Test::new();
+        for id in [42, 43] {
+            let mut failed = job("cortexkit/basal", id + 1000);
+            failed["run_id"] = json!(id);
+            failed["head_branch"] = json!(branch);
+            t.ci(failed);
+            let mut finished = run("cortexkit/basal", "failure");
+            finished["run_id"] = json!(id);
+            finished["head_branch"] = json!(branch);
+            t.ci(finished);
+        }
+        let writes = t.writes();
+        assert_eq!(writes.len(), 4);
+        for (index, write) in writes.iter().enumerate() {
+            assert_eq!(
+                write["action"],
+                if index % 2 == 0 { "wake" } else { "silent" }
+            );
+            assert_eq!(
+                write["replace_key"],
+                format!("ci:cortexkit/basal:{}:1", 42 + index / 2)
+            );
+        }
+    }
+}
+
+#[test]
 fn magic_context_design_gate_is_ignored_off_master_and_train_branches() {
     // A contributor PR blocked by the design gate is expected; the same gate
     // failing on master or a train branch is real breakage and still wakes.
@@ -656,7 +838,10 @@ fn quiet_repo_updates_silently_while_other_repos_still_wake() {
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0]["action"], "silent");
     assert_eq!(writes[0]["agent"], "agent_b1a9c546c33b84c9");
-    assert_eq!(writes[0]["replace_key"], "ci:cortexkit/cerebellum:42:1");
+    assert_eq!(
+        writes[0]["replace_key"],
+        "ci-branch:cortexkit/cerebellum:main"
+    );
     assert!(
         writes[0]["item"]["body"]
             .as_str()
@@ -1090,7 +1275,7 @@ fn refused_rejected_or_unreadable_job_logs_never_block_the_digest_or_retry() {
         assert_eq!(t.writes()[0]["action"], "wake");
         assert_eq!(
             t.writes()[0]["item"]["body"],
-            "Failed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
+            "Workflow unknown\nFailed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
         );
         assert!(
             !t.writes()[1]["item"]["body"]
@@ -1188,7 +1373,7 @@ fn non_test_failures_add_no_names_line() {
     let writes = t.writes();
     assert_eq!(
         writes[0]["item"]["body"],
-        "Failed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
+        "Workflow unknown\nFailed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
     );
     assert_eq!(t.job_log_reads().len(), 1);
 }
@@ -1239,7 +1424,7 @@ fn digest_body_never_repeats_title_or_reports_unavailable_test_names() {
     assert_eq!(failed_item["title"], "cortexkit/basal: CI failed on main");
     assert_eq!(
         failed_item["body"],
-        "Failed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
+        "Workflow unknown\nFailed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
     );
     assert_eq!(
         green_item["title"],
@@ -1247,15 +1432,12 @@ fn digest_body_never_repeats_title_or_reports_unavailable_test_names() {
     );
     assert_eq!(
         green_item["body"],
-        "Previously failed: linux shard 101\nRun 42, attempt 1, finished green (success)\nCommit 0123456789ab"
+        "Workflow CI\nPreviously failed: linux shard 101\nRun 42, attempt 1, finished green (success)\nCommit 0123456789ab"
     );
-    assert_eq!(
-        red_item["title"],
-        "cortexkit/basal: CI run on main ended failure"
-    );
+    assert_eq!(red_item["title"], "cortexkit/basal: CI failed on main");
     assert_eq!(
         red_item["body"],
-        "Failed jobs not reported yet\nRun 42, attempt 1, finished red (failure)\nCommit 0123456789ab"
+        "1 recent run attempt on main\nNewest 1 shown; history limited to 14 days and the retained byte budget.\n\nWorkflow CI\nFailed jobs not reported yet\nRun 42, attempt 1, finished red (failure)\nCommit 0123456789ab"
     );
 }
 
@@ -1874,15 +2056,27 @@ fn red_run_without_jobs_creates_one_item_and_only_startup_failure_wakes() {
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0]["agent"], BASAL);
         assert_eq!(writes[0]["action"], action, "{conclusion}");
-        assert_eq!(writes[0]["replace_key"], "ci:cortexkit/basal:42:1");
+        assert_eq!(
+            writes[0]["replace_key"],
+            if action == "wake" {
+                "ci:cortexkit/basal:42:1"
+            } else {
+                "ci-branch:cortexkit/basal:main"
+            }
+        );
         assert_eq!(
             writes[0]["item"]["title"],
-            format!("cortexkit/basal: CI run on main ended {conclusion}")
+            "cortexkit/basal: CI failed on main"
         );
         assert_eq!(
             writes[0]["item"]["body"],
             format!(
-                "Failed jobs not reported yet\nRun 42, attempt 1, finished red ({conclusion})\nCommit 0123456789ab"
+                "{}Workflow CI\nFailed jobs not reported yet\nRun 42, attempt 1, finished red ({conclusion})\nCommit 0123456789ab",
+                if action == "wake" {
+                    ""
+                } else {
+                    "1 recent run attempt on main\nNewest 1 shown; history limited to 14 days and the retained byte budget.\n\n"
+                }
             )
         );
     }
