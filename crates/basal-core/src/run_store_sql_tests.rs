@@ -228,7 +228,7 @@ fn production_open_keeps_the_legacy_schema_and_meta() {
         })
         .unwrap();
     assert!(!dir.join("run-log").exists());
-    assert_eq!(MIGRATIONS.last().unwrap().version, 49);
+    assert_eq!(MIGRATIONS.last().unwrap().version, 50);
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }

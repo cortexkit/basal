@@ -5,11 +5,12 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const EVENTS: [&str; 4] = [
+pub const EVENTS: [&str; 5] = [
     "flow_instance_created",
     "flow_instance_extended",
     "flow_instance_ended",
     "flow_instance_expired",
+    "flow_instance_rescheduled",
 ];
 pub const BODY_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
@@ -73,6 +74,39 @@ pub(crate) fn enqueue(tx: &Transaction<'_>, flow_id: &str, event: &str, now: i64
     }
     tx.execute("INSERT INTO template_event_outbox(flow_id,seq,event_name,body,retry_at) VALUES (?1,?2,?3,?4,?5)", params![flow_id, body["seq"].as_i64(), event, body.to_string(), now])?;
     Ok(())
+}
+
+pub(crate) fn enqueue_rescheduled(tx: &Transaction<'_>, flow_id: &str, now: i64) -> Result<()> {
+    // A consumed one-shot is reported by its ended event. Disabled, revoked
+    // and expired instances also have no next fire to announce.
+    let Some(next_fire) = next_fire_at_ms(tx, flow_id, now)? else {
+        return Ok(());
+    };
+    let Some(approved) = crate::packages::approved(tx, flow_id)? else {
+        return Ok(());
+    };
+    let manifest = crate::manifest::Manifest::parse_stored(&approved.manifest)
+        .map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
+    if !manifest.wait_sink() {
+        return Ok(());
+    }
+    // Pending bodies count too: a retry publishes the same immutable snapshot,
+    // not another change. Older acknowledged bodies may already be pruned.
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT body FROM template_event_outbox WHERE flow_id=?1 ORDER BY seq DESC LIMIT 1",
+            [flow_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(previous) = previous {
+        let previous: Value = serde_json::from_str(&previous)
+            .map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
+        if previous["next_fire_at_ms"].as_i64() == Some(next_fire) {
+            return Ok(());
+        }
+    }
+    enqueue(tx, flow_id, "flow_instance_rescheduled", now)
 }
 
 pub(crate) fn prune(tx: &Transaction<'_>, now: i64) -> Result<()> {

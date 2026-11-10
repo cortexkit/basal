@@ -3,6 +3,7 @@ use basal_core::Runtime;
 use basal_module::{caller::Caller, events::publish_outbox};
 use cortexkit_bus_trait::{ContentDigest, Stream};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 const OWNER: &str = "agent_47120287c700722b";
 
@@ -99,6 +100,82 @@ async fn duplicate_publish_receipt_settles_outbox_after_ack_crash() {
         rt.template_event_body(&event.event_key()).unwrap().unwrap()["published_at"],
         1000
     );
+}
+
+#[tokio::test]
+async fn rescheduled_outbox_survives_fire_commit_and_publish_ack_crashes() {
+    for after_ack in [false, true] {
+        let server = Server::start().await;
+        let path = server.dir.join("rescheduled.db");
+        let rt = runtime(&path);
+        let mut m = common::events_manifest("watch");
+        m["params"] = json!({"note":{"type":"string","max_bytes":4096}});
+        m["template"] = json!({"max_per_agent":4,"max_lifetime":"1d"});
+        m["sinks"] = json!([{"kind":"wait"}]);
+        m["trigger"] = json!({"schedule":{"interval":"1m"}});
+        rt.register_package("return 1;", &m.to_string()).unwrap();
+        let id = create(&rt, json!({"note":"rescheduled"}), "1h");
+        assert_eq!(
+            publish_outbox(&rt, &server.bus, "account").await.unwrap(),
+            1
+        );
+        rt.config().clock.set(61_000);
+        assert_eq!(rt.scheduler().unwrap().tick().unwrap().planned.len(), 1);
+        let pending = rt.pending_template_events(32).unwrap();
+        assert_eq!(pending.len(), 1);
+        let event = &pending[0];
+        assert_eq!(event.event_name, "flow_instance_rescheduled");
+        assert_eq!(event.seq, 2);
+        assert_eq!(
+            serde_json::from_str::<Value>(&event.body).unwrap()["next_fire_at_ms"],
+            121_000
+        );
+        if after_ack {
+            let receipt = server
+                .bus
+                .stream(STREAM)
+                .publish(
+                    "ck.account.event.basal.flow_instance_rescheduled.v1",
+                    &event.event_key(),
+                    ContentDigest::of_bytes(event.body.as_bytes()),
+                    Default::default(),
+                )
+                .await
+                .unwrap();
+            assert!(!receipt.duplicate());
+        }
+        // Reopen after the fire commit, optionally also after a bus receipt
+        // whose local published mark was lost.
+        drop(rt);
+        let rt = runtime(&path);
+        rt.config().clock.set(61_000);
+        assert!(rt.scheduler().unwrap().tick().unwrap().planned.is_empty());
+        let recovered = rt.pending_template_events(32).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].event_key(), format!("{id}:2"));
+        assert_eq!(recovered[0].body, event.body);
+        assert_eq!(
+            publish_outbox(&rt, &server.bus, "account").await.unwrap(),
+            1
+        );
+        assert_eq!(
+            publish_outbox(&rt, &server.bus, "account").await.unwrap(),
+            0
+        );
+        assert!(rt.pending_template_events(32).unwrap().is_empty());
+        let stream = async_nats::jetstream::new(server.bus.client())
+            .get_stream(STREAM)
+            .await
+            .unwrap();
+        assert_eq!(stream.cached_info().state.messages, 2);
+        let stored = rt.template_event_body(&event.event_key()).unwrap().unwrap();
+        assert_eq!(stored["body"], event.body);
+        assert_eq!(
+            stored["digest"],
+            format!("{:x}", Sha256::digest(&event.body))
+        );
+        assert_eq!(stored["published_at"], 61_000);
+    }
 }
 
 #[tokio::test]
@@ -394,12 +471,13 @@ async fn body_retention_starts_at_ack_and_never_prunes_unpublished_rows() {
 fn manifest_declares_all_lifecycle_events_and_query_operations() {
     let m = serde_json::to_value(basal_module::manifest::manifest()).unwrap();
     let events = m["events"].as_array().unwrap();
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 5);
     for name in [
         "flow_instance_created",
         "flow_instance_extended",
         "flow_instance_ended",
         "flow_instance_expired",
+        "flow_instance_rescheduled",
     ] {
         let event = events.iter().find(|e| e["name"] == name).unwrap();
         assert_eq!(event["version"], 1);
