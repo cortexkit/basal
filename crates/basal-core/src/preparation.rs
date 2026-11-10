@@ -159,13 +159,32 @@ impl CallPreparation<'_> {
             args["action"] = serde_json::to_value(cap)
                 .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
         }
-        authorize::check(
+        if let Err(refusal) = authorize::check(
             manifest,
             &self.rt.config.shell_denylist,
             self.rt.catalog(),
             &call.kind,
             &args,
-        )?;
+        ) {
+            use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
+            let reason = if refusal.code == RefusalReason::ProviderNotCatalogued.as_str() {
+                RefusalReason::ProviderNotCatalogued
+            } else if refusal.code == RefusalReason::CatalogUnavailable.as_str() {
+                RefusalReason::CatalogUnavailable
+            } else {
+                return Err(refusal);
+            };
+            let (CallKind::Op { module, op } | CallKind::OpFor { module, op }) = &call.kind else {
+                return Err(refusal);
+            };
+            // Authorization has not built or sent a request. Recheck the live
+            // declaration after the same readiness backoff as scope registration.
+            return Ok(Prepared {
+                deferred: Some(FlowRefusal::new(reason, module, op)),
+                args: Some(args),
+                ..Prepared::default()
+            });
+        }
         if matches!(
             call.kind,
             CallKind::Primitive(Primitive::SinkNoticeSend | Primitive::SinkNoticeResolve)

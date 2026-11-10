@@ -101,6 +101,16 @@ pub trait Catalog: Send + Sync {
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl>;
     /// The declaration of `module`'s op `op`, if declared.
     fn op(&self, module: &str, op: &str) -> Option<OpDecl>;
+    /// A fresh declaration for authorization. `Ok(None)` means the provider
+    /// answered without the op; a failed or incomplete catalog read is an error,
+    /// not evidence that the op was removed. Static catalogs can use `op`.
+    fn lookup_op(
+        &self,
+        module: &str,
+        op: &str,
+    ) -> Result<Option<OpDecl>, crate::transport::WireError> {
+        Ok(self.op(module, op))
+    }
     /// Provider-owned tool metadata, including capability tags and input schema.
     fn tool_contract(
         &self,
@@ -174,6 +184,7 @@ struct Entries {
     flow_call_support: BTreeMap<String, bool>,
     events: BTreeMap<(String, String, u32), EventDecl>,
     ops: BTreeMap<(String, String), OpDecl>,
+    op_lookup_failure: Option<crate::transport::WireError>,
     /// What each tool declares for `emits_events`, or the error reading it
     /// returns. A tool without an entry declares nothing.
     emits_events: BTreeMap<(String, String), Result<Option<bool>, crate::transport::WireError>>,
@@ -201,6 +212,13 @@ pub struct MockCatalog {
 
 #[cfg(any(test, feature = "test-support"))]
 impl MockCatalog {
+    /// Simulates a catalog read that cannot currently classify operations.
+    pub fn fail_op_lookup(&self, error: Option<crate::transport::WireError>) {
+        self.write().op_lookup_failure = error;
+    }
+    pub fn remove_op(&self, module: &str, op: &str) {
+        self.write().ops.remove(&(module.into(), op.into()));
+    }
     /// Metadata lookups that would read the provider's tool.catalog on SubcCatalog.
     pub fn tool_contract_reads(&self) -> Vec<(String, String)> {
         self.read().tool_contract_reads.clone()
@@ -427,10 +445,19 @@ impl Catalog for MockCatalog {
     }
 
     fn op(&self, module: &str, op: &str) -> Option<OpDecl> {
-        self.read()
-            .ops
-            .get(&(module.to_owned(), op.to_owned()))
-            .cloned()
+        self.lookup_op(module, op).ok().flatten()
+    }
+
+    fn lookup_op(
+        &self,
+        module: &str,
+        op: &str,
+    ) -> Result<Option<OpDecl>, crate::transport::WireError> {
+        let entries = self.read();
+        if let Some(error) = &entries.op_lookup_failure {
+            return Err(error.clone());
+        }
+        Ok(entries.ops.get(&(module.into(), op.into())).cloned())
     }
 
     fn emits_events(

@@ -2568,6 +2568,8 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
                 | ScopeEpochRequired
                 | ScopeUnsupported
                 | TargetFlowUnsupported
+                | ProviderNotCatalogued
+                | CatalogUnavailable
                 | ResourceBusy
                 | ModuleGrantAbsent
                 | AgentGrantAbsent

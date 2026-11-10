@@ -761,6 +761,193 @@ fn pending_preparation_deadline_keeps_typed_unsent_refusal_without_an_intent() {
     assert!(f.host.sent.lock().unwrap().is_empty());
 }
 
+fn pending_catalog_call(
+    f: &Fixture,
+    error: basal_host::transport::WireError,
+    expected_code: &str,
+) -> String {
+    f.install("catalog-readiness", 1, json!({}));
+    let id = f.admit("catalog-readiness", "first");
+    f.catalog.fail_op_lookup(Some(error));
+    let refusal = crate::authorize::shell_or_unknown(
+        &crate::authorize::ShellDenylist::default(),
+        f.catalog.as_ref(),
+        "test",
+        "query",
+    )
+    .expect("an unavailable declaration must not authorize a call");
+    assert_eq!(refusal.code, expected_code);
+    let mut worker = ScriptedWorker::new(vec![
+        op(0, "query", json!({})),
+        WorkerMessage::Blocked { awaiting: vec![0] },
+        suspended(vec![0]),
+    ]);
+    assert_eq!(
+        f.rt.activate(&id, &mut worker).unwrap(),
+        ActivationEnd::Suspended { awaited: vec![0] }
+    );
+    let state = f.rt.staged_snapshot(&id).unwrap();
+    assert!(state.calls[&0].intent.is_none());
+    let deferred = state.calls[&0].deferred.as_ref().unwrap();
+    assert!(deferred.proven_unsent);
+    assert!(deferred.refund_dispatch);
+    assert_eq!(deferred.retry_not_before, f.clock.now_ms() + 10);
+    assert!(f.host.sent.lock().unwrap().is_empty());
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
+    assert_eq!(catalog_dispatches(f), 0);
+    id
+}
+
+fn missing_provider() -> basal_host::transport::WireError {
+    basal_host::transport::WireError::Typed(basal_host::flow_refusal::FlowRefusal::new(
+        basal_host::flow_refusal::RefusalReason::ProviderNotCatalogued,
+        "test",
+        "query",
+    ))
+}
+
+fn catalog_dispatches(f: &Fixture) -> u64 {
+    f.rt.store()
+        .read(|c| {
+            c.query_row(
+                "SELECT COALESCE(SUM(dispatches),0) FROM rate_windows WHERE flow_id='catalog-readiness'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .unwrap()
+}
+
+#[test]
+fn catalog_readiness_missing_provider_defers_then_succeeds() {
+    let f = Fixture::new(true);
+    let id = pending_catalog_call(&f, missing_provider(), "provider_not_catalogued");
+    assert!(f.rt.startable().unwrap().is_empty());
+    let state = f.rt.staged_snapshot(&id).unwrap();
+    let cause: basal_host::flow_refusal::FlowRefusal =
+        serde_json::from_str(&state.calls[&0].deferred.as_ref().unwrap().cause).unwrap();
+    assert_eq!(cause.reason.as_str(), "provider_not_catalogued");
+    assert!(cause.readiness());
+    f.catalog.fail_op_lookup(None);
+    f.clock.advance(11);
+    assert_eq!(
+        f.rt.startable().unwrap(),
+        vec![(id.clone(), "catalog-readiness".into())]
+    );
+    let mut worker = ScriptedWorker::new(vec![
+        WorkerMessage::Blocked { awaiting: vec![0] },
+        finished(),
+    ]);
+    assert!(matches!(
+        f.rt.activate(&id, &mut worker).unwrap(),
+        ActivationEnd::Succeeded { .. }
+    ));
+    assert_eq!(f.host.sent.lock().unwrap().len(), 1);
+    assert_eq!(catalog_dispatches(&f), 1);
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
+}
+
+#[test]
+fn catalog_readiness_deadline_keeps_typed_unsent_rejection() {
+    let f = Fixture::new(false);
+    let id = pending_catalog_call(&f, missing_provider(), "provider_not_catalogued");
+    f.clock.advance(600_001);
+    assert_eq!(f.rt.enforce_deadlines().unwrap(), vec![id.clone()]);
+    let call =
+        f.rt.store()
+            .read(|c| sql::call(c, &id, 0))
+            .unwrap()
+            .unwrap();
+    assert!(call.detail["intent"].is_null());
+    let value: Value =
+        serde_json::from_str(call.detail["arrival"]["value"].as_str().unwrap()).unwrap();
+    assert_eq!(value["code"], "provider_not_catalogued");
+    assert_eq!(value["module"], "test");
+    assert_eq!(value["action"], "query");
+    assert!(f.host.sent.lock().unwrap().is_empty());
+    assert_eq!(catalog_dispatches(&f), 0);
+    // The wait is free, but exhausting the run deadline still counts as one
+    // failed run, just like other deferred calls that never become ready.
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 1);
+}
+
+#[test]
+fn catalog_readiness_unreadable_catalog_defers() {
+    let f = Fixture::new(true);
+    let id = pending_catalog_call(
+        &f,
+        basal_host::transport::WireError::Unreadable("daemon disconnected".into()),
+        "catalog_unavailable",
+    );
+    let state = f.rt.staged_snapshot(&id).unwrap();
+    let cause: basal_host::flow_refusal::FlowRefusal =
+        serde_json::from_str(&state.calls[&0].deferred.as_ref().unwrap().cause).unwrap();
+    assert_eq!(cause.reason.as_str(), "catalog_unavailable");
+    assert!(cause.readiness());
+}
+
+#[test]
+fn catalog_readiness_missing_op_is_still_final_denied() {
+    let f = Fixture::new(true);
+    f.install("catalog-readiness", 1, json!({}));
+    let id = f.admit("catalog-readiness", "first");
+    f.catalog.remove_op("test", "query");
+    let mut worker = ScriptedWorker::new(vec![
+        op(0, "query", json!({})),
+        WorkerMessage::Blocked { awaiting: vec![0] },
+        finished(),
+    ]);
+    assert!(matches!(
+        f.rt.activate(&id, &mut worker).unwrap(),
+        ActivationEnd::Succeeded { .. }
+    ));
+    let state = f.rt.staged_snapshot(&id).unwrap();
+    assert!(state.calls[&0].deferred.is_none());
+    let value: Value =
+        serde_json::from_str(state.calls[&0].arrival.as_ref().unwrap().value.as_str()).unwrap();
+    assert_eq!(value["code"], "denied");
+    assert_eq!(value["message"], "op (test, query) is not in the catalog");
+    assert!(f.host.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn catalog_readiness_intake_refuses_unavailable_provider_with_clear_reason() {
+    let f = Fixture::new(true);
+    let manifest = Manifest::parse_ordinary(
+        &json!({"id":"intake","version":1,"purpose":"Check catalog readiness at intake",
+            "trigger":{"schedule":{"interval":"1h"}},"ops":[{"module":"test","op":"query"}]})
+        .to_string(),
+    )
+    .unwrap();
+    for (error, expected) in [
+        (
+            missing_provider(),
+            "provider test is not currently catalogued",
+        ),
+        (
+            basal_host::transport::WireError::Unreadable("daemon disconnected".into()),
+            "catalog unavailable",
+        ),
+    ] {
+        f.catalog.fail_op_lookup(Some(error));
+        let error = crate::install::validate(
+            &manifest,
+            "operator",
+            f.catalog.as_ref(),
+            &crate::authorize::ShellDenylist::default(),
+            false,
+        )
+        .unwrap_err();
+        let crate::InstallError::OpCatalogUnavailable { module, op, reason } = error else {
+            panic!("intake must refuse unavailable declarations, not call them absent: {error:?}")
+        };
+        assert_eq!(module, "test");
+        assert_eq!(op, "query");
+        assert!(reason.contains(expected), "{reason}");
+    }
+}
+
 #[test]
 fn consecutive_runs_each_keep_their_own_dollar_cap() {
     let f = Fixture::new(false);
