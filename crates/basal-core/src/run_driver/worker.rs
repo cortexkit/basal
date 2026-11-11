@@ -213,6 +213,7 @@ impl Activation {
             },
         )?;
         let mut pending = Vec::new();
+        let mut reported = BTreeSet::new();
         let spawn = |dispatch: Dispatch| {
             let (tx, rx) = mpsc::sync_channel(1);
             self.driver.services.spawn_dispatch(Box::new(move || {
@@ -220,7 +221,7 @@ impl Activation {
             }))?;
             Ok::<_, CoreError>(rx)
         };
-        for dispatch in self.recover_dispatches_for_worker()? {
+        for dispatch in self.recover_dispatches_for_worker(&reported)? {
             pending.push(spawn(dispatch)?);
         }
         let state = self.state()?;
@@ -265,7 +266,6 @@ impl Activation {
             *frames = Some(Frames::start(worker));
         }
         let mut awaiting = Vec::new();
-        let mut reported = BTreeSet::new();
         loop {
             for rx in &pending {
                 match rx.try_recv() {
@@ -273,7 +273,7 @@ impl Activation {
                     Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {}
                 }
             }
-            for dispatch in self.recover_dispatches_for_worker()? {
+            for dispatch in self.recover_dispatches_for_worker(&reported)? {
                 pending.push(spawn(dispatch)?);
             }
             let unknown: Vec<_> = self

@@ -400,6 +400,125 @@ fn identical_retry_uses_highest_attempt_without_a_second_identity() {
 }
 
 #[test]
+fn first_intent_promotes_provisional_class_after_restart() {
+    for (provisional, authorized) in [
+        (StoredClass::Mutation, StoredClass::Query),
+        (StoredClass::Query, StoredClass::Mutation),
+    ] {
+        let (mut records, log) = journal();
+        append(&mut records, Body::Issued(identity(0, provisional)));
+        for audit_at in [10, 20] {
+            append(
+                &mut records,
+                Body::Deferred(Deferred {
+                    position: 0,
+                    retry_not_before: audit_at + 10,
+                    cause: "provider_not_catalogued".into(),
+                    audit_at,
+                    proven_unsent: true,
+                    refund_dispatch: true,
+                    attempt: None,
+                }),
+            );
+        }
+        records.sync_terminal().unwrap();
+        let mut restarted =
+            Records::recover("run".into(), 0, log.clone(), &log.records(true)).unwrap();
+        assert_eq!(restarted.state(), records.state());
+        let request = intent(0, authorized);
+        append(&mut restarted, Body::Intent(request.clone()));
+        let call = &restarted.state().calls[&0];
+        assert_eq!(call.identity, request.call);
+        assert_eq!(call.intent.as_ref(), Some(&request));
+        assert!(call.deferred.is_none());
+        assert_eq!(call.prior_deferrals.len(), 2);
+        restarted.sync_terminal().unwrap();
+        let recovered = Records::recover("run".into(), 0, log.clone(), &log.records(true)).unwrap();
+        assert_eq!(recovered.state(), restarted.state());
+    }
+}
+
+#[test]
+fn first_intent_promotion_preserves_signature_and_requires_only_unsent_deferrals() {
+    for change in 0..10 {
+        let (mut records, log) = journal();
+        append(
+            &mut records,
+            Body::Issued(identity(0, StoredClass::Mutation)),
+        );
+        let mut deferred = Deferred {
+            position: 0,
+            retry_not_before: 20,
+            cause: "provider_not_catalogued".into(),
+            audit_at: 10,
+            proven_unsent: change != 5,
+            refund_dispatch: true,
+            attempt: None,
+        };
+        append(&mut records, Body::Deferred(deferred.clone()));
+        if change == 5 {
+            deferred.proven_unsent = true;
+            append(&mut records, Body::Deferred(deferred));
+        }
+        let mut request = intent(0, StoredClass::Query);
+        match change {
+            0 => {
+                request.call.kind = CallKind::Op {
+                    module: "other".into(),
+                    op: "call".into(),
+                }
+            }
+            1 => request.call.op = "changed".into(),
+            2 => request.call.args = json("2"),
+            3 => request.call.args_digest = ArgsDigest::of(&json("2")),
+            4 => request.attempts = 2,
+            5 => {}
+            6 => {
+                append(&mut records, Body::Arrived(arrival(0, 0)));
+            }
+            7 => {
+                append(
+                    &mut records,
+                    Body::Unknown {
+                        position: 0,
+                        reason: "basal_restarted".into(),
+                    },
+                );
+            }
+            8 => {
+                append(&mut records, Body::CallScopeCut { position: 0 });
+            }
+            _ => {
+                append(&mut records, Body::Resolution(resolution(0)));
+            }
+        }
+        assert!(
+            matches!(
+                records.append(1, Body::Intent(request.clone())),
+                Err(CoreError::Corrupt(_))
+            ),
+            "change {change}"
+        );
+        RecordLog::append(
+            log.as_ref(),
+            Record {
+                run_id: "run".into(),
+                generation: 1,
+                body: Body::Intent(request),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                Records::recover("run".into(), 0, log.clone(), &log.records(false)),
+                Err(CoreError::Corrupt(_))
+            ),
+            "change {change}"
+        );
+    }
+}
+
+#[test]
 fn retry_changed_identity_is_corruption() {
     for change in 0..4 {
         let (mut records, log) = journal();
