@@ -78,6 +78,8 @@ impl Hooks for Cut {
     }
 }
 
+type DispatchJob = Box<dyn FnOnce() + Send>;
+
 struct Service {
     now: AtomicI64,
     gate: Mutex<Gate>,
@@ -91,6 +93,7 @@ struct Service {
     file_log: Mutex<Option<Arc<crate::run_log::RunLog<Record>>>>,
     dispatch_revoked: AtomicBool,
     before_release: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    held_dispatches: Mutex<Option<Vec<DispatchJob>>>,
 }
 impl CloseDriver for Service {
     fn stop_worker(&self, _: &str) -> Result<()> {
@@ -133,6 +136,10 @@ fn arrival(position: u64, value: &str) -> Arrival {
 }
 impl Services for Service {
     fn spawn_dispatch(&self, job: Box<dyn FnOnce() + Send>) -> Result<()> {
+        if let Some(held) = self.held_dispatches.lock().unwrap().as_mut() {
+            held.push(job);
+            return Ok(());
+        }
         std::thread::spawn(job);
         Ok(())
     }
@@ -331,6 +338,9 @@ struct Worker {
     messages: VecDeque<basal_proto::WorkerMessage>,
     sent: Vec<basal_proto::ParentMessage>,
     killed: bool,
+    after_long_running: Option<Box<dyn FnOnce() + Send>>,
+    before_suspended: Option<Box<dyn FnOnce() + Send>>,
+    timeout_once: bool,
 }
 impl Worker {
     fn new(messages: Vec<basal_proto::WorkerMessage>) -> Self {
@@ -345,6 +355,9 @@ impl Worker {
             messages: messages.into(),
             sent: Vec::new(),
             killed: false,
+            after_long_running: None,
+            before_suspended: None,
+            timeout_once: false,
         }
     }
 }
@@ -357,13 +370,36 @@ impl crate::channel::WorkerChannel for Worker {
         message: &basal_proto::ParentMessage,
     ) -> std::result::Result<(), crate::ChannelError> {
         self.sent.push(message.clone());
+        if matches!(message, basal_proto::ParentMessage::LongRunning { .. })
+            && let Some(hook) = self.after_long_running.take()
+        {
+            hook();
+            self.timeout_once = true;
+        }
         Ok(())
     }
     fn recv(
         &mut self,
         _: Duration,
     ) -> std::result::Result<basal_proto::WorkerMessage, crate::ChannelError> {
-        self.messages.pop_front().ok_or(crate::ChannelError::Closed)
+        if std::mem::take(&mut self.timeout_once) {
+            return Err(crate::ChannelError::Timeout);
+        }
+        let message = self
+            .messages
+            .pop_front()
+            .ok_or(crate::ChannelError::Closed)?;
+        if matches!(
+            message,
+            basal_proto::WorkerMessage::Finished {
+                result: basal_proto::ActivationResult::Suspended { .. },
+                ..
+            }
+        ) && let Some(hook) = self.before_suspended.take()
+        {
+            hook();
+        }
+        Ok(message)
     }
     fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
         panic!("driver uses timed receives")
@@ -646,6 +682,7 @@ impl Fixture {
             file_log: Mutex::new(None),
             dispatch_revoked: AtomicBool::new(false),
             before_release: Mutex::new(None),
+            held_dispatches: Mutex::new(None),
         });
         let cut = Arc::new(Cut(Mutex::new(None)));
         let registry = Arc::new(RunStore::new_staged(store.clone(), Arc::new(NoHooks)));
@@ -755,6 +792,93 @@ fn closing_counts_dispatch_before_its_append_to_sync_gap() {
         .unwrap()
         .unwrap();
     assert_eq!(detail.outcome, sql::CallOutcome::Fulfilled);
+}
+
+#[test]
+fn long_running_deferral_keeps_its_witness_until_suspension() {
+    use basal_proto::{ActivationResult, ParentMessage, WorkerMessage};
+    let f = Fixture::new();
+    let a = f.claim(0);
+    assert!(matches!(
+        a.issue(HostCall {
+            position: 0,
+            kind: CallKind::Primitive(Primitive::Now),
+            args: JsonText::null(),
+        })
+        .unwrap(),
+        Issued::Reply(_)
+    ));
+    f.service
+        .replies
+        .lock()
+        .unwrap()
+        .push_back(Reply::Deferred(Deferred {
+            position: 1,
+            retry_not_before: 30,
+            cause: "reply_timeout".into(),
+            audit_at: 20,
+            proven_unsent: false,
+            refund_dispatch: false,
+            attempt: None,
+        }));
+    f.send(&a, 1, "query");
+    *f.service.held_dispatches.lock().unwrap() = Some(Vec::new());
+    let mut worker = Worker::new(vec![
+        WorkerMessage::Blocked { awaiting: vec![1] },
+        WorkerMessage::Finished {
+            activation_id: a.generation,
+            result: ActivationResult::Suspended { awaited: vec![1] },
+        },
+    ]);
+    let service = f.service.clone();
+    worker.after_long_running = Some(Box::new(move || {
+        // The parent times out reading Finished after promising suspension.
+        // Advancing the clock makes the deferred retry due during that gap.
+        service.now.store(30, Ordering::Release);
+    }));
+    let service = f.service.clone();
+    worker.before_suspended = Some(Box::new(move || {
+        // An incorrectly started retry has not received any host reply. Drop
+        // its queued job so a failing driver's terminal close cannot hang.
+        drop(service.held_dispatches.lock().unwrap().take());
+    }));
+    let end = a
+        .drive(
+            &mut worker,
+            request(),
+            Arc::new(Effects),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(end, crate::ActivationEnd::Requeued);
+    assert!(worker.sent.iter().any(|m| matches!(
+        m, ParentMessage::LongRunning { positions } if positions == &[1]
+    )));
+    assert_eq!(f.service.sent.lock().unwrap().len(), 1);
+    assert_eq!(
+        a.state().unwrap().calls[&1]
+            .intent
+            .as_ref()
+            .unwrap()
+            .attempts,
+        1
+    );
+
+    let next = f.claim(a.generation);
+    let dispatches = next.recover_dispatches().unwrap();
+    assert_eq!(dispatches.len(), 1);
+    for dispatch in dispatches {
+        dispatch.send().unwrap();
+    }
+    assert!(next.recover_dispatches().unwrap().is_empty());
+    let sent = f.service.sent.lock().unwrap();
+    assert_eq!(
+        sent.iter()
+            .map(|i| (i.call.position, i.attempts))
+            .collect::<Vec<_>>(),
+        vec![(1, 1), (1, 2)]
+    );
+    assert_eq!(next.release(&[1]).unwrap().unwrap().value.as_str(), "42");
 }
 
 #[test]

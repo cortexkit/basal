@@ -355,18 +355,29 @@ impl State {
                 }
                 if let Some(old) = self.calls.get_mut(&intent.call.position) {
                     let Some(previous) = old.intent.as_ref() else {
-                        // A registry lookup can defer before a request exists.
-                        // The first prepared request promotes that unsent identity.
-                        if old.identity != intent.call
+                        // A missing catalog can only guess a call's class.
+                        // Only the first prepared request may replace that
+                        // provisional class, before any possible send or outcome.
+                        let mut identity = old.identity.clone();
+                        identity.class = intent.call.class;
+                        if identity != intent.call
+                            || matches!(old.identity.class, StoredClass::Local | StoredClass::Sync)
                             || intent.attempts != 1
                             || !old.deferred.as_ref().is_some_and(|d| d.proven_unsent)
+                            || old.prior_deferrals.iter().any(|d| !d.proven_unsent)
+                            || !old.prior_intents.is_empty()
                             || old.arrival.is_some()
                             || old.sync.is_some()
                             || old.accepted.is_some()
                             || old.unknown.is_some()
+                            || old.scope_cut
+                            || old.usage_report.is_some()
+                            || old.delivery_order.is_some()
+                            || !old.resolutions.is_empty()
                         {
                             return Err(corrupt("invalid first intent after Issued"));
                         }
+                        old.identity = intent.call.clone();
                         old.intent = Some(intent.clone());
                         if let Some(deferred) = old.deferred.take() {
                             old.prior_deferrals.push(deferred);

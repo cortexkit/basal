@@ -888,8 +888,8 @@ impl Activation {
         self.recover_dispatches_inner(false)
     }
 
-    fn recover_dispatches_for_worker(&self) -> Result<Vec<Dispatch>> {
-        self.recover_dispatches_inner(true)
+    fn recover_dispatches_for_worker(&self, reported: &BTreeSet<u64>) -> Result<Vec<Dispatch>> {
+        self.recover_dispatches_excluding(true, reported, || {})
     }
 
     fn recover_dispatches_inner(&self, refuse_budgets: bool) -> Result<Vec<Dispatch>> {
@@ -901,10 +901,25 @@ impl Activation {
         refuse_budgets: bool,
         after_snapshot: impl FnOnce(),
     ) -> Result<Vec<Dispatch>> {
+        self.recover_dispatches_excluding(refuse_budgets, &BTreeSet::new(), after_snapshot)
+    }
+
+    fn recover_dispatches_excluding(
+        &self,
+        refuse_budgets: bool,
+        reported: &BTreeSet<u64>,
+        after_snapshot: impl FnOnce(),
+    ) -> Result<Vec<Dispatch>> {
         let mut dispatches = Vec::new();
         let snapshot = self.state()?;
         after_snapshot();
         for call in snapshot.calls.values() {
+            // LongRunning lets the worker finish with Suspended. Keep its
+            // acceptance or deferral intact until that suspension is handled;
+            // a retry would consume the deferral before park can check it.
+            if reported.contains(&call.identity.position) {
+                continue;
+            }
             if call.arrival.is_some() || call.sync.is_some() || call.accepted.is_some() {
                 continue;
             }

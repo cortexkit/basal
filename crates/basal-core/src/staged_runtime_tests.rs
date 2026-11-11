@@ -33,6 +33,7 @@ struct TestHost {
     refused: Mutex<Vec<CallRequest>>,
     revokes: std::sync::atomic::AtomicUsize,
     accept: AtomicBool,
+    class_override: Mutex<Option<CallClass>>,
 }
 impl Host for TestHost {
     fn install_status(
@@ -46,6 +47,9 @@ impl Host for TestHost {
         })
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
+        if let Some(class) = *self.class_override.lock().unwrap() {
+            return class;
+        }
         match kind {
             CallKind::Op { op, .. } if op == "write" => CallClass::Mutation {
                 honours_idempotency_keys: false,
@@ -850,6 +854,96 @@ fn catalog_readiness_missing_provider_defers_then_succeeds() {
     assert_eq!(f.host.sent.lock().unwrap().len(), 1);
     assert_eq!(catalog_dispatches(&f), 1);
     assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
+}
+
+#[test]
+fn catalog_readiness_restart_promotes_class_and_projects_actual_run_call() {
+    use crate::model::StoredClass;
+    let mutation = CallClass::Mutation {
+        honours_idempotency_keys: false,
+    };
+    for (provisional, registered, expected_provisional, expected_registered) in [
+        (
+            mutation,
+            CallClass::Query,
+            StoredClass::Mutation,
+            StoredClass::Query,
+        ),
+        (
+            CallClass::Query,
+            mutation,
+            StoredClass::Query,
+            StoredClass::Mutation,
+        ),
+    ] {
+        let f = Fixture::new(false);
+        *f.host.class_override.lock().unwrap() = Some(provisional);
+        let id = pending_catalog_call(&f, missing_provider(), "provider_not_catalogued");
+        let state = f.rt.staged_snapshot(&id).unwrap();
+        assert_eq!(state.calls[&0].identity.class, expected_provisional);
+        assert!(state.calls[&0].intent.is_none());
+        f.rt.stop_for_recovery();
+        f.rt.quiesce();
+        f.rt.store().cut();
+        let Fixture {
+            rt,
+            root,
+            host,
+            catalog,
+            clock,
+        } = f;
+        drop(rt);
+
+        let store = Arc::new(Store::open(root.join("store.db"), Durability::default()).unwrap());
+        let rt = Runtime::new(
+            store,
+            host.clone(),
+            catalog.clone(),
+            Arc::new(NoHooks),
+            None,
+            config(&clock),
+        )
+        .unwrap();
+        let recovered = rt.staged_snapshot(&id).unwrap();
+        assert_eq!(recovered.calls, state.calls);
+        // Registration supplies a definitive class only after the unsent
+        // identity has survived a real run-log reopen.
+        catalog.fail_op_lookup(None);
+        *host.class_override.lock().unwrap() = Some(registered);
+        clock.advance(11);
+        assert_eq!(
+            rt.startable().unwrap(),
+            vec![(id.clone(), "catalog-readiness".into())]
+        );
+        let mut worker = ScriptedWorker::new(vec![
+            WorkerMessage::Blocked { awaiting: vec![0] },
+            WorkerMessage::Finished {
+                activation_id: 0,
+                result: basal_proto::ActivationResult::Failed(basal_proto::Failure::Script {
+                    message: "synthetic failure after the call".into(),
+                }),
+            },
+        ]);
+        assert!(
+            matches!(rt.activate(&id, &mut worker).unwrap(), ActivationEnd::Failed { kind, .. } if kind == "script")
+        );
+        rt.quiesce();
+        assert_eq!(host.sent.lock().unwrap().len(), 1);
+        // Successful runs discard payloads. A script failure after the call
+        // exercises the production run_calls projection, rather than the
+        // test-only retained payloads.
+        let call = rt.store().read(|c| sql::call(c, &id, 0)).unwrap().unwrap();
+        assert_eq!(call.class, expected_registered);
+        assert_eq!(
+            call.detail["identity"]["class"],
+            expected_registered.as_str()
+        );
+        assert_eq!(
+            call.detail["intent"]["call"]["class"],
+            expected_registered.as_str()
+        );
+        assert_eq!(call.detail["intent"]["attempts"], 1);
+    }
 }
 
 #[test]
