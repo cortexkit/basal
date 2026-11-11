@@ -1817,7 +1817,8 @@ mod tests {
                     records.push(body);
                     json!({"op":"route.open","route_channel":10+records.len(),"route_epoch":1})
                 } else if body["op"] == "catalog.list" {
-                    json!({"op":"catalog.list","generation":1,"modules":[],"subc_ops":[]})
+                    // The model selector finds routing as the sole routing/v1 provider.
+                    json!({"op":"catalog.list","generation":1,"modules":[{"module_id":"router","roles":[],"control_ops":[],"capabilities":{"provides":["routing/v1"]}}],"subc_ops":[]})
                 } else if body["method"] == "grants.would_ask" {
                     json!({"result":{"items":[{"grant":body["params"]["items"][0]["grant"],"verdict":"yes","reason":"allowed"}]}})
                 } else if body["method"] == "refuse" {
