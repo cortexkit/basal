@@ -80,7 +80,7 @@ Local calls (`kv`, clock, random) are served in the parent and recorded in the r
 
 ## Model calls
 
-A flow's `llm` call, and codemode's `tools.model`, go through prefrontal-routing's `route.select`, which picks the model from the declared IQ and EQ demands. basal records that choice before the request can be sent, so a resend reuses it (`basal-host/src/selector.rs`). Each call then opens its own Broca session (`basal-host/src/broca/`). Completion arrives as Broca's `run.ended` bus event, matched by `run_id`; a polling fallback bounded by the run's deadline covers a missed event. Classification uses Broca's `llm_classify` tool (tag `llm.classify/v1`) with a dollar budget: $0.50 per codemode run by default, and a manifest-declared cap for flows.
+A flow's `llm` call, and codemode's `tools.model`, go through the routing module (the `routing/v1` provider) via `route.select`, which picks a model from the caller's requirements. basal records that choice before the request can be sent, so a resend reuses it (`basal-host/src/selector.rs`). Each call then opens its own Broca session (`basal-host/src/broca/`). Completion arrives as Broca's `run.ended` bus event, matched by `run_id`; a polling fallback bounded by the run's deadline covers a missed event. Classification uses Broca's `llm_classify` tool (tag `llm.classify/v1`) with a dollar budget: $0.50 per codemode run by default, and a manifest-declared cap for flows.
 
 ## Codemode, end to end
 
@@ -101,7 +101,7 @@ A codemode call is never replayed. A worker crash, deadline or cancel ends the r
 | ck-bus (NATS JetStream) | The `m_basal` consumer for module events, and publishing basal's own template lifecycle events. |
 | prefrontal-core | Install cards and status, revocation hints, flow and run scopes, sinks, `board.read`, `work.unsettled`, agent lookup, owner notices. |
 | Cingulate | Decision cards (`consent/v1`). |
-| prefrontal-routing | Model choice (`route.select`). |
+| The routing module (the `routing/v1` provider) | Model choice (`route.select`). |
 | Broca | Model calls, `run.ended` events, `llm_classify`. |
 | Plexus, AFT, Cerebellum and other providers | Flow ops and codemode tools, each over the caller's scope. AFT's `file.read_exact` also reads script files for the `flow` tool. |
 | The vault | Secret approval and injection for `net.fetch` (`basal-host/src/secrets.rs`). |

@@ -79,7 +79,7 @@ fn budget(reason: &str) -> WireError {
 }
 
 /// Builds the Broca request for one model call. The first dispatch asks
-/// prefrontal-routing for a model and saves the whole request, including that
+/// the routing provider for a model and saves the whole request, including that
 /// choice, in `codemode_models`; a resend reads the saved request instead of
 /// asking routing again, so it can never switch models.
 pub fn prepare(

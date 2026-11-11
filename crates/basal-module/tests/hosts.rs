@@ -78,6 +78,16 @@ fn set_core_capability(fake: &Fake, capability: &str, supported: bool) {
     }
 }
 
+fn add_routing_provider(fake: &Fake) {
+    fake.catalog.lock().unwrap()["modules"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "module_id": "model-picker",
+            "capabilities": {"provides": ["routing/v1"]}
+        }));
+}
+
 #[test]
 fn core_requests_match_c3_c4_field_for_field() {
     let f = Fake::new();
@@ -1658,6 +1668,7 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
         wire::{RunFinishReason, Usage},
     };
     let wire = Fake::new();
+    add_routing_provider(&wire);
     let selector = Arc::new(basal_host::selector::RoutingSelector::new(wire.clone()));
     let (f, model, fake, snapshots) = model_fixture(
         "model-and-digest",
@@ -1761,6 +1772,7 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
 fn routing_select_request_bytes_are_exact_without_available_models() {
     use basal_host::selector::{ModelSelector, RoutingSelector, SelectionRequest};
     let wire = Fake::new();
+    add_routing_provider(&wire);
     let selector = RoutingSelector::new(wire.clone());
     selector
         .select(&SelectionRequest {
@@ -1773,7 +1785,7 @@ fn routing_select_request_bytes_are_exact_without_available_models() {
         })
         .unwrap();
     assert_eq!(serde_json::to_vec(&wire.calls("route.select")[0]).unwrap(),br#"{"method":"route.select","params":{"excludeRouteKeys":[],"requirements":{"eq":20,"iq":70},"sendID":"send-1","substrate":"broca","targetAgent":"flow","taskId":"flow:flow-a:run-a"}}"#);
-    assert_eq!(wire.records.lock().unwrap()[0].0, "prefrontal-routing");
+    assert_eq!(wire.records.lock().unwrap()[0].0, "model-picker");
     for (outcome, name) in [
         (basal_host::selector::ModelOutcome::Completed, "completed"),
         (basal_host::selector::ModelOutcome::Error, "error"),
@@ -1853,6 +1865,7 @@ fn selector_refusals_are_journaled_with_each_code_and_never_send_broca() {
         "route_runner_missing",
     ] {
         let wire = Fake::new();
+        add_routing_provider(&wire);
         let selector = Arc::new(RoutingSelector::new(wire.clone()));
         let (f, _, fake, _) = model_fixture(code, wire.clone(), selector, Arc::new(NoHooks));
         common::install(
@@ -1897,6 +1910,7 @@ fn selector_refusals_are_journaled_with_each_code_and_never_send_broca() {
 fn unreachable_selector_retries_boundedly_then_journals_route_unavailable() {
     use basal_host::selector::RoutingSelector;
     let wire = Fake::new();
+    add_routing_provider(&wire);
     let selector = Arc::new(RoutingSelector::new(wire.clone()));
     let (f, _, fake, _) = model_fixture("route-down", wire.clone(), selector, Arc::new(NoHooks));
     common::install(
