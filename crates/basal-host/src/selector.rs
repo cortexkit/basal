@@ -5,9 +5,7 @@ use crate::transport::{Transport, WireError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt;
-use std::sync::Arc;
-#[cfg(any(test, feature = "test-support"))]
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 #[path = "selector_tests.rs"]
@@ -111,52 +109,82 @@ fn string(value: &Value, name: &str) -> Result<String, SelectionError> {
 }
 pub struct RoutingSelector {
     transport: Arc<dyn Transport>,
+    module: Mutex<Option<String>>,
 }
 impl fmt::Debug for RoutingSelector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("RoutingSelector(prefrontal-routing/striatum)")
+        f.write_str("RoutingSelector(routing/v1)")
     }
 }
 impl RoutingSelector {
     pub fn new(transport: Arc<dyn Transport>) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            module: Mutex::new(None),
+        }
     }
 
-    fn routing_module(&self) -> Result<&'static str, WireError> {
+    fn routing_module(&self, refresh: bool) -> Result<String, WireError> {
+        let mut cached = self.module.lock().unwrap();
+        if !refresh && let Some(module) = cached.as_ref() {
+            return Ok(module.clone());
+        }
+        *cached = None;
         let catalog = self.transport.catalog()?;
-        let registered = |id: &str| {
-            catalog["modules"]
+        let modules = catalog["modules"]
+            .as_array()
+            .ok_or_else(|| WireError::Unreadable("catalog modules missing".into()))?;
+        // The daemon reserves routing/v1 at HELLO admission, so its catalog's
+        // capability claims can be trusted without a separate nonce check here.
+        let mut providers = modules.iter().filter(|module| {
+            module["capabilities"]["provides"]
                 .as_array()
-                .is_some_and(|modules| modules.iter().any(|module| module["module_id"] == id))
-        };
-        Ok(
-            if !registered("prefrontal-routing") && registered("striatum") {
-                "striatum"
-            } else {
-                "prefrontal-routing"
-            },
-        )
+                .is_some_and(|caps| caps.iter().any(|cap| cap == "routing/v1"))
+        });
+        let provider = providers.next().ok_or_else(|| WireError::Refused {
+            code: "routing_unavailable".into(),
+            message: "no module provides routing/v1".into(),
+        })?;
+        if providers.next().is_some() {
+            return Err(WireError::Refused {
+                code: "routing_ambiguous".into(),
+                message: "more than one module provides routing/v1".into(),
+            });
+        }
+        let module = provider["module_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| WireError::Unreadable("routing provider module_id missing".into()))?
+            .to_owned();
+        *cached = Some(module.clone());
+        Ok(module)
     }
 
     fn management(&self, op: &str, params: Value) -> Result<Value, WireError> {
-        let module = self.routing_module()?;
-        let result = self
-            .transport
-            .management_with_route_refusals(module, op, params.clone());
-        // A rename can race the catalog read. Refresh once on a route miss,
-        // retrying only if the id changed: at most two ordinary management
-        // calls and one catalog refresh, each with its normal timeout.
+        let (module, result) = match self.routing_module(false) {
+            Ok(module) => {
+                let result =
+                    self.transport
+                        .management_with_route_refusals(&module, op, params.clone());
+                (Some(module), result)
+            }
+            Err(error) => (None, Err(error)),
+        };
+        // A provider can appear or be renamed after the catalog read. Refresh
+        // once on a missing provider or route, retrying only if the id changed
+        // or no provider was found: at most two management calls and two catalog
+        // reads, each with its normal timeout.
         if result.as_ref().is_err_and(|error| {
             matches!(
                 error.refusal_code(),
-                Some("unknown_module" | "target_unavailable")
+                Some("unknown_module" | "target_unavailable" | "routing_unavailable")
             )
         }) {
-            let refreshed = self.routing_module()?;
-            if refreshed != module {
+            let refreshed = self.routing_module(true)?;
+            if module.as_deref() != Some(&refreshed) {
                 return self
                     .transport
-                    .management_with_route_refusals(refreshed, op, params);
+                    .management_with_route_refusals(&refreshed, op, params);
             }
         }
         result

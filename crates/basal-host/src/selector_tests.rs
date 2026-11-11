@@ -18,7 +18,7 @@ impl RoutingTransport {
     fn new(catalogs: &[&[&str]], replies: Vec<Result<Value, WireError>>) -> Arc<Self> {
         Arc::new(Self {
             catalogs: Mutex::new(catalogs.iter().map(|ids| {
-                json!({"modules": ids.iter().map(|id| json!({"module_id": id})).collect::<Vec<_>>()})
+                json!({"modules": ids.iter().map(|id| json!({"module_id": id, "capabilities": {"provides": ["routing/v1"]}})).collect::<Vec<_>>()})
             }).collect()),
             catalog_reads: Mutex::new(0),
             replies: Mutex::new(replies.into()),
@@ -88,47 +88,131 @@ fn refused(code: &str) -> Result<Value, WireError> {
 }
 
 #[test]
-fn routing_catalog_legacy_registered_calls_legacy_once() {
-    let transport = RoutingTransport::new(&[&["prefrontal-routing"]], vec![Ok(answer())]);
+fn routing_catalog_one_provider_calls_it_once() {
+    let transport = RoutingTransport::new(&[&["model-picker"]], vec![Ok(answer())]);
+    transport.catalogs.lock().unwrap()[0]["modules"]
+        .as_array_mut()
+        .unwrap()
+        .extend([
+            json!({"module_id":"unrelated-provider","capabilities":{"provides":["other/v1"]}}),
+            json!({"module_id":"unqualified-module"}),
+        ]);
     let selected = RoutingSelector::new(transport.clone())
         .select(&request())
         .unwrap();
     assert_eq!(selected.decision_id, "decision-1");
-    assert_eq!(transport.modules(), ["prefrontal-routing"]);
+    assert_eq!(transport.modules(), ["model-picker"]);
     assert_eq!(*transport.catalog_reads.lock().unwrap(), 1);
 }
 
 #[test]
-fn routing_catalog_only_striatum_registered_calls_striatum() {
-    let transport = RoutingTransport::new(&[&["striatum"]], vec![Ok(answer())]);
+fn routing_catalog_provider_id_is_not_fixed() {
+    let transport = RoutingTransport::new(&[&["another-picker"]], vec![Ok(answer())]);
     RoutingSelector::new(transport.clone())
         .select(&request())
         .unwrap();
-    assert_eq!(transport.modules(), ["striatum"]);
+    assert_eq!(transport.modules(), ["another-picker"]);
     assert_eq!(*transport.catalog_reads.lock().unwrap(), 1);
 }
 
 #[test]
-fn routing_catalog_prefers_legacy_when_both_or_neither_are_registered() {
-    for ids in [&["prefrontal-routing", "striatum"][..], &[][..]] {
-        let transport = RoutingTransport::new(&[ids], vec![Ok(answer())]);
-        RoutingSelector::new(transport.clone())
-            .select(&request())
-            .unwrap();
-        assert_eq!(transport.modules(), ["prefrontal-routing"]);
+fn routing_catalog_no_provider_refuses_after_one_refresh() {
+    let transport = RoutingTransport::new(&[&[], &[]], vec![]);
+    for catalog in transport.catalogs.lock().unwrap().iter_mut() {
+        catalog["modules"] = json!([{"module_id":"unqualified-module"}]);
+    }
+    assert!(matches!(
+        RoutingSelector::new(transport.clone()).select(&request()),
+        Err(SelectionError::Refused { code, .. }) if code == "routing_unavailable"
+    ));
+    assert!(transport.modules().is_empty());
+    assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
+}
+
+#[test]
+fn routing_catalog_two_providers_refuse_without_dispatch_or_refresh() {
+    let transport = RoutingTransport::new(&[&["model-picker", "another-picker"]], vec![]);
+    assert!(matches!(
+        RoutingSelector::new(transport.clone()).select(&request()),
+        Err(SelectionError::Refused { code, .. }) if code == "routing_ambiguous"
+    ));
+    assert!(transport.modules().is_empty());
+    assert_eq!(*transport.catalog_reads.lock().unwrap(), 1);
+}
+
+#[test]
+fn routing_catalog_missing_provider_refreshes_and_finds_provider() {
+    let transport = RoutingTransport::new(&[&[], &["model-picker"]], vec![Ok(answer())]);
+    RoutingSelector::new(transport.clone())
+        .select(&request())
+        .unwrap();
+    assert_eq!(transport.modules(), ["model-picker"]);
+    assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
+}
+
+#[test]
+fn routing_catalog_cached_provider_is_shared_by_selection_and_outcomes() {
+    let transport = RoutingTransport::new(
+        &[&["model-picker"]],
+        vec![Ok(answer()), Ok(json!({"ok":true}))],
+    );
+    let selector = RoutingSelector::new(transport.clone());
+    selector.select(&request()).unwrap();
+    selector
+        .report_outcome("decision-1", ModelOutcome::Completed)
+        .unwrap();
+    assert_eq!(transport.modules(), ["model-picker", "model-picker"]);
+    assert_eq!(*transport.catalog_reads.lock().unwrap(), 1);
+}
+
+#[test]
+fn routing_catalog_refreshed_provider_is_cached() {
+    let transport = RoutingTransport::new(
+        &[&["model-picker"], &["renamed-picker"]],
+        vec![refused("unknown_module"), Ok(answer()), Ok(answer())],
+    );
+    let selector = RoutingSelector::new(transport.clone());
+    selector.select(&request()).unwrap();
+    selector.select(&request()).unwrap();
+    assert_eq!(
+        transport.modules(),
+        ["model-picker", "renamed-picker", "renamed-picker"]
+    );
+    assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
+}
+
+#[test]
+fn routing_catalog_route_miss_refresh_can_refuse_missing_or_ambiguous_provider() {
+    for (providers, expected) in [
+        (&[][..], "routing_unavailable"),
+        (
+            &["renamed-picker", "another-picker"][..],
+            "routing_ambiguous",
+        ),
+    ] {
+        let transport = RoutingTransport::new(
+            &[&["model-picker"], providers],
+            vec![refused("unknown_module")],
+        );
+        assert!(matches!(
+            RoutingSelector::new(transport.clone()).select(&request()),
+            Err(SelectionError::Refused { code, .. }) if code == expected
+        ));
+        assert_eq!(transport.modules(), ["model-picker"]);
+        assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
     }
 }
 
 #[test]
-fn routing_catalog_stale_legacy_refreshes_on_unknown_module_and_retries_striatum() {
+fn routing_catalog_rename_refreshes_on_unknown_module_and_retries_new_provider() {
     let transport = RoutingTransport::new(
-        &[&["prefrontal-routing"], &["striatum"]],
+        &[&["model-picker"], &["renamed-picker"]],
         vec![refused("unknown_module"), Ok(answer())],
     );
     RoutingSelector::new(transport.clone())
         .select(&request())
         .unwrap();
-    assert_eq!(transport.modules(), ["prefrontal-routing", "striatum"]);
+    assert_eq!(transport.modules(), ["model-picker", "renamed-picker"]);
     assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
     let attempts = transport.attempts.lock().unwrap();
     assert!(
@@ -139,9 +223,9 @@ fn routing_catalog_stale_legacy_refreshes_on_unknown_module_and_retries_striatum
 }
 
 #[test]
-fn routing_catalog_stale_striatum_refreshes_on_target_unavailable_and_retries_legacy() {
+fn routing_catalog_rename_refreshes_on_target_unavailable_and_retries_new_provider() {
     let transport = RoutingTransport::new(
-        &[&["striatum"], &["prefrontal-routing"]],
+        &[&["model-picker"], &["renamed-picker"]],
         vec![
             Err(WireError::RefusedDetails {
                 code: "target_unavailable".into(),
@@ -154,7 +238,7 @@ fn routing_catalog_stale_striatum_refreshes_on_target_unavailable_and_retries_le
     RoutingSelector::new(transport.clone())
         .select(&request())
         .unwrap();
-    assert_eq!(transport.modules(), ["striatum", "prefrontal-routing"]);
+    assert_eq!(transport.modules(), ["model-picker", "renamed-picker"]);
     assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
 }
 
@@ -162,7 +246,7 @@ fn routing_catalog_stale_striatum_refreshes_on_target_unavailable_and_retries_le
 fn routing_catalog_other_refusals_return_without_refresh_or_message_matching() {
     for code in ["principal_denied", "module_warming", "no_available_model"] {
         let transport = RoutingTransport::new(
-            &[&["prefrontal-routing"]],
+            &[&["model-picker"]],
             vec![Err(WireError::Refused {
                 code: code.into(),
                 message: "unknown_module target_unavailable".into(),
@@ -172,7 +256,7 @@ fn routing_catalog_other_refusals_return_without_refresh_or_message_matching() {
             matches!(RoutingSelector::new(transport.clone()).select(&request()),
             Err(SelectionError::Refused { code: actual, .. }) if actual == code)
         );
-        assert_eq!(transport.modules(), ["prefrontal-routing"]);
+        assert_eq!(transport.modules(), ["model-picker"]);
         assert_eq!(*transport.catalog_reads.lock().unwrap(), 1);
     }
 }
@@ -180,41 +264,41 @@ fn routing_catalog_other_refusals_return_without_refresh_or_message_matching() {
 #[test]
 fn routing_catalog_second_miss_returns_without_another_refresh() {
     let transport = RoutingTransport::new(
-        &[&["prefrontal-routing"], &["striatum"]],
+        &[&["model-picker"], &["renamed-picker"]],
         vec![refused("unknown_module"), refused("target_unavailable")],
     );
     assert!(
         matches!(RoutingSelector::new(transport.clone()).select(&request()),
         Err(SelectionError::Refused { code, .. }) if code == "target_unavailable")
     );
-    assert_eq!(transport.modules(), ["prefrontal-routing", "striatum"]);
+    assert_eq!(transport.modules(), ["model-picker", "renamed-picker"]);
     assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
 }
 
 #[test]
 fn routing_catalog_unchanged_id_returns_the_original_miss_without_retry() {
     let transport = RoutingTransport::new(
-        &[&["prefrontal-routing"], &["prefrontal-routing"]],
+        &[&["model-picker"], &["model-picker"]],
         vec![refused("unknown_module")],
     );
     assert!(
         matches!(RoutingSelector::new(transport.clone()).select(&request()),
         Err(SelectionError::Refused { code, .. }) if code == "unknown_module")
     );
-    assert_eq!(transport.modules(), ["prefrontal-routing"]);
+    assert_eq!(transport.modules(), ["model-picker"]);
     assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
 }
 
 #[test]
 fn routing_catalog_outcome_reporting_uses_the_same_resolution_and_refresh() {
     let transport = RoutingTransport::new(
-        &[&["prefrontal-routing"], &["striatum"]],
+        &[&["model-picker"], &["renamed-picker"]],
         vec![refused("unknown_module"), Ok(json!({"ok":true}))],
     );
     RoutingSelector::new(transport.clone())
         .report_outcome("decision-1", ModelOutcome::Completed)
         .unwrap();
-    assert_eq!(transport.modules(), ["prefrontal-routing", "striatum"]);
+    assert_eq!(transport.modules(), ["model-picker", "renamed-picker"]);
     assert_eq!(*transport.catalog_reads.lock().unwrap(), 2);
     let attempts = transport.attempts.lock().unwrap();
     assert!(attempts.iter().all(|a| a.op == "route.set_decision_outcome"

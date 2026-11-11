@@ -16,7 +16,9 @@ struct Routing {
 }
 impl Transport for Routing {
     fn catalog(&self) -> std::result::Result<Value, WireError> {
-        Ok(json!({"modules":[{"module_id":"prefrontal-routing"}]}))
+        Ok(
+            json!({"modules":[{"module_id":"model-picker","capabilities":{"provides":["routing/v1"]}}]}),
+        )
     }
     fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> std::result::Result<Value, WireError> {
         panic!("no tool route")
@@ -27,7 +29,7 @@ impl Transport for Routing {
         op: &str,
         params: Value,
     ) -> std::result::Result<Value, WireError> {
-        assert_eq!(module, "prefrontal-routing");
+        assert_eq!(module, "model-picker");
         match op {
             "route.select" => {
                 self.calls.lock().unwrap().push(params);
