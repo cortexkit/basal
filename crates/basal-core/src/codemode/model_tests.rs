@@ -134,10 +134,16 @@ struct ModelFixture {
     selector: Arc<dyn ModelSelector>,
     broca: Arc<BrocaHost>,
     committed: mpsc::Receiver<u64>,
+    model_waits: mpsc::Receiver<(u64, i64)>,
 }
 impl ModelFixture {
     fn new() -> Self {
         let f = Fixture::new();
+        let (model_wait, model_waits) = mpsc::channel();
+        *f.supervisor.0.after_model_wait.lock().unwrap() =
+            Some(Arc::new(move |position, recheck| {
+                model_wait.send((position, recheck)).unwrap();
+            }));
         let routing = Arc::new(Routing::default());
         let selector: Arc<dyn ModelSelector> = Arc::new(RoutingSelector::new(routing.clone()));
         let wire = Arc::new(ObservedBroca {
@@ -182,26 +188,22 @@ impl ModelFixture {
             selector,
             broca,
             committed: commits,
+            model_waits,
         }
     }
-    fn wait_model_retry(&self, sends: usize) {
-        let until = Instant::now() + TIMEOUT;
-        loop {
-            let calls = self.f.calls();
-            if self.wire.fake.sends().len() == sends
-                && calls
-                    .first()
-                    .is_some_and(|c| c.intent_at.is_none() && c.entered_at.is_none())
-            {
-                assert_eq!(calls[0].outcome, Outcome::Pending);
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "model refusal did not defer: {calls:?}"
-            );
-            thread::yield_now();
-        }
+    fn wait_model_retry(&self, sends: usize) -> i64 {
+        // A queued row and a recorded send do not prove the driver registered
+        // its retry: the row is cleared before the recheck deadline is set,
+        // and a snapshot read before the send can still look queued. Advance
+        // the manual clock only after the driver's registration acknowledgement.
+        let (position, recheck) = self.model_waits.recv_timeout(TIMEOUT).unwrap();
+        assert_eq!(position, 0);
+        assert_eq!(self.wire.fake.sends().len(), sends);
+        let calls = self.f.calls();
+        assert!(calls[0].intent_at.is_none());
+        assert!(calls[0].entered_at.is_none());
+        assert_eq!(calls[0].outcome, Outcome::Pending);
+        recheck
     }
     fn request(&self, position: u64, name: &str, input: Value) -> HostCall {
         let call = HostCall {
@@ -552,7 +554,10 @@ fn account_model_send_malformed_hint_falls_back_to_provider_backoff() {
             .fake
             .refuse_next_send_with_data("account_selection_refused", data);
         f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
-        f.wait_model_retry(1);
+        assert_eq!(
+            f.wait_model_retry(1),
+            f.f.clock.now_ms() + PROVIDER_RECHECK_MS
+        );
         f.f.clock.advance(PROVIDER_RECHECK_MS);
         assert_eq!(
             f.finish_usage(

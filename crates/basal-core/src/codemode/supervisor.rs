@@ -163,6 +163,9 @@ struct Shared {
     /// Called by a driver just before it blocks waiting for its next event.
     #[cfg(test)]
     before_wait: Mutex<Option<ParkedHook>>,
+    /// Reports a model retry only after its recheck deadline is registered.
+    #[cfg(test)]
+    after_model_wait: Mutex<Option<ModelWaitHook>>,
     /// How many times a driver has returned from its wait for an event.
     #[cfg(test)]
     wakes: std::sync::atomic::AtomicUsize,
@@ -180,6 +183,9 @@ pub type TerminalHook = dyn Fn(&str, Value) -> Result<()> + Send + Sync;
 /// A test's callback for a driver about to block; see [`Parked`].
 #[cfg(test)]
 type ParkedHook = Arc<dyn Fn(&Parked) + Send + Sync>;
+
+#[cfg(test)]
+type ModelWaitHook = Arc<dyn Fn(u64, i64) + Send + Sync>;
 
 /// What a driver reports to a test just before it blocks for its next event,
 /// so the test can wait for the driver to go idle instead of sleeping.
@@ -286,6 +292,8 @@ impl Supervisor {
             after_block: Mutex::new(None),
             #[cfg(test)]
             before_wait: Mutex::new(None),
+            #[cfg(test)]
+            after_model_wait: Mutex::new(None),
             #[cfg(test)]
             wakes: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
@@ -1467,6 +1475,13 @@ impl Driver {
                     refusal: Some(refusal.clone()),
                 },
             );
+            #[cfg(test)]
+            {
+                let hook = self.shared.after_model_wait.lock().unwrap().clone();
+                if let Some(hook) = hook {
+                    hook(position, self.provider_waits[&position].recheck_ms);
+                }
+            }
             return Ok(());
         }
         let (usage, no_effect, result) = match result {
