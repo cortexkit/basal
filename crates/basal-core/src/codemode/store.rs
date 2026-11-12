@@ -535,6 +535,17 @@ pub fn enter_call(tx: &Transaction, run_id: &str, position: u64, at: i64) -> Res
     Ok(changed == 1)
 }
 
+/// A typed refusal proves this model attempt was not accepted. Return its
+/// timestamps to queued state so a crash or wall timeout cannot label it sent.
+pub(super) fn defer_unsent_model(tx: &Transaction, run_id: &str, position: u64) -> Result<()> {
+    tx.execute(
+        "UPDATE codemode_calls SET intent_at=NULL, entered_at=NULL \
+         WHERE run_id=?1 AND position=?2 AND outcome='pending'",
+        params![run_id, sql_i64(position)?],
+    )?;
+    Ok(())
+}
+
 /// Records a call's outcome at `at`, only if the call is still pending.
 /// Returns `false`, changing nothing, when an outcome was already recorded,
 /// including the one termination records for a call it settled: a late

@@ -628,6 +628,7 @@ struct ProviderWait {
     call: HostCall,
     deadline_ms: i64,
     recheck_ms: i64,
+    refusal: Option<basal_host::flow_refusal::FlowRefusal>,
 }
 
 struct Driver {
@@ -652,9 +653,9 @@ struct Driver {
     in_flight: usize,
     flight_positions: BTreeSet<u64>,
     held_positions: BTreeSet<u64>,
-    /// Calls waiting for a provider to reconnect occupy in-flight slots but
-    /// have no permission-to-send or sent-at timestamps in the journal. They
-    /// spend wall time, not person time, and have not been sent to a provider.
+    /// Calls waiting for a provider to reconnect or for an unsent model retry
+    /// occupy in-flight slots but have no permission-to-send or sent-at
+    /// timestamps. They spend wall time, not person time.
     provider_waits: BTreeMap<u64, ProviderWait>,
     tool_calls: BTreeMap<u64, (String, HostCall)>,
     /// The tool, provider code and message of each call that rejected, so a
@@ -1432,6 +1433,42 @@ impl Driver {
                 |r| r.get(0),
             )?)
         })?;
+        if let Err(WireError::Typed(refusal)) = &result
+            && refusal.model_send_wait()
+        {
+            self.shared
+                .store
+                .write(|tx| store::defer_unsent_model(tx, &self.run.run_id, position))?;
+            // Keep the existing model reservation and the same request. Neither
+            // settling this free attempt nor preparing a new position is safe:
+            // settlement would make a later successful retry appear free too.
+            self.provider_waits.insert(
+                position,
+                ProviderWait {
+                    call: HostCall {
+                        position,
+                        kind: CallKind::Tool { name },
+                        args: JsonText::null(),
+                    },
+                    deadline_ms: self.run.deadline_ms,
+                    recheck_ms: self
+                        .shared
+                        .clock
+                        .now_ms()
+                        .saturating_add(PROVIDER_RECHECK_MS.max(
+                            i64::try_from(refusal.retry_after_ms.unwrap_or(0)).unwrap_or(i64::MAX),
+                        ))
+                        .min(self.run.deadline_ms)
+                        .min(
+                            self.start
+                                .wall_deadline_ms
+                                .saturating_add(self.person_wait_ms),
+                        ),
+                    refusal: Some(refusal.clone()),
+                },
+            );
+            return Ok(());
+        }
         let (usage, no_effect, result) = match result {
             Ok(outcome) => {
                 let value: Value = serde_json::from_str(outcome.value.as_str())
@@ -1845,7 +1882,12 @@ impl Driver {
             .provider_waits
             .iter()
             .filter_map(|(position, wait)| {
-                (catalog_changed || now >= wait.recheck_ms || now >= wait.deadline_ms)
+                let CallKind::Tool { name } = &wait.call.kind else {
+                    unreachable!()
+                };
+                let tool = &self.start.tools[name];
+                let model = super::models::is_local(&tool.module, &tool.op);
+                ((!model && catalog_changed) || now >= wait.recheck_ms || now >= wait.deadline_ms)
                     .then_some(*position)
             })
             .collect();
@@ -1927,6 +1969,7 @@ impl Driver {
                         .clock
                         .now_ms()
                         .saturating_add(PROVIDER_RECHECK_MS),
+                    refusal: None,
                 },
             );
             return Ok(());
@@ -2110,6 +2153,7 @@ impl Driver {
     }
 
     fn dispatch_model(&mut self, call: HostCall, queued: bool) -> Result<()> {
+        self.release_provider_wait(call.position);
         if !queued {
             self.insert(&call, CallStart::Queued)?;
         }
@@ -2267,15 +2311,31 @@ impl Driver {
         self.shared.holds.lock().unwrap().remove(&self.run.run_id);
         self.account_time();
         self.stopping = true;
+        for wait in self.provider_waits.values() {
+            self.shared.store.write(|tx| {
+                super::models::settle(tx, &self.run.run_id, wait.call.position, None, true)
+            })?;
+        }
         if terminal.status == Status::BudgetExhausted(Budget::Wall) {
             for wait in self.provider_waits.values() {
+                let account_wait = wait.refusal.as_ref().filter(|r| {
+                    matches!(
+                        r.reason,
+                        RefusalReason::AccountSelectionRefused
+                            | RefusalReason::AccountLimitExhausted
+                    )
+                });
                 self.shared.store.write(|tx| {
                     store::record_outcome(
                         tx,
                         &self.run.run_id,
                         wait.call.position,
-                        Outcome::ToolUnavailable,
-                        Some("tool_unavailable"),
+                        if account_wait.is_some() {
+                            Outcome::Refused
+                        } else {
+                            Outcome::ToolUnavailable
+                        },
+                        Some(account_wait.map_or("tool_unavailable", |r| r.reason.as_str())),
                         self.shared.clock.now_ms(),
                     )
                 })?;
@@ -2287,6 +2347,13 @@ impl Driver {
                         "; {name} (call {}) was not sent while waiting for {} to reconnect",
                         self.tool_numbers[&wait.call.position], self.start.tools[name].module,
                     ));
+                    if let Some(refusal) = account_wait {
+                        error.message.push_str(&format!(
+                            " ({}: {})",
+                            refusal.reason.as_str(),
+                            refusal.message.as_deref().unwrap_or(refusal.message())
+                        ));
+                    }
                 }
             }
         }
@@ -2571,6 +2638,9 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
                 | ProviderNotCatalogued
                 | CatalogUnavailable
                 | ResourceBusy
+                | Transient
+                | AccountSelectionRefused
+                | AccountLimitExhausted
                 | ModuleGrantAbsent
                 | AgentGrantAbsent
                 | NoFlowScope

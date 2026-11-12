@@ -184,6 +184,25 @@ impl ModelFixture {
             committed: commits,
         }
     }
+    fn wait_model_retry(&self, sends: usize) {
+        let until = Instant::now() + TIMEOUT;
+        loop {
+            let calls = self.f.calls();
+            if self.wire.fake.sends().len() == sends
+                && calls
+                    .first()
+                    .is_some_and(|c| c.intent_at.is_none() && c.entered_at.is_none())
+            {
+                assert_eq!(calls[0].outcome, Outcome::Pending);
+                return;
+            }
+            assert!(
+                Instant::now() < until,
+                "model refusal did not defer: {calls:?}"
+            );
+            thread::yield_now();
+        }
+    }
     fn request(&self, position: u64, name: &str, input: Value) -> HostCall {
         let call = HostCall {
             position,
@@ -258,6 +277,298 @@ impl ModelFixture {
             .unwrap();
         self.broca.poll().unwrap();
         self.f.delivery()
+    }
+}
+
+#[test]
+fn transient_model_send_retries_with_one_reservation_then_charges_only_success() {
+    let f = ModelFixture::new();
+    f.wire
+        .fake
+        .refuse_next_send_with_detail("transient", "credentials_unavailable");
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    f.wait_model_retry(1);
+    assert!(f.wire.fake.keys().is_empty());
+    assert!(f.f.parent.try_recv().is_err());
+    assert!(f.f.supervisor.holds("r").is_empty());
+    let ledger = || {
+        f.f.host.store.read(|c| {
+        Ok(c.query_row("SELECT COUNT(*),SUM(reserved),SUM(charged) FROM codemode_models WHERE run_id='r'", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<i64>>(2)?)))?)
+    }).unwrap()
+    };
+    let reserved = ledger();
+    assert_eq!(reserved.0, 1);
+    assert!(reserved.1 > 0);
+    assert_eq!(
+        reserved.2, None,
+        "a free refusal neither charges nor settles the retry reservation"
+    );
+    f.wire
+        .fake
+        .refuse_next_send_with_detail("transient", "variant_unsupported");
+    f.f.clock.advance(PROVIDER_RECHECK_MS);
+    f.wait_model_retry(2);
+    assert_eq!(ledger(), reserved);
+    f.f.clock.advance(PROVIDER_RECHECK_MS);
+    let delivery = f.finish_usage(
+        0,
+        "answer",
+        Usage {
+            input_tokens: Some(1),
+            cache_write_tokens: Some(0),
+            output_tokens: Some(1),
+            ..Usage::default()
+        },
+    );
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(ledger(), (1, reserved.1, Some(2)));
+    let dollars: (i64, f64) = f.f.host.store.read(|c| Ok(c.query_row("SELECT COUNT(*),COALESCE(SUM(COALESCE(charged,reserved)),0) FROM classify_costs WHERE kind='program' AND run_id='r'", [], |r| Ok((r.get(0)?,r.get(1)?)))?)).unwrap();
+    assert_eq!(
+        dollars,
+        (0, 0.0),
+        "local model retries never create classifier dollar reservations"
+    );
+    assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
+    let sends = f.wire.fake.sends();
+    assert_eq!(sends.len(), 3);
+    assert!(sends.iter().all(|s| s == &sends[0]));
+    f.f.finish("null");
+    assert_eq!(f.f.terminal()["person_wait_ms"], 0);
+}
+
+#[test]
+fn transient_model_send_wait_spends_wall_time_and_ends_unsent_for_free() {
+    let f = ModelFixture::new();
+    f.wire.fake.refuse_next_send("transient");
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    f.wait_model_retry(1);
+    let blocked = f.f.block_handled();
+    f.f.worker
+        .send(WorkerMessage::Blocked { awaiting: vec![0] })
+        .unwrap();
+    blocked.recv_timeout(TIMEOUT).unwrap();
+    assert!(f.f.supervisor.holds("r").is_empty());
+    f.f.clock.set(100_000);
+    let result = f.f.terminal();
+    assert_eq!(result["status"], "budget_exhausted:wall");
+    assert_eq!(result["person_wait_ms"], 0);
+    f.f.assert_never_sent(0, Outcome::ToolUnavailable);
+    assert_eq!(f.wire.fake.sends().len(), 1);
+    let charged: i64 =
+        f.f.host
+            .store
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT charged FROM codemode_models WHERE run_id='r' AND position=0",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+    assert_eq!(charged, 0);
+    assert_eq!(
+        f.f.host
+            .store
+            .read(|c| crate::classify_cost::spent(c, "program", "r"))
+            .unwrap(),
+        0.0
+    );
+}
+
+#[test]
+fn nonretryable_model_send_codes_are_final_regardless_of_detail() {
+    for code in ["variant_unsupported", "open_failed"] {
+        let f = ModelFixture::new();
+        f.wire
+            .fake
+            .refuse_next_send_with_detail(code, "transient credentials_unavailable");
+        f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+        let delivery = f.f.delivery();
+        assert_eq!(delivery.settlement, Settlement::Rejected);
+        assert_eq!(parse(delivery.value.as_str()).unwrap()["code"], code);
+        assert_eq!(f.wire.fake.sends().len(), 1);
+        assert_ne!(f.f.calls()[0].outcome, Outcome::Pending);
+    }
+}
+
+#[test]
+fn transient_repeat_of_accepted_model_send_stays_pending() {
+    let f = ModelFixture::new();
+    let input = json!({"prompt":"hello","max_output":1});
+    f.f.issue(0, "model", input.clone());
+    assert_eq!(f.committed.recv_timeout(TIMEOUT).unwrap(), 0);
+    let call = HostCall {
+        position: 0,
+        kind: CallKind::Tool {
+            name: "model".into(),
+        },
+        args: JsonText::new(input.to_string()).unwrap(),
+    };
+    let request = models::prepare(&f.f.host.store, f.selector.as_ref(), &f.run(), &call).unwrap();
+    f.wire.fake.refuse_next_send("transient");
+    assert!(matches!(
+        f.broca.dispatch(&request),
+        Err(TransportError::Unavailable {
+            sent: basal_host::Sent::Maybe(_),
+            ..
+        })
+    ));
+    let saved = f.broca.dispatch_model(&request).unwrap();
+    assert!(matches!(saved, Dispatched::Accepted { .. }));
+    assert!(f.f.parent.try_recv().is_err());
+    f.wire
+        .fake
+        .finish(
+            &request.idempotency_key,
+            "answer",
+            RunFinishReason::Completed,
+            None,
+        )
+        .unwrap();
+    f.broca.poll().unwrap();
+    assert_eq!(f.f.delivery().settlement, Settlement::Fulfilled);
+}
+
+#[test]
+fn account_model_send_wait_honors_hint_then_succeeds_with_one_reservation() {
+    for code in ["account_selection_refused", "account_limit_exhausted"] {
+        let f = ModelFixture::new();
+        // A classifier reservation belongs to a different call. Model retries
+        // must not settle it or consume a second dollar reservation beside it.
+        f.f.host
+            .store
+            .write(|tx| {
+                let mut input = json!({"max_cost_usd":0.12});
+                crate::classify_cost::reserve(
+                    tx, "program", "r", 7, None, 100, 0.5, None, &mut input,
+                )?
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        f.wire
+            .fake
+            .refuse_next_send_with_data(code, json!({"retry_after_s":2.5}));
+        f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+        f.wait_model_retry(1);
+        let original = f.f.clock.now_ms();
+        f.f.clock.set(original + 2499);
+        f.f.catalog_notice();
+        let blocked = f.f.block_handled();
+        f.f.worker
+            .send(WorkerMessage::Blocked { awaiting: vec![0] })
+            .unwrap();
+        blocked.recv_timeout(TIMEOUT).unwrap();
+        assert_eq!(
+            f.wire.fake.sends().len(),
+            1,
+            "neither timer nor catalog wake bypasses the hint"
+        );
+        f.f.clock.set(original + 2500);
+        assert_eq!(
+            f.finish_usage(
+                0,
+                "answer",
+                Usage {
+                    input_tokens: Some(1),
+                    cache_write_tokens: Some(0),
+                    output_tokens: Some(1),
+                    ..Usage::default()
+                }
+            )
+            .settlement,
+            Settlement::Fulfilled
+        );
+        let ledgers: (i64, i64, i64, f64) =
+            f.f.host
+                .store
+                .read(|c| {
+                    let (models, charged): (i64, i64) = c.query_row(
+                        "SELECT COUNT(*),SUM(charged) FROM codemode_models WHERE run_id='r'",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?;
+                    let dollars: i64 = c.query_row(
+                        "SELECT COUNT(*) FROM classify_costs WHERE run_id='r'",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    Ok((
+                        models,
+                        charged,
+                        dollars,
+                        crate::classify_cost::spent(c, "program", "r")?,
+                    ))
+                })
+                .unwrap();
+        assert_eq!(ledgers, (1, 2, 1, 0.12));
+        let sends = f.wire.fake.sends();
+        assert_eq!(sends.len(), 2);
+        assert_eq!(sends[0], sends[1]);
+        assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn account_model_send_hint_beyond_wall_deadline_keeps_typed_unsent_code() {
+    for code in ["account_selection_refused", "account_limit_exhausted"] {
+        let f = ModelFixture::new();
+        f.wire
+            .fake
+            .refuse_next_send_with_data(code, json!({"retry_after_s":1e100}));
+        f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+        f.wait_model_retry(1);
+        f.f.clock.set(100_000);
+        let result = f.f.terminal();
+        assert_eq!(result["status"], "budget_exhausted:wall");
+        assert_eq!(result["person_wait_ms"], 0);
+        assert_eq!(result["calls"][0]["code"], code);
+        assert!(result["error"]["message"].as_str().unwrap().contains(code));
+        f.f.assert_never_sent(0, Outcome::Refused);
+        assert_eq!(f.wire.fake.sends().len(), 1);
+        assert_eq!(
+            f.f.host
+                .store
+                .read(|c| Ok(c.query_row(
+                    "SELECT charged FROM codemode_models WHERE run_id='r' AND position=0",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn account_model_send_malformed_hint_falls_back_to_provider_backoff() {
+    for data in [
+        json!({}),
+        json!({"retry_after_s":-1}),
+        json!({"retry_after_s":"2"}),
+    ] {
+        let f = ModelFixture::new();
+        f.wire
+            .fake
+            .refuse_next_send_with_data("account_selection_refused", data);
+        f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+        f.wait_model_retry(1);
+        f.f.clock.advance(PROVIDER_RECHECK_MS);
+        assert_eq!(
+            f.finish_usage(
+                0,
+                "answer",
+                Usage {
+                    input_tokens: Some(1),
+                    cache_write_tokens: Some(0),
+                    output_tokens: Some(1),
+                    ..Usage::default()
+                }
+            )
+            .settlement,
+            Settlement::Fulfilled
+        );
+        assert_eq!(f.wire.fake.sends().len(), 2);
     }
 }
 impl Drop for ModelFixture {
