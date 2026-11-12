@@ -41,9 +41,10 @@ cortexkit-test-support = "=0.1.10"
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
 cortexkit-store = { version = "=0.2.5", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
-cortexkit-role-tool-provider = "=0.13.3"
+cortexkit-role-tool-provider = "=0.15.5"
+cortexkit-role-llm-runner = "=0.8.41"
 cortexkit-llm-tools = "=0.2.1"
-cortexkit-role-tool-provider-conformance = "=0.13.0"
+cortexkit-role-tool-provider-conformance = "=0.15.6"
 # The provider-owned resource-busy refusal is shared across the fleet.
 cortexkit-resource-busy = { git = "https://github.com/cortexkit/commons", rev = "c46f324133c5df6411703714e4c147f7cc8554a0" }
 # The model messages and refusal types the LLM tool contracts share. Pinned
@@ -76,10 +77,10 @@ unicode-general-category = "1.1"
 # The module shell. subc-client-rs owns HELLO, route binding, health and the
 # frame lifecycle; subc-protocol is the manifest and route vocabulary it
 # speaks. Keep the scope-stamp reader current with the protocol.
-subc-client-rs = "0.32.7"
-subc-os = "0.1.20"
-subc-protocol = "0.33.4"
-subc-transport = "0.14.0"
+subc-client-rs = "=0.38.5"
+subc-os = "=0.1.32"
+subc-protocol = "=0.36.3"
+subc-transport = "=0.17.0"
 async-trait = "0.1"
 async-nats = { version = "0.50", default-features = false, features = ["jetstream", "kv", "nkeys", "nuid", "ring", "server_2_10"] }
 cortexkit-bus-naming = "=0.2.0"

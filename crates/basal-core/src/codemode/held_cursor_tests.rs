@@ -73,7 +73,7 @@ fn custodian_page_reaches_both_runs_before_ack_and_rechecks_held_eligibility() {
                 events,
                 held: false,
                 options: basal_host::transport::RunToolOptions {
-                    identity: subc_protocol::BindIdentity::new("/", "basal", "test"),
+                    identity: subc_protocol::BindIdentity::new("basal", "test"),
                     reply_timeout: Duration::from_secs(1),
                     preset: None,
                 },
@@ -119,7 +119,7 @@ fn custodian_page_reaches_both_runs_before_ack_and_rechecks_held_eligibility() {
         reads: AtomicUsize::new(0),
     };
     let options = basal_host::transport::RunToolOptions {
-        identity: subc_protocol::BindIdentity::new("/", "basal", "test"),
+        identity: subc_protocol::BindIdentity::new("basal", "test"),
         reply_timeout: Duration::from_secs(1),
         preset: None,
     };

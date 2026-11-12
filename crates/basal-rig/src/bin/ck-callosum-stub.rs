@@ -137,7 +137,7 @@ fn operator_bind(module: &str) -> BindIdentity {
     } else {
         MODULE_ID
     };
-    BindIdentity::new("/", harness, "callosum:rig-stub")
+    BindIdentity::new(harness, "callosum:rig-stub")
 }
 
 impl Stub {

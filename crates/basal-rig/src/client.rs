@@ -271,11 +271,11 @@ const RELAY_MODULE: &str = "prefrontal-core";
 /// opener's word about itself and grants nothing: basal and core decide the
 /// caller from the daemon's stamp.
 pub fn suite_identity() -> BindIdentity {
-    BindIdentity::new("/", "basal-rig", "basal-rig:contract")
+    BindIdentity::new("basal-rig", "basal-rig:contract")
 }
 
 fn stub_identity() -> BindIdentity {
-    BindIdentity::new("/", "basal-rig", "basal-rig:operator")
+    BindIdentity::new("basal-rig", "basal-rig:operator")
 }
 
 fn target(module: &str) -> RouteTarget {

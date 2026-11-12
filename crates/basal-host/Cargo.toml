@@ -31,6 +31,7 @@ base64.workspace = true
 # Typed decode of a provider's own role.describe and tool.catalog answers,
 # read when the loop install rule needs a tool's emits_events declaration.
 cortexkit-role-tool-provider.workspace = true
+cortexkit-role-llm-runner.workspace = true
 cortexkit-resource-busy.workspace = true
 httparse.workspace = true
 jiff.workspace = true

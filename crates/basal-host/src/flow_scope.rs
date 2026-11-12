@@ -53,7 +53,7 @@ pub(crate) struct RouteKey {
     scope: ScopeKey,
     module: String,
     tool: bool,
-    identity: Option<(std::path::PathBuf, String, String, Option<String>)>,
+    identity: Option<(String, String)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ScopeKey {
@@ -245,14 +245,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
             scope: scope_key.clone(),
             module: module.into(),
             tool,
-            identity: identity.map(|id| {
-                (
-                    id.project_root.clone(),
-                    id.harness.clone(),
-                    id.session.clone(),
-                    id.project_id.clone(),
-                )
-            }),
+            identity: identity.map(|id| (id.harness.clone(), id.session.clone())),
         };
         if let Some((_, handle, _)) = self.routes.get(&key) {
             return handle

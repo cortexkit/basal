@@ -68,7 +68,7 @@ fn supervised_binary_exits_cleanly_after_daemon_eof() {
                 key: vec![0x5a; 32],
                 daemon_id: [0x2b; 16],
                 pid: std::process::id(),
-                daemon_ver: "eof-test".into(),
+                daemon_ver: "0.44.5".into(),
             };
             write_atomic(&file, &info).unwrap();
             let mut module = Process(
@@ -90,7 +90,7 @@ fn supervised_binary_exits_cleanly_after_daemon_eof() {
                 &mut consumer,
                 &info.key,
                 &info.daemon_id,
-                "eof-test",
+                "0.44.5",
                 Duration::from_secs(30),
             )
             .await
@@ -100,7 +100,7 @@ fn supervised_binary_exits_cleanly_after_daemon_eof() {
                 &mut stream,
                 &info.key,
                 &info.daemon_id,
-                "eof-test",
+                "0.44.5",
                 Duration::from_secs(30),
             )
             .await
@@ -258,7 +258,7 @@ fn startup_transaction_child() {
         let info = ConnectionInfo {
             schema: SCHEMA_VERSION, wire_version: None,
             endpoints: vec![Endpoint { host:"127.0.0.1".into(), port:listener.local_addr().unwrap().port() }],
-            key:vec![8;32], daemon_id:[9;16], pid:std::process::id(), daemon_ver:"transaction-eof-test".into(),
+            key:vec![8;32], daemon_id:[9;16], pid:std::process::id(), daemon_ver:"0.44.5".into(),
         };
         let file = root.join("connection.json");
         write_atomic(&file, &info).unwrap();
@@ -294,7 +294,7 @@ fn startup_transaction_child() {
         }));
         let daemon = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            authenticate_server(&mut stream, &info.key, &info.daemon_id, "transaction-eof-test", Duration::from_secs(5)).await.unwrap();
+            authenticate_server(&mut stream, &info.key, &info.daemon_id, "0.44.5", Duration::from_secs(5)).await.unwrap();
             let hello = read_frame(&mut stream).await.unwrap().unwrap();
             let storage = cortexkit_store_types::StorageDescriptor {
                 module_id:"basal".into(), storage_namespace:"core".into(),
