@@ -130,7 +130,12 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
         );
         return match (
             &scope.attributes.agent_id,
-            core_owned && scope.owner_authorized,
+            core_owned
+                && scope.owner_authorized
+                && matches!(
+                    scope.kind,
+                    ScopeKind::Head | ScopeKind::Worker | ScopeKind::Ephemeral
+                ),
         ) {
             (Some(agent), true) if !agent.is_empty() => Caller::Agent {
                 agent_id: agent.clone(),
@@ -251,7 +256,7 @@ pub fn diagnostics_admitted(principal: Option<&Principal>, scope: Option<&ScopeS
             if module_id == OPERATOR_MODULE || module_id == CORE_MODULE);
     };
     if !scope.owner_authorized
-        || scope.kind == ScopeKind::Worker
+        || !matches!(scope.kind, ScopeKind::Head | ScopeKind::Ephemeral)
         || !matches!(&scope.owner, Principal::Reserved { module_id } if module_id == CORE_MODULE)
     {
         return false;
@@ -290,6 +295,24 @@ mod tests {
         )
         .with_attributes(ScopeAttributes::new().with_agent_id(agent.map(str::to_owned)))
         .with_owner_authorized(authorized)
+    }
+
+    #[test]
+    fn federated_scopes_never_gain_head_worker_or_flow_admission() {
+        let mut stamp = scope(CORE_MODULE, Some("agent"), true);
+        stamp.kind = ScopeKind::Federated;
+        assert!(matches!(
+            from_route(Some(&Principal::Direct), Some(&stamp)),
+            Caller::Other(_)
+        ));
+        assert!(!diagnostics_admitted(
+            Some(&Principal::Direct),
+            Some(&stamp)
+        ));
+        stamp.attributes.flow_id = Some("flow".into());
+        assert!(!diagnostics_admitted(None, Some(&stamp)));
+        stamp.attributes = ScopeAttributes::new();
+        assert!(worker_scope(&stamp).is_none());
     }
 
     #[test]
@@ -425,7 +448,7 @@ mod tests {
     }
 
     fn identity(harness: &str, session: &str) -> BindIdentity {
-        BindIdentity::new("/work/project", harness, session)
+        BindIdentity::new(harness, session)
     }
 
     #[test]

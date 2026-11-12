@@ -123,7 +123,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
             let info = ConnectionInfo {
                 schema: SCHEMA_VERSION, wire_version: None,
                 endpoints: vec![Endpoint { host: "127.0.0.1".into(), port: listener.local_addr().unwrap().port() }],
-                key: vec![7; 32], daemon_id: [session; 16], pid: std::process::id(), daemon_ver: "codemode-sdk-test".into(),
+                key: vec![7; 32], daemon_id: [session; 16], pid: std::process::id(), daemon_ver: "0.44.5".into(),
             };
             let file = dir.join("connection.json");
             write_atomic(&file, &info).unwrap();
@@ -135,7 +135,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 // Bound the daemon protocol too, not only the serving future.
                 tokio::time::timeout(Duration::from_secs(60), async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                authenticate_server(&mut stream, &info.key, &info.daemon_id, "codemode-sdk-test", Duration::from_secs(5)).await.unwrap();
+                authenticate_server(&mut stream, &info.key, &info.daemon_id, "0.44.5", Duration::from_secs(5)).await.unwrap();
                 let hello = read_frame(&mut stream).await.unwrap().unwrap();
                 assert_eq!(hello.header.ty, FrameType::Hello);
                 let storage = cortexkit_store_types::StorageDescriptor {
@@ -159,7 +159,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 let bind = ModuleControlRequest::RouteBind {
                     route_channel: 7, epoch: 1,
                     target: subc_protocol::RouteTarget::ToolProvider { module_id: "basal".into() },
-                    identity: subc_protocol::BindIdentity::new("/work", "test", "session"),
+                    identity: subc_protocol::BindIdentity::new("test", "session"),
                     principal: Some(subc_protocol::Principal::Reserved { module_id: "prefrontal-core".into() }),
                     call_mode: None,
                     consumer_capabilities: None, role_versions: None, admission_facts: None, scope: Some(serde_json::from_value(json!({

@@ -51,7 +51,7 @@ fn bind_with(handle: RouteHandle, harness: &str, session: &str) -> RouteBindRequ
         RouteTarget::ManagementSurface {
             module_id: "basal".into(),
         },
-        BindIdentity::new("/work/project", harness, session),
+        BindIdentity::new(harness, session),
     )
 }
 

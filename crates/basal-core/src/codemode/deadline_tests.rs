@@ -142,7 +142,7 @@ fn tool_scope_open_checks_the_attested_deadline() {
     );
     let logs = Logs::default();
     let _subscriber = tracing::subscriber::set_default(logs.clone());
-    let bind = subc_protocol::BindIdentity::new("/work", "test", "session");
+    let bind = subc_protocol::BindIdentity::new("test", "session");
     let result = admit_tool(
         &store.store,
         &host,

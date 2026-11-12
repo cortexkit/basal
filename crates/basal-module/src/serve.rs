@@ -55,7 +55,7 @@ type RouteKey = (u16, u32);
 
 /// The daemon records the route's principal and scope when binding it. Keep
 /// those values to identify the caller. Bind identity configures the provider's
-/// workspace and session; it establishes who the caller is only for the
+/// harness and session; it establishes who the caller is only for the
 /// admitted dev operator app (see [`crate::caller::dev_operator_app_admission`]).
 #[derive(Debug, Clone)]
 struct RouteStamp {
@@ -924,7 +924,7 @@ mod diagnostics_route_tests {
             RouteTarget::ManagementSurface {
                 module_id: "basal".into(),
             },
-            BindIdentity::new("/work/project", "desktop", "desktop-session"),
+            BindIdentity::new("desktop", "desktop-session"),
         )
         .with_principal(Principal::Direct);
         routes.bind(&request);
@@ -966,7 +966,7 @@ mod diagnostics_route_tests {
                 RouteTarget::ManagementSurface {
                     module_id: "basal".into(),
                 },
-                BindIdentity::new("/", "basal", "flow"),
+                BindIdentity::new("basal", "flow"),
             )
             .with_principal(Principal::Reserved {
                 module_id: "basal".into(),

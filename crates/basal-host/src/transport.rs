@@ -506,7 +506,7 @@ impl SubcTransport {
             flow,
             target,
             None,
-            BindIdentity::new("/", "basal", format!("basal:flow:{flow}")),
+            BindIdentity::new("basal", format!("basal:flow:{flow}")),
         )
         .map(Some)
     }
@@ -735,7 +735,7 @@ impl SubcTransport {
             consumer,
             // Core's answer ownership is principal plus session. This label must
             // remain stable across process restarts, not include a process id.
-            identity: BindIdentity::new("/", "basal", "basal:flows"),
+            identity: BindIdentity::new("basal", "basal:flows"),
             timeout,
             routes,
             run_watchers,
@@ -1600,7 +1600,7 @@ mod tests {
             let target = RouteTarget::ManagementSurface {
                 module_id: "broca".into(),
             };
-            let identity = BindIdentity::new("/", "basal", "model");
+            let identity = BindIdentity::new("basal", "model");
             let handle = transport
                 .model_handle("a", &target, identity.clone())
                 .unwrap();
@@ -1626,7 +1626,7 @@ mod tests {
             transport.configure_flow("a", Some(registered()));
             let result = transport.management_for_model(
                 "a",
-                BindIdentity::new("/", "basal", "model"),
+                BindIdentity::new("basal", "model"),
                 "broca",
                 "refuse",
                 b"{}",
@@ -1743,7 +1743,7 @@ mod tests {
             key: vec![7; 32],
             daemon_id: [9; 16],
             pid: std::process::id(),
-            daemon_ver: "scoped-test".into(),
+            daemon_ver: "0.44.5".into(),
         };
         write_atomic(&file, &info).unwrap();
         let opens = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -1758,7 +1758,7 @@ mod tests {
                 &mut stream,
                 &info.key,
                 &info.daemon_id,
-                "scoped-test",
+                "0.44.5",
                 Duration::from_secs(10),
             )
             .await
@@ -1896,7 +1896,7 @@ mod tests {
                 "flow-read/call",
                 Some(1),
             );
-            let identity = BindIdentity::new("/agent/project", "agent", "session");
+            let identity = BindIdentity::new("agent", "session");
             for path in ["flow.js", "flow.json"] {
                 assert_eq!(
                     transport
@@ -1929,7 +1929,7 @@ mod tests {
     #[test]
     fn role_on_run_scope_binds_the_run_scope_with_no_call_key_and_closes_it() {
         with_scoped_transport(|transport, opens, calls, _| {
-            let identity = BindIdentity::new("/agent/project", "runner", "basal:codemode:run-1");
+            let identity = BindIdentity::new("runner", "basal:codemode:run-1");
             let scope = subc_protocol::scope::ScopeSelector::new(
                 subc_protocol::Principal::Reserved {
                     module_id: "prefrontal-core".into(),
@@ -2083,7 +2083,7 @@ mod tests {
     }
 
     #[test]
-    fn run_tool_routes_copy_bind_identity_and_outlive_transport_fallback_wait() {
+    fn run_tool_routes_carry_no_project_fields_and_outlive_transport_fallback_wait() {
         // The 200 ms consumer call timeout is shorter than SLOW_ECHO_DELAY,
         // so the reply comes back only because the 2 s per-call
         // reply_timeout replaces the consumer's fallback wait.
@@ -2103,9 +2103,7 @@ mod tests {
                     targets: ["mock".into()].into_iter().collect(),
                 }),
             );
-            let mut identity =
-                BindIdentity::new("/agent/project", "agent:other", "invoking-session");
-            identity.project_id = Some("pj-registered".into());
+            let identity = BindIdentity::new("agent:other", "invoking-session");
             let options = RunToolOptions {
                 identity: identity.clone(),
                 reply_timeout: Duration::from_secs(2),
@@ -2126,7 +2124,7 @@ mod tests {
             );
             assert_eq!(
                 opens.lock().unwrap()[0]["identity"],
-                serde_json::to_value(identity).unwrap()
+                json!({"harness":"agent:other","session":"invoking-session"})
             );
             assert_eq!(
                 opens.lock().unwrap()[0]["scope"],
@@ -2309,7 +2307,7 @@ mod tests {
             }),
         );
         RunToolOptions {
-            identity: BindIdentity::new("/agent/project", "agent:other", "invoking-session"),
+            identity: BindIdentity::new("agent:other", "invoking-session"),
             reply_timeout: Duration::from_secs(5),
             preset: None,
         }
@@ -2840,7 +2838,8 @@ mod tests {
         sessions.sort();
         assert_eq!(sessions, expected);
         for open in send_opens {
-            assert_eq!(open["identity"]["project_root"], "/");
+            assert!(open["identity"].get("project_root").is_none());
+            assert!(open["identity"].get("project_id").is_none());
             assert_eq!(open["identity"]["harness"], "basal");
         }
     }
@@ -2963,7 +2962,7 @@ mod tests {
             transport
                 .management_for_model(
                     "flow-a",
-                    BindIdentity::new("/", "basal", expected[0]),
+                    BindIdentity::new("basal", expected[0]),
                     "broca",
                     "session.read",
                     b"{}",
@@ -2981,7 +2980,7 @@ mod tests {
             transport
                 .management_for_model(
                     "flow-a",
-                    BindIdentity::new("/", "basal", expected[1]),
+                    BindIdentity::new("basal", expected[1]),
                     "broca",
                     "session.read",
                     b"{}",
