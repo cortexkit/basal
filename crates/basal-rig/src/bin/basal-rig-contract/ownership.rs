@@ -8,7 +8,7 @@ pub(super) async fn cross_agent(rig: &Rig, agent: &Agent, tag: &str, machine_id:
     let mut case =
         Case::new("runtime sinks: seeded authorship fixture reaches core's cross-agent refusal");
     let session = format!("ses_rig_foreign_{tag}");
-    let created = rig.client.call(CORE,&BindIdentity::new("/","opencode",&session),"agent.create",json!({
+    let created = rig.client.call(CORE,&BindIdentity::new("opencode", &session),"agent.create",json!({
         "role":"assistant","name":format!("RigForeign{tag}"),"tag":"isolated sink recipient",
         "residence":{"machine_id":machine_id,"harness":"opencode","address_json":{"version":1,"server":"local","session":session}}
     })).await;

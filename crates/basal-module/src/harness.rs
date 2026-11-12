@@ -226,7 +226,7 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
         RouteTarget::ManagementSurface {
             module_id: crate::manifest::MODULE_ID.to_owned(),
         },
-        BindIdentity::new("/", "harness", "ses-harness"),
+        BindIdentity::new("harness", "ses-harness"),
     );
     match who {
         Value::String(s) if s == "operator" => request.with_principal(Principal::Reserved {

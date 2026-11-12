@@ -69,7 +69,7 @@ fn route_bind_with_future_scope_field() -> Vec<u8> {
         target: RouteTarget::ManagementSurface {
             module_id: "basal".into(),
         },
-        identity: BindIdentity::new("/work/project", "test", "session-1"),
+        identity: BindIdentity::new("test", "session-1"),
         principal: Some(Principal::Direct),
         consumer_capabilities: None,
         role_versions: None,
@@ -100,7 +100,7 @@ async fn unknown_control_field_is_refused_and_the_following_health_check_is_answ
             key: KEY.to_vec(),
             daemon_id: DAEMON_ID,
             pid: std::process::id(),
-            daemon_ver: "test-daemon".into(),
+            daemon_ver: "0.44.5".into(),
         },
     )
     .expect("write connection file");
@@ -120,7 +120,7 @@ async fn unknown_control_field_is_refused_and_the_following_health_check_is_answ
             &mut stream,
             &KEY,
             &DAEMON_ID,
-            "test-daemon",
+            "0.44.5",
             Duration::from_secs(2),
         )
         .await

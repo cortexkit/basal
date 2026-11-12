@@ -467,7 +467,7 @@ fn rig(tag: &str, missing_worker: bool) -> Rig {
     Rig { fixture, core }
 }
 fn context() -> Context {
-    Context { call_mode: cortexkit_role_tool_provider::CallMode::Classic, consumer_capabilities: None, bind_identity: subc_protocol::BindIdentity::new("/agent/workspace","agent-harness","agent-session"),principal:Principal::Reserved { module_id:"broca".into() },scope:Some(serde_json::from_value::<ScopeStamp>(json!({
+    Context { call_mode: cortexkit_role_tool_provider::CallMode::Classic, consumer_capabilities: None, bind_identity: subc_protocol::BindIdentity::new("agent-harness", "agent-session"),principal:Principal::Reserved { module_id:"broca".into() },scope:Some(serde_json::from_value::<ScopeStamp>(json!({
         "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7,"kind":"head",
         "attributes":{"agent_id":"agent"},"owner_authorized":true})).unwrap()) }
 }
@@ -1246,7 +1246,7 @@ fn unhandled_rejections_warn_but_handled_rejections_and_logs_do_not() {
 #[test]
 fn catalog_generation_tracks_content_and_schema_pins_refuse_changes() {
     use cortexkit_role_tool_provider::call::SchemaPin;
-    let full = basal_module::tool::catalog(json!({
+    let flow = basal_module::tool::catalog(json!({
         "params":{"capabilities":["basal:flow.manage/v1"]}
     }))
     .unwrap();
@@ -1254,13 +1254,43 @@ fn catalog_generation_tracks_content_and_schema_pins_refuse_changes() {
         "params":{"capabilities":["basal:flow.manage/v1"]},"digest_only":true
     }))
     .unwrap();
-    let empty = basal_module::tool::catalog(json!({"params":{}})).unwrap();
-    assert_eq!(full["tools"][0]["name"], "flow");
-    assert_eq!(full["tools"][0]["result_format"], "tool-result/v1");
-    assert_eq!(full["catalog_digest"], digest["catalog_digest"]);
+    let all = basal_module::tool::catalog(json!({"params":{}})).unwrap();
+    let empty = basal_module::tool::catalog(json!({"params":{"capabilities":[]}})).unwrap();
+    let codemode_selection = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:codemode/v1"]}
+    }))
+    .unwrap();
+    let names = |catalog: &Value| {
+        catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    // tool-provider's select_by_capabilities leaves tools unchanged when the filter is omitted.
+    assert_eq!(names(&all), ["codemode", "flow"]);
+    // tool-provider's select_by_capabilities selects no tools for an explicit empty filter.
     assert!(empty["tools"].as_array().unwrap().is_empty());
-    assert_eq!(full["generation"], empty["generation"]);
-    assert_ne!(full["catalog_digest"], empty["catalog_digest"]);
+    // tool-provider's select_by_capabilities selects only tools carrying the flow capability.
+    assert_eq!(names(&flow), ["flow"]);
+    // tool-provider's select_by_capabilities selects only tools carrying the codemode capability.
+    assert_eq!(names(&codemode_selection), ["codemode"]);
+    assert_eq!(flow["tools"][0]["result_format"], "tool-result/v1");
+    assert_eq!(flow["catalog_digest"], digest["catalog_digest"]);
+    let selections = [&all, &empty, &flow, &codemode_selection];
+    for selection in selections {
+        assert_eq!(selection["generation"], all["generation"]);
+    }
+    let digests: std::collections::BTreeSet<_> = selections
+        .iter()
+        .map(|selection| selection["catalog_digest"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        digests.len(),
+        selections.len(),
+        "each selection has its own digest"
+    );
     let codemode = basal_module::tool::catalog_tool();
     let rig = rig("schema-pins", false);
     for (pin, code) in [
@@ -1295,9 +1325,7 @@ fn forwarded_bind_identity_is_configuration_not_agent_authority() {
     let rig = rig("bind-identity", false);
     rig.core.release();
     let mut caller = context();
-    caller.bind_identity =
-        subc_protocol::BindIdentity::new("/other/workspace", "forged-agent", "agent:forged");
-    caller.bind_identity.project_id = Some("pj-invoking-project".into());
+    caller.bind_identity = subc_protocol::BindIdentity::new("forged-agent", "agent:forged");
     let expected = caller.bind_identity.clone();
     let result = rig
         .fixture
@@ -1315,14 +1343,15 @@ fn forwarded_bind_identity_is_configuration_not_agent_authority() {
         .unwrap();
     assert_eq!(result["structuredContent"]["status"], "completed");
     assert_eq!(rig.core.identities.lock().unwrap().as_slice(), [expected]);
-    // The admission-time catalog reads bind as a headless runner in the
-    // caller's project root, not with the caller's harness or session.
+    // Admission-time catalog reads use a headless runner's harness and session.
+    // The admitted run scope supplies project attribution for all child routes.
     let reads = rig.core.catalog_identities.lock().unwrap().clone();
     assert_eq!(reads.len(), 2, "role.describe and tool.catalog");
     for read in &reads {
-        assert_eq!(read.project_root, std::path::Path::new("/other/workspace"));
         assert_eq!(read.harness, "runner");
-        assert_eq!(read.project_id, None);
+        let wire = serde_json::to_value(read).unwrap();
+        assert!(wire.get("project_root").is_none());
+        assert!(wire.get("project_id").is_none());
         assert!(read.session.starts_with("basal:codemode:"));
     }
     assert_eq!(rig.core.opens.lock().unwrap()[0]["agent_id"], "agent");

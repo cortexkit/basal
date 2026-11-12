@@ -711,7 +711,7 @@ mod tests;
 /// basal-module builds this invocation from the principal and scope the daemon
 /// records when binding the caller's codemode tool route. The caller's identity
 /// and the invoking scope come only from that record; bind identity configures
-/// provider workspaces and sessions, not authority. Program arguments supply
+/// provider harnesses and sessions, not authority. Program arguments supply
 /// only code, a description and lower limits.
 pub struct ToolInvocation<'a> {
     pub run_id: &'a str,
@@ -904,14 +904,11 @@ pub fn admit_tool(
         // so it runs here, outside every store write. The reads go over the
         // run's own scope, which core registered before answering the open:
         // the daemon stamps a run scope's binds with the codemode call mode,
-        // and providers such as cerebellum admit basal only there. They bind
-        // as a headless runner in the caller's project root, which providers
-        // such as AFT accept; the program's own tool calls later use the
-        // caller's forwarded identity on the same scope.
-        let read_identity = run_scope::catalog_read_identity(
-            &invocation.bind_identity.project_root,
-            invocation.run_id,
-        );
+        // and providers such as cerebellum admit basal only there. Catalog
+        // reads bind as a headless runner, which providers such as AFT accept. Project
+        // attribution comes from the admitted run scope; the program's tool
+        // calls use the caller's harness and session on that same scope.
+        let read_identity = run_scope::catalog_read_identity(invocation.run_id);
         let run_scope_selector = selector.selector();
         let read = run_scope::CatalogRead {
             scope: &run_scope_selector,
