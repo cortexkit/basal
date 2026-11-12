@@ -453,7 +453,13 @@ impl Module {
                 .with_detail((!error.detail.is_null()).then_some(error.detail))
             }
             basal_core::templates::TemplateError::Refused(error) => {
-                OpError::new(error.code, error.code)
+                // A parameter refusal names its parameter in the detail; repeat it
+                // in the message, which is all a tool's text reply shows.
+                let message = match error.detail["param"].as_str() {
+                    Some(param) => format!("{}: parameter `{param}`", error.code),
+                    None => error.code.to_owned(),
+                };
+                OpError::new(error.code, message)
                     .with_detail((!error.detail.is_null()).then_some(error.detail))
             }
         }

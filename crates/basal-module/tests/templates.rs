@@ -1448,9 +1448,16 @@ fn template_dry_run_param_missing_matches_instantiate() {
     register(&f, &manifest(), "return 1;");
     let error = dry(&f, &agent(OWNER), json!({"flow_id":"watch","params":{}})).unwrap_err();
     assert_eq!(error.code, "param_missing");
+    let created = create(&f, OWNER, json!({}), 1, "1h").unwrap_err();
+    assert_eq!(error.detail, created.detail);
+    // A text reply shows only the message, so it must name the parameter.
+    let param = created.detail.as_ref().unwrap()["param"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(
-        error.detail,
-        create(&f, OWNER, json!({}), 1, "1h").unwrap_err().detail
+        created.message,
+        format!("param_missing: parameter `{param}`")
     );
 }
 
