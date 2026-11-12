@@ -8,6 +8,8 @@ mod digest_withdraw;
 mod dry_run_capabilities;
 #[path = "hosts/flow_scope_refusal.rs"]
 mod flow_scope_refusal;
+#[path = "hosts/model_retry.rs"]
+mod model_retry;
 #[path = "hosts/notice.rs"]
 mod notice;
 #[path = "hosts/room_post.rs"]

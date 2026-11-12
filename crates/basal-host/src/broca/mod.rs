@@ -68,6 +68,52 @@ pub enum BrocaError {
     Sink(String),
 }
 
+// Mirrors the llm-runner contract's retry rule for `transient`: codes only,
+// never detail. Use the contract crate's predicate once basal upgrades to the
+// subconscious crate versions (subc-protocol 0.36) that crate requires.
+fn retryable_send_refusal(code: &str) -> bool {
+    code == "transient"
+}
+
+// Mirrors the llm-runner contract's account-wait rule: codes only, never
+// detail. Use its predicate once basal upgrades to the subconscious crate
+// versions (subc-protocol 0.36) that crate requires.
+fn account_wait_send_refusal(code: &str) -> bool {
+    matches!(
+        code,
+        "account_selection_refused" | "account_limit_exhausted"
+    )
+}
+
+fn deferred_send_refusal(
+    code: &str,
+    message: &str,
+    detail: Option<&Value>,
+) -> Option<crate::flow_refusal::FlowRefusal> {
+    use crate::flow_refusal::{FlowRefusal, RefusalReason};
+    let reason = if retryable_send_refusal(code) {
+        RefusalReason::Transient
+    } else if account_wait_send_refusal(code) {
+        match code {
+            "account_selection_refused" => RefusalReason::AccountSelectionRefused,
+            _ => RefusalReason::AccountLimitExhausted,
+        }
+    } else {
+        return None;
+    };
+    let mut refusal = FlowRefusal::new(reason, "broca", "session.send");
+    refusal.message = Some(message.into());
+    refusal.detail = detail.cloned();
+    if account_wait_send_refusal(code) {
+        refusal.retry_after_ms = detail
+            .and_then(|d| d.get("retry_after_s"))
+            .and_then(Value::as_f64)
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+            .map(|seconds| (seconds * 1000.0).ceil() as u64);
+    }
+    Some(refusal)
+}
+
 impl fmt::Display for BrocaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -747,6 +793,11 @@ impl BrocaHost {
                             "Broca refused a repeat of an accepted send ({code}): {detail}"
                         ),
                     });
+                }
+                if let Some(refusal) = deferred_send_refusal(&code, &detail, None) {
+                    call.deferred = true;
+                    self.store.save(call)?;
+                    return Err(BrocaError::Flow(refusal));
                 }
                 if call.handle.is_none() {
                     call.handle = Some(call.send_id.clone());

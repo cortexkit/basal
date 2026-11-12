@@ -53,6 +53,10 @@ struct State {
     event_gets: usize,
     send_statuses: usize,
     refuse_next_send: Option<String>,
+    #[serde(default)]
+    refuse_next_send_detail: Option<String>,
+    #[serde(default)]
+    refuse_next_send_data: Option<Value>,
     status_calls: usize,
     result_calls: usize,
     pending_next: bool,
@@ -148,7 +152,17 @@ impl FakeBroca {
     /// The next `session.send` is refused with `code`, whether or not Broca
     /// accepted the send before.
     pub fn refuse_next_send(&self, code: &str) {
-        lock(&self.state).refuse_next_send = Some(code.into());
+        self.refuse_next_send_with_detail(code, &format!("fake refused {code}"));
+    }
+    pub fn refuse_next_send_with_detail(&self, code: &str, detail: &str) {
+        let mut state = lock(&self.state);
+        state.refuse_next_send = Some(code.into());
+        state.refuse_next_send_detail = Some(detail.into());
+        state.refuse_next_send_data = None;
+    }
+    pub fn refuse_next_send_with_data(&self, code: &str, data: Value) {
+        self.refuse_next_send(code);
+        lock(&self.state).refuse_next_send_data = Some(data);
     }
     /// How many times `run.event.get` was called.
     pub fn event_gets(&self) -> usize {
@@ -371,8 +385,15 @@ impl Transport for FakeBroca {
         let mut s = lock(&self.state);
         s.sends.push((route.clone(), params.to_vec()));
         if let Some(code) = s.refuse_next_send.take() {
+            let detail = s.refuse_next_send_detail.take().unwrap_or_default();
+            let data = s.refuse_next_send_data.take();
             self.save(&s)?;
-            return Err(refused(&code));
+            if let Some(data) = data
+                && let Some(refusal) = super::deferred_send_refusal(&code, &detail, Some(&data))
+            {
+                return Err(BrocaError::Flow(refusal));
+            }
+            return Err(BrocaError::Refused { code, detail });
         }
         if let Some(old) = s.runs.get(&key) {
             if old.bytes != params || &old.route != route {

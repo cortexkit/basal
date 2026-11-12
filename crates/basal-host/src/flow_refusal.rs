@@ -18,6 +18,9 @@ pub enum RefusalReason {
     ProviderNotCatalogued,
     CatalogUnavailable,
     ResourceBusy,
+    Transient,
+    AccountSelectionRefused,
+    AccountLimitExhausted,
     ConsentUnavailable,
     ModuleGrantAbsent,
     AgentGrantAbsent,
@@ -50,6 +53,9 @@ impl RefusalReason {
             Self::ProviderNotCatalogued => "provider_not_catalogued",
             Self::CatalogUnavailable => "catalog_unavailable",
             Self::ResourceBusy => "resource_busy",
+            Self::Transient => "transient",
+            Self::AccountSelectionRefused => "account_selection_refused",
+            Self::AccountLimitExhausted => "account_limit_exhausted",
             Self::ConsentUnavailable => "consent_unavailable",
             Self::ModuleGrantAbsent => "module_grant_absent",
             Self::AgentGrantAbsent => "agent_grant_absent",
@@ -71,6 +77,7 @@ impl RefusalReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "PersistedRefusal", into = "PersistedRefusal")]
 pub struct FlowRefusal {
     pub reason: RefusalReason,
     pub provider: String,
@@ -84,7 +91,73 @@ pub struct FlowRefusal {
     pub message: Option<Box<str>>,
 }
 
+// Older builds decode persisted deferral causes with a closed reason enum.
+// ResourceBusy has the same unsent retry/refund behavior as model-send waits. Keep
+// that legacy reason on disk and carry the exact provider code in a field
+// older builds ignore, so rolling back never makes a run log unreadable.
+#[derive(Serialize, Deserialize)]
+struct PersistedRefusal {
+    reason: RefusalReason,
+    provider: String,
+    action: String,
+    retry_after_ms: Option<u64>,
+    detail: Option<Value>,
+    message: Option<Box<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_code: Option<String>,
+}
+
+impl From<FlowRefusal> for PersistedRefusal {
+    fn from(refusal: FlowRefusal) -> Self {
+        let model_wait = refusal.model_send_wait();
+        let provider_code = model_wait.then(|| refusal.reason.as_str().into());
+        Self {
+            reason: if model_wait {
+                RefusalReason::ResourceBusy
+            } else {
+                refusal.reason
+            },
+            provider: refusal.provider,
+            action: refusal.action,
+            retry_after_ms: refusal.retry_after_ms,
+            detail: refusal.detail,
+            message: refusal.message,
+            provider_code,
+        }
+    }
+}
+
+impl From<PersistedRefusal> for FlowRefusal {
+    fn from(refusal: PersistedRefusal) -> Self {
+        Self {
+            reason: if refusal.reason == RefusalReason::ResourceBusy {
+                match refusal.provider_code.as_deref() {
+                    Some("transient") => RefusalReason::Transient,
+                    Some("account_selection_refused") => RefusalReason::AccountSelectionRefused,
+                    Some("account_limit_exhausted") => RefusalReason::AccountLimitExhausted,
+                    _ => refusal.reason,
+                }
+            } else {
+                refusal.reason
+            },
+            provider: refusal.provider,
+            action: refusal.action,
+            retry_after_ms: refusal.retry_after_ms,
+            detail: refusal.detail,
+            message: refusal.message,
+        }
+    }
+}
+
 impl FlowRefusal {
+    pub fn model_send_wait(&self) -> bool {
+        matches!(
+            self.reason,
+            RefusalReason::Transient
+                | RefusalReason::AccountSelectionRefused
+                | RefusalReason::AccountLimitExhausted
+        )
+    }
     pub fn terminal(&self) -> bool {
         matches!(
             self.reason,
@@ -142,6 +215,10 @@ impl FlowRefusal {
                 "the daemon does not accept flow calls to this module yet: it is still registering, or it does not declare flow-scopes/v1; retry later"
             }
             RefusalReason::ResourceBusy => "the provider's exclusive resource is busy",
+            RefusalReason::Transient => "the model provider is temporarily unavailable",
+            RefusalReason::AccountSelectionRefused | RefusalReason::AccountLimitExhausted => {
+                "waiting for an available model account"
+            }
             RefusalReason::ConsentUnavailable => {
                 "the provider requires a standing grant for this action"
             }
@@ -238,6 +315,82 @@ mod tests {
     use super::*;
     use cortexkit_resource_busy::Holder;
     use serde_json::json;
+
+    #[test]
+    fn model_wait_cause_is_readable_by_the_legacy_refusal_shape() {
+        // The legacy refusal types below reproduce the decoder from before
+        // model-send waits: its reason enum is closed, but the containing
+        // struct ignores unknown fields.
+        #[derive(Debug, Deserialize, Serialize, PartialEq)]
+        #[serde(rename_all = "snake_case")]
+        enum LegacyReason {
+            ScopeNotCarrier,
+            ScopeEnded,
+            ScopeNotLive,
+            ScopeEpochRequired,
+            ScopeNotSynced,
+            ScopeChanged,
+            ScopeUnsupported,
+            TargetFlowUnsupported,
+            ProviderNotCatalogued,
+            CatalogUnavailable,
+            ResourceBusy,
+            ConsentUnavailable,
+            ModuleGrantAbsent,
+            AgentGrantAbsent,
+            NoFlowScope,
+            AgentRetired,
+            FlowScopeRequired,
+            FlowDelegationUnsupported,
+            SinkTargetNotInAudience,
+            FlowNotApproved,
+            SinkAudienceUnavailable,
+            SinkStoreFailed,
+            SecretVaultUnavailable,
+            SinkBoardTargetUnavailable,
+            FlowHasNoAudience,
+            ScopeExpiryTooFar,
+            FlowTargetScopePrincipalRefused,
+        }
+        #[derive(Debug, Deserialize, Serialize)]
+        struct LegacyRefusal {
+            reason: LegacyReason,
+            provider: String,
+            action: String,
+            retry_after_ms: Option<u64>,
+            detail: Option<Value>,
+            message: Option<Box<str>>,
+        }
+        for reason in [
+            RefusalReason::Transient,
+            RefusalReason::AccountSelectionRefused,
+            RefusalReason::AccountLimitExhausted,
+        ] {
+            let mut refusal = FlowRefusal::new(reason, "broca", "session.send");
+            refusal.message = Some("credential listing unavailable".into());
+            refusal.retry_after_ms = Some(2500);
+            let cause = serde_json::to_string(&refusal).unwrap();
+            let legacy: LegacyRefusal = serde_json::from_str(&cause).unwrap();
+            assert_eq!(legacy.reason, LegacyReason::ResourceBusy);
+            assert_eq!(legacy.provider, "broca");
+            assert_eq!(legacy.action, "session.send");
+            assert_eq!(legacy.message, refusal.message);
+            assert_eq!(
+                serde_json::from_str::<FlowRefusal>(&cause).unwrap(),
+                refusal
+            );
+            assert!(!refusal.terminal() && !refusal.readiness() && !refusal.grant_absent());
+            let value: Value = serde_json::from_str(refusal.outcome().value.as_str()).unwrap();
+            assert_eq!(value["code"], reason.as_str());
+            let old_cause = serde_json::to_string(&legacy).unwrap();
+            assert_eq!(
+                serde_json::from_str::<FlowRefusal>(&old_cause)
+                    .unwrap()
+                    .reason,
+                RefusalReason::ResourceBusy
+            );
+        }
+    }
 
     #[test]
     fn resource_busy_uses_shared_type_and_validates() {

@@ -23,12 +23,24 @@ fn error(e: WireError) -> BrocaError {
             proven_unsent: false,
             detail,
         },
-        WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. } => {
-            BrocaError::Refused {
-                code,
-                detail: message,
+        WireError::RefusedDetails {
+            code,
+            message,
+            detail,
+        } => {
+            if let Some(refusal) = super::deferred_send_refusal(&code, &message, Some(&detail)) {
+                BrocaError::Flow(refusal)
+            } else {
+                BrocaError::Refused {
+                    code,
+                    detail: message,
+                }
             }
         }
+        WireError::Refused { code, message } => BrocaError::Refused {
+            code,
+            detail: message,
+        },
     }
 }
 fn identity(route: &Route) -> BindIdentity {
@@ -283,6 +295,43 @@ impl Transport for SubcBrocaTransport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn account_wait_retry_hints_are_informational_and_codes_alone_admit_retries() {
+        use super::*;
+        use serde_json::json;
+        for code in ["account_selection_refused", "account_limit_exhausted"] {
+            for (hint, expected) in [
+                (json!(2.5), Some(2500)),
+                (json!(0), Some(0)),
+                (json!(-1), None),
+                (json!("2"), None),
+                (json!(null), None),
+                (json!({}), None),
+                (json!(1e100), Some(u64::MAX)),
+            ] {
+                let error = error(WireError::RefusedDetails {
+                    code: code.into(),
+                    message: "account unavailable".into(),
+                    detail: json!({"retry_after_s":hint,"class":"final","cause":"not_retryable"}),
+                });
+                let BrocaError::Flow(refusal) = error else {
+                    panic!("{error:?}");
+                };
+                assert_eq!(refusal.reason.as_str(), code);
+                assert_eq!(refusal.retry_after_ms, expected);
+            }
+        }
+        for code in ["variant_unsupported", "open_failed"] {
+            assert!(matches!(
+                error(WireError::RefusedDetails {
+                    code: code.into(),
+                    message: "transient".into(),
+                    detail: json!({"class":"retryable","cause":"credentials_unavailable","retry_after_s":0}),
+                }),
+                BrocaError::Refused { .. }
+            ));
+        }
+    }
     use super::*;
 
     #[test]
