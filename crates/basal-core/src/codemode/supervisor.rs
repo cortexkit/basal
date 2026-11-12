@@ -1128,7 +1128,7 @@ impl Driver {
     fn custody_options(&self) -> basal_host::transport::RunToolOptions {
         basal_host::transport::RunToolOptions {
             identity: self.identity.clone().unwrap_or_else(|| {
-                subc_protocol::BindIdentity::new("basal", format!("basal:flow:{}", self.key()))
+                subc_protocol::BindIdentity::new("/", "basal", format!("basal:flow:{}", self.key()))
             }),
             reply_timeout: Duration::from_secs(2),
             // Custody requests never carry a preset.
@@ -2079,7 +2079,7 @@ impl Driver {
         let transport = self.shared.transport.clone();
         let options = basal_host::transport::RunToolOptions {
             identity: self.identity.clone().unwrap_or_else(|| {
-                subc_protocol::BindIdentity::new("basal", format!("basal:flow:{}", self.key()))
+                subc_protocol::BindIdentity::new("/", "basal", format!("basal:flow:{}", self.key()))
             }),
             preset: self.start.presets.get(&module).cloned(),
             // The ck-basal process supervises the separate ck-basal-worker and

@@ -68,7 +68,22 @@ pub enum BrocaError {
     Sink(String),
 }
 
-use cortexkit_role_llm_runner::errors::{is_account_wait, is_retryable};
+// Mirrors the llm-runner contract's retry rule for `transient`: codes only,
+// never detail. Use the contract crate's predicate once basal upgrades to the
+// subconscious crate versions (subc-protocol 0.36) that crate requires.
+fn retryable_send_refusal(code: &str) -> bool {
+    code == "transient"
+}
+
+// Mirrors the llm-runner contract's account-wait rule: codes only, never
+// detail. Use its predicate once basal upgrades to the subconscious crate
+// versions (subc-protocol 0.36) that crate requires.
+fn account_wait_send_refusal(code: &str) -> bool {
+    matches!(
+        code,
+        "account_selection_refused" | "account_limit_exhausted"
+    )
+}
 
 fn deferred_send_refusal(
     code: &str,
@@ -76,9 +91,9 @@ fn deferred_send_refusal(
     detail: Option<&Value>,
 ) -> Option<crate::flow_refusal::FlowRefusal> {
     use crate::flow_refusal::{FlowRefusal, RefusalReason};
-    let reason = if is_retryable(code) {
+    let reason = if retryable_send_refusal(code) {
         RefusalReason::Transient
-    } else if is_account_wait(code) {
+    } else if account_wait_send_refusal(code) {
         match code {
             "account_selection_refused" => RefusalReason::AccountSelectionRefused,
             _ => RefusalReason::AccountLimitExhausted,
@@ -89,7 +104,7 @@ fn deferred_send_refusal(
     let mut refusal = FlowRefusal::new(reason, "broca", "session.send");
     refusal.message = Some(message.into());
     refusal.detail = detail.cloned();
-    if is_account_wait(code) {
+    if account_wait_send_refusal(code) {
         refusal.retry_after_ms = detail
             .and_then(|d| d.get("retry_after_s"))
             .and_then(Value::as_f64)

@@ -105,10 +105,17 @@ pub const LEGACY_RUN_SCOPES_CAPABILITY: &str = "agent-run-scopes/v1";
 pub const CATALOG_READ_HARNESS: &str = "runner";
 
 /// The bind identity for a codemode run's admission-time catalog reads: the
-/// `runner` harness and a session naming the run. Project attribution comes
-/// from the admitted run scope, not the bind identity.
-pub fn catalog_read_identity(run_id: &str) -> subc_protocol::BindIdentity {
-    subc_protocol::BindIdentity::new(CATALOG_READ_HARNESS, format!("basal:codemode:{run_id}"))
+/// invoking caller's project root, the `runner` harness and a session naming
+/// the run. Tool calls inside the run use the caller's forwarded identity.
+pub fn catalog_read_identity(
+    project_root: &std::path::Path,
+    run_id: &str,
+) -> subc_protocol::BindIdentity {
+    subc_protocol::BindIdentity::new(
+        project_root,
+        CATALOG_READ_HARNESS,
+        format!("basal:codemode:{run_id}"),
+    )
 }
 
 /// The scope and bind identity a codemode run's admission-time catalog reads
@@ -767,7 +774,7 @@ mod call_mode_tests {
     }
 
     fn identity() -> BindIdentity {
-        catalog_read_identity("run-1")
+        catalog_read_identity(std::path::Path::new("/agent/project"), "run-1")
     }
 
     fn provider_module(module: &str, provides: &[&str]) -> Value {
@@ -921,7 +928,7 @@ mod call_mode_tests {
     }
 
     #[test]
-    fn catalog_reads_bind_as_a_runner_on_the_run_scope() {
+    fn catalog_reads_bind_as_a_runner_with_the_callers_project_root() {
         let provider =
             Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
         let resolved = resolve(
@@ -931,7 +938,7 @@ mod call_mode_tests {
         );
         assert_eq!(names(&resolved), ["mock_read"]);
         assert!(resolved.gaps.is_empty());
-        let expected = BindIdentity::new("runner", "basal:codemode:run-1");
+        let expected = BindIdentity::new("/agent/project", "runner", "basal:codemode:run-1");
         assert_eq!(
             provider.identities.lock().unwrap().as_slice(),
             [expected.clone(), expected],

@@ -131,7 +131,7 @@ pub(super) async fn lifecycle(rig: &Rig, agent: &Agent, args: &Args, tag: &str) 
     ) {
         return vec![setup];
     }
-    let primary=rig.client.call(CORE,&BindIdentity::new("opencode", &agent.session),"board.register_primary",json!({"harness":"opencode","session":agent.session,"callerDirectory":args.project_root,"callerIsPrimary":true})).await;
+    let primary=rig.client.call(CORE,&BindIdentity::new(args.project_root.clone(),"opencode",&agent.session),"board.register_primary",json!({"harness":"opencode","session":agent.session,"callerDirectory":args.project_root,"callerIsPrimary":true})).await;
     setup.check(
         "bind the registered head's persona source to its rig project",
         primary.as_ref().is_ok_and(|r| r["applied"] == true),

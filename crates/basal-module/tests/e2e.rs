@@ -372,7 +372,7 @@ mod privacy {
                 key: key.to_vec(),
                 daemon_id,
                 pid: std::process::id(),
-                daemon_ver: "0.44.5".into(),
+                daemon_ver: "privacy-test".into(),
             },
         )
         .expect("connection file");
@@ -398,7 +398,7 @@ mod privacy {
                 &mut consumer,
                 &key,
                 &daemon_id,
-                "0.44.5",
+                "privacy-test",
                 Duration::from_secs(30),
             )
             .await
@@ -408,7 +408,7 @@ mod privacy {
                 &mut stream,
                 &key,
                 &daemon_id,
-                "0.44.5",
+                "privacy-test",
                 Duration::from_secs(30),
             )
             .await

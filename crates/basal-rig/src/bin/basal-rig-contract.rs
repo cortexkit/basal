@@ -704,7 +704,7 @@ async fn register_agent(
 ) -> Result<Agent, String> {
     let name = format!("RigAgent{tag}");
     let session = format!("ses_rig_{tag}");
-    let identity = BindIdentity::new("opencode", &session);
+    let identity = BindIdentity::new("/", "opencode", &session);
     let residence = |session: &str| {
         json!({
             "machine_id": machine_id,
@@ -765,7 +765,7 @@ async fn register_agent(
         .client
         .call(
             CORE,
-            &BindIdentity::new("opencode", &second_session),
+            &BindIdentity::new("/", "opencode", &second_session),
             "agent.create",
             json!({
                 "role": "head",
@@ -1657,7 +1657,7 @@ async fn relayed_actions(
 /// refused install was not sent.
 async fn relay_refusals(rig: &Rig, flow: &Flow, agent: &Agent) -> Case {
     let mut case = Case::new("core's flow relay refuses before reaching basal");
-    let stranger = BindIdentity::new("opencode", format!("{}_unregistered", agent.session));
+    let stranger = BindIdentity::new("/", "opencode", format!("{}_unregistered", agent.session));
     let unregistered = rig.client.relay(&stranger, "list", json!({})).await;
     case.check(
         "a session that is no registered agent's residence is refused flow_caller_not_registered",
@@ -1895,7 +1895,7 @@ async fn non_carrier(rig: &Rig, flow: &Flow, run: &Run) -> Result<Case, String> 
         .core
         .flow_scope(&flow.id, flow.version)?
         .ok_or("core has no registered flow scope")?;
-    let bind = BindIdentity::new("basal-rig", format!("non-carrier:{}", run.run_id));
+    let bind = BindIdentity::new("/", "basal-rig", format!("non-carrier:{}", run.run_id));
     let route = serde_json::to_value(&bind).map_err(|e| e.to_string())?;
     case.check(
         "the direct probe bind is fresh in Broca before opening",

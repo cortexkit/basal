@@ -50,16 +50,6 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
     );
 
     assert_eq!(manifest.module_id, MODULE_ID);
-    assert!(
-        manifest
-            .capabilities
-            .as_ref()
-            .unwrap()
-            .provides
-            .iter()
-            .any(|cap| cap == "bind-no-project/v1"),
-        "basal must opt in to project-free bind identities"
-    );
     assert_eq!(manifest.protocol_ver, PROTOCOL_VERSION);
     assert_eq!(manifest.module_version, env!("CARGO_PKG_VERSION"));
     let [

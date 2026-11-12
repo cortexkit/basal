@@ -379,7 +379,7 @@ fn with_daemon(parent_state: &str, test: impl FnOnce(Arc<SubcTransport>, Arc<Mut
         key: vec![7; 32],
         daemon_id: [9; 16],
         pid: std::process::id(),
-        daemon_ver: "0.44.5".into(),
+        daemon_ver: "run-scope-test".into(),
     };
     write_atomic(&file, &info).unwrap();
     let state = Arc::new(Mutex::new(Daemon::default()));
@@ -400,7 +400,7 @@ fn with_daemon(parent_state: &str, test: impl FnOnce(Arc<SubcTransport>, Arc<Mut
             &mut stream,
             &info.key,
             &info.daemon_id,
-            "0.44.5",
+            "run-scope-test",
             Duration::from_secs(10),
         )
         .await
@@ -483,7 +483,8 @@ fn read_catalogs(
     scope: &ScopeSelector,
     preset: Option<&str>,
 ) -> crate::run_scope::ResolvedCatalog {
-    let identity = crate::run_scope::catalog_read_identity(RUN);
+    let identity =
+        crate::run_scope::catalog_read_identity(std::path::Path::new("/agent/project"), RUN);
     let read = crate::run_scope::CatalogRead {
         scope,
         identity: &identity,
@@ -532,7 +533,7 @@ fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
             }),
         );
         let options = RunToolOptions {
-            identity: BindIdentity::new("opencode", "head-session"),
+            identity: BindIdentity::new("/agent/project", "opencode", "head-session"),
             reply_timeout: Duration::from_secs(10),
             preset: None,
         };
@@ -636,7 +637,7 @@ fn core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets() {
             // The program's calls, each carrying the preset only when its
             // provider serves it, as the run's supervisor decides it.
             let options = |module: &str| RunToolOptions {
-                identity: BindIdentity::new("opencode", "head-session"),
+                identity: BindIdentity::new("/agent/project", "opencode", "head-session"),
                 reply_timeout: Duration::from_secs(10),
                 preset: resolved
                     .preset_modules
@@ -736,7 +737,7 @@ fn the_fake_cerebellum_refuses_envelope_keys_on_role_ops_and_unknown_catalog_mem
             }),
         );
         let options = RunToolOptions {
-            identity: BindIdentity::new("opencode", "head-session"),
+            identity: BindIdentity::new("/agent/project", "opencode", "head-session"),
             reply_timeout: Duration::from_secs(10),
             preset: None,
         };
@@ -769,7 +770,8 @@ fn the_fake_cerebellum_refuses_envelope_keys_on_role_ops_and_unknown_catalog_mem
             matches!(&preset, Err(error) if format!("{error:?}").contains("unsupported_value")),
             "{preset:?}"
         );
-        let identity = crate::run_scope::catalog_read_identity(RUN);
+        let identity =
+            crate::run_scope::catalog_read_identity(std::path::Path::new("/agent/project"), RUN);
         let unknown = transport.role_on_run_scope(
             &run_selector(),
             &identity,
@@ -823,7 +825,7 @@ fn a_program_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
                     targets: ["broca"].map(String::from).into(),
                 }),
             );
-            let identity = BindIdentity::new("opencode", "head-session");
+            let identity = BindIdentity::new("/agent/project", "opencode", "head-session");
             let reply = transport.management_for_model(
                 &flow,
                 identity,
@@ -864,7 +866,8 @@ fn a_role_request_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
             .unwrap()
             .tool_refusals
             .insert("role.describe".into(), refusal);
-        let identity = crate::run_scope::catalog_read_identity(RUN);
+        let identity =
+            crate::run_scope::catalog_read_identity(std::path::Path::new("/agent/project"), RUN);
         let reply = transport.role_on_run_scope(
             &run_selector(),
             &identity,

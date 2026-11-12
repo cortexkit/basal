@@ -94,7 +94,7 @@ impl Fixture {
             host: MockHost::default(),
             core: Core::default(),
             clock: Clock::manual(100),
-            bind: subc_protocol::BindIdentity::new("test", "session"),
+            bind: subc_protocol::BindIdentity::new("/work", "test", "session"),
         }
     }
 

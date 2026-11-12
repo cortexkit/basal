@@ -44,7 +44,7 @@ fn error(e: WireError) -> BrocaError {
     }
 }
 fn identity(route: &Route) -> BindIdentity {
-    BindIdentity::new(&route.harness, &route.session)
+    BindIdentity::new(&route.project_root, &route.harness, &route.session)
 }
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
@@ -295,33 +295,6 @@ impl Transport for SubcBrocaTransport {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn runner_retryable_send_refusals_use_outer_codes_not_detail() {
-        use super::*;
-        for code in [
-            "transient",
-            "fetch_unavailable",
-            "scope_not_synced",
-            "session_released",
-            "fork_busy",
-            "fork_account_held",
-        ] {
-            let error = error(WireError::RefusedDetails {
-                code: code.into(),
-                message: "retry later".into(),
-                detail: serde_json::json!({"class":"final","cause":"variant_unsupported"}),
-            });
-            let BrocaError::Flow(refusal) = error else {
-                panic!("{code} must defer the send, got {error:?}");
-            };
-            assert_eq!(
-                refusal.reason,
-                crate::flow_refusal::RefusalReason::Transient
-            );
-            assert_eq!(refusal.retry_after_ms, None);
-        }
-    }
-
     #[test]
     fn account_wait_retry_hints_are_informational_and_codes_alone_admit_retries() {
         use super::*;

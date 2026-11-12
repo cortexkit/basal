@@ -399,7 +399,7 @@ impl Harness for Subject {
             key: vec![7; 32],
             daemon_id: [1; 16],
             pid: std::process::id(),
-            daemon_ver: "0.44.5".into(),
+            daemon_ver: "conformance".into(),
         };
         let file = root.join("connection.json");
         write_atomic(&file, &info).unwrap();
@@ -474,7 +474,7 @@ impl Harness for Subject {
             &mut stream,
             &info.key,
             &info.daemon_id,
-            "0.44.5",
+            "conformance",
             Duration::from_secs(5),
         )
         .await
@@ -593,7 +593,7 @@ impl Subject {
             route_channel: channel,
             epoch: 1,
             target,
-            identity: BindIdentity::new("test", "session"),
+            identity: BindIdentity::new("/work", "test", "session"),
             principal: Some(principal(&stamp.principal)),
             consumer_capabilities,
             role_versions: None,
@@ -654,7 +654,7 @@ impl ToolProviderSubject for Subject {
         Some(principals())
     }
     fn catalog_arguments(&self) -> Value {
-        json!({"params":{}})
+        json!({"params":{"capabilities":["basal:flow.manage/v1"]}})
     }
     fn quick_call(&self) -> CallSpec {
         ("flow".into(), json!({"action":"list"}))
@@ -732,19 +732,9 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
         .unwrap();
     use cortexkit_role_tool_provider_conformance::{CaseOutcome, SuiteVerdict};
     println!("{}", report.render());
-    for name in [
-        "call_mode_matches_catalog",
-        "catalog_filter_preserves_plan_item",
-        "catalog_filter_model_refused",
-    ] {
-        assert!(
-            report
-                .cases
-                .iter()
-                .any(|case| { case.case == name && matches!(case.outcome, CaseOutcome::Passed) }),
-            "{name} must run and pass"
-        );
-    }
+    assert!(report.cases.iter().any(|case| {
+        case.case == "call_mode_matches_catalog" && matches!(case.outcome, CaseOutcome::Passed)
+    }));
     assert!(
         matches!(
             report.verdict,
@@ -776,23 +766,6 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
             "user_commands_codemode_refused",
             "user_commands_flow_refused",
             "user_commands_accepted_late",
-            // Basal does not declare reply-custody capabilities.
-            "reply_custody_dependencies",
-            "reply_custody_immediate",
-            "reply_custody_held",
-            "reply_custody_refusal_after_dispatch",
-            "reply_custody_route_close",
-            "reply_custody_restart",
-            "reply_custody_fresh_key",
-            "reply_custody_pure_direct",
-            "reply_custody_pure_route_close",
-            "reply_custody_pure_held",
-            "reply_custody_frozen_catalog",
-            "reply_custody_retention_ack",
-            // Basal's catalog does not advertise model selection.
-            "catalog_model_malformed_refused",
-            // Legacy replies have direct route tests, not a shared-suite fixture.
-            "tool_result_legacy_route_unchanged",
             // basal's own catalog lists no presets, so the served-presets
             // case has nothing to check.
             "catalog_listed_presets_served",
@@ -1251,22 +1224,12 @@ fn catalog_capability_filter_selects_flow_and_refuses_invalid_requests() {
         ["codemode"]
     );
 
-    // tool-provider's select_by_capabilities leaves an unfiltered catalog unchanged.
-    let all = basal_module::tool::catalog(json!({"params":{}})).unwrap();
-    assert_eq!(
-        all["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["codemode", "flow"]
-    );
-    // tool-provider's select_by_capabilities selects no tools for an explicit empty filter.
-    assert_eq!(
-        basal_module::tool::catalog(json!({"params":{"capabilities":[]}})).unwrap()["tools"],
-        json!([])
-    );
+    for request in [json!({"params":{}}), json!({"params":{"capabilities":[]}})] {
+        assert_eq!(
+            basal_module::tool::catalog(request).unwrap()["tools"],
+            json!([])
+        );
+    }
 
     let unknown = basal_module::tool::catalog(json!({
         "params":{"capabilities":["other:unknown/v1"]}
@@ -1295,10 +1258,7 @@ fn catalog_capability_filter_selects_flow_and_refuses_invalid_requests() {
         );
     }
 
-    let exclude = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:flow.manage/v1"],"exclude":["flow"]}
-    }))
-    .unwrap_err();
+    let exclude = basal_module::tool::catalog(json!({"params":{"exclude":["flow"]}})).unwrap_err();
     assert_eq!(exclude.code, INVALID_REQUEST);
     assert_eq!(exclude.detail.as_ref().unwrap()["field"], "params.exclude");
 }
