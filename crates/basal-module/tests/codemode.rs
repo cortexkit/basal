@@ -42,6 +42,7 @@ struct Core {
     two_providers: AtomicBool,
     store: Mutex<Option<Arc<basal_core::Store>>>,
     held_provider: AtomicBool,
+    tool_result: Mutex<Option<Value>>,
     unreadable_catalog: Mutex<Option<String>>,
     extra_entries: Mutex<Vec<basal_host::run_scope::CatalogEntry>>,
     consent_provider: AtomicBool,
@@ -113,6 +114,11 @@ impl Transport for Core {
         if module != "mock" {
             return Ok(input);
         }
+        if !self.held_provider.load(Ordering::SeqCst)
+            && let Some(result) = self.tool_result.lock().unwrap().as_ref()
+        {
+            return Ok(result.clone());
+        }
         if self.held_provider.load(Ordering::SeqCst) {
             assert_eq!((module, name), ("mock", "echo"));
             self.onward_keys.lock().unwrap().push(key.into());
@@ -157,10 +163,13 @@ impl Transport for Core {
                         json!({"kind":"not_started","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,"custodian":"reserved:basal","call_key":key,"event_id":"consent-result","settled_at":100,"reason":"consent","detail":{"consent":"approved"}}),
                     ]
                 } else if ready {
+                    let result = self.tool_result.lock().unwrap().clone().unwrap_or_else(|| {
+                        json!({"content":[{"type":"text","text":"Ready"}],"structuredContent":input})
+                    });
                     vec![
                         json!({"kind":"result","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,
                     "custodian":"reserved:basal","call_key":key,"event_id":"login-result","settled_at":100,
-                    "result":{"content":[{"type":"text","text":"Ready"}],"structuredContent":input}}),
+                    "result":result}),
                     ]
                 } else {
                     vec![]
@@ -380,7 +389,9 @@ impl Transport for Core {
                     _ => "echo",
                 };
                 let mut tool = json!({"name":tool,"schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],"input_schema":{}});
-                if self.held_provider.load(Ordering::SeqCst) {
+                if self.held_provider.load(Ordering::SeqCst)
+                    || self.tool_result.lock().unwrap().is_some()
+                {
                     tool["result_format"] = json!("tool-result/v1");
                 }
                 let mut answer =
@@ -1459,6 +1470,83 @@ fn core_run_scope_preset_reaches_only_tool_calls_to_providers_serving_presets() 
         ],
         "only the call to the provider serving presets carries the run's preset"
     );
+}
+
+#[test]
+fn tool_result_errors_reach_programs_with_provider_detail() {
+    let detail = json!({"code":"rate_limited","message":"slow down","retry_after_ms":1500});
+    let mut large_detail = detail.clone();
+    large_detail["padding"] = json!("x".repeat(basal_proto::MAX_DETAIL_BYTES + 1));
+    for late in [false, true] {
+        for detail in [Some(detail.clone()), None, Some(large_detail.clone())] {
+            let rig = rig("tool-result-error-detail", false);
+            rig.core.held_provider.store(late, Ordering::SeqCst);
+            let mut reply = json!({
+                "content":[{"type":"text","text":"rate limited"}],
+                "isError":true,
+                "errorCode":"rate_limited"
+            });
+            if let Some(detail) = &detail {
+                reply["structuredContent"] = detail.clone();
+            }
+            *rig.core.tool_result.lock().unwrap() = Some(reply);
+            let program = r#"
+                try {
+                    await tools.echo({n:20});
+                    return {unexpected_success: true};
+                } catch (e) {
+                    const {padding, ...detail} = e.detail ?? {};
+                    return {
+                        code: e.code,
+                        message: e.message,
+                        detail: e.detail === undefined ? null : detail,
+                        retry_after_ms: e.detail?.retry_after_ms ?? null,
+                        padding_length: padding?.length ?? 0,
+                        padding_intact: padding === undefined || padding === 'x'.repeat(padding.length)
+                    };
+                }
+            "#;
+            if late {
+                assert_eq!(
+                    call(&rig, "detail-key", program, Duration::from_millis(20))["structuredContent"]
+                        ["status"],
+                    "running"
+                );
+                rig.core.wait_sent(1);
+                rig.core.release();
+            }
+            let result = call(&rig, "detail-key", program, Duration::from_secs(180));
+            let result = &result["structuredContent"];
+            assert_eq!(result["status"], "completed", "{result}");
+            assert_eq!(result["value"]["code"], "rate_limited");
+            assert_eq!(result["value"]["message"], "rate limited");
+            assert_eq!(
+                result["value"]["retry_after_ms"],
+                if detail.is_some() {
+                    json!(1500)
+                } else {
+                    Value::Null
+                }
+            );
+            let mut expected_detail = detail.unwrap_or(Value::Null);
+            let padding = expected_detail
+                .as_object_mut()
+                .and_then(|detail| detail.remove("padding"));
+            assert_eq!(result["value"]["detail"], expected_detail);
+            assert_eq!(
+                result["value"]["padding_length"],
+                padding.as_ref().and_then(Value::as_str).map_or(0, str::len)
+            );
+            assert_eq!(result["value"]["padding_intact"], true);
+            assert_eq!(result["calls"][0]["outcome"], "error");
+            assert_eq!(result["calls"][0]["code"], "rate_limited");
+            if late {
+                assert_eq!(result["calls"][0]["waited_on_person"], true);
+                assert_eq!(rig.core.state.lock().unwrap().0, 1);
+                assert!(rig.core.late_acks.load(Ordering::SeqCst) > 0);
+            }
+        }
+    }
 }
 
 #[test]

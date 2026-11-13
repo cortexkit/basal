@@ -3301,6 +3301,83 @@ fn onward_content_results_map_structured_text_and_errors_and_reject_malformed_he
 }
 
 #[test]
+fn tool_result_error_detail_over_one_mib_takes_existing_delivery_failure_path() {
+    for tool_result in [false, true] {
+        let f = Fixture::new();
+        f.host.content_results.store(tool_result, Ordering::SeqCst);
+        f.standard();
+        f.issue(0, "read", json!({}));
+        let detail = json!({"padding":"x".repeat(MAX_VALUE_BYTES)});
+        let reply = if tool_result {
+            Ok(json!({
+                "content":[{"type":"text","text":"rate limited"}],
+                "isError":true,
+                "errorCode":"rate_limited",
+                "structuredContent":detail
+            }))
+        } else {
+            Err(WireError::RefusedDetails {
+                code: "rate_limited".into(),
+                message: "rate limited".into(),
+                detail,
+            })
+        };
+        f.attempt().reply.send(reply).unwrap();
+        let result = f.terminal();
+        assert_eq!(result["status"], "failed", "{result}");
+        assert_eq!(result["error"]["code"], "engine_error");
+        assert!(
+            result["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("exceeds the cap of 1048576"),
+            "{result}"
+        );
+        assert_eq!(f.calls()[0].outcome, Outcome::Error);
+        assert_eq!(f.calls()[0].code.as_deref(), Some("rate_limited"));
+        assert!(f.parent.try_recv().is_err());
+    }
+}
+
+#[test]
+fn late_tool_result_errors_keep_structured_content_as_refusal_detail() {
+    for detail in [
+        Some(json!({"code":"rate_limited","message":"slow down","retry_after_ms":1500})),
+        None,
+    ] {
+        let f = Fixture::new();
+        let (call, pull) = f.provider_held();
+        let mut reply = json!({
+            "content":[{"type":"text","text":"rate limited"}],
+            "isError":true,
+            "errorCode":"rate_limited"
+        });
+        if let Some(detail) = &detail {
+            reply["structuredContent"] = detail.clone();
+        }
+        let entry = late_entry(&call.key, "rate-limit", reply);
+        pull.reply
+            .send(Ok(late_page("i1", 1, vec![entry])))
+            .unwrap();
+        let delivery = f.delivery();
+        assert_eq!(delivery.settlement, Settlement::Rejected);
+        let rejection: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+        assert_eq!(rejection["code"], "rate_limited");
+        assert_eq!(rejection["message"], "rate limited");
+        assert_eq!(rejection.get("detail"), detail.as_ref());
+        assert_eq!(f.calls()[0].outcome, Outcome::Error);
+        assert_eq!(f.calls()[0].code.as_deref(), Some("rate_limited"));
+        f.custody_attempt("late_results.ack")
+            .reply
+            .send(Ok(json!({})))
+            .unwrap();
+        f.finish("null");
+        assert_eq!(f.terminal()["status"], "completed");
+        assert!(f.attempts.try_recv().is_err());
+    }
+}
+
+#[test]
 fn late_not_started_expired_and_error_results_are_terminal_without_retry() {
     for (kind, result, outcome, code) in [
         ("not_started", None, Outcome::Withdrawn, "not_started"),

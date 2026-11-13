@@ -50,9 +50,17 @@ pub(super) fn classify(
         .collect::<Vec<_>>()
         .join("\n");
     if decoded.is_error == Some(true) {
-        Reply::Final(Err(WireError::Refused {
-            code: decoded.error_code.unwrap_or_else(|| "tool_error".into()),
-            message: text,
+        let code = decoded.error_code.unwrap_or_else(|| "tool_error".into());
+        Reply::Final(Err(match decoded.structured_content {
+            Some(detail) => WireError::RefusedDetails {
+                code,
+                message: text,
+                detail: Value::Object(detail),
+            },
+            None => WireError::Refused {
+                code,
+                message: text,
+            },
         }))
     } else {
         Reply::Final(Ok(decoded
