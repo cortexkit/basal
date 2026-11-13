@@ -1772,7 +1772,7 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
     );
     assert_eq!(
         wire.calls("route.select")[0]["params"],
-        json!({"consumer":"basal.flow","requirements":{"iq":70,"eq":20,"tools":"none","max_output_tokens":32},"runners":["broca"],"correlation_id":call.idempotency_key,"task_ref":format!("flow:host-flow:{run}")})
+        json!({"consumer":"basal.flow","requirements":{"iq":70,"eq":20,"tools":"none"},"runners":["broca"],"correlation_id":call.idempotency_key,"task_ref":format!("flow:host-flow:{run}")})
     );
     let sent: Value = serde_json::from_slice(&fake.sends()[0].1).unwrap();
     assert_eq!(sent["model"], json!({"provider":"fake","model":"test"}));
@@ -1872,7 +1872,7 @@ fn routing_select_request_bytes_are_exact_without_available_models() {
             send_id: "send-1".into(),
         })
         .unwrap();
-    assert_eq!(serde_json::to_vec(&wire.calls("route.select")[0]).unwrap(),br#"{"method":"route.select","params":{"consumer":"basal.flow","correlation_id":"send-1","requirements":{"eq":20,"iq":70,"max_output_tokens":32,"tools":"none"},"runners":["broca"],"task_ref":"flow:flow-a:run-a"}}"#);
+    assert_eq!(serde_json::to_vec(&wire.calls("route.select")[0]).unwrap(),br#"{"method":"route.select","params":{"consumer":"basal.flow","correlation_id":"send-1","requirements":{"eq":20,"iq":70,"tools":"none"},"runners":["broca"],"task_ref":"flow:flow-a:run-a"}}"#);
     assert_eq!(wire.records.lock().unwrap()[0].0, "model-picker");
     for (outcome, name) in [
         (basal_host::selector::ModelOutcome::Completed, "completed"),

@@ -301,10 +301,15 @@ pub fn select_params(request: &SelectionRequest) -> Value {
     } else {
         FLOW_CONSUMER
     };
+    // No `max_output_tokens` here. Routing treats it as a requirement for a
+    // harness that declares `output_cap`, and Broca's harness can't declare
+    // that because ChatGPT routes refuse an output cap, so asking for it
+    // excludes every Broca route (`harness_unavailable`). The cap still
+    // travels on the Broca send, which applies it where the provider allows,
+    // and the selected model's own output limit bounds it everywhere.
     let requirements = Requirements {
         iq: u8::try_from(request.iq).unwrap_or(u8::MAX),
         eq: Some(u8::try_from(request.eq).unwrap_or(u8::MAX)),
-        max_output_tokens: Some(request.max_output_tokens),
         tools: Some(ToolsRequirement::None),
         ..Requirements::default()
     };

@@ -134,7 +134,7 @@ fn routing_v1_request_names_consumer_runner_and_preserves_call_identity() {
     assert_eq!(
         select_params(&request()),
         json!({
-            "consumer":"basal.flow", "requirements":{"iq":70,"eq":20,"tools":"none","max_output_tokens":32},
+            "consumer":"basal.flow", "requirements":{"iq":70,"eq":20,"tools":"none"},
             "runners":["broca"], "correlation_id":"send-1", "task_ref":"flow:flow-a:run-a"
         })
     );
@@ -164,7 +164,12 @@ fn input_estimate_is_sent_only_when_live_routing_advertises_it() {
                 attempt.params["requirements"].get("input_tokens").cloned(),
                 advertised.then(|| json!(100))
             );
-            assert_eq!(attempt.params["requirements"]["max_output_tokens"], 32);
+            // An output cap would demand a harness declaring `output_cap`, which
+            // Broca's doesn't, so routing would refuse every route.
+            assert_eq!(
+                attempt.params["requirements"].get("max_output_tokens"),
+                None
+            );
         }
         assert_eq!(*transport.describe_reads.lock().unwrap(), 1);
     }

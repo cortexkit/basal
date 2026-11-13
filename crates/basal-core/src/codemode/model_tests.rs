@@ -933,7 +933,7 @@ fn model_routing_uses_codemode_caller_class_and_run_task() {
     assert_eq!(calls.len(), 1);
     assert_eq!(
         calls[0],
-        json!({"consumer":"basal.codemode","requirements":{"iq":50,"eq":50,"tools":"none","max_output_tokens":1},
+        json!({"consumer":"basal.codemode","requirements":{"iq":50,"eq":50,"tools":"none"},
         "runners":["broca"],"correlation_id":store::call_key("r",0),"task_ref":"codemode:r"})
     );
     assert_eq!(
@@ -1256,10 +1256,7 @@ fn model_defaults_to_iq_50_and_eq_0() {
     let calls = f.routing.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
     for call in calls.iter() {
-        assert_eq!(
-            call["requirements"],
-            json!({"iq":50,"eq":0,"max_output_tokens":1,"tools":"none"})
-        );
+        assert_eq!(call["requirements"], json!({"iq":50,"eq":0,"tools":"none"}));
     }
     let catalog = models::catalog();
     for tool in catalog.as_array().unwrap() {
@@ -1307,7 +1304,6 @@ fn model_forwards_explicit_iq_and_eq() {
             Settlement::Fulfilled
         );
         let calls = f.routing.calls.lock().unwrap();
-        expected["max_output_tokens"] = json!(1);
         expected["tools"] = json!("none");
         assert_eq!(calls[position as usize]["requirements"], expected);
     }

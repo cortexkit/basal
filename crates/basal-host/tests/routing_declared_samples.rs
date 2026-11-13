@@ -330,7 +330,7 @@ fn declared_samples_basal_request_member_names_limits_and_identity() {
     assert_eq!(
         params,
         json!({
-            "consumer":"basal.flow", "requirements":{"iq":50,"eq":0,"tools":"none","max_output_tokens":32},
+            "consumer":"basal.flow", "requirements":{"iq":50,"eq":0,"tools":"none"},
             "runners":["broca"], "correlation_id":"send-1", "task_ref":"flow:flow-a:run-a"
         })
     );

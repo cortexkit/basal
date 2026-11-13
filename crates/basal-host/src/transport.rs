@@ -2714,7 +2714,7 @@ mod tests {
             assert_eq!(selected.0, reports[0].0);
             assert_eq!(
                 selected.1["params"],
-                json!({"consumer":"basal.flow","requirements":{"iq":70,"eq":20,"tools":"none","max_output_tokens":32},"runners":["broca"],"correlation_id":"send-1","task_ref":"flow:flow-a:run-a"})
+                json!({"consumer":"basal.flow","requirements":{"iq":70,"eq":20,"tools":"none"},"runners":["broca"],"correlation_id":"send-1","task_ref":"flow:flow-a:run-a"})
             );
             let sent = calls
                 .iter()
