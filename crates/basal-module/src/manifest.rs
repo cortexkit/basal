@@ -236,6 +236,8 @@ pub fn manifest() -> ModuleManifest {
 }
 
 fn routing_consumers() -> serde_json::Map<String, serde_json::Value> {
+    // Once the live router advertises consumer_priority, set both flow consumers
+    // to background and both codemode consumers to blocking. The member is gated.
     let consumers = [
         FLOW_CONSUMER,
         CODEMODE_CONSUMER,

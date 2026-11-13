@@ -155,6 +155,11 @@ pub fn prepare(
         });
         let (selection, dollars) = match selection {
             Ok(selection) => selection,
+            Err(basal_host::selector::SelectionError::Wait(refusal)) => {
+                // Selection has not succeeded or sent anything. Keep the token
+                // reservation pending until this same position succeeds or expires.
+                return Err(WireError::Typed(*refusal));
+            }
             Err(error) => {
                 store
                     .write(|tx| settle(tx, &run.run_id, call.position, None, true))

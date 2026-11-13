@@ -665,6 +665,8 @@ struct Driver {
     /// occupy in-flight slots but have no permission-to-send or sent-at
     /// timestamps. They spend wall time, not person time.
     provider_waits: BTreeMap<u64, ProviderWait>,
+    /// Selection can wait before an envelope exists, so retry needs the input.
+    model_args: BTreeMap<u64, JsonText>,
     tool_calls: BTreeMap<u64, (String, HostCall)>,
     /// The tool, provider code and message of each call that rejected, so a
     /// program ending on an uncaught rejection reports them as plain text.
@@ -721,6 +723,7 @@ impl Driver {
             flight_positions: BTreeSet::new(),
             held_positions: BTreeSet::new(),
             provider_waits: BTreeMap::new(),
+            model_args: BTreeMap::new(),
             tool_calls: BTreeMap::new(),
             rejections: BTreeMap::new(),
             hold_reasons: BTreeMap::new(),
@@ -1447,6 +1450,7 @@ impl Driver {
             self.shared
                 .store
                 .write(|tx| store::defer_unsent_model(tx, &self.run.run_id, position))?;
+            let now = self.shared.clock.now_ms();
             // Keep the existing model reservation and the same request. Neither
             // settling this free attempt nor preparing a new position is safe:
             // settlement would make a later successful retry appear free too.
@@ -1456,16 +1460,19 @@ impl Driver {
                     call: HostCall {
                         position,
                         kind: CallKind::Tool { name },
-                        args: JsonText::null(),
+                        args: self
+                            .model_args
+                            .get(&position)
+                            .cloned()
+                            .unwrap_or_else(JsonText::null),
                     },
                     deadline_ms: self.run.deadline_ms,
-                    recheck_ms: self
-                        .shared
-                        .clock
-                        .now_ms()
-                        .saturating_add(PROVIDER_RECHECK_MS.max(
-                            i64::try_from(refusal.retry_after_ms.unwrap_or(0)).unwrap_or(i64::MAX),
-                        ))
+                    recheck_ms: now
+                        .saturating_add(
+                            PROVIDER_RECHECK_MS.max(
+                                i64::try_from(refusal.retry_delay_ms(now)).unwrap_or(i64::MAX),
+                            ),
+                        )
                         .min(self.run.deadline_ms)
                         .min(
                             self.start
@@ -1504,6 +1511,7 @@ impl Driver {
             }
             Err(error) => (None, error.unknown_reason().is_none(), Err(error)),
         };
+        self.model_args.remove(&position);
         self.answer(Answer {
             call: HostCall {
                 position,
@@ -2168,6 +2176,9 @@ impl Driver {
     }
 
     fn dispatch_model(&mut self, call: HostCall, queued: bool) -> Result<()> {
+        self.model_args
+            .entry(call.position)
+            .or_insert_with(|| call.args.clone());
         self.release_provider_wait(call.position);
         if !queued {
             self.insert(&call, CallStart::Queued)?;
@@ -2333,24 +2344,25 @@ impl Driver {
         }
         if terminal.status == Status::BudgetExhausted(Budget::Wall) {
             for wait in self.provider_waits.values() {
-                let account_wait = wait.refusal.as_ref().filter(|r| {
-                    matches!(
-                        r.reason,
-                        RefusalReason::AccountSelectionRefused
-                            | RefusalReason::AccountLimitExhausted
-                    )
+                let model_wait = wait.refusal.as_ref().filter(|r| {
+                    r.model_selection_wait()
+                        || matches!(
+                            r.reason,
+                            RefusalReason::AccountSelectionRefused
+                                | RefusalReason::AccountLimitExhausted
+                        )
                 });
                 self.shared.store.write(|tx| {
                     store::record_outcome(
                         tx,
                         &self.run.run_id,
                         wait.call.position,
-                        if account_wait.is_some() {
+                        if model_wait.is_some() {
                             Outcome::Refused
                         } else {
                             Outcome::ToolUnavailable
                         },
-                        Some(account_wait.map_or("tool_unavailable", |r| r.reason.as_str())),
+                        Some(model_wait.map_or("tool_unavailable", |r| r.reason.as_str())),
                         self.shared.clock.now_ms(),
                     )
                 })?;
@@ -2362,7 +2374,7 @@ impl Driver {
                         "; {name} (call {}) was not sent while waiting for {} to reconnect",
                         self.tool_numbers[&wait.call.position], self.start.tools[name].module,
                     ));
-                    if let Some(refusal) = account_wait {
+                    if let Some(refusal) = model_wait {
                         error.message.push_str(&format!(
                             " ({}: {})",
                             refusal.reason.as_str(),

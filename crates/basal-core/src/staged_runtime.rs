@@ -65,6 +65,7 @@ impl Services {
         if refusal.reason == basal_host::flow_refusal::RefusalReason::ConsentUnavailable {
             return i64::MAX;
         }
+        let now = self.config.clock.now_ms();
         let shift = u32::try_from(attempt.saturating_sub(1))
             .unwrap_or(31)
             .min(31);
@@ -74,16 +75,13 @@ impl Services {
             .saturating_mul(1u32 << shift)
             .min(rt.config.deferral_retry_max)
             .max(std::time::Duration::from_millis(
-                refusal.retry_after_ms.unwrap_or(0),
+                refusal.retry_delay_ms(now),
             ));
         let deadline = rt
             .staged_snapshot(&live.run_id)
             .and_then(|s| s.claim.map(|c| c.deadline_at))
             .unwrap_or(i64::MAX);
-        self.config
-            .clock
-            .now_ms()
-            .saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX))
+        now.saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX))
             .min(deadline)
     }
     fn runtime(&self) -> Result<Runtime> {

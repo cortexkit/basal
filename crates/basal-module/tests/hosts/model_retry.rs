@@ -1,6 +1,113 @@
 use super::*;
 use basal_host::broca::{StateStore, wire::RunFinishReason};
 
+fn concurrency_full(reset_at_ms: Option<i64>) -> WireError {
+    WireError::RefusedDetails {
+        code: "no_route".into(),
+        message: "all slots occupied".into(),
+        detail: json!({"reason":"concurrency_full","reset_at_ms":reset_at_ms}),
+    }
+}
+
+#[test]
+fn routing_concurrency_defers_selection_then_sends_once() {
+    for reset in [Some(common::T0 + 2500), None] {
+        let wire = Fake::new();
+        add_routing_provider(&wire);
+        let selector = Arc::new(basal_host::selector::RoutingSelector::new(wire.clone()));
+        let (f, model, fake, _) = model_fixture(
+            "routing-concurrency",
+            wire.clone(),
+            selector,
+            Arc::new(NoHooks),
+        );
+        common::install(
+            &f,
+            &Caller::Operator,
+            "return (await llm({prompt:'hello'})).text;",
+            &model_manifest(),
+        );
+        approve_model(&f);
+        wire.enqueue("route.select", vec![Err(concurrency_full(reset))]);
+        let run = common::admit(&f, "host-flow", "slots");
+        f.module.engine.run_until_idle(50).unwrap();
+        let deferred = f
+            .module
+            .rt
+            .fixture_deferral(&run, 0)
+            .expect("capacity is an unsent preparation wait, not a final refusal");
+        assert_eq!(
+            deferred.retry_not_before,
+            reset.unwrap_or(common::T0 + 1000)
+        );
+        assert!(deferred.proven_unsent && deferred.refund_dispatch);
+        let call = f.module.rt.fixture_call_state(&run, 0).unwrap();
+        assert!(call.intent.is_none() && call.arrival.is_none());
+        assert!(fake.sends().is_empty());
+        assert_eq!(
+            f.module.rt.flow_health().unwrap()[0].consecutive_failures,
+            0
+        );
+        assert!(f.module.rt.flow("host-flow").unwrap().unwrap().enabled);
+        f.clock.set(deferred.retry_not_before - 1);
+        f.module.engine.run_until_idle(50).unwrap();
+        assert!(fake.sends().is_empty());
+        f.clock.set(deferred.retry_not_before);
+        f.module.engine.run_until_idle(50).unwrap();
+        f.module.rt.quiesce();
+        assert_eq!(fake.sends().len(), 1);
+        let key = f.module.rt.calls(&run).unwrap()[0].idempotency_key.clone();
+        fake.finish(&key, "answer", RunFinishReason::Completed, None)
+            .unwrap();
+        model.poll().unwrap();
+        f.module.engine.run_until_idle(50).unwrap();
+        assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
+        assert_eq!(fake.sends().len(), 1);
+        let selections = wire.calls("route.select");
+        assert_eq!(selections.len(), 2);
+        assert_eq!(selections[0], selections[1]);
+    }
+}
+
+#[test]
+fn routing_concurrency_deadline_is_unsent_without_a_failure_latch_penalty() {
+    let wire = Fake::new();
+    add_routing_provider(&wire);
+    let selector = Arc::new(basal_host::selector::RoutingSelector::new(wire.clone()));
+    let (f, _, fake, _) = model_fixture(
+        "routing-concurrency-deadline",
+        wire.clone(),
+        selector,
+        Arc::new(NoHooks),
+    );
+    common::install(
+        &f,
+        &Caller::Operator,
+        "return await llm({prompt:'hello'});",
+        &model_manifest(),
+    );
+    approve_model(&f);
+    wire.enqueue(
+        "route.select",
+        vec![Err(concurrency_full(Some(common::T0 + 1_000_000)))],
+    );
+    let run = common::admit(&f, "host-flow", "deadline");
+    f.module.engine.run_until_idle(50).unwrap();
+    let deferred = f.module.rt.fixture_deferral(&run, 0).unwrap();
+    assert_eq!(deferred.retry_not_before, common::T0 + 600_000);
+    f.clock.set(deferred.retry_not_before);
+    f.module.engine.run_until_idle(50).unwrap();
+    let call = f.module.rt.fixture_call_state(&run, 0).unwrap();
+    assert!(call.intent.is_none());
+    assert!(call.arrival.is_some());
+    assert!(fake.sends().is_empty());
+    assert_eq!(
+        f.module.rt.flow_health().unwrap()[0].consecutive_failures,
+        0
+    );
+    assert!(f.module.rt.flow("host-flow").unwrap().unwrap().enabled);
+}
+
 #[test]
 fn transient_model_send_defers_then_succeeds_without_spending_dispatch_budget() {
     let selector = Arc::new(basal_host::selector::FakeSelector::default());

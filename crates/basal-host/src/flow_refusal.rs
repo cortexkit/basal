@@ -150,13 +150,37 @@ impl From<PersistedRefusal> for FlowRefusal {
 }
 
 impl FlowRefusal {
+    pub fn model_selection_wait(&self) -> bool {
+        self.reason == RefusalReason::ResourceBusy
+            && self.provider == "routing"
+            && self.action == "route.select"
+            && self
+                .detail
+                .as_ref()
+                .is_some_and(|d| d["reason"] == "concurrency_full")
+    }
+
+    /// Routing supplies an absolute reset time. Convert it when scheduling,
+    /// not when selecting, so time spent in preparation cannot extend the wait.
+    pub fn retry_delay_ms(&self, now_ms: i64) -> u64 {
+        if self.model_selection_wait() {
+            self.detail
+                .as_ref()
+                .and_then(|d| d["reset_at_ms"].as_u64())
+                .map_or(0, |at| at.saturating_sub(now_ms.max(0) as u64))
+        } else {
+            self.retry_after_ms.unwrap_or(0)
+        }
+    }
+
     pub fn model_send_wait(&self) -> bool {
-        matches!(
-            self.reason,
-            RefusalReason::Transient
-                | RefusalReason::AccountSelectionRefused
-                | RefusalReason::AccountLimitExhausted
-        )
+        self.model_selection_wait()
+            || matches!(
+                self.reason,
+                RefusalReason::Transient
+                    | RefusalReason::AccountSelectionRefused
+                    | RefusalReason::AccountLimitExhausted
+            )
     }
     pub fn terminal(&self) -> bool {
         matches!(

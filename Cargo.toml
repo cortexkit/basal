@@ -42,7 +42,7 @@ cortexkit-test-support = "=0.1.14"
 cortexkit-store = { version = "=0.2.5", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
 cortexkit-role-tool-provider = "=0.15.5"
-cortexkit-role-routing = "=0.7.22"
+cortexkit-role-routing = "=0.7.23"
 cortexkit-role-llm-runner = "=0.8.41"
 cortexkit-llm-tools = "=0.2.1"
 cortexkit-role-tool-provider-conformance = "=0.15.6"

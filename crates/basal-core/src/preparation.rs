@@ -448,6 +448,12 @@ impl CallPreparation<'_> {
                 let selection = loop {
                     match self.rt.config.selector.select(&selection_request) {
                         Ok(selection) => break selection,
+                        Err(basal_host::selector::SelectionError::Wait(refusal)) => {
+                            return Ok(Prepared {
+                                deferred: Some(*refusal),
+                                ..Prepared::default()
+                            });
+                        }
                         Err(basal_host::selector::SelectionError::Refused { code, detail }) => {
                             return Err(Refusal::new(code, detail));
                         }

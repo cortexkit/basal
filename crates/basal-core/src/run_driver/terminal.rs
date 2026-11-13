@@ -211,11 +211,11 @@ impl TerminalBuilder<Records> for Terminal {
             activation_count: state.activation_count,
             script_started: state.script_started,
             phase: state.phase.clone(),
-            // Target-registry outages are control-plane readiness failures,
-            // not script failures. Expiry of that still-pending, proven-unsent
+            // Target-registry outages and routing capacity waits are control-plane
+            // readiness problems, not script failures. Expiry of a proven-unsent
             // wait must not trip the flow's consecutive-failure breaker.
             deadline_exempt: state.deadline_exempt || (self.error_kind.as_deref()==Some("deadline") && state.calls.values().any(|call| {
-                call.deferred.as_ref().filter(|d| d.proven_unsent).and_then(|d| crate::refusal_receipt::decode_refusal(&d.cause).ok()).is_some_and(|r| matches!(r.reason,basal_host::flow_refusal::RefusalReason::SinkAudienceUnavailable | basal_host::flow_refusal::RefusalReason::SinkBoardTargetUnavailable))
+                call.deferred.as_ref().filter(|d| d.proven_unsent).and_then(|d| crate::refusal_receipt::decode_refusal(&d.cause).ok()).is_some_and(|r| r.model_selection_wait() || matches!(r.reason,basal_host::flow_refusal::RefusalReason::SinkAudienceUnavailable | basal_host::flow_refusal::RefusalReason::SinkBoardTargetUnavailable))
             })),
             history_lost: false,
             commit_seq: 0,

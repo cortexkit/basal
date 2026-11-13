@@ -14,6 +14,7 @@ struct Routing {
     calls: Mutex<Vec<Value>>,
     outcomes: Mutex<Vec<Value>>,
     answer: Mutex<Option<Value>>,
+    refusals: Mutex<VecDeque<WireError>>,
 }
 impl Transport for Routing {
     fn catalog(&self) -> std::result::Result<Value, WireError> {
@@ -35,6 +36,9 @@ impl Transport for Routing {
             "role.describe" => Ok(basal_host::selector::fake_describe(false)),
             "route.select" => {
                 self.calls.lock().unwrap().push(params);
+                if let Some(refusal) = self.refusals.lock().unwrap().pop_front() {
+                    return Err(refusal);
+                }
                 Ok(self.answer.lock().unwrap().clone().unwrap_or_else(|| {
                     basal_host::selector::fake_answer(
                         "decision",
@@ -691,6 +695,139 @@ fn account_model_send_wait_honors_hint_then_succeeds_with_one_reservation() {
         assert_eq!(sends[0], sends[1]);
         assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
     }
+}
+
+fn concurrency_full(reset_at_ms: Option<i64>) -> WireError {
+    WireError::RefusedDetails {
+        code: "no_route".into(),
+        message: "all slots occupied".into(),
+        detail: json!({"reason":"concurrency_full","reset_at_ms":reset_at_ms}),
+    }
+}
+
+#[test]
+fn routing_concurrency_wait_reselects_then_sends_once_with_original_arguments() {
+    let f = ModelFixture::new();
+    f.routing
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(concurrency_full(Some(2600)));
+    f.f.issue(
+        0,
+        "model",
+        json!({"prompt":"original prompt","max_output":1}),
+    );
+    assert_eq!(f.wait_model_retry(0), 2600);
+    assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        f.f.host
+            .store
+            .read(|c| crate::classify_cost::spent(c, "program", "r"))
+            .unwrap(),
+        0.0
+    );
+    f.f.clock.set(2599);
+    f.f.catalog_notice();
+    let blocked = f.f.block_handled();
+    f.f.worker
+        .send(WorkerMessage::Blocked { awaiting: vec![0] })
+        .unwrap();
+    blocked.recv_timeout(TIMEOUT).unwrap();
+    assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
+    f.f.clock.set(2600);
+    assert_eq!(
+        f.finish_usage(
+            0,
+            "answer",
+            Usage {
+                input_tokens: Some(1),
+                cache_write_tokens: Some(0),
+                output_tokens: Some(1),
+                ..Usage::default()
+            }
+        )
+        .settlement,
+        Settlement::Fulfilled
+    );
+    let calls = f.routing.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0], calls[1]);
+    let sends = f.wire.fake.sends();
+    assert_eq!(sends.len(), 1);
+    let send: SendParams = serde_json::from_slice(&sends[0].1).unwrap();
+    assert_eq!(send.prompt, "original prompt");
+    assert_eq!(
+        f.f.host
+            .store
+            .read(|c| crate::classify_cost::spent(c, "program", "r"))
+            .unwrap(),
+        0.000002
+    );
+}
+
+#[test]
+fn routing_concurrency_wait_deadline_is_unsent_and_free() {
+    let f = ModelFixture::new();
+    f.routing
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(concurrency_full(Some(1_000_000)));
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    assert_eq!(f.wait_model_retry(0), 100_000);
+    f.f.clock.set(100_000);
+    let result = f.f.terminal();
+    assert_eq!(result["status"], "budget_exhausted:wall");
+    assert_eq!(result["person_wait_ms"], 0);
+    assert_eq!(result["calls"][0]["code"], "resource_busy");
+    f.f.assert_never_sent(0, Outcome::Refused);
+    assert!(f.wire.fake.sends().is_empty());
+    assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
+    f.f.host
+        .store
+        .read(|c| {
+            let charged: u64 = c.query_row(
+                "SELECT charged FROM codemode_models WHERE run_id='r' AND position=0",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(charged, 0);
+            assert_eq!(crate::classify_cost::spent(c, "program", "r")?, 0.0);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn routing_concurrency_without_reset_uses_the_existing_provider_backoff() {
+    let f = ModelFixture::new();
+    f.routing
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(concurrency_full(None));
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    assert_eq!(
+        f.wait_model_retry(0),
+        f.f.clock.now_ms() + PROVIDER_RECHECK_MS
+    );
+    f.f.clock.advance(PROVIDER_RECHECK_MS);
+    assert_eq!(
+        f.finish_usage(
+            0,
+            "answer",
+            Usage {
+                input_tokens: Some(1),
+                cache_write_tokens: Some(0),
+                output_tokens: Some(1),
+                ..Usage::default()
+            }
+        )
+        .settlement,
+        Settlement::Fulfilled
+    );
+    assert_eq!(f.wire.fake.sends().len(), 1);
 }
 
 #[test]

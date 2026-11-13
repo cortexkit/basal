@@ -91,6 +91,45 @@ fn answer() -> Value {
 }
 
 #[test]
+fn routing_concurrency_full_is_a_typed_wait_with_an_absolute_reset() {
+    for (hint, delay) in [
+        (json!(2600), 2500),
+        (Value::Null, 0),
+        (json!("2600"), 0),
+        (json!(-1), 0),
+    ] {
+        let transport = RoutingTransport::new(
+            &[&["model-picker"]],
+            vec![Err(WireError::RefusedDetails {
+                code: "no_route".into(),
+                message: "all slots occupied".into(),
+                detail: json!({"reason":"concurrency_full","reset_at_ms":hint}),
+            })],
+        );
+        let Err(SelectionError::Wait(wait)) = RoutingSelector::new(transport).select(&request())
+        else {
+            panic!("concurrency must wait")
+        };
+        assert!(wait.model_selection_wait() && wait.model_send_wait());
+        assert_eq!(wait.retry_delay_ms(100), delay);
+        assert_eq!(wait.retry_delay_ms(3000), 0);
+        assert!(!wait.terminal() && !wait.readiness());
+        let persisted = serde_json::to_value(&wait).unwrap();
+        assert_eq!(persisted["reason"], "resource_busy");
+        assert_eq!(
+            serde_json::from_value::<crate::flow_refusal::FlowRefusal>(persisted).unwrap(),
+            *wait
+        );
+    }
+    let refused = error(WireError::RefusedDetails {
+        code: "no_route".into(),
+        message: "concurrency_full".into(),
+        detail: json!({"reason":"all_inadequate","reset_at_ms":2600}),
+    });
+    assert!(matches!(refused, SelectionError::Refused {code,..} if code=="no_route"));
+}
+
+#[test]
 fn routing_v1_request_names_consumer_runner_and_preserves_call_identity() {
     assert_eq!(
         select_params(&request()),

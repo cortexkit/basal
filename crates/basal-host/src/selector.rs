@@ -91,12 +91,16 @@ pub enum ModelOutcome {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectionError {
+    Wait(Box<crate::flow_refusal::FlowRefusal>),
     Refused { code: String, detail: String },
     Unavailable { detail: String },
 }
 impl fmt::Display for SelectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Wait(refusal) => {
+                write!(f, "model selection waiting: {}", refusal.reason.as_str())
+            }
             Self::Refused { code, detail } => write!(f, "model selection refused {code}: {detail}"),
             Self::Unavailable { detail } => write!(f, "model selection unavailable: {detail}"),
         }
@@ -129,12 +133,37 @@ impl ModelSelector for UnconfiguredSelector {
 }
 fn error(e: WireError) -> SelectionError {
     match e {
-        WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. } => {
+        WireError::RefusedDetails {
+            code,
+            message,
+            detail,
+        } => {
+            use cortexkit_role_routing::errors::{NoRouteReason, Refusal, RefusalCode};
+            let refusal = Refusal::with(RefusalCode::parse(&code), &message, &detail);
+            if refusal.code == RefusalCode::NoRoute
+                && serde_json::from_value::<NoRouteReason>(detail["reason"].clone()).ok()
+                    == Some(NoRouteReason::ConcurrencyFull)
+            {
+                use crate::flow_refusal::{FlowRefusal, RefusalReason};
+                let mut wait =
+                    FlowRefusal::new(RefusalReason::ResourceBusy, "routing", "route.select");
+                let mut detail = detail;
+                // Use the contract's timestamp classifier; missing or malformed
+                // hints still wait on basal's normal bounded retry schedule.
+                detail["reset_at_ms"] = json!(refusal.wait_until_ms());
+                wait.detail = Some(detail);
+                wait.message = Some(message.into());
+                return SelectionError::Wait(Box::new(wait));
+            }
             SelectionError::Refused {
                 code,
                 detail: message,
             }
         }
+        WireError::Refused { code, message } => SelectionError::Refused {
+            code,
+            detail: message,
+        },
         other => SelectionError::Unavailable {
             detail: format!("{other:?}"),
         },
