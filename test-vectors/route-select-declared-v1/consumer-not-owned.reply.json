@@ -1,0 +1,1 @@
+{"code":"consumer_not_owned","message":"the caller and its scope do not own consumer \"magic-context.summary\"","detail":{"consumer":"magic-context.summary"}}

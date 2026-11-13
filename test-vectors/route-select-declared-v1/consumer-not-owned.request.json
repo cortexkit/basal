@@ -1,0 +1,1 @@
+{"method":"route.select","params":{"consumer":"magic-context.summary","eligible_routes":[{"model":"model-a","provider":"example-provider"}],"requirements":{"tools":"none"},"runners":["broca"]}}

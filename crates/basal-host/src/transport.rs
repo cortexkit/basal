@@ -1826,7 +1826,9 @@ mod tests {
                 } else if body["method"] == "session.send" {
                     json!({"result":{"state":"active","run_id":format!("broca-run:{}",body["params"]["send_id"].as_str().unwrap())}})
                 } else if body["method"]=="route.select" {
-                    json!({"result":{"selected":{"model":{"providerID":"registry","modelID":"model"}},"decisionID":"selection-1","runner":{"provider":"runner","model":"model"}}})
+                    json!({"result":crate::selector::fake_answer("selection-1", ("registry", "model"), ("runner", "model"))})
+                } else if body["method"]=="role.describe" {
+                    json!({"result":crate::selector::fake_describe(false)})
                 } else if body["method"]=="run.result" {
                     json!({"result":{"run_id":body["params"]["run_id"],"state":"completed","final_message":{"ordinal":0,"mid":"m","text":"answer"}}})
                 } else if body["method"]=="run.status" {
@@ -2590,6 +2592,8 @@ mod tests {
                 Arc::new(crate::selector::RoutingSelector::new(transport.clone()));
             let selection = selector_client
                 .select(&crate::selector::SelectionRequest {
+                    input_tokens: 100,
+                    max_output_tokens: 32,
                     caller_class: "flow".into(),
                     iq: 70,
                     eq: 20,
@@ -2710,7 +2714,7 @@ mod tests {
             assert_eq!(selected.0, reports[0].0);
             assert_eq!(
                 selected.1["params"],
-                json!({"targetAgent":"flow","requirements":{"iq":70,"eq":20},"excludeRouteKeys":[],"sendID":"send-1","taskId":"flow:flow-a:run-a","substrate":"broca"})
+                json!({"consumer":"basal.flow","requirements":{"iq":70,"eq":20,"tools":"none","max_output_tokens":32},"runners":["broca"],"correlation_id":"send-1","task_ref":"flow:flow-a:run-a"})
             );
             let sent = calls
                 .iter()
@@ -2795,6 +2799,8 @@ mod tests {
             let send = format!("send-{}", requests.len());
             let chosen = selection
                 .select(&SelectionRequest {
+                    input_tokens: 100,
+                    max_output_tokens: 32,
                     caller_class: "flow".into(),
                     iq: 70,
                     eq: 20,

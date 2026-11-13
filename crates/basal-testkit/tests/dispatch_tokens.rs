@@ -366,6 +366,7 @@ fn usage_outcome(input: u64, cache_write: u64, output: u64, cached: u64) -> Host
         cache_write_tokens: Some(cache_write),
         output_tokens: Some(output),
         cached_input_tokens: Some(cached),
+        ..Default::default()
     });
     outcome
 }

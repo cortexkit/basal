@@ -43,6 +43,8 @@ fn keyed_snapshot_lookup_ignores_unrelated_corruption_and_migrates_legacy_params
     let memory = Arc::new(MemoryStore::default());
     let selection = FakeSelector::default()
         .select(&SelectionRequest {
+            input_tokens: 100,
+            max_output_tokens: 32,
             caller_class: "flow".into(),
             iq: 1,
             eq: 1,

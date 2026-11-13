@@ -29,6 +29,8 @@ fn llm(position: u64) -> CallRequest {
     let key = format!("key:{position}");
     let selection = FakeSelector::default()
         .select(&SelectionRequest {
+            input_tokens: 100,
+            max_output_tokens: 32,
             caller_class: "flow".into(),
             iq: 40,
             eq: 20,
@@ -722,6 +724,8 @@ fn codemode_request(position: u64) -> CallRequest {
     let key = format!("codemode-key:{position}");
     let selection = FakeSelector::default()
         .select(&SelectionRequest {
+            input_tokens: 100,
+            max_output_tokens: 32,
             caller_class: "codemode".into(),
             iq: 40,
             eq: 20,

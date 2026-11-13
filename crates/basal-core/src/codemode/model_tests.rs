@@ -13,6 +13,7 @@ use basal_host::{
 struct Routing {
     calls: Mutex<Vec<Value>>,
     outcomes: Mutex<Vec<Value>>,
+    answer: Mutex<Option<Value>>,
 }
 impl Transport for Routing {
     fn catalog(&self) -> std::result::Result<Value, WireError> {
@@ -31,11 +32,16 @@ impl Transport for Routing {
     ) -> std::result::Result<Value, WireError> {
         assert_eq!(module, "model-picker");
         match op {
+            "role.describe" => Ok(basal_host::selector::fake_describe(false)),
             "route.select" => {
                 self.calls.lock().unwrap().push(params);
-                Ok(
-                    json!({"selected":{"model":{"providerID":"registry","modelID":"chosen"}},"decisionID":"decision","runner":{"provider":"fake","model":"test"}}),
-                )
+                Ok(self.answer.lock().unwrap().clone().unwrap_or_else(|| {
+                    basal_host::selector::fake_answer(
+                        "decision",
+                        ("registry", "chosen"),
+                        ("fake", "test"),
+                    )
+                }))
             }
             "route.set_decision_outcome" => {
                 self.outcomes.lock().unwrap().push(params);
@@ -138,6 +144,9 @@ struct ModelFixture {
 }
 impl ModelFixture {
     fn new() -> Self {
+        Self::with_limits(Limits::default())
+    }
+    fn with_limits(limits: Limits) -> Self {
         let f = Fixture::new();
         let (model_wait, model_waits) = mpsc::channel();
         *f.supervisor.0.after_model_wait.lock().unwrap() =
@@ -167,14 +176,36 @@ impl ModelFixture {
             selector.clone(),
         );
         let catalog = models::catalog();
+        f.catalog.set_op(
+            "provider",
+            "classify_alias",
+            OpDecl {
+                kind: Some(OpKind::Query),
+                cause_echo: false,
+                shell_capable: false,
+            },
+        );
+        f.catalog.set_tool_contract(
+            "provider",
+            "classify_alias",
+            json!({"capabilities":[cortexkit_llm_tools::classify::TAG]}),
+        );
         f.start(
-            &[(
-                "model",
-                "basal",
-                "model",
-                catalog[0]["input_schema"].clone(),
-            )],
-            Limits::default(),
+            &[
+                (
+                    "model",
+                    "basal",
+                    "model",
+                    catalog[0]["input_schema"].clone(),
+                ),
+                (
+                    "llm_classify",
+                    "provider",
+                    "classify_alias",
+                    cortexkit_llm_tools::classify::input_schema(),
+                ),
+            ],
+            limits,
             100_000,
         );
         assert!(matches!(
@@ -327,8 +358,9 @@ fn transient_model_send_retries_with_one_reservation_then_charges_only_success()
     let dollars: (i64, f64) = f.f.host.store.read(|c| Ok(c.query_row("SELECT COUNT(*),COALESCE(SUM(COALESCE(charged,reserved)),0) FROM classify_costs WHERE kind='program' AND run_id='r'", [], |r| Ok((r.get(0)?,r.get(1)?)))?)).unwrap();
     assert_eq!(
         dollars,
-        (0, 0.0),
-        "local model retries never create classifier dollar reservations"
+        (1, 0.000002),
+        // Direct model calls now share the dollar ledger and cap with classifiers.
+        "model retries settle one shared dollar reservation from actual usage"
     );
     assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
     let sends = f.wire.fake.sends();
@@ -336,6 +368,155 @@ fn transient_model_send_retries_with_one_reservation_then_charges_only_success()
     assert!(sends.iter().all(|s| s == &sends[0]));
     f.f.finish("null");
     assert_eq!(f.f.terminal()["person_wait_ms"], 0);
+}
+
+#[test]
+fn model_without_price_is_refused_before_send_and_releases_token_reservation() {
+    let f = ModelFixture::new();
+    let mut answer =
+        basal_host::selector::fake_answer("decision", ("registry", "chosen"), ("fake", "test"));
+    answer.as_object_mut().unwrap().remove("price");
+    *f.routing.answer.lock().unwrap() = Some(answer);
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    let message = f.f.parent.recv_timeout(TIMEOUT).unwrap_or_else(|error| {
+        panic!(
+            "no refusal: {error:?}; run={:?}; calls={:?}",
+            f.run(),
+            f.f.calls()
+        )
+    });
+    let ParentMessage::Deliver(delivery) = message else {
+        panic!("expected a model refusal, got {message:?}")
+    };
+    assert_eq!(delivery.settlement, Settlement::Rejected);
+    assert_eq!(
+        parse(delivery.value.as_str()).unwrap()["code"],
+        "price_unknown"
+    );
+    assert!(f.wire.fake.sends().is_empty());
+    f.f.host
+        .store
+        .read(|c| {
+            let charged: u64 = c.query_row(
+                "SELECT charged FROM codemode_models WHERE run_id='r' AND position=0",
+                [],
+                |r| r.get(0),
+            )?;
+            let dollars: u64 = c.query_row(
+                "SELECT COUNT(*) FROM classify_costs WHERE run_id='r'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!((charged, dollars), (0, 0));
+            Ok(())
+        })
+        .unwrap();
+    f.f.finish("null");
+}
+
+#[test]
+fn model_task_estimate_is_replaced_once_by_actual_usage_in_both_ledgers() {
+    let f = ModelFixture::new();
+    let mut answer =
+        basal_host::selector::fake_answer("decision", ("registry", "chosen"), ("fake", "test"));
+    answer["price"]["estimated_task_usd"] = json!(0.125);
+    *f.routing.answer.lock().unwrap() = Some(answer);
+    let call = f.request(0, "model", json!({"prompt":"hello","max_output":32}));
+    let request = models::prepare(&f.f.host.store, f.selector.as_ref(), &f.run(), &call).unwrap();
+    let retry = models::prepare(&f.f.host.store, f.selector.as_ref(), &f.run(), &call).unwrap();
+    assert_eq!(request.args, retry.args);
+    assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        f.f.host
+            .store
+            .read(|c| crate::classify_cost::spent(c, "program", "r"))
+            .unwrap(),
+        0.125
+    );
+    let usage = TokenUsage {
+        input_tokens: Some(100),
+        output_tokens: Some(20),
+        cache_write_tokens: Some(0),
+        cached_input_tokens: Some(50),
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        f.f.host
+            .store
+            .write(|tx| models::settle(tx, "r", 0, Some(usage), false))
+            .unwrap();
+    }
+    f.f.host.store.read(|c| {
+        let dollars: (f64,f64) = c.query_row("SELECT reserved,charged FROM classify_costs WHERE kind='program' AND run_id='r' AND position=0", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let tokens: u64 = c.query_row("SELECT charged FROM codemode_models WHERE run_id='r' AND position=0", [], |r| r.get(0))?;
+        assert_eq!(dollars, (0.125, 0.00012));
+        assert_eq!(tokens, 120);
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn model_and_classifier_share_the_program_dollar_cap_including_inflight_reserves() {
+    let f = ModelFixture::with_limits(Limits {
+        model_cost_usd: 0.125,
+        ..Limits::default()
+    });
+    let mut answer =
+        basal_host::selector::fake_answer("decision", ("registry", "chosen"), ("fake", "test"));
+    answer["price"]["estimated_task_usd"] = json!(0.0625);
+    *f.routing.answer.lock().unwrap() = Some(answer);
+    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
+    assert_eq!(f.committed.recv_timeout(TIMEOUT).unwrap(), 0);
+    assert_eq!(
+        f.f.host
+            .store
+            .read(|c| crate::classify_cost::spent(c, "program", "r"))
+            .unwrap(),
+        0.0625
+    );
+    let vectors: Value = serde_json::from_str(cortexkit_llm_tools::vectors::CLASSIFY).unwrap();
+    let mut input = vectors["valid_requests"][0]["value"].clone();
+    input["max_cost_usd"] = json!(0.125);
+    f.f.issue(1, "llm_classify", input);
+    let attempt = f.f.attempt();
+    assert_eq!(attempt.input["max_cost_usd"], 0.0625);
+    attempt
+        .reply
+        .send(Ok(json!({"answers":{},"usage":{},"cost_usd":0.0625})))
+        .unwrap();
+    assert_eq!(f.f.delivery().position, 1);
+    f.f.issue(2, "model", json!({"prompt":"hello","max_output":1}));
+    let refused = f.f.delivery();
+    assert_eq!(refused.position, 2);
+    assert_eq!(
+        parse(refused.value.as_str()).unwrap()["code"],
+        "budget_exhausted"
+    );
+    assert_eq!(f.wire.fake.sends().len(), 1);
+    f.wire
+        .fake
+        .finish(
+            &store::call_key("r", 0),
+            "answer",
+            RunFinishReason::Completed,
+            Some(Usage {
+                input_tokens: Some(1),
+                cache_write_tokens: Some(0),
+                output_tokens: Some(1),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    f.broca.poll().unwrap();
+    assert_eq!(f.f.delivery().position, 0);
+    assert_eq!(
+        f.f.host
+            .store
+            .read(|c| crate::classify_cost::spent(c, "program", "r"))
+            .unwrap(),
+        0.062502
+    );
+    f.f.finish("null");
 }
 
 #[test]
@@ -503,7 +684,8 @@ fn account_model_send_wait_honors_hint_then_succeeds_with_one_reservation() {
                     ))
                 })
                 .unwrap();
-        assert_eq!(ledgers, (1, 2, 1, 0.12));
+        // The classifier keeps its charge; the successful model call adds two microdollars.
+        assert_eq!(ledgers, (1, 2, 2, 0.120002));
         let sends = f.wire.fake.sends();
         assert_eq!(sends.len(), 2);
         assert_eq!(sends[0], sends[1]);
@@ -614,8 +796,8 @@ fn model_routing_uses_codemode_caller_class_and_run_task() {
     assert_eq!(calls.len(), 1);
     assert_eq!(
         calls[0],
-        json!({"targetAgent":"codemode","requirements":{"iq":50,"eq":50},
-        "excludeRouteKeys":[],"sendID":store::call_key("r",0),"taskId":"codemode:r","substrate":"broca"})
+        json!({"consumer":"basal.codemode","requirements":{"iq":50,"eq":50,"tools":"none","max_output_tokens":1},
+        "runners":["broca"],"correlation_id":store::call_key("r",0),"task_ref":"codemode:r"})
     );
     assert_eq!(
         f.routing.outcomes.lock().unwrap().as_slice(),
@@ -774,6 +956,7 @@ fn model_usage_counts_fresh_cache_writes_output_but_not_cached_input() {
         cache_write_tokens: Some(20),
         output_tokens: Some(30),
         cached_input_tokens: Some(1_000_000),
+        ..Default::default()
     };
     f.f.host
         .store
@@ -914,6 +1097,7 @@ fn overcap_provider_usage_still_yields_typed_budget_refusal() {
         cache_write_tokens: Some(0),
         output_tokens: Some(0),
         cached_input_tokens: None,
+        ..Default::default()
     };
     for position in 0..2 {
         f.f.host
@@ -935,7 +1119,10 @@ fn model_defaults_to_iq_50_and_eq_0() {
     let calls = f.routing.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
     for call in calls.iter() {
-        assert_eq!(call["requirements"], json!({"iq":50,"eq":0}));
+        assert_eq!(
+            call["requirements"],
+            json!({"iq":50,"eq":0,"max_output_tokens":1,"tools":"none"})
+        );
     }
     let catalog = models::catalog();
     for tool in catalog.as_array().unwrap() {
@@ -952,7 +1139,7 @@ fn model_defaults_to_iq_50_and_eq_0() {
 #[test]
 fn model_forwards_explicit_iq_and_eq() {
     let f = ModelFixture::new();
-    for (position, name, input, expected) in [
+    for (position, name, input, mut expected) in [
         (
             0,
             "model",
@@ -983,6 +1170,8 @@ fn model_forwards_explicit_iq_and_eq() {
             Settlement::Fulfilled
         );
         let calls = f.routing.calls.lock().unwrap();
+        expected["max_output_tokens"] = json!(1);
+        expected["tools"] = json!("none");
         assert_eq!(calls[position as usize]["requirements"], expected);
     }
 }

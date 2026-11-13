@@ -253,6 +253,7 @@ impl FlowRefusal {
             cache_write_tokens: Some(0),
             output_tokens: Some(0),
             cached_input_tokens: Some(0),
+            ..Default::default()
         });
         outcome
     }

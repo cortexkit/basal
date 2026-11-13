@@ -128,6 +128,7 @@ dependencies = [
  "base64",
  "cortexkit-resource-busy",
  "cortexkit-role-llm-runner",
+ "cortexkit-role-routing",
  "cortexkit-role-tool-provider",
  "httparse",
  "jiff",
@@ -582,9 +583,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-role-routing"
-version = "0.7.21"
+version = "0.7.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1c489612594ab5acd5465c9bc67fe4b2e90f438a30ba0de4402d1139115f1e7"
+checksum = "40df705de968114992a3d25175e0021abe4de5de708abfea61505e02c3b2086f"
 dependencies = [
  "cortexkit-role-media",
  "serde",

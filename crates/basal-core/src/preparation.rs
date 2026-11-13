@@ -20,6 +20,7 @@ pub(crate) struct Prepared {
     pub(crate) request: Option<JsonText>,
     /// Tokens to reserve for a model call.
     pub(crate) tokens: Option<u64>,
+    pub(crate) model_cost_micros: u64,
     pub(crate) classify_cost: bool,
     pub(crate) args: Option<Value>,
     /// A failed agent registry read is retried without dispatching the call.
@@ -432,6 +433,10 @@ impl CallPreparation<'_> {
                     },
                 )?;
                 let selection_request = basal_host::selector::SelectionRequest {
+                    input_tokens: clamped
+                        .reserve
+                        .saturating_sub(u64::from(clamped.max_output)),
+                    max_output_tokens: u64::from(clamped.max_output),
                     caller_class: "flow".into(),
                     iq: grant.iq,
                     eq: grant.eq,
@@ -455,6 +460,17 @@ impl CallPreparation<'_> {
                         }
                     }
                 };
+                let price = selection.price.as_ref().ok_or_else(|| {
+                    Refusal::new("price_unknown", "routing did not price the selected model")
+                })?;
+                let model_cost_micros = basal_host::model_cost::reserve(
+                    price,
+                    clamped
+                        .reserve
+                        .saturating_sub(u64::from(clamped.max_output)),
+                    u64::from(clamped.max_output),
+                )
+                .map_err(|e| Refusal::new("price_unknown", e.to_string()))?;
                 let mut envelope: Value = serde_json::from_str(clamped.request.as_str())
                     .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
                 envelope["selection"] = serde_json::to_value(selection)
@@ -464,6 +480,7 @@ impl CallPreparation<'_> {
                 Ok(Prepared {
                     request: Some(request),
                     tokens: Some(clamped.reserve),
+                    model_cost_micros,
                     args: None,
                     ..Prepared::default()
                 })

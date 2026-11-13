@@ -16,6 +16,8 @@ fn request(p: Primitive, position: u64, args: Value) -> CallRequest {
     let key = format!("key:{position}");
     let selection = FakeSelector::default()
         .select(&SelectionRequest {
+            input_tokens: 100,
+            max_output_tokens: 32,
             caller_class: "flow".into(),
             iq: 40,
             eq: 20,
@@ -97,7 +99,54 @@ fn usage() -> Usage {
         output_tokens: Some(5),
         cached_input_tokens: Some(100),
         reasoning_tokens: Some(3),
+        ..Default::default()
     }
+}
+
+#[test]
+fn unpriced_frozen_selection_refuses_before_broca_send() {
+    let fake = Arc::new(FakeBroca::default());
+    let store = Arc::new(MemoryStore::default());
+    let h = host(fake.clone(), store.clone());
+    let mut request = llm(0);
+    let mut envelope: Value = serde_json::from_str(request.args.as_str()).unwrap();
+    envelope["selection"]
+        .as_object_mut()
+        .unwrap()
+        .remove("price");
+    request.args = JsonText::new(envelope.to_string()).unwrap();
+    assert!(
+        matches!(h.dispatch_model(&request), Err(BrocaError::Refused {code,..}) if code == "price_unknown")
+    );
+    assert!(fake.sends().is_empty());
+    assert!(store.load().unwrap().is_empty());
+}
+
+#[test]
+fn selected_harness_and_optional_cache_lifetimes_survive_the_broca_adapter() {
+    let fake = Arc::new(FakeBroca::default());
+    let h = host(fake.clone(), Arc::new(MemoryStore::default()));
+    let sink = Arc::new(Sink::default());
+    h.attach(sink.clone());
+    let mut request = llm(0);
+    let mut envelope: Value = serde_json::from_str(request.args.as_str()).unwrap();
+    envelope["selection"]["harness"] = json!("one-off");
+    request.args = JsonText::new(envelope.to_string()).unwrap();
+    h.dispatch_model(&request).unwrap();
+    assert_eq!(fake.sends()[0].0.harness, "one-off");
+    let usage: Usage = serde_json::from_value(json!({
+        "input_tokens":7,"cache_write_tokens":2,"output_tokens":5,"reasoning_tokens":3,
+        "cache_write_5m_tokens":1,"cache_write_1h_tokens":1
+    }))
+    .unwrap();
+    fake.finish("key:0", "answer", RunFinishReason::Completed, Some(usage))
+        .unwrap();
+    h.poll().unwrap();
+    let completions = sink.completions.lock().unwrap();
+    let usage = completions[0].outcome.usage.unwrap();
+    assert_eq!(usage.cache_write_5m_tokens, Some(1));
+    assert_eq!(usage.cache_write_1h_tokens, Some(1));
+    assert_eq!(usage.output_tokens, Some(5));
 }
 
 #[test]
@@ -205,7 +254,8 @@ fn pending_submission_keeps_its_handle_and_usage_is_metadata() {
             input_tokens: Some(7),
             cache_write_tokens: Some(2),
             output_tokens: Some(5),
-            cached_input_tokens: Some(100)
+            cached_input_tokens: Some(100),
+            ..Default::default()
         })
     );
 }
@@ -221,6 +271,7 @@ fn usage_absent_empty_and_zero_remain_distinct() {
             output_tokens: Some(0),
             cached_input_tokens: Some(0),
             reasoning_tokens: Some(0),
+            ..Default::default()
         }),
     ]
     .into_iter()
@@ -478,7 +529,8 @@ fn usage_comes_from_run_status_once_and_waits_while_status_lags() {
             input_tokens: Some(7),
             cache_write_tokens: Some(2),
             output_tokens: Some(5),
-            cached_input_tokens: Some(100)
+            cached_input_tokens: Some(100),
+            ..Default::default()
         })
     );
 }

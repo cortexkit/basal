@@ -124,6 +124,9 @@ impl Fake {
             return r;
         }
         match op {
+            "role.describe" if module == "model-picker" => {
+                Ok(basal_host::selector::fake_describe(false))
+            }
             "role.describe" => Ok(serde_json::to_value(RoleDescribe::new(
                 vec![Major {
                     version: cortexkit_role_tool_provider::PROVIDES.into(),
@@ -173,9 +176,14 @@ impl Fake {
             "agent.list" => Ok(
                 json!({"agents":[{"agent_id":"ag_synapse","name":"SYNAPSE","name_version":1,"tag":"synapse","labels":[],"role":"head","project_id":"pj-synapse","workspace_id":"synapse","sleep":false,"wake_policy_version":1,"reachability":{"state":"unknown"},"created_at":0,"residence":{"machine_id":"local","harness":"opencode","address_json":{"version":1,"server":"local","session":"ses-author"},"residence_epoch":1,"residence_state":"live"}}]}),
             ),
-            "route.select" => Ok(
-                json!({"selected":{"model":{"providerID":"registry-provider","modelID":"registry-model"}},"decisionID":format!("decision:{}",params["sendID"].as_str().unwrap_or("")),"runner":{"provider":"fake","model":"test"}}),
-            ),
+            "route.select" => Ok(basal_host::selector::fake_answer(
+                &format!(
+                    "decision:{}",
+                    params["correlation_id"].as_str().unwrap_or("")
+                ),
+                ("registry-provider", "registry-model"),
+                ("fake", "test"),
+            )),
             "route.set_decision_outcome" => Ok(json!({"ok":true})),
             "consent.request" => self.flow_decision_request(params),
             "flow.install_request" => flow_install_request(&self.scopes.lock().unwrap(), params),

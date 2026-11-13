@@ -624,6 +624,18 @@ impl BrocaHost {
         }
         let e: Envelope = serde_json::from_str(request.args.as_str())
             .map_err(|e| BrocaError::Invalid(e.to_string()))?;
+        let price = e
+            .selection
+            .price
+            .as_ref()
+            .ok_or_else(|| BrocaError::Refused {
+                code: "price_unknown".into(),
+                detail: "routing did not price the recorded selection".into(),
+            })?;
+        price.check().map_err(|detail| BrocaError::Refused {
+            code: "price_unknown".into(),
+            detail: detail.into(),
+        })?;
         let codemode = request.flow_id == format!("codemode:{}", request.run_id);
         let session = if codemode {
             codemode_session(&request.run_id, request.position)
@@ -733,7 +745,11 @@ impl BrocaHost {
                 flow_version: request.flow_version,
                 flow_id: Some(request.flow_id.clone()),
                 project_root: self.project_root.clone(),
-                harness: self.harness.clone(),
+                harness: e
+                    .selection
+                    .harness
+                    .clone()
+                    .unwrap_or_else(|| self.harness.clone()),
                 session,
             },
             basal_run_id: request.run_id.clone(),
@@ -1577,6 +1593,8 @@ fn ledger_usage(u: &Usage) -> TokenUsage {
         cache_write_tokens: u.cache_write_tokens,
         output_tokens: u.output_tokens,
         cached_input_tokens: u.cached_input_tokens,
+        cache_write_5m_tokens: u.cache_write_5m_tokens,
+        cache_write_1h_tokens: u.cache_write_1h_tokens,
     }
 }
 fn fulfilled(value: Value, usage: Option<TokenUsage>) -> StoredOutcome {

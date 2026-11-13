@@ -99,6 +99,7 @@ fn broca_usage_settles_reservation_once_and_classify_returns_a_string() {
             output_tokens: Some(5),
             cached_input_tokens: Some(100),
             reasoning_tokens: Some(3),
+            ..Default::default()
         }),
     )
     .unwrap();
@@ -114,6 +115,7 @@ fn broca_usage_settles_reservation_once_and_classify_returns_a_string() {
             cache_write_tokens: Some(2),
             output_tokens: Some(5),
             cached_input_tokens: Some(100),
+            ..Default::default()
         }),
     };
     assert_eq!(
@@ -298,6 +300,7 @@ fn usage_settles_once_when_an_outcome_is_redelivered_after_a_restart() {
         output_tokens: Some(5),
         cached_input_tokens: Some(100),
         reasoning_tokens: Some(3),
+        ..Default::default()
     };
     fake.finish(&key, "once", RunFinishReason::Completed, Some(usage))
         .unwrap();

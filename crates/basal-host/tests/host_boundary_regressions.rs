@@ -184,10 +184,9 @@ fn bad_answer_does_not_block_later_valid_decisions_or_acknowledge_the_bad_one() 
 }
 #[test]
 fn nullable_model_variant_is_the_absent_variant() {
-    let result = decode_selection(
-        json!({"selected":{"model":{"providerID":"p","modelID":"m","variant":null}},"decisionID":"d","runner":{"provider":"p","model":"m"}}),
-    );
-    assert_eq!(result.unwrap().variant, None);
+    let mut answer = basal_host::selector::fake_answer("d", ("p", "m"), ("p", "m"));
+    answer["route"]["variant"] = Value::Null;
+    assert_eq!(decode_selection(answer).unwrap().variant, None);
 }
 
 #[test]

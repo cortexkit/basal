@@ -12,6 +12,8 @@ use std::sync::Arc;
 fn request() -> CallRequest {
     let selection = FakeSelector::default()
         .select(&SelectionRequest {
+            input_tokens: 100,
+            max_output_tokens: 32,
             caller_class: "flow".into(),
             iq: 1,
             eq: 1,

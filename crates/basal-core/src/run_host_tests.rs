@@ -287,6 +287,7 @@ impl Fixture {
                     cache_write_tokens: Some(1),
                     output_tokens: Some(2),
                     cached_input_tokens: Some(0),
+                    ..Default::default()
                 }),
             },
         }

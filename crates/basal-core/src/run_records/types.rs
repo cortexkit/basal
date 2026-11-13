@@ -111,6 +111,7 @@ impl From<UsageReport> for basal_host::TokenUsage {
             cache_write_tokens: value.cache_write_tokens,
             output_tokens: value.output_tokens,
             cached_input_tokens: value.cached_input_tokens,
+            ..Default::default()
         }
     }
 }

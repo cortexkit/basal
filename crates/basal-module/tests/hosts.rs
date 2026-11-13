@@ -1607,6 +1607,82 @@ fn model_manifest() -> Value {
     m["llm"] = json!({"iq":70,"eq":20,"token_cap":{"tokens":10000,"window":"1h"},"max_output":32});
     m
 }
+
+#[test]
+fn direct_model_dollars_enforce_the_existing_flow_run_and_window_caps() {
+    use basal_host::broca::wire::{RunFinishReason, Usage};
+    let wire = Fake::new();
+    add_routing_provider(&wire);
+    let selector = Arc::new(basal_host::selector::RoutingSelector::new(wire.clone()));
+    let (f, model, fake, _) = model_fixture(
+        "model-dollar-cap",
+        wire.clone(),
+        selector,
+        Arc::new(NoHooks),
+    );
+    let mut manifest = model_manifest();
+    manifest["model_cost_usd"] = json!({"per_run":0.125,"usd":0.125,"window":"1h"});
+    common::install(
+        &f,
+        &Caller::Operator,
+        "try { await llm({prompt:'first'}); return await llm({prompt:'second'}); } catch(e) { return e.data.code; }",
+        &manifest,
+    );
+    approve_model(&f);
+    let mut answer =
+        basal_host::selector::fake_answer("priced", ("registry", "model"), ("fake", "test"));
+    answer["price"] = json!({"basis":"metered","rates_per_mtok":{"input":10000,"output":10000},"estimated_task_usd":0.0625});
+    wire.enqueue(
+        "route.select",
+        vec![Ok(answer.clone()), Ok(answer.clone()), Ok(answer)],
+    );
+    let run = common::admit(&f, "host-flow", "priced-one");
+    f.module.engine.run_until_idle(50).unwrap();
+    f.module.rt.quiesce();
+    let key = f.module.rt.calls(&run).unwrap()[0].idempotency_key.clone();
+    fake.finish(
+        &key,
+        "answer",
+        RunFinishReason::Completed,
+        Some(Usage {
+            input_tokens: Some(10),
+            cache_write_tokens: Some(0),
+            output_tokens: Some(10),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    model.poll().unwrap();
+    f.module.engine.run_until_idle(50).unwrap();
+    let done = f.module.rt.run(&run).unwrap();
+    assert_eq!(done.state, RunState::Succeeded);
+    assert_eq!(done.result.as_deref(), Some("\"budget_exhausted\""));
+    assert_eq!(fake.sends().len(), 1);
+    f.module
+        .rt
+        .store()
+        .read(|c| {
+            let cost: (f64, f64) = c.query_row(
+                "SELECT reserved,charged FROM classify_costs WHERE kind='flow' AND run_id=?1",
+                [&run],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            assert_eq!(cost, (0.0625, 0.2));
+            Ok(())
+        })
+        .unwrap();
+    let next = common::admit(&f, "host-flow", "priced-two");
+    f.module.engine.run_until_idle(50).unwrap();
+    assert_eq!(
+        f.module.rt.run(&next).unwrap().result.as_deref(),
+        Some("\"budget_exhausted\"")
+    );
+    assert_eq!(
+        fake.sends().len(),
+        1,
+        "the rolling dollar cap includes the previous run's model charge"
+    );
+}
 fn model_fixture(
     tag: &str,
     wire: Arc<Fake>,
@@ -1692,11 +1768,11 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
     let request: Value = serde_json::from_str(call.request.as_ref().unwrap().as_str()).unwrap();
     assert_eq!(
         request["selection"],
-        json!({"providerID":"registry-provider","modelID":"registry-model","decisionID":format!("decision:{}",call.idempotency_key),"runner":{"provider":"fake","model":"test"}})
+        json!({"providerID":"registry-provider","modelID":"registry-model","decisionID":format!("decision:{}",call.idempotency_key),"runner":{"provider":"fake","model":"test"},"harness":"basal","price":basal_host::selector::fake_price()})
     );
     assert_eq!(
         wire.calls("route.select")[0]["params"],
-        json!({"targetAgent":"flow","requirements":{"iq":70,"eq":20},"excludeRouteKeys":[],"sendID":call.idempotency_key,"taskId":format!("flow:host-flow:{run}"),"substrate":"broca"})
+        json!({"consumer":"basal.flow","requirements":{"iq":70,"eq":20,"tools":"none","max_output_tokens":32},"runners":["broca"],"correlation_id":call.idempotency_key,"task_ref":format!("flow:host-flow:{run}")})
     );
     let sent: Value = serde_json::from_slice(&fake.sends()[0].1).unwrap();
     assert_eq!(sent["model"], json!({"provider":"fake","model":"test"}));
@@ -1733,6 +1809,7 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
             output_tokens: Some(5),
             cached_input_tokens: Some(100),
             reasoning_tokens: Some(3),
+            ..Default::default()
         }),
     )
     .unwrap();
@@ -1766,6 +1843,13 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
                 |r| r.get(0),
             )?;
             assert_eq!(tokens, 5);
+            let cost: f64 = c.query_row(
+                "SELECT charged FROM classify_costs WHERE kind='flow' AND run_id=?1",
+                [&run],
+                |r| r.get(0),
+            )?;
+            // This flow has no dollar cap: direct model cost is still recorded.
+            assert_eq!(cost, 0.000014);
             Ok(())
         })
         .unwrap();
@@ -1778,6 +1862,8 @@ fn routing_select_request_bytes_are_exact_without_available_models() {
     let selector = RoutingSelector::new(wire.clone());
     selector
         .select(&SelectionRequest {
+            input_tokens: 100,
+            max_output_tokens: 32,
             caller_class: "flow".into(),
             iq: 70,
             eq: 20,
@@ -1786,7 +1872,7 @@ fn routing_select_request_bytes_are_exact_without_available_models() {
             send_id: "send-1".into(),
         })
         .unwrap();
-    assert_eq!(serde_json::to_vec(&wire.calls("route.select")[0]).unwrap(),br#"{"method":"route.select","params":{"excludeRouteKeys":[],"requirements":{"eq":20,"iq":70},"sendID":"send-1","substrate":"broca","targetAgent":"flow","taskId":"flow:flow-a:run-a"}}"#);
+    assert_eq!(serde_json::to_vec(&wire.calls("route.select")[0]).unwrap(),br#"{"method":"route.select","params":{"consumer":"basal.flow","correlation_id":"send-1","requirements":{"eq":20,"iq":70,"max_output_tokens":32,"tools":"none"},"runners":["broca"],"task_ref":"flow:flow-a:run-a"}}"#);
     assert_eq!(wire.records.lock().unwrap()[0].0, "model-picker");
     for (outcome, name) in [
         (basal_host::selector::ModelOutcome::Completed, "completed"),
@@ -1814,10 +1900,14 @@ fn routing_select_request_bytes_are_exact_without_available_models() {
 fn routing_selection_reply_shapes_require_runner_and_preserve_both_identities() {
     use basal_host::selector::{SelectionError, decode_selection};
     for variant in [None, Some("thinking")] {
-        let mut reply = json!({"selected":{"model":{"providerID":"registry-provider","modelID":"registry-model"}},"decisionID":"decision-1","runner":{"provider":"runner-provider","model":"runner-model"}});
+        let mut reply = basal_host::selector::fake_answer(
+            "decision-1",
+            ("registry-provider", "registry-model"),
+            ("runner-provider", "runner-model"),
+        );
         if let Some(v) = variant {
-            reply["selected"]["model"]["variant"] = json!(v);
-            reply["runner"]["variant"] = json!("runner-variant");
+            reply["route"]["variant"] = json!(v);
+            reply["runner"]["model"]["variant"] = json!("runner-variant");
         }
         let selected = decode_selection(reply.clone()).unwrap();
         assert_eq!(selected.provider_id, "registry-provider");
@@ -1826,27 +1916,27 @@ fn routing_selection_reply_shapes_require_runner_and_preserve_both_identities() 
         assert_eq!(selected.decision_id, "decision-1");
         assert_eq!(
             serde_json::to_value(selected.runner).unwrap(),
-            reply["runner"]
+            reply["runner"]["model"]
         );
         let mut missing = reply.clone();
         missing.as_object_mut().unwrap().remove("runner");
         assert!(
             matches!(decode_selection(missing),Err(SelectionError::Refused {code,..}) if code=="route_runner_missing")
         );
-        for key in ["providerID", "modelID"] {
+        for key in ["provider", "model"] {
             let mut invalid = reply.clone();
-            invalid["selected"]["model"][key] = json!({});
+            invalid["route"][key] = json!({});
             assert!(
                 matches!(decode_selection(invalid),Err(SelectionError::Refused {code,..}) if code=="route_reply_invalid")
             );
         }
         for key in ["provider", "model"] {
             let mut invalid = reply.clone();
-            invalid["runner"][key] = json!({});
+            invalid["runner"]["model"][key] = json!({});
             assert!(decode_selection(invalid).is_err());
         }
         let mut invalid = reply.clone();
-        invalid["decisionID"] = Value::Null;
+        invalid["decision_id"] = Value::Null;
         assert!(decode_selection(invalid).is_err());
         let mut invalid = reply;
         invalid["runner"] = Value::Null;
@@ -1865,6 +1955,7 @@ fn selector_refusals_are_journaled_with_each_code_and_never_send_broca() {
         "context_too_small",
         "invalid_requirements",
         "route_runner_missing",
+        "price_unknown",
     ] {
         let wire = Fake::new();
         add_routing_provider(&wire);
@@ -1877,13 +1968,17 @@ fn selector_refusals_are_journaled_with_each_code_and_never_send_broca() {
             &model_manifest(),
         );
         approve_model(&f);
-        if code == "route_runner_missing" {
-            wire.enqueue(
-                "route.select",
-                vec![Ok(
-                    json!({"selected":{"model":{"providerID":"p","modelID":"m"}},"decisionID":"d"}),
-                )],
-            );
+        if code == "route_runner_missing" || code == "price_unknown" {
+            let mut reply = basal_host::selector::fake_answer("d", ("p", "m"), ("p", "m"));
+            reply
+                .as_object_mut()
+                .unwrap()
+                .remove(if code == "price_unknown" {
+                    "price"
+                } else {
+                    "runner"
+                });
+            wire.enqueue("route.select", vec![Ok(reply)]);
         } else {
             wire.enqueue(
                 "route.select",
@@ -2064,6 +2159,13 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
                 model: format!("runner-{id}"),
                 variant: Some("runner-variant".into()),
             },
+            harness: Some("basal".into()),
+            price: Some(
+                serde_json::from_value(
+                    json!({"basis":"metered","rates_per_mtok":{"input":1,"output":1}}),
+                )
+                .unwrap(),
+            ),
         };
         selector
             .replies

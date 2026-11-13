@@ -44,6 +44,8 @@ pub fn selected_luna(selection: &Value) -> bool {
         && selection["decisionID"]
             .as_str()
             .is_some_and(|s| !s.is_empty())
+        && selection["price"]["rates_per_mtok"]["input"].is_number()
+        && selection["price"]["rates_per_mtok"]["output"].is_number()
 }
 
 pub fn frozen_send(snapshot: &Value) -> Option<Value> {
@@ -173,7 +175,7 @@ mod tests {
     #[test]
     fn only_a_complete_luna_selection_passes() {
         let good = json!({"providerID":"openai","modelID":"gpt-6-luna","decisionID":"d1",
-            "runner":{"provider":"openai","model":"gpt-6-luna"}});
+            "runner":{"provider":"openai","model":"gpt-6-luna"},"harness":"basal","price":{"basis":"metered","rates_per_mtok":{"input":1,"output":1}}});
         assert!(selected_luna(&good));
         for pointer in [
             "/providerID",
@@ -181,6 +183,7 @@ mod tests {
             "/decisionID",
             "/runner/provider",
             "/runner/model",
+            "/price",
         ] {
             let mut bad = good.clone();
             *bad.pointer_mut(pointer).unwrap() = json!("");
@@ -275,6 +278,13 @@ mod tests {
                     model: "gpt-6-luna".into(),
                     variant: None,
                 },
+                harness: Some("basal".into()),
+                price: Some(
+                    serde_json::from_value(
+                        json!({"basis":"metered","rates_per_mtok":{"input":1,"output":1}}),
+                    )
+                    .unwrap(),
+                ),
             },
         };
         let snapshot = serde_json::to_value(call).unwrap();

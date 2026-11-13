@@ -1,0 +1,1 @@
+{"method":"route.select","params":{"consumer":"basal.flow","eligible_routes":[{"model":"model-a","provider":"example-provider"}],"requirements":{"iq":50,"tools":"none"}}}

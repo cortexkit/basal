@@ -536,7 +536,7 @@ flow-health penalty, as is `for_target_requires_delegate`.
 
 Model calls get no tools: an `llm` request with a `tools` field is refused. Scripts cannot supply a `model` or `provider`, even one previously selected: the call is rejected with `model_not_allowed`. Fleet routing chooses a Broca runner before the intent commits, and its exact selection and decision id are journaled. Retries reuse that selection; there is no default or environment-configured model.
 
-### Classifier dollar caps
+### Model dollar caps
 
 Broca's `llm_classify` is called through an ordinary `ops` grant, for example
 `ops.call("broca", "llm_classify", {model, questions, item, max_cost_usd})`.
@@ -549,6 +549,10 @@ An op carrying the shared `llm.classify/v1` tag additionally requires:
 Both amounts are finite non-negative US dollars. `per_run` bounds each run;
 `usd` bounds the flow across all versions in a **rolling** lookback of `window`
 (`"1m"` through `"31d"`, unlike the legacy token grant's fixed windows).
+These caps are shared by direct `llm`/`classify` calls and tagged classifier
+ops. An existing approved flow with both an `llm` grant and these caps now
+charges its direct model calls against the same limits. A flow with no dollar
+cap still records direct model costs, without gaining a new dollar ceiling.
 The install card shows a dollar line with both caps. A tagged classifier grant
 without these caps is refused with `model_cost_cap_required`. While providers
 are enabling tags, an untagged tool whose input schema requires `max_cost_usd`
@@ -574,7 +578,20 @@ not the actual bill. Unknown calls keep their reservations and are not
 automatically resent. Broca does not bill twice if the same call is retried
 with its durable call key.
 Calls use the flow-stamped scope, and spend belongs to the flow, not its owner.
-The legacy `llm` grant and token-budgeted primitives are unchanged.
+Direct model calls select under `basal.flow` with a Broca runner, no tools,
+the approved intelligence (`iq`) and judgment (`eq`) demands, and the clamped
+output requirement. Routing prefers
+subscriptions according to its settings. Every new send requires routing's
+`price`; an unpriced selection is refused as `price_unknown` before Broca runs.
+The reserve uses `estimated_task_usd`, or estimated input plus maximum output
+at the selected rates. Settlement prices Broca's fresh input, output (including
+reasoning), cached input and cache writes separately. Subscription-equivalent
+rates already include routing's discount and count against these same caps.
+When both cache-write lifetime counters are present, each uses only its exact
+`5m`/`1h` rate; an unmatched lifetime stays unpriced. Without both counters,
+the entire cache-write total uses the plain cache-write rate. Missing usage
+keeps the reservation's liability. Token grants and accounting are unchanged;
+dollar charges are additional, not a replacement for tokens.
 
 ## Card fields not in the manifest
 

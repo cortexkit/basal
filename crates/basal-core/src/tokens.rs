@@ -232,6 +232,7 @@ pub(crate) fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64
                 cache_write_tokens: Some(u.cache_write_tokens),
                 output_tokens: Some(u.output_tokens),
                 cached_input_tokens: Some(u.cached_input_tokens),
+                ..Default::default()
             },
             0,
         ),
@@ -242,6 +243,7 @@ pub(crate) fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64
                 cache_write_tokens: Some(0),
                 output_tokens: Some(0),
                 cached_input_tokens: Some(0),
+                ..Default::default()
             },
             0,
         ),

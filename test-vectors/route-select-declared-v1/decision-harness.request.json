@@ -1,0 +1,1 @@
+{"method":"route.select","params":{"consumer":"example_summary","harness":"sample-harness","pin":"example-provider/model-a","requirements":{"iq":50}}}

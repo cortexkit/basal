@@ -1097,6 +1097,7 @@ fn token_readers_count_live_and_settled_runs_in_each_pinned_window() {
                 cache_write_tokens: Some(0),
                 output_tokens: Some(2),
                 cached_input_tokens: Some(0),
+                ..Default::default()
             }),
         };
         assert_eq!(
@@ -1161,6 +1162,7 @@ fn late_callback_after_close_settles_the_admitted_versions_window() {
             cache_write_tokens: Some(0),
             output_tokens: Some(2),
             cached_input_tokens: Some(0),
+            ..Default::default()
         }),
     };
     assert_eq!(

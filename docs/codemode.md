@@ -2,9 +2,10 @@
 
 Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. prefrontal-core, which manages agents and their tool grants, grants access to codemode and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny using the daemon-recorded agent identity and run scope, just as for a direct call. Basal also provides `tools.model`, which calls Broca within the existing per-run budget of 20 calls and 200,000 tokens. Classification uses Broca's catalog tool `tools.llm_classify`, not a Basal built-in.
 
-## Classifier dollar budget
+## Model dollar budget
 
-Tools carrying the shared contract's `llm.classify/v1` tag share **$0.50 per program run**.
+`tools.model` and tools carrying the shared contract's `llm.classify/v1` tag
+share **$0.50 per program run**, in addition to the direct model call/token limits.
 `limits: {model_cost_usd: 0.30}` may lower that budget (including to zero), never raise it.
 The caller supplies `{model, questions, item, max_cost_usd?}`; `model` is its chosen
 `provider/model` id. Basal supplies an omitted ceiling from the remaining budget,
@@ -28,7 +29,21 @@ Until Broca advertises the tag, an untagged `llm_classify` remains an ordinary
 program tool call **without Basal's dollar accounting or ceiling injection**;
 Broca still requires and enforces the caller's `max_cost_usd` on each call.
 Flows instead refuse installation of untagged tools whose schema requires that
-ceiling; see [manifest dollar caps](manifest.md#classifier-dollar-caps).
+ceiling; see [manifest dollar caps](manifest.md#model-dollar-caps).
+
+`tools.model` selects under `basal.codemode`, using its existing defaults of
+`iq: 50`, `eq: 0` (minimum intelligence and judgment demand, each from 0 to 100),
+no tools, and its requested
+output ceiling. Routing's selected `price` is required before sending;
+otherwise the call rejects as `price_unknown`. The dollar reservation uses
+`estimated_task_usd`, or the input estimate and maximum output at the selected
+rates. Broca reports usage, not dollars: basal settles fresh input, output
+(reasoning included), cached input and cache writes at those rates, without
+applying a subscription multiplier a second time. With both `5m`/`1h` write
+counters present, only the matching lifetime rates apply; an unmatched bucket
+is unpriced. Otherwise all writes use the plain write rate. Missing usage
+retains the reserved liability. Retries reuse the frozen selection and reserve
+only once; actual measured cost replaces the estimate, even on an overrun.
 
 A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Codemode runs on macOS, Linux and Windows under each OS's full worker confinement. See [the tool and role operations](ops.md#codemode).
 

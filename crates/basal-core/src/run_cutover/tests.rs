@@ -465,6 +465,8 @@ fn released_broca_outcome_redelivers_as_duplicate_then_host_records_acknowledgem
     let selector = Arc::new(FakeSelector::default());
     let selection = selector
         .select(&SelectionRequest {
+            input_tokens: 100,
+            max_output_tokens: 32,
             caller_class: "flow".into(),
             iq: 1,
             eq: 1,

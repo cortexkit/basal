@@ -2,6 +2,86 @@ use basal_core::run_log::LogRecord;
 use basal_core::run_records::{Body, Deferred, Record};
 
 #[test]
+fn priced_selection_keeps_the_placed_intent_layout_and_json_reader_compatible() {
+    use basal_core::StoredClass;
+    use basal_core::run_records::{CallIdentity, Intent, Reservation};
+    use basal_proto::{CallKind, HostCall, JsonText, Primitive};
+    use serde::Deserialize;
+
+    // Preserve the pre-pricing Intent layout for rollback readers. Its JSON
+    // field is a string, not a postcard struct whose layout grows with selection.
+    #[derive(Deserialize)]
+    struct PlacedIntent {
+        call: CallIdentity,
+        idempotency_key: Option<String>,
+        frozen_request: String,
+        attempts: u64,
+        dispatch_count_window: Option<(i64, u64)>,
+        audit_at: i64,
+        reservation: Option<(u64, u64, u64, i64)>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PlacedSelection {
+        #[serde(rename = "providerID")]
+        provider_id: String,
+        #[serde(rename = "modelID")]
+        model_id: String,
+        variant: Option<String>,
+        #[serde(rename = "decisionID")]
+        decision_id: String,
+        runner: basal_host::broca::wire::ModelParams,
+    }
+    let frozen = JsonText::new(r#"{"selection":{"providerID":"registry","modelID":"chosen","decisionID":"decision","runner":{"provider":"runner","model":"wire-model"},"harness":"basal","price":{"basis":"metered","rates_per_mtok":{"input":3,"output":15},"estimated_task_usd":0.015}}}"#).unwrap();
+    let identity = CallIdentity::new(
+        HostCall {
+            position: 7,
+            kind: CallKind::Primitive(Primitive::Llm),
+            args: JsonText::new(r#"{"prompt":"hello"}"#).unwrap(),
+        },
+        StoredClass::Mutation,
+    );
+    let record = Record {
+        run_id: "priced-run".into(),
+        generation: 3,
+        body: Body::Intent(Intent {
+            call: identity.clone(),
+            idempotency_key: Some("send-7".into()),
+            frozen_request: frozen.clone(),
+            attempts: 1,
+            dispatch_count_window: None,
+            audit_at: 17,
+            reservation: Some(Reservation {
+                input_tokens: 100,
+                output_tokens: 32,
+                cost_micros: 15_000,
+                window_start: 0,
+            }),
+        }),
+    };
+    let bytes = postcard::to_allocvec(&record).unwrap();
+    let (run, generation, ordinal, placed): (String, u64, u32, PlacedIntent) =
+        postcard::from_bytes(&bytes).unwrap();
+    assert_eq!((run.as_str(), generation, ordinal), ("priced-run", 3, 5));
+    assert_eq!(placed.call, identity);
+    assert_eq!(placed.idempotency_key.as_deref(), Some("send-7"));
+    assert_eq!(placed.attempts, 1);
+    assert_eq!(placed.dispatch_count_window, None);
+    assert_eq!(placed.audit_at, 17);
+    assert_eq!(placed.reservation, Some((100, 32, 15_000, 0)));
+    assert_eq!(placed.frozen_request, frozen.as_str());
+    let envelope: serde_json::Value = serde_json::from_str(&placed.frozen_request).unwrap();
+    let selection: PlacedSelection = serde_json::from_value(envelope["selection"].clone()).unwrap();
+    assert_eq!(selection.provider_id, "registry");
+    assert_eq!(selection.model_id, "chosen");
+    assert_eq!(selection.variant, None);
+    assert_eq!(selection.decision_id, "decision");
+    assert_eq!(selection.runner.provider, "runner");
+    assert_eq!(selection.runner.model, "wire-model");
+    assert_eq!(Record::decode(8, &bytes).unwrap(), record);
+}
+
+#[test]
 fn pre_refund_deferral_record_decodes_with_refund_enabled() {
     // Body::Deferred had enum ordinal 11 and ended with a bool. This tuple
     // encodes that pre-change field order, independently of today's Record.

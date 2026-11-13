@@ -1387,6 +1387,13 @@ impl Driver {
                 .map(|detail| json!({"detail": detail}))
         });
         if self.shared.store.write(|tx| {
+            super::models::settle(
+                tx,
+                &self.run.run_id,
+                answer.call.position,
+                answer.usage,
+                answer.no_effect,
+            )?;
             crate::classify_cost::settle(
                 tx,
                 "program",
@@ -1394,13 +1401,6 @@ impl Driver {
                 answer.call.position,
                 cost_value.as_ref(),
                 mapped.code.as_deref(),
-            )?;
-            super::models::settle(
-                tx,
-                &self.run.run_id,
-                answer.call.position,
-                answer.usage,
-                answer.no_effect,
             )?;
             store::record_outcome(
                 tx,
@@ -2719,7 +2719,10 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
                 Outcome::Denied
             } else if code == "tool_unavailable" {
                 Outcome::ToolUnavailable
-            } else if matches!(code.as_str(), "budget_exhausted" | "route_unavailable") {
+            } else if matches!(
+                code.as_str(),
+                "budget_exhausted" | "route_unavailable" | "price_unknown"
+            ) {
                 Outcome::Refused
             } else {
                 Outcome::Error

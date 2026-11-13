@@ -39,6 +39,7 @@ pub mod flow_refusal;
 pub mod flow_scope;
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
+pub mod model_cost;
 pub mod routing;
 pub mod run_scope;
 pub mod scope_describe;
@@ -154,6 +155,10 @@ pub struct TokenUsage {
     pub output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_5m_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h_tokens: Option<u64>,
 }
 
 /// What repeating a call could do, which decides what the runtime may do

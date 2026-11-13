@@ -218,20 +218,29 @@ fn arrival(
     position: u64,
     outcome: HostOutcome,
     reservation: Option<&crate::run_records::Reservation>,
+    frozen_request: &str,
 ) -> Arrival {
     let value: Option<serde_json::Value> = serde_json::from_str(outcome.value.as_str()).ok();
-    let cost_micros = reservation
-        .filter(|r| r.cost_micros > 0 || r.input_tokens.saturating_add(r.output_tokens) == 0)
-        .map(|r| {
-            (crate::classify_cost::charge(
-                r.cost_micros as f64 / 1_000_000.0,
-                value.as_ref(),
-                value
-                    .as_ref()
-                    .and_then(|v| crate::classify_cost::refusal_code(outcome.settlement, v)),
-            ) * 1_000_000.0)
-                .ceil() as u64
-        });
+    let cost_micros = basal_host::model_cost::recorded_charge(
+        frozen_request,
+        outcome.usage,
+        reservation.map_or(0, |r| r.cost_micros),
+        false,
+    )
+    .or_else(|| {
+        reservation
+            .filter(|r| r.cost_micros > 0 || r.input_tokens.saturating_add(r.output_tokens) == 0)
+            .map(|r| {
+                (crate::classify_cost::charge(
+                    r.cost_micros as f64 / 1_000_000.0,
+                    value.as_ref(),
+                    value
+                        .as_ref()
+                        .and_then(|v| crate::classify_cost::refusal_code(outcome.settlement, v)),
+                ) * 1_000_000.0)
+                    .ceil() as u64
+            })
+    });
     let usage = outcome.usage.map(|u| {
         let input = u
             .input_tokens
@@ -477,7 +486,7 @@ impl run_driver::Services for Services {
                 notify: false,
             });
         }
-        let mut cost_micros = 0;
+        let mut cost_micros = prepared.model_cost_micros;
         if prepared.classify_cost {
             let hosts = rt.shared.staged_hosts.as_ref().unwrap();
             let budgets = hosts.budgets_for(&live.run_id)?;
@@ -716,6 +725,7 @@ impl run_driver::Services for Services {
                     intent.call.position,
                     rt.cap_result(&outcome).unwrap_or(outcome),
                     intent.reservation.as_ref(),
+                    intent.frozen_request.as_str(),
                 );
                 if proven_unsent && maybe_sent.is_none() {
                     arrived.usage = Some(crate::run_records::Usage {
@@ -779,6 +789,7 @@ impl run_driver::Services for Services {
                     intent.call.position,
                     rt.cap_result(&outcome).unwrap_or(outcome),
                     intent.reservation.as_ref(),
+                    intent.frozen_request.as_str(),
                 );
                 Ok(if let Some(report) = report {
                     Reply::Measured(arrival, report)

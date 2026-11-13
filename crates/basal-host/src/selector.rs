@@ -2,6 +2,10 @@
 //! request that can be sent. A replay uses that saved choice, not a new one.
 use crate::broca::wire::ModelParams;
 use crate::transport::{Transport, WireError};
+use cortexkit_role_routing::{
+    price::Price,
+    select::{Requirements, SelectAnswer, SelectRequest, ToolsRequirement},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt;
@@ -16,9 +20,43 @@ pub const CODEMODE_CONSUMER: &str = "basal.codemode";
 pub const FLOW_CLASSIFY_CONSUMER: &str = "basal.flow.classify";
 pub const CODEMODE_CLASSIFY_CONSUMER: &str = "basal.codemode.classify";
 
+#[cfg(any(test, feature = "test-support"))]
+pub fn fake_price() -> Price {
+    serde_json::from_value(json!({"basis":"metered","rates_per_mtok":{"input":1,"output":1,"cache_read":0,"cache_write":1}})).unwrap()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn fake_answer(decision: &str, route: (&str, &str), runner: (&str, &str)) -> Value {
+    use cortexkit_role_routing::select::{RouteRef, RunnerRef};
+    serde_json::to_value(
+        SelectAnswer::new(
+            decision,
+            RouteRef::new(route.0, route.1),
+            RunnerRef::new("broca", RouteRef::new(runner.0, runner.1)).with_harness("basal"),
+            200_000,
+            32_000,
+            1_800_000_000_000,
+            "The fake route fits.",
+        )
+        .with_price(fake_price()),
+    )
+    .unwrap()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn fake_describe(input_tokens: bool) -> Value {
+    let mut describe = cortexkit_role_routing::describe::RoleDescribe::new(vec![], false);
+    if input_tokens {
+        describe.requirement_fields.push("input_tokens".into());
+    }
+    serde_json::to_value(describe).unwrap()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionRequest {
-    /// A shared routing category such as "flow" or "codemode", not an agent ID.
+    pub input_tokens: u64,
+    pub max_output_tokens: u64,
+    /// Internal call class choosing basal's declared consumer, never an agent ID.
     pub caller_class: String,
     pub iq: u32,
     pub eq: u32,
@@ -38,6 +76,10 @@ pub struct ModelSelection {
     #[serde(rename = "decisionID")]
     pub decision_id: String,
     pub runner: ModelParams,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<Price>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,17 +146,10 @@ fn invalid(detail: &str) -> SelectionError {
         detail: detail.into(),
     }
 }
-fn string(value: &Value, name: &str) -> Result<String, SelectionError> {
-    value
-        .get(name)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| invalid(name))
-}
 pub struct RoutingSelector {
     transport: Arc<dyn Transport>,
     module: Mutex<Option<String>>,
+    input_tokens: Mutex<Option<(String, bool)>>,
 }
 impl fmt::Debug for RoutingSelector {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -126,6 +161,7 @@ impl RoutingSelector {
         Self {
             transport,
             module: Mutex::new(None),
+            input_tokens: Mutex::new(None),
         }
     }
 
@@ -165,12 +201,40 @@ impl RoutingSelector {
         Ok(module)
     }
 
-    fn management(&self, op: &str, params: Value) -> Result<Value, WireError> {
+    fn params_for(&self, module: &str, request: &SelectionRequest) -> Value {
+        let mut cached = self.input_tokens.lock().unwrap();
+        if cached.as_ref().is_none_or(|(id, _)| id != module) {
+            let advertised = self
+                .transport
+                .management_with_route_refusals(module, "role.describe", json!({}))
+                .ok()
+                .and_then(|value| {
+                    serde_json::from_value::<cortexkit_role_routing::describe::RoleDescribe>(value)
+                        .ok()
+                })
+                .is_some_and(|description| {
+                    description.role == "routing"
+                        && description.version == 1
+                        && description
+                            .requirement_fields
+                            .iter()
+                            .any(|field| field == "input_tokens")
+                });
+            *cached = Some((module.to_owned(), advertised));
+        }
+        let mut params = select_params(request);
+        if cached.as_ref().is_some_and(|(_, advertised)| *advertised) {
+            params["requirements"]["input_tokens"] = request.input_tokens.into();
+        }
+        params
+    }
+
+    fn management(&self, op: &str, params: impl Fn(&str) -> Value) -> Result<Value, WireError> {
         let (module, result) = match self.routing_module(false) {
             Ok(module) => {
                 let result =
                     self.transport
-                        .management_with_route_refusals(&module, op, params.clone());
+                        .management_with_route_refusals(&module, op, params(&module));
                 (Some(module), result)
             }
             Err(error) => (None, Err(error)),
@@ -187,9 +251,11 @@ impl RoutingSelector {
         }) {
             let refreshed = self.routing_module(true)?;
             if module.as_deref() != Some(&refreshed) {
-                return self
-                    .transport
-                    .management_with_route_refusals(&refreshed, op, params);
+                return self.transport.management_with_route_refusals(
+                    &refreshed,
+                    op,
+                    params(&refreshed),
+                );
             }
         }
         result
@@ -201,42 +267,74 @@ pub fn select_params(request: &SelectionRequest) -> Value {
     } else {
         format!("flow:{}:{}", request.flow_id, request.run_id)
     };
-    json!({"targetAgent":request.caller_class,"requirements":{"iq":request.iq,"eq":request.eq},"excludeRouteKeys":[],"sendID":request.send_id,"taskId":task,"substrate":"broca"})
+    let consumer = if request.caller_class == "codemode" {
+        CODEMODE_CONSUMER
+    } else {
+        FLOW_CONSUMER
+    };
+    let requirements = Requirements {
+        iq: u8::try_from(request.iq).unwrap_or(u8::MAX),
+        eq: Some(u8::try_from(request.eq).unwrap_or(u8::MAX)),
+        max_output_tokens: Some(request.max_output_tokens),
+        tools: Some(ToolsRequirement::None),
+        ..Requirements::default()
+    };
+    serde_json::to_value(
+        SelectRequest::new(consumer, requirements)
+            .with_runners(vec!["broca".into()])
+            .with_correlation_id(&request.send_id)
+            .with_task_ref(task),
+    )
+    .expect("routing request serializes")
 }
+/// Checks structural answer and price validity only, not runner admission.
+/// `RoutingSelector::select` admits the runner before returning a choice.
 pub fn decode_selection(reply: Value) -> Result<ModelSelection, SelectionError> {
-    let raw = reply.get("runner").ok_or_else(|| SelectionError::Refused {
-        code: "route_runner_missing".into(),
-        detail: "routing did not supply a Broca runner".into(),
-    })?;
-    let runner: ModelParams =
-        serde_json::from_value(raw.clone()).map_err(|e| invalid(&e.to_string()))?;
-    if runner.provider.is_empty() || runner.model.is_empty() {
-        return Err(invalid("empty runner identity"));
+    if reply.get("runner").is_none_or(Value::is_null) {
+        return Err(SelectionError::Refused {
+            code: "route_runner_missing".into(),
+            detail: "routing did not supply a Broca runner".into(),
+        });
     }
-    let selected = &reply["selected"]["model"];
-    let variant = selected
-        .get("variant")
-        .filter(|v| !v.is_null())
-        .map(|v| {
-            v.as_str()
-                .map(str::to_owned)
-                .ok_or_else(|| invalid("variant"))
-        })
-        .transpose()?;
+    let answer: SelectAnswer =
+        serde_json::from_value(reply).map_err(|e| invalid(&e.to_string()))?;
+    if answer.route.provider.is_empty()
+        || answer.route.model.is_empty()
+        || answer.decision_id.is_empty()
+        || answer.runner.model.provider.is_empty()
+        || answer.runner.model.model.is_empty()
+    {
+        return Err(invalid("empty selection identity"));
+    }
+    let price = answer.price.ok_or_else(crate::model_cost::price_unknown)?;
+    price.check().map_err(invalid)?;
     Ok(ModelSelection {
-        provider_id: string(selected, "providerID")?,
-        model_id: string(selected, "modelID")?,
-        variant,
-        decision_id: string(&reply, "decisionID")?,
-        runner,
+        provider_id: answer.route.provider,
+        model_id: answer.route.model,
+        variant: answer.route.variant,
+        decision_id: answer.decision_id,
+        runner: ModelParams {
+            provider: answer.runner.model.provider,
+            model: answer.runner.model.model,
+            variant: answer.runner.model.variant,
+        },
+        harness: answer.runner.harness,
+        price: Some(price),
     })
 }
 impl ModelSelector for RoutingSelector {
     fn select(&self, request: &SelectionRequest) -> Result<ModelSelection, SelectionError> {
-        decode_selection(
-            self.management("route.select", select_params(request))
-                .map_err(error)?,
-        )
+        let reply = self
+            .management("route.select", |module| self.params_for(module, request))
+            .map_err(error)?;
+        let selection = decode_selection(reply.clone())?;
+        if reply["runner"]["module"] != "broca" {
+            return Err(SelectionError::Refused {
+                code: "route_runner_missing".into(),
+                detail: "routing did not supply a Broca runner".into(),
+            });
+        }
+        Ok(selection)
     }
     fn report_outcome(
         &self,
@@ -246,7 +344,7 @@ impl ModelSelector for RoutingSelector {
         let reply = self
             .management(
                 "route.set_decision_outcome",
-                json!({"decisionID":decision_id,"outcome":outcome}),
+                |_| json!({"decisionID":decision_id,"outcome":outcome}),
             )
             .map_err(error)?;
         if reply["ok"] != true {
@@ -291,6 +389,8 @@ impl ModelSelector for FakeSelector {
                 model: "test".into(),
                 variant: None,
             },
+            harness: Some("basal".into()),
+            price: Some(fake_price()),
         })
     }
     fn report_outcome(

@@ -132,6 +132,8 @@ pub fn prepare(
         }).map_err(storage)?;
         reserved?;
         let selection = selector.select(&SelectionRequest {
+            input_tokens: reserve.saturating_sub(u64::from(max_output)),
+            max_output_tokens: u64::from(max_output),
             caller_class: "codemode".into(),
             iq: input["iq"].as_f64().map(|n| n as u32).unwrap_or(50),
             eq: input["eq"].as_f64().map(|n| n as u32).unwrap_or(0),
@@ -139,24 +141,55 @@ pub fn prepare(
             run_id: run.run_id.clone(),
             send_id: send_id.clone(),
         });
-        let selection = match selection {
+        let selection = selection.and_then(|selection| {
+            let price = selection
+                .price
+                .as_ref()
+                .ok_or_else(basal_host::model_cost::price_unknown)?;
+            let dollars = basal_host::model_cost::reserve(
+                price,
+                reserve.saturating_sub(u64::from(max_output)),
+                u64::from(max_output),
+            )?;
+            Ok((selection, dollars))
+        });
+        let (selection, dollars) = match selection {
             Ok(selection) => selection,
             Err(error) => {
                 store
                     .write(|tx| settle(tx, &run.run_id, call.position, None, true))
                     .map_err(storage)?;
-                return Err(WireError::Refused {
-                    code: "route_unavailable".into(),
-                    message: error.to_string(),
+                return Err(match error {
+                    basal_host::selector::SelectionError::Refused { code, detail }
+                        if code == "price_unknown" =>
+                    {
+                        WireError::Refused {
+                            code,
+                            message: detail,
+                        }
+                    }
+                    other => WireError::Refused {
+                        code: "route_unavailable".into(),
+                        message: other.to_string(),
+                    },
                 });
             }
         };
         envelope["selection"] = serde_json::to_value(selection).unwrap();
         let envelope = envelope.to_string();
-        store.write(|tx| {
+        let limits: super::admission::Limits =
+            serde_json::from_str(&run.limits).map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let saved = store.write(|tx| {
+            let used = crate::classify_cost::spent(tx, "program", &run.run_id)?;
+            if used + dollars as f64 / 1_000_000.0 > limits.model_cost_usd {
+                settle(tx, &run.run_id, call.position, None, true)?;
+                return Ok(Err(budget("model_cost_usd")));
+            }
+            tx.execute("INSERT INTO classify_costs(kind,run_id,position,created_at,reserved,args) VALUES('program',?1,?2,?3,?4,?5)",params![run.run_id,call.position,run.admitted_at,dollars as f64 / 1_000_000.0,envelope])?;
             tx.execute("UPDATE codemode_models SET envelope=?3 WHERE run_id=?1 AND position=?2 AND envelope IS NULL",params![run.run_id,call.position,envelope])?;
-            Ok(())
+            Ok(Ok(()))
         }).map_err(storage)?;
+        saved?;
         envelope
     };
     Ok(CallRequest {
@@ -181,10 +214,23 @@ pub fn settle(
     usage: Option<TokenUsage>,
     no_effect: bool,
 ) -> crate::Result<()> {
-    let reserved: Option<u64> = tx.query_row("SELECT reserved FROM codemode_models WHERE run_id=?1 AND position=?2 AND charged IS NULL",params![run,position],|r|r.get(0)).optional()?;
-    let Some(reserved) = reserved else {
+    let saved: Option<(u64, Option<String>)> = tx.query_row("SELECT reserved,envelope FROM codemode_models WHERE run_id=?1 AND position=?2 AND charged IS NULL",params![run,position],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let Some((reserved, envelope)) = saved else {
         return Ok(());
     };
+    if let Some(envelope) = envelope {
+        let dollars: Option<f64> = tx.query_row("SELECT reserved FROM classify_costs WHERE kind='program' AND run_id=?1 AND position=?2 AND charged IS NULL", params![run,position], |r| r.get(0)).optional()?;
+        if let Some(dollars) = dollars
+            && let Some(cost) = basal_host::model_cost::recorded_charge(
+                &envelope,
+                usage,
+                (dollars * 1_000_000.0).ceil() as u64,
+                no_effect,
+            )
+        {
+            tx.execute("UPDATE classify_costs SET charged=?3 WHERE kind='program' AND run_id=?1 AND position=?2 AND charged IS NULL",params![run,position,cost as f64 / 1_000_000.0])?;
+        }
+    }
     let charged = if no_effect {
         0
     } else if let Some(u) = usage {
