@@ -11,6 +11,11 @@ use std::sync::{Arc, Mutex};
 #[path = "selector_tests.rs"]
 mod tests;
 
+pub const FLOW_CONSUMER: &str = "basal.flow";
+pub const CODEMODE_CONSUMER: &str = "basal.codemode";
+pub const FLOW_CLASSIFY_CONSUMER: &str = "basal.flow.classify";
+pub const CODEMODE_CLASSIFY_CONSUMER: &str = "basal.codemode.classify";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionRequest {
     /// A shared routing category such as "flow" or "codemode", not an agent ID.

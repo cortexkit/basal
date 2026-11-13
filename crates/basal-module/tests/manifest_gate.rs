@@ -16,6 +16,27 @@ use subc_protocol::manifest::{
 };
 
 #[test]
+fn routing_consumers_declare_placement_and_delegate_broca() {
+    let manifest = basal_module::manifest::manifest();
+    let declarations = serde_json::to_value(&manifest.role_declarations["routing/v1"]).unwrap();
+    assert_eq!(
+        declarations,
+        serde_json::json!({"consumers": [
+            {"name":"basal.flow", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"]},
+            {"name":"basal.codemode", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"]},
+            {"name":"basal.flow.classify", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"]},
+            {"name":"basal.codemode.classify", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"]}
+        ]})
+    );
+    let parsed = cortexkit_role_routing::parse_consumer_declarations_serving(
+        &declarations,
+        &["consumer_declarations"],
+    )
+    .expect("routing/v1 accepts the declarations");
+    assert_eq!(parsed.consumers.len(), 4);
+}
+
+#[test]
 fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
     let output = Command::new(dev_binary(env!("CARGO_BIN_EXE_ck-basal")))
         .arg("--manifest")

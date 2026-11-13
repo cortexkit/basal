@@ -172,6 +172,7 @@ dependencies = [
  "cortexkit-bus-trait",
  "cortexkit-log",
  "cortexkit-role-harness",
+ "cortexkit-role-routing",
  "cortexkit-role-tool-provider",
  "cortexkit-role-tool-provider-conformance",
  "cortexkit-store-types",
@@ -565,6 +566,29 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "cortexkit-role-media"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55ebbb81ef10f360dd46bb59f05fb0cdb3dea74eb61dbbcf464aad0c0defec16"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "cortexkit-role-routing"
+version = "0.7.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c489612594ab5acd5465c9bc67fe4b2e90f438a30ba0de4402d1139115f1e7"
+dependencies = [
+ "cortexkit-role-media",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

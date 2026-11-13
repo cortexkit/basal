@@ -1,6 +1,12 @@
 //! The subc manifest, built in Rust so the binary and its declaration cannot
 //! drift: `ck-basal --manifest` prints exactly what `serve` registers.
 
+use basal_host::selector::{
+    CODEMODE_CLASSIFY_CONSUMER, CODEMODE_CONSUMER, FLOW_CLASSIFY_CONSUMER, FLOW_CONSUMER,
+};
+use cortexkit_role_routing::placement::Placement;
+use cortexkit_role_routing::select::ToolsRequirement;
+use cortexkit_role_routing::{ConsumerDeclaration, ConsumerDeclarations, DemandDefaults};
 use serde_json::json;
 use subc_protocol::PROTOCOL_VERSION;
 use subc_protocol::manifest::{
@@ -209,6 +215,10 @@ pub fn manifest() -> ModuleManifest {
         // those are reported through flow.health.
         .self_signals(None)
         .flow_operations(Some(vec!["diagnostics.findings".into()]))
+        .role_declarations(std::collections::BTreeMap::from([(
+            cortexkit_role_routing::ROLE_DECLARATIONS_KEY.into(),
+            routing_consumers(),
+        )]))
         .events(Some(
             basal_core::template_events::EVENTS
                 .iter()
@@ -223,6 +233,31 @@ pub fn manifest() -> ModuleManifest {
         ))
         .provenance(Some(build_provenance()))
         .build()
+}
+
+fn routing_consumers() -> serde_json::Map<String, serde_json::Value> {
+    let consumers = [
+        FLOW_CONSUMER,
+        CODEMODE_CONSUMER,
+        FLOW_CLASSIFY_CONSUMER,
+        CODEMODE_CLASSIFY_CONSUMER,
+    ]
+    .into_iter()
+    .map(|name| {
+        // Core opens the flow/program scopes Broca uses; basal does not own them.
+        // List Broca explicitly to admit its routing requests on basal's behalf.
+        let mut defaults = DemandDefaults::new()
+            .with_placement(Placement::module("broca"))
+            .with_selectors(vec!["broca".into()]);
+        defaults.tools = Some(ToolsRequirement::None);
+        ConsumerDeclaration::new(name).with_defaults(defaults)
+    })
+    .collect();
+    serde_json::to_value(ConsumerDeclarations::new().with_consumers(consumers))
+        .expect("routing consumer declarations serialize")
+        .as_object()
+        .expect("routing consumer declarations are an object")
+        .clone()
 }
 
 /// The commit this binary was built from, as `build.rs` embedded it.
