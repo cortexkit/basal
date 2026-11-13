@@ -23,6 +23,8 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `changes` | string | for a subsequent version | absent on a first version | 1 to 600 Unicode scalar values, with the same character rules as `explanation`. What changed from the previous version and why, shown as **What changed** on the approval card. Refused on a first version. |
 | `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
 | `audience` | `{kind, id?}` | no | none | Approved delivery reach: global, workspace or agent. See below. |
+| `abilities` | list of `{key, token, scope}` | no | absent | At most 16 named capability grants for an automation pack. Runtime is not available yet; see below. |
+| `destinations` | list of `{key, kind, severity_max?}` | no | absent | At most 16 card-bound output destinations for an automation pack. Runtime is not available yet; see below. |
 | `private_content_providers` | list of provider ids (strings) | no | `[]` | Extra model providers approved to receive private content, beyond local models and Anthropic. At most 16 distinct ids; see below. |
 | `max_targets` | integer | no | `64` | Maximum distinct agents a run may make `for:` module calls for; 1 to 1024. Shown on the card. Repeated calls for the same stable id use one slot. |
 | `sinks` | list of sink grants | no | `[]` | Agents whose digest the flow may write. |
@@ -69,6 +71,59 @@ text.
 These are intake rules, not a migration of approved manifests. Stored versions
 without either field keep decoding and running unchanged. Add the texts on the
 next real change; do not submit a text-only version of an already approved flow.
+
+### Automation packs: `abilities` and `destinations`
+
+These optional members declare a catalog flow's narrow inputs and card-bound
+outputs. **Pack runtime is not available yet.** After shape and static checks
+pass, install and dry run refuse any manifest containing either member with
+`pack_runtime_unavailable`, even when its list is empty. The declarations can
+be decoded from stored versions without reapplying current intake policy.
+
+```json
+{
+  "abilities": [
+    {"key": "family_calendar", "token": "cap/calendar.read@1", "scope": ["calendar"]},
+    {"key": "family_reminders", "token": "cap/reminders.read@1", "scope": ["list"]}
+  ],
+  "destinations": [
+    {"key": "planning", "kind": "room"},
+    {"key": "me", "kind": "agent_inbox"},
+    {"key": "alerts", "kind": "notice", "severity_max": "attention"}
+  ]
+}
+```
+
+- Both lists hold at most 16 entries. A `key` matches
+  `[a-z][a-z0-9_]{0,39}` and is unique within its own list. The two lists may
+  use the same key.
+- An ability's `token` matches exactly
+  `^cap/[a-z][a-z0-9_.-]*@[1-9][0-9]*$`. The major is a positive decimal
+  integer with no leading zeroes and no machine-integer size limit. This is a
+  capability token, not a module name.
+- Its `scope` names 1 to 8 unique keys, each with the same key grammar. The
+  manifest names the keys, not their values; the install card will bind values.
+- A destination's `kind` is `room`, `agent_inbox`, `notice` or `plexus_action`.
+  `severity_max` is required for `notice` and must be `info` or `attention`;
+  `urgent` is refused. Every other kind refuses `severity_max`.
+- Unknown fields inside either entry are refused. There are no literal room
+  ids, agent ids or recipients in these declarations.
+
+Any ability entry combined with a `net.fetch` grant is refused with
+`pack_net_fetch_forbidden`. Either member combined with nonempty literal
+`sinks` or `ops` grants is refused with `pack_literal_grant`. A package or
+template declaring `abilities` is refused at registration with
+`pack_template_unsupported`: packs are catalog flows, not templates, in v1.
+Malformed declarations use the existing `install_refused` field-error family,
+with a path such as `abilities[0].token` or
+`destinations[2].severity_max` in the message. Fresh dry-run field errors use
+its existing `invalid_params` family; stored dry-run pack field errors use
+`install_refused`. Named pack refusals keep their codes.
+
+The generated [pack manifest vectors](../test-vectors/pack-manifest-v1/README.md)
+contain complete manifests, including `explanation`, and exact intake refusals.
+Ability calls, provider resolution, destination substitution and install-card
+bindings are not implemented by these parsing rules.
 
 ### `secrets`
 

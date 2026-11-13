@@ -1,0 +1,159 @@
+{
+  "manifest": {
+    "abilities": [
+      {
+        "key": "calendar_0",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_1",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_2",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_3",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_4",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_5",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_6",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_7",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_8",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_9",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_10",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_11",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_12",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_13",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_14",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_15",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "calendar_16",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      }
+    ],
+    "audience": {
+      "id": "ag_synapse",
+      "kind": "agent"
+    },
+    "destinations": [
+      {
+        "key": "planning",
+        "kind": "room"
+      },
+      {
+        "key": "me",
+        "kind": "agent_inbox"
+      },
+      {
+        "key": "alerts",
+        "kind": "notice",
+        "severity_max": "attention"
+      }
+    ],
+    "explanation": "Read the selected calendar and reminder list and send a planning summary to the bound destinations.",
+    "id": "family-planning",
+    "purpose": "Plan family commitments",
+    "trigger": {
+      "schedule": {
+        "interval": "1h"
+      }
+    },
+    "version": 1
+  },
+  "reply": {
+    "error": {
+      "code": "install_refused",
+      "message": "the manifest is invalid: abilities: at most 16 entries"
+    }
+  }
+}

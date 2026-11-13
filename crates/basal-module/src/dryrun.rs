@@ -222,7 +222,8 @@ impl DryRunner {
         self.run_install(&install, request.mode, &request.trigger, request.now_ms)
     }
 
-    /// Replays immutable installed bytes without applying new intake policy.
+    /// Replays immutable installed bytes without unrelated new intake policy.
+    /// Pack declarations still pass their narrow checks and runtime gate.
     pub(crate) fn run_stored(&self, request: &DryRunRequest) -> Result<Value, DryRunError> {
         let install = InstallRequest {
             script: request.script.clone(),
@@ -301,6 +302,7 @@ impl DryRunner {
             | basal_core::manifest::ManifestError::ChangesRequired
             | basal_core::manifest::ManifestError::ChangesOnFirstVersion
             | basal_core::manifest::ManifestError::Notice { .. }
+            | basal_core::manifest::ManifestError::Pack { .. }
             | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience
             | basal_core::manifest::ManifestError::ForTargetRequiresAudience
             | basal_core::manifest::ManifestError::RunBoundExceedsAudienceLimit) => {
@@ -308,6 +310,11 @@ impl DryRunner {
             }
             other => DryRunError::Invalid(format!("manifest: {other}")),
         })?;
+        if request.stored || request.template.is_some() {
+            manifest
+                .check_pack_intake()
+                .map_err(|e| DryRunError::InstallRefused(basal_core::InstallError::Manifest(e)))?;
+        }
         if !request.stored && request.template.is_none() {
             // Version history belongs to basal's durable store. The disposable
             // replay store is empty even when this is an upgrade.
