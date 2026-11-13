@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::schedule::ScheduleSpec;
 
+#[path = "pack_manifest.rs"]
+mod packs;
+
 /// The manifest format this build reads.
 pub const MANIFEST_FORMAT: u32 = 1;
 /// The largest manifest accepted, checked before it is parsed.
@@ -107,6 +110,20 @@ pub struct Manifest {
     /// and widening it needs a new version and a new approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<Audience>,
+    /// Capability tokens and scope keys whose values the install card binds.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_abilities"
+    )]
+    pub abilities: Option<Vec<Ability>>,
+    /// Named output destinations whose recipients the install card binds.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_destinations"
+    )]
+    pub destinations: Option<Vec<Destination>>,
     /// Extra model providers approved to receive private content, in manifest order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub private_content_providers: Vec<String>,
@@ -167,6 +184,39 @@ fn decode_string<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
     String::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ability {
+    pub key: String,
+    pub token: String,
+    pub scope: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Destination {
+    pub key: String,
+    pub kind: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_string"
+    )]
+    pub severity_max: Option<String>,
+}
+
+fn decode_abilities<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<Ability>>, D::Error> {
+    Vec::deserialize(deserializer).map(Some)
+}
+
+fn decode_destinations<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<Destination>>, D::Error> {
+    Vec::deserialize(deserializer).map(Some)
 }
 
 /// What starts a run: module events or a schedule, never both.
@@ -532,6 +582,10 @@ pub enum ManifestError {
     ChangesRequired,
     ChangesOnFirstVersion,
     SecretsRequireFlowInstall,
+    Pack {
+        code: &'static str,
+        reason: String,
+    },
     Notice {
         code: &'static str,
         reason: String,
@@ -636,6 +690,7 @@ impl std::fmt::Display for ManifestError {
             Self::AudiencePlaceholderWithoutAudience => {
                 write!(f, "$audience requires an audience in the manifest")
             }
+            Self::Pack { reason, .. } => f.write_str(reason),
             Self::Invalid { field, reason } => write!(f, "{field}: {reason}"),
             Self::Duplicate { field, value } => write!(f, "{field}: {value} is listed twice"),
         }
@@ -859,6 +914,7 @@ impl Manifest {
         // the original bytes afterwards to retain duplicate-key refusals.
         let value: serde_json::Value =
             serde_json::from_str(text).map_err(|e| ManifestError::Decode(e.to_string()))?;
+        packs::check_decode_shape(&value)?;
         for sink in value["sinks"].as_array().into_iter().flatten() {
             if sink["kind"] == "notice" {
                 serde_json::from_value::<NoticeGrant>(sink.clone()).map_err(|e| {
@@ -953,6 +1009,12 @@ impl Manifest {
         }
         if matches!(kind, IntakeKind::Package) {
             self.check_package_secret_eligibility()?;
+            if self.abilities.is_some() {
+                return Err(packs::refused(
+                    "pack_template_unsupported",
+                    "abilities: automation packs cannot be registered as packages or templates",
+                ));
+            }
         }
         let notices: Vec<_> = self
             .sinks
@@ -1042,6 +1104,25 @@ impl Manifest {
             return Err(invalid(
                 "board_read",
                 "requires prefrontal-core board.read in ops",
+            ));
+        }
+        self.check_pack_intake()
+    }
+
+    /// Checks only pack declarations, including the temporary runtime gate.
+    /// Stored dry runs use this without reapplying other current intake policy.
+    pub fn check_pack_intake(&self) -> Result<(), ManifestError> {
+        packs::check(self)?;
+        self.check_pack_runtime()
+    }
+
+    fn check_pack_runtime(&self) -> Result<(), ManifestError> {
+        // Remove this last gate when ability calls and bound destinations have
+        // a runtime implementation. Valid pack bytes must not execute before then.
+        if self.abilities.is_some() || self.destinations.is_some() {
+            return Err(packs::refused(
+                "pack_runtime_unavailable",
+                "automation pack runtime is not available yet",
             ));
         }
         Ok(())
@@ -1667,6 +1748,10 @@ mod board_sink_tests;
 #[cfg(test)]
 #[path = "flow_secrets_manifest_tests.rs"]
 mod flow_secrets_tests;
+
+#[cfg(test)]
+#[path = "pack_manifest_tests.rs"]
+mod pack_manifest_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,54 @@
+{
+  "manifest": {
+    "abilities": [
+      {
+        "key": "family_calendar",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "family_reminders",
+        "scope": [
+          "list"
+        ],
+        "token": "cap/reminders.read@1"
+      }
+    ],
+    "audience": {
+      "id": "ag_synapse",
+      "kind": "agent"
+    },
+    "destinations": [
+      {
+        "key": "planning",
+        "kind": "notice"
+      },
+      {
+        "key": "me",
+        "kind": "agent_inbox"
+      },
+      {
+        "key": "alerts",
+        "kind": "notice",
+        "severity_max": "attention"
+      }
+    ],
+    "explanation": "Read the selected calendar and reminder list and send a planning summary to the bound destinations.",
+    "id": "family-planning",
+    "purpose": "Plan family commitments",
+    "trigger": {
+      "schedule": {
+        "interval": "1h"
+      }
+    },
+    "version": 1
+  },
+  "reply": {
+    "error": {
+      "code": "install_refused",
+      "message": "the manifest is invalid: destinations[0].severity_max: required for notice; must be info or attention"
+    }
+  }
+}

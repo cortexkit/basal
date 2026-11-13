@@ -1,0 +1,60 @@
+{
+  "manifest": {
+    "abilities": [
+      {
+        "key": "family_calendar",
+        "scope": [
+          "calendar"
+        ],
+        "token": "cap/calendar.read@1"
+      },
+      {
+        "key": "family_reminders",
+        "scope": [
+          "list"
+        ],
+        "token": "cap/reminders.read@1"
+      }
+    ],
+    "audience": {
+      "id": "ag_synapse",
+      "kind": "agent"
+    },
+    "destinations": [
+      {
+        "key": "planning",
+        "kind": "room"
+      },
+      {
+        "key": "me",
+        "kind": "agent_inbox"
+      },
+      {
+        "key": "alerts",
+        "kind": "notice",
+        "severity_max": "attention"
+      }
+    ],
+    "explanation": "Read the selected calendar and reminder list and send a planning summary to the bound destinations.",
+    "id": "family-planning",
+    "ops": [
+      {
+        "module": "calendar",
+        "op": "events.list"
+      }
+    ],
+    "purpose": "Plan family commitments",
+    "trigger": {
+      "schedule": {
+        "interval": "1h"
+      }
+    },
+    "version": 1
+  },
+  "reply": {
+    "error": {
+      "code": "pack_literal_grant",
+      "message": "sinks/ops: packs cannot use literal sinks or ops grants"
+    }
+  }
+}
