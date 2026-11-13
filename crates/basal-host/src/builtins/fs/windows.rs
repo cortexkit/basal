@@ -199,11 +199,7 @@ pub fn guid_path_inside_component_wise(
         }
     }
 
-    if !is_directory_root && target_parts.len() != root_parts.len() {
-        return false;
-    }
-
-    true
+    is_directory_root || target_parts.len() == root_parts.len()
 }
 
 #[cfg(windows)]

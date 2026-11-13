@@ -534,10 +534,7 @@ pub fn prune_history(tx: &Transaction<'_>, run_id: &str) -> Result<bool> {
          AND NOT EXISTS(SELECT 1 FROM obligations WHERE run_id=?1 AND state<>'settled')",
         [run_id],
     )?;
-    if deleted == 0 {
-        return Ok(false);
-    }
-    Ok(true)
+    Ok(deleted != 0)
 }
 
 pub fn insert_obligation(tx: &Transaction<'_>, row: &Obligation) -> Result<()> {
