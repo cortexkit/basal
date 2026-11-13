@@ -109,6 +109,34 @@ fn flow_catalog_has_exact_capability_tag() {
     );
 }
 
+#[test]
+fn flow_trigger_schema_types_preserve_all_json_payloads() {
+    let catalog = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:flow.manage/v1"]}
+    }))
+    .unwrap();
+    assert_eq!(catalog["tools"][0]["name"], "flow");
+    let schema = &catalog["tools"][0]["input_schema"];
+    assert_eq!(
+        schema["properties"]["trigger"]["type"],
+        json!(["object", "array", "string", "number", "boolean", "null"])
+    );
+    let validator = basal_core::codemode::catalog::compile_input_schema(schema).unwrap();
+    for trigger in [
+        json!({"sample": true}),
+        json!([1, "sample"]),
+        json!("sample"),
+        json!(42),
+        json!(1.5),
+        json!(false),
+        Value::Null,
+    ] {
+        let arguments = json!({"action":"dry_run","flow_id":"head-flow","trigger":trigger});
+        assert!(validator.is_valid(&arguments), "{arguments}");
+    }
+    assert!(validator.is_valid(&json!({"action":"dry_run","flow_id":"head-flow"})));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn install_reads_exact_head_bytes_on_stamped_scope_and_deduplicates() {
     let root = common::scratch("flow-exact");

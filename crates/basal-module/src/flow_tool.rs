@@ -54,11 +54,13 @@ fn malformed_file_read_reply(reply: &Value) -> ErrorBody {
 }
 
 pub fn schema() -> Value {
+    // A dry-run trigger payload can be any JSON value. Null, like an omitted
+    // trigger, instead replays the flow's scheduled fires over the chosen window.
     json!({"type":"object","properties":{
         "action":{"type":"string","enum":["install","dry_run","disable","enable","list","instantiate","end"]},
         "script_path":{"type":"string"},"manifest_path":{"type":"string"},
         "flow_id":{"type":"string"},"version":{"type":"integer","minimum":1,"maximum":u32::MAX},
-        "window":{"type":"string"},"trigger":{},"reason":{"type":"string"},
+        "window":{"type":"string"},"trigger":{"type":["object","array","string","number","boolean","null"]},"reason":{"type":"string"},
         "flow_ids":{"type":"array","items":{"type":"string"}},
         "template":{"type":"string"},"params":{"type":"object"},"expires_in":{"type":"string"}
     },"required":["action"],"additionalProperties":false})
