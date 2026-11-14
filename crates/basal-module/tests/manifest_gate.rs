@@ -22,18 +22,27 @@ fn routing_consumers_declare_placement_and_delegate_broca() {
     assert_eq!(
         declarations,
         serde_json::json!({"consumers": [
-            {"name":"basal.flow", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"]},
-            {"name":"basal.codemode", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"]},
-            {"name":"basal.flow.classify", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"]},
-            {"name":"basal.codemode.classify", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"]}
+            {"name":"basal.flow", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"background"},
+            {"name":"basal.codemode", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"blocking"},
+            {"name":"basal.flow.classify", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"background"},
+            {"name":"basal.codemode.classify", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"blocking"}
         ]})
     );
     let parsed = cortexkit_role_routing::parse_consumer_declarations_serving(
         &declarations,
-        &["consumer_declarations"],
+        &["consumer_declarations", "consumer_priority"],
     )
     .expect("routing/v1 accepts the declarations");
     assert_eq!(parsed.consumers.len(), 4);
+    // A router without priority support refuses the member, which is why the
+    // declarations waited for the live router to advertise it.
+    assert!(
+        cortexkit_role_routing::parse_consumer_declarations_serving(
+            &declarations,
+            &["consumer_declarations"],
+        )
+        .is_err()
+    );
 }
 
 #[test]

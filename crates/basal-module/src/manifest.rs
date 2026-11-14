@@ -4,6 +4,7 @@
 use basal_host::selector::{
     CODEMODE_CLASSIFY_CONSUMER, CODEMODE_CONSUMER, FLOW_CLASSIFY_CONSUMER, FLOW_CONSUMER,
 };
+use cortexkit_role_routing::declarations::ConsumerPriority;
 use cortexkit_role_routing::placement::Placement;
 use cortexkit_role_routing::select::ToolsRequirement;
 use cortexkit_role_routing::{ConsumerDeclaration, ConsumerDeclarations, DemandDefaults};
@@ -236,8 +237,10 @@ pub fn manifest() -> ModuleManifest {
 }
 
 fn routing_consumers() -> serde_json::Map<String, serde_json::Value> {
-    // Once the live router advertises consumer_priority, set both flow consumers
-    // to background and both codemode consumers to blocking. The member is gated.
+    // Flows run unattended, so they yield to callers that are waiting. A
+    // program's model call holds up the agent turn that started the program,
+    // so it is `blocking`. Routing reads `priority` only from a router that
+    // advertises `consumer_priority`, which the live router does.
     let consumers = [
         FLOW_CONSUMER,
         CODEMODE_CONSUMER,
@@ -248,9 +251,15 @@ fn routing_consumers() -> serde_json::Map<String, serde_json::Value> {
     .map(|name| {
         // Core opens the flow/program scopes Broca uses; basal does not own them.
         // List Broca explicitly to admit its routing requests on basal's behalf.
+        let priority = if name == FLOW_CONSUMER || name == FLOW_CLASSIFY_CONSUMER {
+            ConsumerPriority::Background
+        } else {
+            ConsumerPriority::Blocking
+        };
         let mut defaults = DemandDefaults::new()
             .with_placement(Placement::module("broca"))
-            .with_selectors(vec!["broca".into()]);
+            .with_selectors(vec!["broca".into()])
+            .with_priority(priority);
         defaults.tools = Some(ToolsRequirement::None);
         ConsumerDeclaration::new(name).with_defaults(defaults)
     })
