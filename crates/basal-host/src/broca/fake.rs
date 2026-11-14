@@ -66,12 +66,16 @@ struct State {
 pub struct FakeBroca {
     state: Arc<Mutex<State>>,
     path: Option<PathBuf>,
+    after_result: Arc<Mutex<Option<ResultHook>>>,
 }
+type ResultHook = Box<dyn FnOnce() + Send>;
+
 impl Default for FakeBroca {
     fn default() -> Self {
         Self {
             state: Arc::new(Mutex::new(State::default())),
             path: None,
+            after_result: Arc::default(),
         }
     }
 }
@@ -98,6 +102,7 @@ impl FakeBroca {
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
             path: Some(path),
+            after_result: Arc::default(),
         })
     }
     fn save(&self, state: &State) -> Result<(), BrocaError> {
@@ -131,6 +136,11 @@ impl FakeBroca {
     }
     pub fn sends(&self) -> Vec<(Route, Vec<u8>)> {
         lock(&self.state).sends.clone()
+    }
+    /// Runs once after the next successful result snapshot, outside the state
+    /// lock, so a test can finish the run while its stale read is in flight.
+    pub fn after_next_result(&self, hook: impl FnOnce() + Send + 'static) {
+        *lock(&self.after_result) = Some(Box::new(hook));
     }
     /// How many times `send.status` was called.
     pub fn send_statuses(&self) -> usize {
@@ -516,6 +526,11 @@ impl Transport for FakeBroca {
             .find(|r| &r.route == route && r.run_id == params.run_id && !r.forgotten)
             .map(|r| r.result.clone());
         self.save(&s)?;
+        drop(s);
+        let hook = lock(&self.after_result).take();
+        if let Some(hook) = hook {
+            hook();
+        }
         result.ok_or_else(|| refused(UNKNOWN_RUN))
     }
     fn status(

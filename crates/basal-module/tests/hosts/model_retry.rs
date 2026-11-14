@@ -145,9 +145,8 @@ fn transient_model_send_defers_then_succeeds_without_spending_dispatch_budget() 
 
     f.clock.set(deferred.retry_not_before);
     f.module.engine.run_until_idle(50).unwrap();
-    // Engine idleness does not join dispatch threads. Wait for dispatch_committed
-    // to finish its first read before completing the fake run: a concurrent poll
-    // skips a locked call, and this fixture has no bus wake to trigger another.
+    // Engine idleness does not join dispatch threads. Finish the first read
+    // before completing the fake run to keep this retry-budget test sequential.
     f.module.rt.quiesce();
     let row = f.module.rt.calls(&run).unwrap()[0].clone();
     assert_eq!(row.attempts, 2);
@@ -184,6 +183,86 @@ fn transient_model_send_defers_then_succeeds_without_spending_dispatch_budget() 
         dispatches, 1,
         "only the accepted attempt consumes rate budget"
     );
+}
+
+#[test]
+fn model_visit_drains_wakes_skipped_during_dispatch_read() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn pause_next_result(
+        fake: &basal_host::broca::fake::FakeBroca,
+    ) -> (mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (captured, read) = mpsc::sync_channel(1);
+        let (release, resume) = mpsc::sync_channel(1);
+        fake.after_next_result(move || {
+            captured.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        (read, release)
+    }
+
+    for bursts in [1, 2] {
+        let selector = Arc::new(basal_host::selector::FakeSelector::default());
+        let (f, model, fake, snapshots) = model_fixture(
+            "model-visit-wakes",
+            Fake::new(),
+            selector,
+            Arc::new(NoHooks),
+        );
+        common::install(
+            &f,
+            &Caller::Operator,
+            "return (await llm({prompt:'hello'})).text;",
+            &model_manifest(),
+        );
+        approve_model(&f);
+        let (mut read, mut release) = pause_next_result(&fake);
+        let run = common::admit(&f, "host-flow", "wake-during-read");
+        f.module.engine.run_until_idle(50).unwrap();
+
+        for burst in 0..bursts {
+            // dispatch_committed (then its reread) captured a running result
+            // and still holds the call gate, but not the fake's state lock.
+            read.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(fake.calls(), (0, burst + 1));
+            for _ in 0..8 {
+                model.poll().unwrap();
+            }
+            assert_eq!(fake.calls(), (0, burst + 1), "wakes never wait or read");
+            assert!(
+                f.module
+                    .rt
+                    .fixture_call_state(&run, 0)
+                    .unwrap()
+                    .arrival
+                    .is_none()
+            );
+
+            if burst + 1 < bursts {
+                let next = pause_next_result(&fake);
+                release.send(()).unwrap();
+                (read, release) = next;
+            }
+        }
+
+        let key = f.module.rt.calls(&run).unwrap()[0].idempotency_key.clone();
+        fake.finish(&key, "answer", RunFinishReason::Completed, None)
+            .unwrap();
+        release.send(()).unwrap();
+        // No later poll, timer or clock advance: the holder owes the read.
+        f.module.rt.quiesce();
+        f.module.engine.run_until_idle(50).unwrap();
+        assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
+        assert_eq!(
+            f.module.rt.run(&run).unwrap().result.as_deref(),
+            Some("\"answer\"")
+        );
+        assert_eq!(fake.calls(), (1, bursts + 1), "one reread per wake burst");
+        let saved = snapshots.load().unwrap().remove(0);
+        assert!(saved.acknowledged && saved.outcome.is_some());
+        assert_eq!(fake.sends().len(), 1);
+    }
 }
 
 #[test]

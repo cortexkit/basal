@@ -523,7 +523,7 @@ pub struct BrocaHost {
     selector: Arc<dyn ModelSelector>,
     // Only identical send ids serialize. An unavailable provider must not hold
     // every other model dispatch behind a process-wide network lock.
-    gate: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
+    gate: Mutex<HashMap<String, std::sync::Weak<CallGate>>>,
     /// Per send id, how many consecutive polls found the run terminal in
     /// `run.result` while `run.status` still said active or paused (the
     /// brief window described in `resolve`). Kept in memory only: a restart
@@ -536,6 +536,14 @@ pub struct BrocaHost {
     /// Wakes the thread that runs `wake` (see `subc::PollWake`), so it
     /// handles new bus wakes and recomputes when the next check is due.
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+#[derive(Default)]
+struct CallGate {
+    call: Mutex<()>,
+    // Held only to request a visit or finish a read, never during transport I/O.
+    // Serializing the final check with unlocking prevents a lost late request.
+    visit_requested: Mutex<bool>,
 }
 
 /// What became of one committed wake.
@@ -595,13 +603,13 @@ impl BrocaHost {
         }
     }
 
-    fn call_gate(&self, send_id: &str) -> Arc<Mutex<()>> {
+    fn call_gate(&self, send_id: &str) -> Arc<CallGate> {
         let mut gates = lock(&self.gate);
         if let Some(gate) = gates.get(send_id).and_then(std::sync::Weak::upgrade) {
             return gate;
         }
         gates.retain(|_, gate| gate.strong_count() != 0);
-        let gate = Arc::new(Mutex::new(()));
+        let gate = Arc::new(CallGate::default());
         gates.insert(send_id.to_owned(), Arc::downgrade(&gate));
         gate
     }
@@ -1120,7 +1128,7 @@ impl BrocaHost {
         let now = self.now();
         let route = {
             let gate = self.call_gate(&wake.send_id);
-            let Ok(_guard) = gate.try_lock() else {
+            let Ok(_guard) = gate.call.try_lock() else {
                 return Ok(WakeStep::Busy);
             };
             let Some(mut call) = self.store.get(&wake.send_id)? else {
@@ -1197,7 +1205,7 @@ impl BrocaHost {
             },
         };
         let gate = self.call_gate(&wake.send_id);
-        let Ok(_guard) = gate.try_lock() else {
+        let Ok(_guard) = gate.call.try_lock() else {
             return Ok(WakeStep::Busy);
         };
         let Some(mut call) = self.store.get(&wake.send_id)? else {
@@ -1257,13 +1265,32 @@ impl BrocaHost {
     /// call left has its wait dropped.
     fn visit(&self, send_id: &str) -> Result<(), BrocaError> {
         let gate = self.call_gate(send_id);
-        // Another activation holds this send id's lock because it is
-        // dispatching the same call right now. Skip the call instead of
-        // waiting: once that activation commits the dispatch to the journal
-        // it reads the call again (`dispatch_committed`).
-        let Ok(_guard) = gate.try_lock() else {
+        let mut requested = lock(&gate.visit_requested);
+        *requested = true;
+        // Never wait for a dispatch or read of this call. A reading holder
+        // drains requests made during its read, coalescing each burst into
+        // one more read. A dispatch reads after commit (`dispatch_committed`);
+        // event bookkeeping keeps its durable wake until it can make it due.
+        let Ok(guard) = gate.call.try_lock() else {
             return Ok(());
         };
+        let mut first_error = None;
+        loop {
+            *requested = false;
+            drop(requested);
+            if let Err(error) = self.visit_locked(send_id) {
+                first_error.get_or_insert(error);
+            }
+            requested = lock(&gate.visit_requested);
+            if !*requested {
+                // Requests cannot arrive between the final check and unlock.
+                drop(guard);
+                return first_error.map_or(Ok(()), Err);
+            }
+        }
+    }
+
+    fn visit_locked(&self, send_id: &str) -> Result<(), BrocaError> {
         let Some(mut call) = self.store.get(send_id)? else {
             return self.store.forget(send_id);
         };
@@ -1378,7 +1405,7 @@ impl BrocaHost {
 
     pub fn dispatch_model(&self, request: &CallRequest) -> Result<Dispatched, BrocaError> {
         let gate = self.call_gate(&request.idempotency_key);
-        let _guard = lock(&gate);
+        let _guard = lock(&gate.call);
         let prepared = self.prepare(request)?;
         let existing = self.store.get(&prepared.send_id)?;
         let mut call = match existing {
@@ -1461,7 +1488,7 @@ impl Host for BrocaHost {
     fn refusal_committed(&self, request: &CallRequest, refusal: &crate::flow_refusal::FlowRefusal) {
         let result = (|| {
             let gate = self.call_gate(&request.idempotency_key);
-            let _guard = lock(&gate);
+            let _guard = lock(&gate.call);
             if let Some(mut call) = self.store.get(&request.idempotency_key)? {
                 let was_live = !call.acknowledged && !call.deferred;
                 let outcome = refusal.outcome();
