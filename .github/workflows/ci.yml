@@ -58,6 +58,10 @@ jobs:
         run: |
           python3 script/check-local-paths.py
           python3 -m unittest script.tests.check_local_paths -v
+      - name: Check no ignored .cortexkit file is tracked
+        run: |
+          python3 script/check-tracked-ignored.py
+          python3 -m unittest script.tests.check_tracked_ignored -v
       - name: Check offline placement cards
         run: |
           /bin/sh -n script/stage.sh

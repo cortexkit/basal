@@ -333,13 +333,8 @@ fast() {
     run shellcheck -x script/*.sh
     run /bin/sh -n script/stage.sh
     run "$python" script/check-ckdev-names.py
-    run "$python" -m unittest script.tests.check_ckdev_names script.tests.check_local_paths script.tests.gate -v
-    local tracked_ignored
-    tracked_ignored=$(git ls-files -ci --exclude-standard -- .cortexkit)
-    if [[ -n $tracked_ignored ]]; then
-        printf 'Ignored .cortexkit files are tracked:\n%s\n' "$tracked_ignored" >&2
-        return 1
-    fi
+    run "$python" -m unittest script.tests.check_ckdev_names script.tests.check_local_paths script.tests.check_tracked_ignored script.tests.gate -v
+    run "$python" script/check-tracked-ignored.py
     run "$python" script/gate_support.py author "$base"
     run gitleaks version
     run "$python" script/gate_support.py snapshot "$scratch/linux"
