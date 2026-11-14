@@ -692,6 +692,61 @@ fn refusal(f: &Fixture, caller: &Caller, method: &str, params: Value) -> Value {
     value
 }
 
+fn held_vectors() -> BTreeMap<String, Value> {
+    use basal_core::{InstallGate, RunState, run_records::State};
+    use basal_host::InstallStatus;
+
+    // Keep the gated fixture separate so the existing ungated samples retain
+    // their flow set and bytes. Only the core-held run reaches these readers.
+    let f = fixture(
+        "phone-vectors-held",
+        Options {
+            install_gate: InstallGate::Core,
+            dry_run_max_fires: Some(0),
+            ..Options::with_worker()
+        },
+    );
+    let flow = "flow-phone-held";
+    let run = "run-phone-held";
+    seed(&f, flow, None, "operator");
+    f.module
+        .rt
+        .fixture_run(
+            run,
+            flow,
+            1,
+            "return 1;",
+            &manifest(flow, None).to_string(),
+            State::new(T0),
+        )
+        .unwrap();
+    let hash = basal_core::ids::hex(&f.module.rt.run(run).unwrap().code_hash);
+    let mut values = BTreeMap::new();
+    for (suffix, since) in [("held", Some(T0 - 60_000)), ("held-no-since", None)] {
+        f.mock.set_install_status(
+            flow,
+            1,
+            Some(InstallStatus::Held {
+                code_hash: hash.clone(),
+                reason: "catalog_status_stale".into(),
+                stale_since_ms: since,
+            }),
+        );
+        f.module.engine.run_until_idle(20).unwrap();
+        assert_eq!(f.module.rt.run(run).unwrap().state, RunState::Pending);
+        values.insert(
+            format!("overview-{suffix}.json"),
+            op(&f, "flow.overview", json!({})),
+        );
+        values.insert(
+            format!("details-{suffix}.json"),
+            op(&f, "flow.details", json!({"flow_id":flow})),
+        );
+        f.clock.advance(1_000);
+    }
+    values
+}
+
 fn vectors() -> BTreeMap<String, Value> {
     let f = setup("phone-vectors");
     seed(
@@ -813,6 +868,7 @@ fn vectors() -> BTreeMap<String, Value> {
             json!({"flow_id":"flow-phone-owned","runs":51}),
         ),
     );
+    values.extend(held_vectors());
     values
 }
 
@@ -829,14 +885,21 @@ fn phone_vectors_match_real_dispatch_and_sha256sums() {
     }
     let dir =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-vectors/flows-phone-v1");
+    let write = std::env::var_os("BASAL_WRITE_VECTORS").is_some();
     let mut sums = String::new();
     for (name, actual) in &files {
+        if write {
+            std::fs::write(dir.join(name), actual).unwrap();
+        }
         let expected = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
         assert_eq!(&expected, actual, "handler vector drift: {name}");
         sums.push_str(&format!(
             "{:x}  {name}\n",
             Sha256::digest(actual.as_bytes())
         ));
+    }
+    if write {
+        std::fs::write(dir.join("SHA256SUMS"), &sums).unwrap();
     }
     assert_eq!(
         std::fs::read_to_string(dir.join("SHA256SUMS")).unwrap(),

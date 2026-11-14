@@ -1,0 +1,72 @@
+{
+  "audience": null,
+  "disabled": null,
+  "flow_id": "flow-phone-held",
+  "install_hold": {
+    "reason": "catalog_status_stale",
+    "since_ms": 1777593540000
+  },
+  "installs": [
+    {
+      "approval": {
+        "kind": "card"
+      },
+      "code_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "decided_at_ms": 1777593600001,
+      "requested_at_ms": 1777593600000,
+      "requested_by": "operator",
+      "state": "approved",
+      "version": 1
+    }
+  ],
+  "last_run": null,
+  "manifest": {
+    "explanation": "Exercises the declared trigger and grants for a test, without additional effects.",
+    "id": "flow-phone-held",
+    "ops": [
+      {
+        "module": "mock",
+        "op": "echo"
+      },
+      {
+        "module": "mock",
+        "op": "send"
+      }
+    ],
+    "purpose": "A test flow.",
+    "sinks": [
+      {
+        "agent": "Target",
+        "digest_max": "piggyback"
+      }
+    ],
+    "title": "Synthetic flow",
+    "trigger": {
+      "events": [
+        {
+          "module": "plexus",
+          "name": "pull_request_review",
+          "version": 1
+        }
+      ]
+    },
+    "version": 1
+  },
+  "owner": null,
+  "purpose": "A test flow.",
+  "runs": [
+    {
+      "admitted_at_ms": 1777593600000,
+      "ended_at_ms": null,
+      "error": null,
+      "error_kind": null,
+      "outcome": "pending",
+      "run_id": "run-phone-held",
+      "trigger": "manual"
+    }
+  ],
+  "state": "enabled",
+  "title": "Synthetic flow",
+  "trigger": "on plexus pull_request_review",
+  "version": 1
+}
