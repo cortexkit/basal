@@ -17,9 +17,18 @@ const proposal = event.body;
 const validId = Number.isSafeInteger(proposal?.id) || (typeof proposal?.id === 'string' && proposal.id !== '');
 if (!proposal || proposal.project_id !== params.project_id || !validId) return;
 
-const answer = await ops.call('magic-context', 'docs_proposals.state', { proposal_id: proposal.id });
-if (answer?.error) throw { data: answer.error };
-if (answer?.result?.state !== 'pending') return;
+let state;
+try {
+  const answer = await ops.call('magic-context', 'docs_proposals.state', { proposal_id: proposal.id });
+  if (answer?.error) throw { data: answer.error };
+  state = answer?.result?.state;
+} catch (error) {
+  // A capture-only dry run answers no query; treat the proposal as pending
+  // there so the preview shows the digest a real run would send.
+  if (error.data?.code !== 'captured') throw error;
+  state = 'pending';
+}
+if (state !== 'pending') return;
 
 const documents = (Array.isArray(proposal.documents) ? proposal.documents : [])
   .filter((doc) => Array.isArray(doc.changes) && doc.changes.length);
