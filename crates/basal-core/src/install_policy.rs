@@ -89,11 +89,7 @@ impl Runtime {
         provenance: Option<InstallApproval>,
     ) -> Result<bool> {
         let expected = crate::ids::hex(hash);
-        let approval = match self
-            .shared
-            .host
-            .install_status_with_approval(flow_id, version)
-        {
+        let approval = match self.core_install_status_with_approval(flow_id, version) {
             Ok((InstallStatus::Active { code_hash, .. }, approval)) if code_hash == expected => {
                 provenance.or(approval)
             }
@@ -207,11 +203,7 @@ impl Runtime {
     fn reconcile_install_card(&self, card: &crate::cards::CardRecord) -> Result<()> {
         let flow_id = &card.flow_id;
         let version = card.version;
-        match self
-            .shared
-            .host
-            .install_status_with_approval(flow_id, version)
-        {
+        match self.core_install_status_with_approval(flow_id, version) {
             Ok((InstallStatus::Active { code_hash, .. }, approval))
                 if code_hash == crate::ids::hex(&card.code_hash) =>
             {

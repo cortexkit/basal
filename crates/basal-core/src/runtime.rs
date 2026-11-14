@@ -259,6 +259,7 @@ pub(crate) struct Shared {
     /// Runs whose install gate got no answer from core, with when they may
     /// be checked again. In memory: a restart checks every run at once.
     pub(crate) gate_backoff: Mutex<HashMap<String, crate::gate::Backoff>>,
+    pub(crate) install_holds: Mutex<HashMap<(String, u32), crate::gate::InstallHold>>,
     event_scope_warnings: Mutex<EventScopeWarnings>,
 
     pub(crate) signal: Signal,
@@ -506,6 +507,7 @@ impl Runtime {
 
             flow_routes: Mutex::new(()),
             gate_backoff: Mutex::new(HashMap::new()),
+            install_holds: Mutex::new(HashMap::new()),
             event_scope_warnings: Mutex::new(EventScopeWarnings::default()),
 
             signal: Signal {

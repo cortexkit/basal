@@ -317,10 +317,22 @@ pub(super) fn summary(action: &str, result: &Value) -> String {
                 } else {
                     "none".into()
                 };
+                let state = match flow["install_hold"]["reason"].as_str() {
+                    Some(reason) => format!(
+                        "{}; held: {}",
+                        field(flow, "state"),
+                        if reason == "catalog_status_stale" {
+                            "catalog status stale"
+                        } else {
+                            reason
+                        }
+                    ),
+                    None => field(flow, "state").to_owned(),
+                };
                 format!(
                     "{}: {}; approved version {}; last run {last}",
                     field(flow, "flow_id"),
-                    field(flow, "state"),
+                    state,
                     version(&flow["approved_version"])
                 )
             })

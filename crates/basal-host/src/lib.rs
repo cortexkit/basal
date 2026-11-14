@@ -391,9 +391,9 @@ impl fmt::Display for TransportError {
 impl std::error::Error for TransportError {}
 
 /// What core says about one flow version, from its `flow.install_status`
-/// op. Core keeps every version it approved active until the operator
-/// revokes it there; it has no notion of a superseded version, so the older
-/// approved version a run started on still reads active.
+/// op. Core keeps every version approved until the operator revokes it
+/// there, though it may temporarily hold runs. It has no notion of a
+/// superseded version, so a newer approval does not revoke an older one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallStatus {
     /// Core stands behind the version. `code_hash` is the code hash core
@@ -401,6 +401,13 @@ pub enum InstallStatus {
     Active {
         code_hash: String,
         scope: Option<flow_scope::RegisteredScope>,
+    },
+    /// Core approved the version but cannot currently authorize a run. A
+    /// confirmed active status clears the hold without a new approval.
+    Held {
+        code_hash: String,
+        reason: String,
+        stale_since_ms: Option<i64>,
     },
     /// The operator revoked the version in core, which now refuses its sink
     /// writes. Core omits the hash when nothing approved remains to name, such

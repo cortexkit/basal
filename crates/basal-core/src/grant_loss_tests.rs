@@ -19,6 +19,7 @@ struct ProbeHost {
     yes: AtomicBool,
     scoped: AtomicBool,
     revoked: AtomicBool,
+    held: AtomicBool,
     configured: Mutex<Option<String>>,
     hash: String,
     on_probe: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -62,6 +63,13 @@ impl Host for ProbeHost {
         _: &str,
         _: u32,
     ) -> std::result::Result<basal_host::InstallStatus, TransportError> {
+        if self.held.load(Ordering::SeqCst) {
+            return Ok(basal_host::InstallStatus::Held {
+                code_hash: self.hash.clone(),
+                reason: "ability_setup_pending".into(),
+                stale_since_ms: None,
+            });
+        }
         if self.revoked.load(Ordering::SeqCst) {
             return Ok(basal_host::InstallStatus::Revoked {
                 code_hash: Some(self.hash.clone()),
@@ -130,6 +138,7 @@ impl Fixture {
             yes: AtomicBool::new(false),
             scoped: AtomicBool::new(true),
             revoked: AtomicBool::new(false),
+            held: AtomicBool::new(false),
             configured: Mutex::new(None),
             hash: crate::ids::hex(&hash),
             on_probe: Mutex::new(None),
@@ -437,6 +446,35 @@ fn core_revocation_stops_grant_polling_without_provider_calls() {
     assert!(lock(&f.host.probes).is_empty());
     assert_eq!(f.rt.poll_lost_grants().unwrap(), 0);
     assert!(!f.rt.flow("flow").unwrap().unwrap().enabled);
+}
+
+#[test]
+fn core_hold_defers_grant_restoration_without_revoking_the_install() {
+    let f = Fixture::new("old-agent");
+    f.lose("run", absence(json!("g1.opaque")), json!({}));
+    f.host.held.store(true, Ordering::SeqCst);
+    f.host.yes.store(true, Ordering::SeqCst);
+    assert_eq!(f.rt.poll_lost_grants().unwrap(), 1);
+    assert_eq!(f.rt.grant_losses().unwrap()[0].state, "polling");
+    assert!(lock(&f.host.probes).is_empty());
+    assert!(
+        f.rt.store()
+            .read(|c| crate::install::approved(c, "flow"))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        f.rt.store()
+            .read(|c| crate::install::revocation(c, "flow", 1))
+            .unwrap()
+            .is_none()
+    );
+    f.host.held.store(false, Ordering::SeqCst);
+    f.rt.config.clock.set(1000);
+    assert_eq!(f.rt.poll_lost_grants().unwrap(), 1);
+    assert_eq!(f.rt.grant_losses().unwrap()[0].state, "restored");
+    assert!(f.rt.flow("flow").unwrap().unwrap().enabled);
+    assert_eq!(lock(&f.host.probes).len(), 1);
 }
 
 #[test]

@@ -232,6 +232,22 @@ fn remaining_actions_have_plain_text_instead_of_json() {
 }
 
 #[test]
+fn list_names_temporary_install_holds_without_hiding_enable_state() {
+    for (reason, display) in [
+        ("catalog_status_stale", "catalog status stale"),
+        ("ability_setup_pending", "ability_setup_pending"),
+        ("ability_permission_denied", "ability_permission_denied"),
+        ("future_reason", "future_reason"),
+    ] {
+        let result = json!({"flows":[{"flow_id":"watch","state":"enabled","approved_version":2,"last_run":null,"install_hold":{"reason":reason}}]});
+        assert_eq!(
+            summary("list", &result),
+            format!("watch: enabled; held: {display}; approved version 2; last run none")
+        );
+    }
+}
+
+#[test]
 fn successful_runs_still_show_captured_and_refused_call_outcomes() {
     let mut run = captured_run(0, "prefrontal-core", "board.read");
     run["state"] = json!("succeeded");

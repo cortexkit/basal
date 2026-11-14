@@ -445,8 +445,108 @@ fn an_undecodable_reply_defers_the_run() {
     assert_eq!(health_entry(&f)["state"], "enabled");
 }
 
-/// `flow.install_status` accepts only these `state` values. Active, pending,
-/// executed, declined and expired states require a valid hash; revoked and
+#[test]
+fn held_install_is_visible_in_operator_readers_until_active() {
+    let fake = Fake::new();
+    let (f, consent) = gated_with_worker(&fake, "gate-wire-held");
+    install_approved(&f, &fake, &consent, true);
+    let id = common::admit(&f, FLOW, "held");
+    let hash = basal_core::ids::hex(&f.module.rt.run(&id).unwrap().code_hash);
+    for since in [Some(900100), None] {
+        let mut catalog = json!({"code":"catalog_status_stale","state":"held"});
+        if let Some(since) = since {
+            catalog["stale_since_ms"] = json!(since);
+        }
+        fake.enqueue(
+            "flow.install_status",
+            vec![Ok(
+                json!({"state":"held","code_hash":hash,"catalog":catalog,"pack":{}}),
+            )],
+        );
+        f.module.engine.run_until_idle(20).unwrap();
+        assert_eq!(f.module.rt.run(&id).unwrap().state, RunState::Pending);
+        let mut expected = json!({"reason":"catalog_status_stale"});
+        if let Some(since) = since {
+            expected["since_ms"] = json!(since);
+        }
+        let overview = f
+            .module
+            .handle(&Caller::Operator, "flow.overview", json!({}))
+            .unwrap();
+        let details = f
+            .module
+            .handle(&Caller::Operator, "flow.details", json!({"flow_id":FLOW}))
+            .unwrap();
+        let list = f
+            .module
+            .handle(&Caller::Operator, "flow.list", json!({}))
+            .unwrap();
+        for row in [&overview["flows"][0], &details, &list["flows"][0]] {
+            assert_eq!(row["install_hold"], expected, "{row:#}");
+            assert_eq!(row["state"], "enabled");
+            assert!(row["last_run"].is_null());
+            assert!(row["disabled"].is_null());
+        }
+        f.clock.advance(if since.is_some() { 1_000 } else { 2_000 });
+    }
+    f.module.engine.run_until_idle(20).unwrap();
+    assert_eq!(f.module.rt.run(&id).unwrap().state, RunState::Succeeded);
+    let overview = f
+        .module
+        .handle(&Caller::Operator, "flow.overview", json!({}))
+        .unwrap();
+    let details = f
+        .module
+        .handle(&Caller::Operator, "flow.details", json!({"flow_id":FLOW}))
+        .unwrap();
+    let list = f
+        .module
+        .handle(&Caller::Operator, "flow.list", json!({}))
+        .unwrap();
+    for row in [&overview["flows"][0], &details, &list["flows"][0]] {
+        assert!(row.get("install_hold").is_none(), "{row:#}");
+        assert_eq!(row["state"], "enabled");
+    }
+}
+
+#[test]
+fn held_reply_to_a_revocation_hint_is_unavailable_not_a_revocation() {
+    let fake = Fake::new();
+    let (f, consent) = gated(&fake, "gate-held-hint");
+    install_approved(&f, &fake, &consent, true);
+    let approved = f
+        .module
+        .rt
+        .store()
+        .read(|c| basal_core::install::approved(c, FLOW))
+        .unwrap()
+        .unwrap();
+    let hash = basal_core::ids::hex(&approved.code_hash);
+    fake.enqueue(
+        "flow.install_status",
+        vec![Ok(
+            json!({"state":"held","code_hash":hash,"catalog":{"code":"catalog_status_stale"}}),
+        )],
+    );
+    assert!(matches!(
+        f.module.rt.install_revoked(FLOW, 1, &hash),
+        Err(basal_core::CoreError::Unavailable(_))
+    ));
+    let flow = f.module.rt.flow(FLOW).unwrap().unwrap();
+    assert!(flow.enabled);
+    assert_eq!(flow.approved_version, Some(1));
+    assert!(
+        f.module
+            .rt
+            .store()
+            .read(|c| basal_core::install::revocation(c, FLOW, 1))
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// Known `flow.install_status` states are decoded strictly. Active, held,
+/// pending, executed, declined and expired states require a valid hash; revoked and
 /// rejected may omit the hash but never carry a malformed one, and unknown must
 /// have no hash.
 #[test]

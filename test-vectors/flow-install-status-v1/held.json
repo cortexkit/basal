@@ -1,0 +1,1 @@
+{"approval":{"kind":"card"},"catalog":{"code":"catalog_status_stale","stale_since_ms":900100,"state":"held"},"code_hash":"6c998814b5e0e52d6baa0c55261ce4bbd8211a95fea9ed8686d61592989c3cc8","pack":{"abilities":[],"flow_version":3,"install_id":"install-example--hello-flow-3","name":"@example/hello-flow","version":"1.0.0"},"state":"held"}

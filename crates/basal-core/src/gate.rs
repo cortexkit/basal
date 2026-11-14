@@ -22,6 +22,9 @@
 //!   a backoff passes, doubling with each unanswered check, so a core outage
 //!   delays runs but never loses one, never runs one unapproved, and never
 //!   turns into a loop of questions.
+//! - `held`: core approved the version but cannot currently confirm it may
+//!   run. Use the same backoff as an unanswered check, without revoking the
+//!   version. A later active reply opens the gate automatically.
 //!
 //! The check runs after the activation's lease is taken and before the
 //! worker is handed anything. A verified push can record revocation during an
@@ -34,6 +37,16 @@ use std::time::Duration;
 use crate::error::Result;
 
 use crate::runtime::Runtime;
+
+/// The last confirmed temporary hold for a flow version. It is observational
+/// runtime state, not a disable or a failed run, and is cleared by a non-held
+/// core reply. An unreachable core leaves the last confirmed hold visible.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InstallHold {
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since_ms: Option<i64>,
+}
 
 /// Whether activations ask core first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +92,77 @@ fn millis(d: Duration) -> i64 {
 }
 
 impl Runtime {
+    pub fn install_hold(&self, flow: &str, version: u32) -> Option<InstallHold> {
+        self.shared
+            .install_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&(flow.to_owned(), version))
+            .cloned()
+    }
+
+    pub(crate) fn observe_install_status(
+        &self,
+        flow: &str,
+        version: u32,
+        status: &basal_host::InstallStatus,
+    ) {
+        let mut holds = self
+            .shared
+            .install_holds
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let key = (flow.to_owned(), version);
+        if let basal_host::InstallStatus::Held {
+            reason,
+            stale_since_ms,
+            ..
+        } = status
+        {
+            if holds.get(&key).is_none_or(|hold| hold.reason != *reason) {
+                tracing::info!(target: "install_gate", flow_id = flow, version, reason, "flow install held");
+            }
+            holds.insert(
+                key,
+                InstallHold {
+                    reason: reason.clone(),
+                    since_ms: *stale_since_ms,
+                },
+            );
+        } else {
+            holds.remove(&key);
+        }
+    }
+
+    pub(crate) fn core_install_status(
+        &self,
+        flow: &str,
+        version: u32,
+    ) -> std::result::Result<basal_host::InstallStatus, basal_host::TransportError> {
+        let status = self.shared.host.install_status(flow, version)?;
+        self.observe_install_status(flow, version, &status);
+        Ok(status)
+    }
+
+    pub(crate) fn core_install_status_with_approval(
+        &self,
+        flow: &str,
+        version: u32,
+    ) -> std::result::Result<
+        (
+            basal_host::InstallStatus,
+            Option<basal_host::InstallApproval>,
+        ),
+        basal_host::TransportError,
+    > {
+        let (status, approval) = self
+            .shared
+            .host
+            .install_status_with_approval(flow, version)?;
+        self.observe_install_status(flow, version, &status);
+        Ok((status, approval))
+    }
+
     /// How long `run_id` still waits before its gate may ask core again,
     /// if it waits at all.
     pub(crate) fn gate_wait(&self, run_id: &str) -> Option<Duration> {

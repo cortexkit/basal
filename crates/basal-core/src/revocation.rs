@@ -32,14 +32,15 @@ impl Runtime {
         };
         // The network read must not hold SQLite's writer: running calls need it
         // to journal their outcomes even when core is slow or unreachable.
-        let status = self
-            .shared
-            .host
-            .install_status(flow, version)
-            .map_err(|e| {
-                CoreError::Unavailable(format!("no install status for {flow} v{version}: {e}"))
-            })?;
+        let status = self.core_install_status(flow, version).map_err(|e| {
+            CoreError::Unavailable(format!("no install status for {flow} v{version}: {e}"))
+        })?;
         let reason = match status {
+            InstallStatus::Held { .. } => {
+                return Err(CoreError::Unavailable(format!(
+                    "install held for {flow} v{version}"
+                )));
+            }
             InstallStatus::Active { code_hash, .. } if code_hash == hash => return Ok(()),
             InstallStatus::Active { code_hash, .. } => format!(
                 "core approved code hash {code_hash} for {flow} v{version}, but basal holds code hash {hash}"

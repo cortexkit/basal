@@ -309,11 +309,7 @@ impl run_driver::Services for Services {
             .store()
             .read(|c| sql::identity(c, &live.run_id))?
             .ok_or_else(|| CoreError::NoSuchRun(live.run_id.clone()))?;
-        match rt
-            .shared
-            .host
-            .install_status(&live.flow_id, live.flow_version)
-        {
+        match rt.core_install_status(&live.flow_id, live.flow_version) {
             Ok(InstallStatus::Active { code_hash, scope })
                 if code_hash == crate::ids::hex(&identity.code_hash) =>
             {
@@ -321,7 +317,7 @@ impl run_driver::Services for Services {
                 rt.clear_backoff(&live.run_id);
                 Ok(Gate::Open)
             }
-            Err(_) => {
+            Ok(InstallStatus::Held { .. }) | Err(_) => {
                 rt.back_off(&live.run_id)?;
                 Ok(Gate::Deferred)
             }

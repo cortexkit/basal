@@ -315,6 +315,135 @@ fn unreachable_core_defers_the_run_with_a_doubling_backoff() {
     assert_eq!(rt.activation_count(&run_id).expect("count"), 1);
 }
 
+#[test]
+fn held_core_defers_without_failure_and_active_resumes_automatically() {
+    let logs = basal_core::test_support::logs::CapturedLogs::new();
+    let world = World::new("gate-held");
+    let clock = Clock::manual(T0);
+    let rt = gated(&world, &clock);
+    let id = admit(&rt, &world, "return 7;");
+    let r = run(&rt, &id);
+    for (reason, wait) in [
+        ("catalog_status_stale", 1),
+        ("catalog_status_stale", 2),
+        ("ability_setup_pending", 4),
+        ("future_reason", 8),
+    ] {
+        world.mock.set_install_status(
+            &r.flow_id,
+            1,
+            Some(InstallStatus::Held {
+                code_hash: hex(&r.code_hash),
+                reason: reason.into(),
+                stale_since_ms: Some(900100 + wait as i64),
+            }),
+        );
+        let end = rt.resume(&id).unwrap();
+        assert!(
+            matches!(end, ActivationEnd::Deferred { retry_in, .. } if retry_in == Duration::from_secs(wait)),
+            "{end:?}"
+        );
+        let after = run(&rt, &id);
+        assert_eq!(after.state, RunState::Pending);
+        assert_eq!(after.deadline_at, None);
+        assert_eq!(after.error_kind, None);
+        assert_eq!(rt.activation_count(&id).unwrap(), 0);
+        assert_eq!(activations_sent(&world), 0);
+        let flow = rt.flow(&r.flow_id).unwrap().unwrap();
+        assert!(flow.enabled);
+        assert_eq!(flow.approved_version, Some(1));
+        assert_eq!(flow.disabled_by, None);
+        assert_eq!(rt.flow_health().unwrap()[0].consecutive_failures, 0);
+        assert!(rt.decision_cards().unwrap().is_empty());
+        assert!(rt.outbox().unwrap().is_empty());
+        assert!(
+            rt.store()
+                .read(|c| basal_core::install::revocation(c, &r.flow_id, 1))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(rt.install_hold(&r.flow_id, 1).unwrap().reason, reason);
+        assert!(rt.startable().unwrap().is_empty());
+        assert!(matches!(
+            rt.resume(&id).unwrap(),
+            ActivationEnd::Deferred { .. }
+        ));
+        clock.advance((wait * 1000) as i64);
+    }
+    assert_eq!(world.mock.install_queries().len(), 4);
+    let holds = logs
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, text)| text.contains("flow install held"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        holds.len(),
+        3,
+        "one log on entry or reason change: {holds:?}"
+    );
+    for (level, text) in holds {
+        assert_eq!(level, tracing::Level::INFO);
+        assert!(
+            text.contains(&r.flow_id) && text.contains("version=1") && text.contains("reason="),
+            "{text}"
+        );
+    }
+    world.mock.set_install_status(&r.flow_id, 1, active(&r));
+    assert_eq!(rt.startable().unwrap().len(), 1);
+    assert!(matches!(
+        rt.resume(&id).unwrap(),
+        ActivationEnd::Succeeded { .. }
+    ));
+    assert!(rt.install_hold(&r.flow_id, 1).is_none());
+    assert_eq!(activations_sent(&world), 1);
+}
+
+#[test]
+fn held_core_on_resume_preserves_the_existing_deadline() {
+    let world = World::new("gate-held-resume");
+    let clock = Clock::manual(T0);
+    let rt = gated(&world, &clock);
+    let id = admit(&rt, &world, "return await llm({prompt:'p'});");
+    let r = run(&rt, &id);
+    world.mock.set_install_status(&r.flow_id, 1, active(&r));
+    assert!(matches!(
+        rt.resume(&id).unwrap(),
+        ActivationEnd::Suspended { .. }
+    ));
+    let deadline = run(&rt, &id).deadline_at.unwrap();
+    world.mock.set_install_status(
+        &r.flow_id,
+        1,
+        Some(InstallStatus::Held {
+            code_hash: hex(&r.code_hash),
+            reason: "catalog_status_stale".into(),
+            stale_since_ms: None,
+        }),
+    );
+    world.mock.complete_all();
+    rt.wait_for(&id, Duration::from_secs(5), |s| s == RunState::Pending)
+        .unwrap();
+    assert!(matches!(
+        rt.resume(&id).unwrap(),
+        ActivationEnd::Deferred { .. }
+    ));
+    assert_eq!(run(&rt, &id).deadline_at, Some(deadline));
+    assert_eq!(activations_sent(&world), 1);
+    clock.advance(deadline - T0 + 1);
+    assert!(matches!(
+        rt.resume(&id).unwrap(),
+        ActivationEnd::NotRunnable {
+            state: RunState::Failed
+        }
+    ));
+    assert_eq!(run(&rt, &id).error_kind.as_deref(), Some("deadline"));
+    assert_eq!(activations_sent(&world), 1);
+    rt.quiesce();
+}
+
 /// A run resumed after a suspension is gated again: core revoked the
 /// version while the run waited, so the resume cancels it. The call it had
 /// dispatched keeps its obligation: its outcome is still recorded.

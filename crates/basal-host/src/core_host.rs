@@ -240,6 +240,26 @@ pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
             code_hash: approved_hash()?,
             scope,
         }),
+        Some("held") => {
+            let catalog = &value["catalog"];
+            let reason = catalog["code"]
+                .as_str()
+                .ok_or("held install status carries no catalog reason")?
+                .to_owned();
+            let stale_since_ms = match catalog.get("stale_since_ms") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    value
+                        .as_i64()
+                        .ok_or("held install status carries an invalid stale time")?,
+                ),
+            };
+            Ok(InstallStatus::Held {
+                code_hash: approved_hash()?,
+                reason,
+                stale_since_ms,
+            })
+        }
         // Revoked is terminal with or without a hash: a missing hash must
         // never read as an unreadable reply, which the gate would retry
         // forever. A present hash must still be well formed.

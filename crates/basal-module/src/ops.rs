@@ -1408,7 +1408,7 @@ impl Module {
                     .collect::<std::collections::BTreeSet<_>>(),
             )
         };
-        let entries = self.rt.store().read(|c| {
+        let mut entries = self.rt.store().read(|c| {
             let mut stmt = c.prepare(
                 { "SELECT f.flow_id,f.approved_version,f.state='enabled',f.disabled_by,f.disabled_reason,f.disabled_at,
                     (SELECT MAX(i.version) FROM installs i WHERE i.flow_id=f.flow_id AND i.state='validated' AND NOT EXISTS(SELECT 1 FROM install_cards c WHERE c.flow_id=i.flow_id AND c.version=i.version AND c.state<>'pending')),
@@ -1475,6 +1475,15 @@ impl Module {
             }
             Ok(rows)
         }).map_err(|e| self.core_error(e))?;
+        for entry in &mut entries {
+            if let (Some(flow), Some(version)) = (
+                entry["flow_id"].as_str(),
+                entry["approved_version"].as_u64(),
+            ) && let Some(hold) = self.rt.install_hold(flow, version as u32)
+            {
+                entry["install_hold"] = json!(hold);
+            }
+        }
         Ok(json!({"as_of": as_of, "flows": entries}))
     }
 

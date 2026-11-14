@@ -497,7 +497,7 @@ impl Runtime {
             return Ok(false);
         };
         let expected = crate::ids::hex(&approved.code_hash);
-        match self.shared.host.install_status(&loss.flow_id, loss.version) {
+        match self.core_install_status(&loss.flow_id, loss.version) {
             Ok(InstallStatus::Active {
                 code_hash,
                 scope: Some(scope),
@@ -524,6 +524,7 @@ impl Runtime {
                     .unwrap_or(false))
             }
             Ok(InstallStatus::Active { code_hash, .. }) if code_hash == expected => Ok(false),
+            Ok(InstallStatus::Held { .. }) => Ok(false),
             Ok(_) => {
                 self.store().write(|tx| {
                     if !eligible(tx, loss)? { return Ok(()); }

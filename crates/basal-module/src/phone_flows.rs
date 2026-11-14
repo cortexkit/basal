@@ -163,6 +163,13 @@ impl Module {
     }
 
     fn decorate(&self, entry: &mut Entry, names: &mut BTreeMap<String, Option<String>>) {
+        if let (Some(flow), Some(version)) = (
+            entry.value["flow_id"].as_str(),
+            entry.value["version"].as_u64(),
+        ) && let Some(hold) = self.rt.install_hold(flow, version as u32)
+        {
+            entry.value["install_hold"] = json!(hold);
+        }
         if let Some(Audience::Workspace { id }) =
             entry.manifest.as_ref().and_then(|m| m.audience.as_ref())
         {
