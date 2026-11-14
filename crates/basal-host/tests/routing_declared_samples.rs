@@ -23,6 +23,14 @@ use subc_protocol::ErrorBody;
 
 const SUMS: &str = include_str!("../../../test-vectors/route-select-declared-v1/SHA256SUMS");
 const SUMS_SHA256: &str = "7164bc6bd38a815c02267c0dedd14069e56e02aa607fc32fd3303c4df544dbc5";
+const CONCURRENCY_SUMS: &str =
+    include_str!("../../../test-vectors/route-concurrency-full-v1/SHA256SUMS");
+const CONCURRENCY_SUMS_SHA256: &str =
+    "46834df2d5b29a797b979494adb132367824975340a79272403599b5aad84a1d";
+
+fn concurrency_directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-vectors/route-concurrency-full-v1")
+}
 
 fn directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-vectors/route-select-declared-v1")
@@ -143,6 +151,89 @@ fn declared_samples_manifest_and_every_file_match_pinned_hashes() {
     assert_eq!(covered, actual);
     assert_eq!(covered.len(), 22);
     assert_eq!(reply_names().len(), 10);
+}
+
+#[test]
+fn concurrency_samples_manifest_and_every_file_match_pinned_hashes() {
+    let directory = concurrency_directory();
+    let manifest = fs::read(directory.join("SHA256SUMS")).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&manifest)),
+        CONCURRENCY_SUMS_SHA256
+    );
+    assert_eq!(manifest, CONCURRENCY_SUMS.as_bytes());
+    // Deliberately not copied: routing's private route catalog must stay out of this public repository.
+    let omitted = ["select.request.json", "select.reply.json"];
+    let mut missing = BTreeSet::new();
+    let mut covered = BTreeSet::from(["SHA256SUMS".to_owned()]);
+    for line in CONCURRENCY_SUMS.lines() {
+        let (expected, name) = line.split_once("  ").unwrap();
+        assert!(!name.contains(['/', '\\']));
+        assert!(
+            covered.insert(name.to_owned()),
+            "duplicate manifest member {name}"
+        );
+        let bytes = match fs::read(directory.join(name)) {
+            Ok(bytes) => bytes,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && omitted.contains(&name) =>
+            {
+                missing.insert(name.to_owned());
+                continue;
+            }
+            Err(error) => panic!("{name}: {error}"),
+        };
+        assert_eq!(format!("{:x}", Sha256::digest(bytes)), expected, "{name}");
+    }
+    let actual: BTreeSet<_> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(covered, actual.union(&missing).cloned().collect());
+    assert_eq!(covered.len(), 8);
+}
+
+#[test]
+fn concurrency_samples_select_decodes_as_wait_at_exact_reset() {
+    use basal_host::flow_refusal::RefusalReason;
+    use cortexkit_role_routing::errors::{Refusal, RefusalCode};
+
+    for (stem, method) in [
+        ("basal-flow-select", "route.select"),
+        ("account-for", "route.account_for"),
+    ] {
+        let directory = concurrency_directory();
+        let captured_request: Value = serde_json::from_slice(
+            &fs::read(directory.join(format!("{stem}.request.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(captured_request["method"], method);
+        let reply: Value = serde_json::from_slice(
+            &fs::read(directory.join(format!("{stem}.reply.json"))).unwrap(),
+        )
+        .unwrap();
+        let refusal: Refusal = serde_json::from_value(reply.clone()).unwrap();
+        assert_eq!(refusal.code, RefusalCode::NoRoute);
+        assert_eq!(refusal.wait_until_ms(), Some(1_800_000_060_000));
+        assert_eq!(reply["detail"]["reason"], "concurrency_full");
+        assert!(reply["detail"].get("is_wait").is_none());
+        if stem == "basal-flow-select" {
+            assert_eq!(captured_request["params"]["consumer"], "basal.flow");
+            assert!(captured_request["params"].get("detail").is_none());
+            let selector = RoutingSelector::new(Arc::new(CapturedRouting { reply }));
+            let selected = selector.select(&request());
+            let Err(SelectionError::Wait(wait)) = selected else {
+                panic!("captured route.select must wait, not refuse: {selected:?}");
+            };
+            assert_eq!(wait.reason, RefusalReason::ResourceBusy);
+            assert!(wait.model_selection_wait());
+            assert_eq!(
+                wait.detail.as_ref().unwrap()["reset_at_ms"],
+                1_800_000_060_000_i64
+            );
+            assert_eq!(wait.retry_delay_ms(1_800_000_048_000), 12_000);
+        }
+    }
 }
 
 fn expected_rates(stem: &str) -> Value {

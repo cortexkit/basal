@@ -151,7 +151,11 @@ impl ModelFixture {
         Self::with_limits(Limits::default())
     }
     fn with_limits(limits: Limits) -> Self {
+        Self::with_limits_at(limits, 100)
+    }
+    fn with_limits_at(limits: Limits, now_ms: i64) -> Self {
         let f = Fixture::new();
+        f.clock.set(now_ms);
         let (model_wait, model_waits) = mpsc::channel();
         *f.supervisor.0.after_model_wait.lock().unwrap() =
             Some(Arc::new(move |position, recheck| {
@@ -210,7 +214,7 @@ impl ModelFixture {
                 ),
             ],
             limits,
-            100_000,
+            now_ms + 99_900,
         );
         assert!(matches!(
             f.parent.recv_timeout(TIMEOUT).unwrap(),
@@ -707,19 +711,27 @@ fn concurrency_full(reset_at_ms: Option<i64>) -> WireError {
 
 #[test]
 fn routing_concurrency_wait_reselects_then_sends_once_with_original_arguments() {
-    let f = ModelFixture::new();
-    f.routing
-        .refusals
-        .lock()
-        .unwrap()
-        .push_back(concurrency_full(Some(2600)));
+    // Replay the captured refusal's reset timestamp without changing the
+    // sample bytes or the fixture's wall-time budget.
+    let f = ModelFixture::with_limits_at(Limits::default(), 1_800_000_048_000);
+    let captured = basal_host::transport::refusal(
+        serde_json::from_slice(include_bytes!(
+            "../../../../test-vectors/route-concurrency-full-v1/basal-flow-select.reply.json"
+        ))
+        .unwrap(),
+    );
+    f.routing.refusals.lock().unwrap().push_back(captured);
     f.f.issue(
         0,
         "model",
         json!({"prompt":"original prompt","max_output":1}),
     );
-    assert_eq!(f.wait_model_retry(0), 2600);
+    assert_eq!(f.wait_model_retry(0), 1_800_000_060_000);
     assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
+    assert!(matches!(
+        f.f.parent.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
     assert_eq!(
         f.f.host
             .store
@@ -727,7 +739,7 @@ fn routing_concurrency_wait_reselects_then_sends_once_with_original_arguments() 
             .unwrap(),
         0.0
     );
-    f.f.clock.set(2599);
+    f.f.clock.set(1_800_000_059_999);
     f.f.catalog_notice();
     let blocked = f.f.block_handled();
     f.f.worker
@@ -735,7 +747,12 @@ fn routing_concurrency_wait_reselects_then_sends_once_with_original_arguments() 
         .unwrap();
     blocked.recv_timeout(TIMEOUT).unwrap();
     assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
-    f.f.clock.set(2600);
+    assert!(f.wire.fake.sends().is_empty());
+    assert!(matches!(
+        f.f.parent.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    f.f.clock.set(1_800_000_060_000);
     assert_eq!(
         f.finish_usage(
             0,

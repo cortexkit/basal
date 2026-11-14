@@ -11,7 +11,16 @@ fn concurrency_full(reset_at_ms: Option<i64>) -> WireError {
 
 #[test]
 fn routing_concurrency_defers_selection_then_sends_once() {
-    for reset in [Some(common::T0 + 2500), None] {
+    let captured = basal_host::transport::refusal(
+        serde_json::from_slice(include_bytes!(
+            "../../../../test-vectors/route-concurrency-full-v1/basal-flow-select.reply.json"
+        ))
+        .unwrap(),
+    );
+    for (now, reset, refusal) in [
+        (1_800_000_048_000, Some(1_800_000_060_000), captured),
+        (common::T0, None, concurrency_full(None)),
+    ] {
         let wire = Fake::new();
         add_routing_provider(&wire);
         let selector = Arc::new(basal_host::selector::RoutingSelector::new(wire.clone()));
@@ -21,6 +30,7 @@ fn routing_concurrency_defers_selection_then_sends_once() {
             selector,
             Arc::new(NoHooks),
         );
+        f.clock.set(now);
         common::install(
             &f,
             &Caller::Operator,
@@ -28,7 +38,7 @@ fn routing_concurrency_defers_selection_then_sends_once() {
             &model_manifest(),
         );
         approve_model(&f);
-        wire.enqueue("route.select", vec![Err(concurrency_full(reset))]);
+        wire.enqueue("route.select", vec![Err(refusal)]);
         let run = common::admit(&f, "host-flow", "slots");
         f.module.engine.run_until_idle(50).unwrap();
         let deferred = f
@@ -36,10 +46,7 @@ fn routing_concurrency_defers_selection_then_sends_once() {
             .rt
             .fixture_deferral(&run, 0)
             .expect("capacity is an unsent preparation wait, not a final refusal");
-        assert_eq!(
-            deferred.retry_not_before,
-            reset.unwrap_or(common::T0 + 1000)
-        );
+        assert_eq!(deferred.retry_not_before, reset.unwrap_or(now + 1000));
         assert!(deferred.proven_unsent && deferred.refund_dispatch);
         let call = f.module.rt.fixture_call_state(&run, 0).unwrap();
         assert!(call.intent.is_none() && call.arrival.is_none());
@@ -52,6 +59,7 @@ fn routing_concurrency_defers_selection_then_sends_once() {
         f.clock.set(deferred.retry_not_before - 1);
         f.module.engine.run_until_idle(50).unwrap();
         assert!(fake.sends().is_empty());
+        assert_eq!(wire.calls("route.select").len(), 1);
         f.clock.set(deferred.retry_not_before);
         f.module.engine.run_until_idle(50).unwrap();
         f.module.rt.quiesce();
