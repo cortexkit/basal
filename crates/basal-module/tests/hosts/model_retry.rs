@@ -145,6 +145,10 @@ fn transient_model_send_defers_then_succeeds_without_spending_dispatch_budget() 
 
     f.clock.set(deferred.retry_not_before);
     f.module.engine.run_until_idle(50).unwrap();
+    // Engine idleness does not join dispatch threads. Wait for dispatch_committed
+    // to finish its first read before completing the fake run: a concurrent poll
+    // skips a locked call, and this fixture has no bus wake to trigger another.
+    f.module.rt.quiesce();
     let row = f.module.rt.calls(&run).unwrap()[0].clone();
     assert_eq!(row.attempts, 2);
     let sends = fake.sends();
