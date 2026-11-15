@@ -446,11 +446,26 @@ pub fn worker_run_id(scope_ref: &str, key: &str) -> String {
     hash.finalize().to_hex().to_string()
 }
 
+/// Whether the program finished but its return value was over the cap, so
+/// only its head was kept. Such a run is reported as a partial success, not a
+/// failure: its tool calls ran and their effects stand, and a caller that
+/// reads "failed" tends to repeat work that already happened.
+fn cut_return(result: &Value) -> bool {
+    result["status"] == "failed"
+        && result["error"]["code"] == "result_too_large"
+        && result.get("value_head").is_some_and(Value::is_string)
+}
+
 fn render_text(result: &mut Value) -> String {
-    let status = result["status"]
-        .as_str()
-        .unwrap_or("failed")
-        .replace("budget_exhausted:", "budget_exhausted: ");
+    let cut = cut_return(result);
+    let status = if cut {
+        "completed, return value cut".to_owned()
+    } else {
+        result["status"]
+            .as_str()
+            .unwrap_or("failed")
+            .replace("budget_exhausted:", "budget_exhausted: ")
+    };
     let calls = result["calls"].as_array().cloned().unwrap_or_default();
     let mut warnings = result["warnings"].as_array().cloned().unwrap_or_default();
     // Catalog diagnostics stay in the run record, but only belong in the
@@ -487,11 +502,16 @@ fn render_text(result: &mut Value) -> String {
             budget["spent"], budget["remaining"], budget["limit"]
         ));
     }
-    if let Some(error) = result.get("error") {
+    if cut {
+        text.push_str(&format!(
+            "The program finished and its tool calls ran. {}\n",
+            result["error"]["message"].as_str().unwrap_or_default()
+        ));
+    } else if let Some(error) = result.get("error") {
         text.push_str(&error_text(error));
     }
     if let Some(head) = result.get("value_head").and_then(Value::as_str) {
-        text.push_str("\nReturn value head:\n");
+        text.push_str(&format!("\nReturn value, first {} bytes:\n", head.len()));
         text.push_str(head);
         if !head.ends_with('\n') {
             text.push('\n');
@@ -573,6 +593,7 @@ fn error_text(error: &Value) -> String {
 }
 
 fn render(id: &str, mut result: Value) -> Value {
+    let cut = cut_return(&result);
     let text = render_text(&mut result);
     result["run_id"] = id.into();
     result["termination_reason"] = result["status"].clone();
@@ -586,7 +607,12 @@ fn render(id: &str, mut result: Value) -> Value {
     let mut reply = cortexkit_role_tool_provider::result::ToolResult::new(vec![
         cortexkit_role_tool_provider::result::ContentPart::text(text),
     ]);
-    if let Some(code) = code {
+    if cut {
+        // structuredContent keeps the stored status and error for readers that
+        // check them; `partial` says the value is a head. The reply itself is
+        // not an error, so callers don't take the run's work as lost.
+        result["partial"] = true.into();
+    } else if let Some(code) = code {
         let code = if let Some(budget) = code.strip_prefix("budget_exhausted:") {
             result["budget"] = budget.into();
             "budget_exhausted".to_owned()
@@ -885,15 +911,20 @@ mod tests {
         assert_eq!(fields["error"]["code"], "result_too_large");
         assert_eq!(fields["error"]["message"], message);
         assert_eq!(fields["value_head"], head);
+        assert_eq!(fields["partial"], true);
         assert!(fields.get("value").is_none());
-        assert_eq!(result["isError"], true);
-        assert_eq!(result["errorCode"], "result_too_large");
+        // The program finished, so the reply is a partial success, not an error.
+        assert_ne!(result["isError"], true);
+        assert!(result.get("errorCode").is_none());
         let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("completed, return value cut · "), "{text}");
+        assert!(!text.contains("failed"), "{text}");
         assert!(text.contains(&format!(
-            "Error (result_too_large): {message}\n\nReturn value head:\n{head}\n"
+            "The program finished and its tool calls ran. {message}\n\nReturn value, first {} bytes:\n{head}\n",
+            head.len()
         )));
         assert!(text.contains("\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\nbash | ok | false | 8\n"));
-        assert!(text.find("Return value head:").unwrap() < text.find("Tool | Outcome").unwrap());
+        assert!(text.find("Return value, first").unwrap() < text.find("Tool | Outcome").unwrap());
         assert!(!text.contains("\nReturn value:\n"));
         let decoded = serde_json::from_value(result).unwrap();
         cortexkit_role_tool_provider::result::validate(&decoded).unwrap();
