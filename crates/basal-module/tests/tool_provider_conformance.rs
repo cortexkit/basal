@@ -628,6 +628,9 @@ impl ToolProviderSubject for Subject {
             Capability::Cancellation,
             Capability::LateResults,
             Capability::CallModes,
+            Capability::SystemText,
+            Capability::SystemTextOptionalPreset,
+            Capability::SystemTextDefault,
         ]
         .into_iter()
         .collect()
@@ -655,6 +658,12 @@ impl ToolProviderSubject for Subject {
     }
     fn catalog_arguments(&self) -> Value {
         json!({"params":{}})
+    }
+    fn system_text_catalog_arguments(&self) -> Option<Value> {
+        Some(json!({
+            "params":{"capabilities":["basal:codemode/v1","basal:flow.manage/v1"]},
+            "system_text":{"params":{}}
+        }))
     }
     fn quick_call(&self) -> CallSpec {
         ("flow".into(), json!({"action":"list"}))
@@ -736,13 +745,18 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
         "call_mode_matches_catalog",
         "catalog_filter_preserves_plan_item",
         "catalog_filter_model_refused",
+        "system_text_digests_match_text",
+        "system_text_preflight_digest_stable",
+        "system_text_preset_optional_served",
+        "system_text_default_served",
     ] {
         assert!(
             report
                 .cases
                 .iter()
                 .any(|case| { case.case == name && matches!(case.outcome, CaseOutcome::Passed) }),
-            "{name} must run and pass"
+            "{name} did not pass: {}",
+            report.render()
         );
     }
     assert!(
@@ -762,9 +776,6 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
     assert_eq!(
         skipped,
         [
-            "system_text_digests_match_text",
-            "system_text_preflight_digest_stable",
-            "system_text_preset_optional_served",
             "catalog_disabled_tool_absent",
             "call_disabled_tool_refused_by_name",
             "late_results_cursor_round_trip",
