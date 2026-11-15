@@ -108,13 +108,9 @@ fn catalog_content_digest(answer: &CatalogAnswer) -> String {
 pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     let request: CatalogRequest =
         serde_json::from_value(arguments).map_err(|e| invalid("arguments", e.to_string()))?;
-    if request.preset.is_some() {
-        return Err(invalid("preset", "basal has no named presets"));
-    }
+    check_preset("preset", request.preset.as_deref())?;
     if let Some(item) = &request.system_text {
-        if item.preset.is_some() {
-            return Err(invalid("system_text.preset", "basal has no named presets"));
-        }
+        check_preset("system_text.preset", item.preset.as_deref())?;
         if let Some(field) = item.params.keys().next() {
             return Err(invalid(
                 &format!("system_text.params.{field}"),
@@ -134,6 +130,9 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
         .cloned()
         .collect();
     let mut answer = CatalogAnswer::new(generation, "").with_tools(tools);
+    if request.preset.is_none() {
+        answer = answer.with_presets(PRESETS);
+    }
 
     answer
         .capabilities
@@ -166,6 +165,20 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
         return Ok(json!({"generation":answer.generation,"catalog_digest":answer.catalog_digest}));
     }
     serde_json::to_value(answer).map_err(|e| invalid("arguments", e.to_string()))
+}
+
+/// Presets basal answers. `head` exists only for runners that can't take a
+/// provider's default system text and so always name a preset. It serves
+/// exactly the default tools and text, because basal's catalog doesn't differ
+/// by caller.
+const PRESETS: [&str; 1] = ["head"];
+
+fn check_preset(field: &str, preset: Option<&str>) -> Result<(), ErrorBody> {
+    match preset {
+        None => Ok(()),
+        Some(name) if PRESETS.contains(&name) => Ok(()),
+        Some(name) => Err(invalid(field, format!("basal has no preset {name:?}"))),
+    }
 }
 
 pub fn invalid(field: &str, message: impl Into<String>) -> ErrorBody {

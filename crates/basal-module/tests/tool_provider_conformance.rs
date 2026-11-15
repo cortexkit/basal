@@ -749,6 +749,8 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
         "system_text_preflight_digest_stable",
         "system_text_preset_optional_served",
         "system_text_default_served",
+        "catalog_listed_presets_served",
+        "catalog_unknown_preset_refused",
     ] {
         assert!(
             report
@@ -804,9 +806,6 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
             "catalog_model_malformed_refused",
             // Legacy replies have direct route tests, not a shared-suite fixture.
             "tool_result_legacy_route_unchanged",
-            // basal's own catalog lists no presets, so the served-presets
-            // case has nothing to check.
-            "catalog_listed_presets_served",
             // The shared held-reply case requires provider-owned approval execution;
             // basal instead waits for providers and core to release their holds.
             "tool_result_held_reply_route_gating"

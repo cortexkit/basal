@@ -31,7 +31,7 @@ fn default_system_text_is_declared_and_its_exact_bytes_are_pinned() {
     );
     assert_eq!(answer["system_text"]["item_digest"], TEXT_DIGEST);
     assert_eq!(answer["system_text"]["preflight_digest"], TEXT_DIGEST);
-    assert!(answer.get("presets").is_none());
+    assert_eq!(answer["presets"], json!(["head"]));
     assert!(answer["system_text"].get("composition_digest").is_none());
 }
 
@@ -136,6 +136,24 @@ fn system_text_composition_and_digest_only_match_the_full_answer() {
     assert_ne!(without_text["catalog_digest"], preflight["catalog_digest"]);
 }
 
+/// Runners without default system text always name a preset, so `head` must
+/// serve the same tools and text as the default, and must not relist presets.
+#[test]
+fn head_preset_serves_the_default_tools_and_text() {
+    let default = tool::catalog(arguments()).unwrap();
+    for request in [
+        json!({"preset":"head","params":arguments()["params"],"system_text":{"preset":"head","params":{}}}),
+        json!({"params":arguments()["params"],"system_text":{"preset":"head","params":{}}}),
+    ] {
+        let named = tool::catalog(request.clone()).unwrap();
+        assert_eq!(named["tools"], default["tools"], "{request}");
+        assert_eq!(named["system_text"], default["system_text"], "{request}");
+        assert_eq!(named["generation"], default["generation"], "{request}");
+    }
+    let named = tool::catalog(json!({"preset":"head","params":arguments()["params"]})).unwrap();
+    assert!(named.get("presets").is_none());
+}
+
 #[test]
 fn system_text_refuses_named_presets_and_unknown_params() {
     for (item, field) in [
@@ -154,4 +172,8 @@ fn system_text_refuses_named_presets_and_unknown_params() {
         assert_eq!(error.code, "invalid_request");
         assert_eq!(error.detail.unwrap()["field"], field);
     }
+    let mut request = arguments();
+    request["preset"] = json!("worker");
+    let error = tool::catalog(request).unwrap_err();
+    assert_eq!(error.detail.unwrap()["field"], "preset");
 }
