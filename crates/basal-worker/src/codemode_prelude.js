@@ -180,7 +180,8 @@
     // (and symbol keys, above); answering undefined keeps them working.
     if (key === 'then' || key === 'toJSON') return undefined;
     throw new TypeErrorCtor('tools.' + key + ' is not available in this codemode run.' + available +
-      ' Not every tool is available inside programs yet.');
+      ' Not every tool is available inside programs; call a missing one directly, outside the program.' +
+      ' To wait inside a program, use waitFor or sleep.');
   };
   Object.freeze(handler);
   const tools = new ProxyCtor(catalog, handler);

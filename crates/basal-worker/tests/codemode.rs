@@ -133,7 +133,7 @@ fn codemode_unknown_tool_access_names_the_tool_and_lists_the_catalog() {
         value(&report),
         json!([
             true,
-            "tools.work is not available in this codemode run. Available tools: bash, echo (2). Not every tool is available inside programs yet."
+            "tools.work is not available in this codemode run. Available tools: bash, echo (2). Not every tool is available inside programs; call a missing one directly, outside the program. To wait inside a program, use waitFor or sleep."
         ])
     );
     assert!(report.calls.is_empty());
@@ -147,7 +147,7 @@ fn codemode_uncaught_unknown_tool_is_a_script_error_naming_it() {
             // Codemode hides stack traces, so the message is the whole text.
             assert_eq!(
                 message,
-                "TypeError: tools.ctx_expand is not available in this codemode run. Available tools: echo (1). Not every tool is available inside programs yet."
+                "TypeError: tools.ctx_expand is not available in this codemode run. Available tools: echo (1). Not every tool is available inside programs; call a missing one directly, outside the program. To wait inside a program, use waitFor or sleep."
             );
         }
         other => panic!("expected a script failure: {other:?}"),
