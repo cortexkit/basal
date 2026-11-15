@@ -671,7 +671,7 @@ impl std::fmt::Display for ManifestError {
             Self::AudienceSinkNamed => {
                 write!(
                     f,
-                    "audience sinks, status and board_read must name $audience"
+                    "with an audience declared, every grant naming a recipient (sinks[].agent, status, board_read) must name \"$audience\", not an agent id; the script's sink calls still pass the explicit agent id"
                 )
             }
             Self::AudienceFactsRequiresGlobal => {

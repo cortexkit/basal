@@ -232,6 +232,15 @@ fn remaining_actions_have_plain_text_instead_of_json() {
 }
 
 #[test]
+fn list_names_a_template_instance_and_its_params() {
+    let result = json!({"flows":[{"flow_id":"module-cpu-watch_692ccdc476a8e0ab","state":"enabled","approved_version":2,"last_run":null,"template":"module-cpu-watch","params":{"module":"thalamus-harness"}}]});
+    assert_eq!(
+        summary("list", &result),
+        "module-cpu-watch_692ccdc476a8e0ab: enabled; approved version 2; template module-cpu-watch with params {\"module\":\"thalamus-harness\"}; last run none"
+    );
+}
+
+#[test]
 fn list_names_temporary_install_holds_without_hiding_enable_state() {
     for (reason, display) in [
         ("catalog_status_stale", "catalog status stale"),

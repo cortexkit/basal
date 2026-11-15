@@ -68,6 +68,15 @@ fn audience_sink_targets_cannot_mix_with_named_targets() {
         }
         assert_eq!(parse(&m), Err(ManifestError::AudienceSinkNamed));
     }
+    // Authors see this refusal as text: it must say which field to change
+    // and to what, not print the error enum.
+    let shown =
+        basal_core::install::InstallError::Manifest(ManifestError::AudienceSinkNamed).to_string();
+    assert!(
+        shown.contains("sinks[].agent") && shown.contains("\"$audience\""),
+        "{shown}"
+    );
+    assert!(!shown.contains("Manifest("), "{shown}");
 }
 
 #[test]

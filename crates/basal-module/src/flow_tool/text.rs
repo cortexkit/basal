@@ -329,8 +329,16 @@ pub(super) fn summary(action: &str, result: &Value) -> String {
                     ),
                     None => field(flow, "state").to_owned(),
                 };
+                // A template instance's id says nothing about what it watches,
+                // so name its template and its (small, schema-bounded) params.
+                let instance = match flow["template"].as_str() {
+                    Some(template) => {
+                        format!("; template {template} with params {}", flow["params"])
+                    }
+                    None => String::new(),
+                };
                 format!(
-                    "{}: {}; approved version {}; last run {last}",
+                    "{}: {}; approved version {}{instance}; last run {last}",
                     field(flow, "flow_id"),
                     state,
                     version(&flow["approved_version"])
