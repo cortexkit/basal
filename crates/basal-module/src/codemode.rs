@@ -503,15 +503,16 @@ fn render_text(result: &mut Value) -> String {
         ));
     }
     if cut {
-        text.push_str(&format!(
-            "The program finished and its tool calls ran. {}\n",
-            result["error"]["message"].as_str().unwrap_or_default()
-        ));
+        // The stored error message points "above" at the call table, which this
+        // layout prints below, and the cut marker already gives the sizes.
+        text.push_str(
+            "The program finished and its tool calls ran. Its return value was over the 16 KiB limit, so only its start is shown. Return counts, ids or the first items to fit.\n",
+        );
     } else if let Some(error) = result.get("error") {
         text.push_str(&error_text(error));
     }
     if let Some(head) = result.get("value_head").and_then(Value::as_str) {
-        text.push_str(&format!("\nReturn value, first {} bytes:\n", head.len()));
+        text.push_str("\nReturn value, cut:\n");
         text.push_str(head);
         if !head.ends_with('\n') {
             text.push('\n');
@@ -920,11 +921,10 @@ mod tests {
         assert!(text.starts_with("completed, return value cut · "), "{text}");
         assert!(!text.contains("failed"), "{text}");
         assert!(text.contains(&format!(
-            "The program finished and its tool calls ran. {message}\n\nReturn value, first {} bytes:\n{head}\n",
-            head.len()
+            "The program finished and its tool calls ran. Its return value was over the 16 KiB limit, so only its start is shown. Return counts, ids or the first items to fit.\n\nReturn value, cut:\n{head}\n"
         )));
         assert!(text.contains("\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\nbash | ok | false | 8\n"));
-        assert!(text.find("Return value, first").unwrap() < text.find("Tool | Outcome").unwrap());
+        assert!(text.find("Return value, cut:").unwrap() < text.find("Tool | Outcome").unwrap());
         assert!(!text.contains("\nReturn value:\n"));
         let decoded = serde_json::from_value(result).unwrap();
         cortexkit_role_tool_provider::result::validate(&decoded).unwrap();
