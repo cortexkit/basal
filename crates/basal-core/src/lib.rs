@@ -68,6 +68,7 @@ pub mod maintenance;
 pub mod manifest;
 pub mod model;
 pub mod ops;
+pub mod overview_changes;
 pub mod owner_notice;
 pub mod packages;
 pub mod rate;

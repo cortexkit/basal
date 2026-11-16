@@ -435,6 +435,45 @@ matches still work. The key is absent on success and on unfiltered overviews.
 Store reads take no write transaction; all registry calls happen outside the
 store snapshot and outside any write transaction.
 
+## flow.overview_watch
+
+A management query with `watch` delivery, replacing polls of `flow.overview`.
+It accepts exactly the same params and validates them under the same caller
+admission as `flow.overview`, including the admitted desktop app. The desktop
+uses `{"include_removed":true}` and adds `agent_id` when scoped.
+
+The first StreamData frame contains the current answer. After that, basal
+wakes the watch on relevant committed flow, install, card, package, template
+and finished-run changes. It also wakes when core starts, updates or clears a
+temporary install hold, or when a live run starts or stops needing operator
+reconciliation of an unknown call outcome. No timer reads the store while
+nothing changes. Changes coalesce
+into at most one evaluation and snapshot per 3 seconds per watch; a change
+inside the window is retained until its end. Reads of Entorhinal and
+prefrontal happen outside write transactions. A change only in Entorhinal's
+membership or workspace names, or in prefrontal's agent names, appears on
+the next basal change or on reconnect, not through a separate registry watch.
+
+Frames follow `app-read-watch-v1`:
+
+```json
+{"frame":"snapshot","digest":"<sha256>","body":{"as_of_ms":0,"flows":[]}}
+```
+
+`body` is the unmodified current `flow.overview` answer, and `digest` is the
+SHA-256 of its encoded bytes. Change detection ignores only `as_of_ms`, since
+snapshot time alone is not a content change. An unchanged answer sends no
+frame. If the encoded snapshot exceeds 196,608 bytes, the frame is instead
+`{"frame":"hint","digest":"<sha256>"}` and the app reads `flow.overview`.
+
+An initial read failure ends with the read's SDK Error frame. Later transient
+read failures retry after 5 seconds without emitting; a refusal ends with the
+read's own Error. Cancellation, route loss or module stop ends with an empty
+SDK StreamEnd, not a JSON end notice. At most eight overview watches are open
+across basal. A ninth receives `watch_limit_reached` with the plain message
+`basal already serves 8 overview watches; close one first`. Cancel or route
+close releases capacity immediately.
+
 ## flow.details
 
 Params:

@@ -1,0 +1,102 @@
+{
+  "changed": {
+    "body": {
+      "as_of_ms": 1777593600001,
+      "flows": [
+        {
+          "audience": {
+            "kind": "global"
+          },
+          "disabled": {
+            "by": "operator",
+            "reason": "disabled by request"
+          },
+          "flow_id": "flow-watch-synthetic",
+          "last_run": null,
+          "owner": null,
+          "purpose": "A test flow.",
+          "state": "disabled",
+          "title": "Synthetic watch flow",
+          "trigger": "on plexus pull_request_review",
+          "version": 1
+        }
+      ]
+    },
+    "digest": "d7be7505e6ed5fbe2f087613854023421103476da84ddc479731249f50c3267f",
+    "frame": "snapshot"
+  },
+  "changedRead": {
+    "as_of_ms": 1777593600001,
+    "flows": [
+      {
+        "audience": {
+          "kind": "global"
+        },
+        "disabled": {
+          "by": "operator",
+          "reason": "disabled by request"
+        },
+        "flow_id": "flow-watch-synthetic",
+        "last_run": null,
+        "owner": null,
+        "purpose": "A test flow.",
+        "state": "disabled",
+        "title": "Synthetic watch flow",
+        "trigger": "on plexus pull_request_review",
+        "version": 1
+      }
+    ]
+  },
+  "end": {
+    "body": [],
+    "type": "StreamEnd"
+  },
+  "read": {
+    "as_of_ms": 1777593600000,
+    "flows": [
+      {
+        "audience": {
+          "kind": "global"
+        },
+        "disabled": null,
+        "flow_id": "flow-watch-synthetic",
+        "last_run": null,
+        "owner": null,
+        "purpose": "A test flow.",
+        "state": "enabled",
+        "title": "Synthetic watch flow",
+        "trigger": "on plexus pull_request_review",
+        "version": 1
+      }
+    ]
+  },
+  "request": {
+    "method": "flow.overview_watch",
+    "params": {
+      "include_removed": true
+    }
+  },
+  "snapshot": {
+    "body": {
+      "as_of_ms": 1777593600000,
+      "flows": [
+        {
+          "audience": {
+            "kind": "global"
+          },
+          "disabled": null,
+          "flow_id": "flow-watch-synthetic",
+          "last_run": null,
+          "owner": null,
+          "purpose": "A test flow.",
+          "state": "enabled",
+          "title": "Synthetic watch flow",
+          "trigger": "on plexus pull_request_review",
+          "version": 1
+        }
+      ]
+    },
+    "digest": "8aa09f1a26e301d9a666b0b5f259a92aadfaffe0c1c92098ab2a7d3e2a589bee",
+    "frame": "snapshot"
+  }
+}

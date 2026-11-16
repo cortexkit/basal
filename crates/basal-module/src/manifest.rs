@@ -35,6 +35,11 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
         "Summarize flows, optionally filtered by workspace or agent; operator only.",
     ),
     (
+        "flow.overview_watch",
+        ManagementOperationKind::Query,
+        "Watch the flow overview on change with the same filters and admission as flow.overview.",
+    ),
+    (
         "flow.details",
         ManagementOperationKind::Query,
         "Read a flow's manifest, installs and bounded run history; operator only.",
@@ -216,6 +221,10 @@ pub fn manifest() -> ModuleManifest {
         // basal declares no self-signals: its effects are its flows', and
         // those are reported through flow.health.
         .self_signals(None)
+        .operation_delivery(std::collections::BTreeMap::from([(
+            "flow.overview_watch".into(),
+            subc_protocol::manifest::OperationDelivery::WATCH,
+        )]))
         .flow_operations(Some(vec!["diagnostics.findings".into()]))
         .role_declarations(std::collections::BTreeMap::from([(
             cortexkit_role_routing::ROLE_DECLARATIONS_KEY.into(),

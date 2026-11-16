@@ -113,6 +113,7 @@ impl Runtime {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let key = (flow.to_owned(), version);
+        let previous = holds.get(&key).cloned();
         if let basal_host::InstallStatus::Held {
             reason,
             stale_since_ms,
@@ -131,6 +132,11 @@ impl Runtime {
             );
         } else {
             holds.remove(&key);
+        }
+        let changed = previous.as_ref() != holds.get(&(flow.to_owned(), version));
+        drop(holds);
+        if changed {
+            self.store().overview_changes().publish();
         }
     }
 

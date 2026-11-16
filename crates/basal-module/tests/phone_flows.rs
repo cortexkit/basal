@@ -886,6 +886,22 @@ fn phone_vectors_match_real_dispatch_and_sha256sums() {
     let dir =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-vectors/flows-phone-v1");
     let write = std::env::var_os("BASAL_WRITE_VECTORS").is_some();
+    // The asynchronous SDK watch generator owns this exact sample. It checks
+    // the frame bytes and its checksum against real handler output separately.
+    let watch_name = "overview-watch.json";
+    let existing_sums = std::fs::read_to_string(dir.join("SHA256SUMS")).unwrap();
+    let watch_sums: Vec<_> = existing_sums
+        .lines()
+        .filter(|line| {
+            line.split_once("  ")
+                .is_some_and(|(_, name)| name == watch_name)
+        })
+        .collect();
+    assert_eq!(
+        watch_sums.len(),
+        1,
+        "the watch generator must own one checksum entry"
+    );
     let mut sums = String::new();
     for (name, actual) in &files {
         if write {
@@ -898,6 +914,9 @@ fn phone_vectors_match_real_dispatch_and_sha256sums() {
             Sha256::digest(actual.as_bytes())
         ));
     }
+    let mut lines: Vec<_> = sums.lines().chain(watch_sums).collect();
+    lines.sort_by_key(|line| line.split_once("  ").unwrap().1);
+    sums = lines.join("\n") + "\n";
     if write {
         std::fs::write(dir.join("SHA256SUMS"), &sums).unwrap();
     }
@@ -913,7 +932,11 @@ fn phone_vectors_match_real_dispatch_and_sha256sums() {
         .filter(|name| name != "README.md")
         .collect();
     names.sort();
-    let mut expected: Vec<_> = files.keys().cloned().chain(["SHA256SUMS".into()]).collect();
+    let mut expected: Vec<_> = files
+        .keys()
+        .cloned()
+        .chain(["SHA256SUMS".into(), watch_name.into()])
+        .collect();
     expected.sort();
     assert_eq!(names, expected, "every vector must be exercised");
 }

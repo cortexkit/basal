@@ -34,6 +34,7 @@ pub trait RunRecords: Send + 'static {
     fn sync_through(&mut self, cut: Lsn) -> Result<()>;
     fn append_refusal(&mut self, refusal: Self::Refusal) -> Result<()>;
     fn all_calls_released(&self) -> bool;
+    fn observe_overview(&mut self, _: Arc<crate::overview_changes::OverviewChanges>) {}
 }
 
 /// An owned, retryable terminal projection. It must perform SQLite work only:
@@ -536,6 +537,7 @@ pub struct RunStore<R> {
     rig_projection: std::sync::atomic::AtomicBool,
     registry: Mutex<BTreeMap<String, Arc<Run<R>>>>,
     flows: Mutex<BTreeMap<String, Arc<Ordered<Accounting>>>>,
+    overview_changes: Arc<crate::overview_changes::OverviewChanges>,
     committer: committer::Committer,
     log: Option<Arc<dyn crate::run_admission::AdmissionLog>>,
 }
@@ -612,6 +614,7 @@ impl<R: RunRecords> RunStore<R> {
             rig_projection: std::sync::atomic::AtomicBool::new(false),
             registry: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
+            overview_changes: store.overview_changes().clone(),
             committer: committer::Committer::with_log(store, hooks, Some(log.clone())),
             log: Some(log),
         }
@@ -624,6 +627,7 @@ impl<R: RunRecords> RunStore<R> {
             rig_projection: std::sync::atomic::AtomicBool::new(false),
             registry: Mutex::new(BTreeMap::new()),
             flows: Mutex::new(BTreeMap::new()),
+            overview_changes: store.overview_changes().clone(),
             committer: committer::Committer::new(store, hooks),
             log: None,
         }
@@ -643,9 +647,10 @@ impl<R: RunRecords> RunStore<R> {
         id: String,
         flow: String,
         generation: u64,
-        records: R,
+        mut records: R,
         reservations: Vec<Reservation>,
     ) -> Result<Arc<Run<R>>> {
+        records.observe_overview(self.overview_changes.clone());
         let accounting = self
             .flows
             .lock()
