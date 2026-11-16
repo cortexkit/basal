@@ -21,13 +21,16 @@ thread_local! {
 #[path = "run_reader_tests.rs"]
 mod tests;
 
+/// Whether a retired version's vault grants must stay. A secret is fetched only
+/// by the `net.fetch` built-in inside a live dispatch, and scripts cannot call
+/// the vault's own ops, so a closed run cannot use a grant again: its
+/// unsettled obligations only wait to record an outcome, and its decision
+/// cards only settle that record. Neither is checked here.
 pub(crate) fn retirement_busy(conn: &Connection, flow: &str, version: u64) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM run_identities r WHERE r.flow_id=?1 AND r.flow_version=?2 AND (
         EXISTS(SELECT 1 FROM live_runs l WHERE l.run_id=r.run_id)
-        OR EXISTS(SELECT 1 FROM obligations o WHERE o.run_id=r.run_id AND o.state<>'settled' AND NOT EXISTS(SELECT 1 FROM quarantine q WHERE q.run_id=o.run_id AND q.position=o.position AND q.reason='run_cancelled'))
         OR EXISTS(SELECT 1 FROM token_ledger t WHERE t.run_id=r.run_id AND t.state='reserved')
         OR EXISTS(SELECT 1 FROM classify_costs c WHERE c.kind='flow' AND c.run_id=r.run_id AND c.charged IS NULL)
-        OR EXISTS(SELECT 1 FROM decision_cards d WHERE d.run_id=r.run_id AND d.state='open')
         OR EXISTS(SELECT 1 FROM broca_calls b WHERE b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0)
         OR EXISTS(SELECT 1 FROM outbox o WHERE o.kind='refusal_committed' AND CAST(json_extract(o.body,'$.run_id') AS TEXT)=r.run_id)))", rusqlite::params![flow,version], |r| r.get(0))?)
 }

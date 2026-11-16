@@ -687,6 +687,21 @@ pub fn mark_obligation_unknown(tx: &Transaction<'_>, run_id: &str, position: u64
     )? != 0)
 }
 
+/// Records a closed run's `open` obligation as an unknown outcome, replacing
+/// its call detail so the detail can name the reason the reconcile card shows.
+pub fn mark_obligation_unknown_with(
+    tx: &Transaction<'_>,
+    run_id: &str,
+    position: u64,
+    detail: &Value,
+) -> Result<bool> {
+    Ok(tx.execute(
+        "UPDATE obligations SET state='unknown',detail=?3
+        WHERE run_id=?1 AND position=?2 AND state='open'",
+        params![run_id, number(position)?, encode(detail)?],
+    )? != 0)
+}
+
 /// Keep the settled receipt until history pruning. Redelivery is read-only:
 /// an unknown notification cannot erase an already established value.
 pub fn settle_obligation(

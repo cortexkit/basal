@@ -437,6 +437,52 @@ fn secret_retirement_waits_for_live_runs_and_releases_after_terminal_commit() {
 }
 
 #[test]
+fn a_busy_retirement_backs_off_and_waits_only_for_live_runs() {
+    let f = Fixture::new(false);
+    f.install("secret-reader", 1, json!({}));
+    let id = f.admit("secret-reader", "first");
+    let start = f.clock.now_ms();
+    f.rt.store().write(|tx|{tx.execute("INSERT INTO outbox(at,kind,flow_id,body,retry_at) VALUES(?1,'secret.revoke_flow_grants','secret-reader',?2,?1)",params![start,json!({"request":{"flow_install_id":"synthetic-install"},"retirement":true,"version":1}).to_string()])?;Ok(())}).unwrap();
+    let outbox = || {
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT retry_at,attempts FROM outbox WHERE kind='secret.revoke_flow_grants'",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                )?)
+            })
+            .unwrap()
+    };
+    // A live run keeps the version busy. Draining at every due time for an
+    // hour must cost a bounded number of writes, not one a second.
+    while f.clock.now_ms() < start + 3_600_000 {
+        f.rt.drain_secret_revocations().unwrap();
+        f.clock.set(outbox().0);
+    }
+    let (_, attempts) = outbox();
+    assert!(attempts <= 24, "{attempts} writes in an hour");
+    assert_eq!(f.host.revokes.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        f.rt.activate(&id, &mut ScriptedWorker::new(vec![finished()]))
+            .unwrap(),
+        ActivationEnd::Succeeded { .. }
+    ));
+    // A closed run's unsettled call and open card cannot use a vault secret,
+    // so they do not hold the version's grants.
+    f.rt.store()
+        .write(|tx| {
+            tx.execute("INSERT INTO obligations(run_id,position,state,audit_at,detail) VALUES(?1,9,'unknown',?2,'{}')", params![id, start])?;
+            tx.execute("INSERT INTO decision_cards(dedup_key,kind,flow_id,version,run_id,position,call_key,instance,card,state,created_at) VALUES('held','reconcile','secret-reader',1,?1,9,'',1,'{}','open',?2)", params![id, start])?;
+            Ok(())
+        })
+        .unwrap();
+    f.clock.set(outbox().0);
+    f.rt.drain_secret_revocations().unwrap();
+    assert_eq!(f.host.revokes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn a_zero_classifier_ceiling_does_not_hide_measured_spend() {
     let f = Fixture::new(false);
     f.install("measured",1,json!({"ops":[{"module":"test","op":"classify"}],"model_cost_usd":{"per_run":1.0,"usd":100.0,"window":"1d"}}));

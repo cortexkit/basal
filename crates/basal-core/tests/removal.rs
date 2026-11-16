@@ -421,7 +421,7 @@ fn same_incarnation_failure_still_persists_its_kv_overlay() {
 }
 
 #[test]
-fn live_dispatch_and_closed_obligation_hold_routes_and_retired_secret_grants() {
+fn live_dispatch_holds_route_and_secret_grant_but_closed_obligation_holds_only_route() {
     let (hooks, at, resume) = pause(Boundary::DriverSynced { position: 0 });
     let f = Fixture::new(hooks);
     f.host.accept.store(true, Ordering::SeqCst);
@@ -502,7 +502,9 @@ fn live_dispatch_and_closed_obligation_hold_routes_and_retired_secret_grants() {
             .contains(&route),
         "the closed run's unsettled obligation still owns its route"
     );
-    assert_eq!(f.host.revokes.load(Ordering::SeqCst), 0);
+    // Only a live dispatch can use a vault secret, so the closed run's
+    // obligation does not hold the retired version's grants.
+    assert_eq!(f.host.revokes.load(Ordering::SeqCst), 1);
     assert_eq!(
         f.rt()
             .complete(&basal_host::Completion {

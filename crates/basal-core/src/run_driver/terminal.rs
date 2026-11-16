@@ -302,6 +302,7 @@ impl TerminalWrite for Projection {
         )?;
         tx.execute("INSERT OR IGNORE INTO tombstones(kind,key,run_id,pruned_at) VALUES('trigger',?1,?2,?3)", params![crate::admission::trigger_key(&history.flow_id,&history.trigger_id),id,history.ended_at])?;
         let mut obligations = Vec::new();
+        let mut unobserved = Vec::new();
         for call in self.state.calls.values() {
             if matches!(
                 call.identity.class,
@@ -344,27 +345,53 @@ impl TerminalWrite for Projection {
                 // Receipts survive terminal close so a host can redeliver an
                 // already acknowledged value without being quarantined.
                 let arrival = call.arrival.as_ref();
-                let settled = arrival.is_some();
+                let detail = |call: &crate::run_records::CallState| {
+                    serde_json::to_value(call).map_err(|e| CoreError::Invalid(e.to_string()))
+                };
+                // closed_obligations::closing says why each class of
+                // unanswered call ends the way it does.
+                let (state, receipt, detail) = match arrival {
+                    Some(arrival) => (
+                        sql::ObligationState::Settled,
+                        Some(sql::Receipt::Value(arrival.value_hash)),
+                        Value::Null,
+                    ),
+                    None => match crate::closed_obligations::closing(call) {
+                        crate::closed_obligations::Closing::Unobserved(reason) => {
+                            unobserved.push((call.identity.position, call.identity.class, reason));
+                            (
+                                sql::ObligationState::Settled,
+                                Some(sql::Receipt::Unknown),
+                                Value::Null,
+                            )
+                        }
+                        crate::closed_obligations::Closing::Unknown(reason) => {
+                            let mut call = call.clone();
+                            call.unknown.get_or_insert(reason);
+                            (sql::ObligationState::Unknown, None, detail(&call)?)
+                        }
+                        crate::closed_obligations::Closing::Awaiting => (
+                            if call.unknown.is_some() {
+                                sql::ObligationState::Unknown
+                            } else {
+                                sql::ObligationState::Open
+                            },
+                            None,
+                            detail(call)?,
+                        ),
+                    },
+                };
+                let settled = state == sql::ObligationState::Settled;
                 obligations.push(sql::Obligation {
                     run_id: id.clone(),
                     position: call.identity.position,
                     handle: arrival
                         .and_then(|a| a.handle.clone())
                         .or_else(|| call.accepted.clone()),
-                    state: if settled {
-                        sql::ObligationState::Settled
-                    } else if call.unknown.is_some() {
-                        sql::ObligationState::Unknown
-                    } else {
-                        sql::ObligationState::Open
-                    },
+                    state,
                     audit_at: intent.audit_at,
-                    detail: if settled {
-                        Value::Null
-                    } else {
-                        serde_json::to_value(call).map_err(|e| CoreError::Invalid(e.to_string()))?
-                    },
-                    receipt: arrival.map(|a| sql::Receipt::Value(a.value_hash)),
+                    detail,
+                    receipt,
                     settled_at: settled.then_some(history.ended_at),
                 });
             }
@@ -372,6 +399,18 @@ impl TerminalWrite for Projection {
         // One batch, so the run's receipts are decoded and rewritten once.
         sql::insert_obligations(tx, id, &obligations)?;
         self.effects.apply(tx)?;
+        // After the effects: an operator's cancel answer commits its card
+        // there, and only a card still open afterwards is withdrawn here.
+        for (position, class, reason) in &unobserved {
+            crate::closed_obligations::finish_unobserved(
+                tx,
+                id,
+                *position,
+                *class,
+                reason,
+                history.ended_at,
+            )?;
+        }
         self.receipt.store(history.commit_seq, Ordering::Release);
         Ok(())
     }

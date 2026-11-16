@@ -130,8 +130,9 @@ impl Runtime {
             if body["retirement"] == true {
                 // RunStore::close_impl drains all dispatch entrants before its
                 // terminal transaction removes live_runs. No entrant outlives
-                // its live row; closed obligations and Broca calls keep the
-                // version busy after that transaction.
+                // its live row, and only a live dispatch can use a vault
+                // secret, so a closed run's obligations and decision cards do
+                // not keep the version busy.
                 busy = self.store().read(|connection| {
                     crate::run_readers::retirement_busy(connection, &flow, version)
                 })?;
@@ -174,11 +175,10 @@ impl Runtime {
                         params![seq, now],
                     )?;
                 } else {
-                    let delay = if busy {
-                        1000
-                    } else {
-                        1000_i64 * (1_i64 << attempts.min(8))
-                    };
+                    // A busy retirement backs off like a failed revoke. A
+                    // version can stay busy for days (a run waiting on the
+                    // operator), and every retry is a store write.
+                    let delay = 1000_i64 * (1_i64 << attempts.min(8));
                     tx.execute(
                         "UPDATE outbox SET attempts=attempts+1,retry_at=?2 WHERE seq=?1",
                         params![seq, now.saturating_add(delay)],

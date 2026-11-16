@@ -136,7 +136,7 @@ impl RecoveredHosts {
                 rows,
             )?;
         }
-        Ok(Self {
+        let hosts = Self {
             store,
             registry,
             budgets,
@@ -145,7 +145,14 @@ impl RecoveredHosts {
             watermark,
             log,
             decisions: std::sync::Mutex::new(None),
-        })
+        };
+        // Before any host attaches or card is raised, so neither sees a row
+        // that an older build left without an end.
+        let repaired = hosts.repair_closed_obligations()?;
+        if repaired > 0 {
+            tracing::info!(repaired, "settled or surfaced closed-run obligations");
+        }
+        Ok(hosts)
     }
 
     pub fn registry(&self) -> &Arc<RunStore<Records>> {

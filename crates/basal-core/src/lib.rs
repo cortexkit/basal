@@ -44,6 +44,7 @@ pub mod cards;
 pub mod channel;
 pub mod classify_cost;
 pub mod clock;
+mod closed_obligations;
 pub mod codemode;
 pub mod decisions;
 mod dry_run_runtime;
