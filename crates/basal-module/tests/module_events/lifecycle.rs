@@ -217,6 +217,52 @@ async fn unavailable_bus_retries_with_durable_backoff_and_loses_nothing() {
 }
 
 #[tokio::test]
+async fn malformed_lifecycle_body_advances_its_durable_retry() {
+    let server = Server::start().await;
+    let rt = runtime(&server.dir.join("malformed-lifecycle.db"));
+    register(&rt, None, "return 1;");
+    let id = create(&rt, json!({"note":"malformed"}), "1h");
+    // SQLite accepts this JSON, but serde's nesting limit rejects it. The
+    // malformed fixture therefore keeps the table's JSON constraint enabled.
+    let body = format!("{}{}", "[".repeat(200), "]".repeat(200));
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE template_event_outbox SET body=?1 WHERE flow_id=?2",
+                rusqlite::params![body, id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(publish_outbox(&rt, &server.bus, "account").await.is_err());
+    assert!(rt.pending_template_events(32).unwrap().is_empty());
+    let retry: (i64, u32) = rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT retry_at,attempts FROM template_event_outbox WHERE flow_id=?1",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(retry, (1250, 1));
+    rt.config().clock.set(1250);
+    assert!(publish_outbox(&rt, &server.bus, "account").await.is_err());
+    let retry: (i64, u32) = rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT retry_at,attempts FROM template_event_outbox WHERE flow_id=?1",
+                [&id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(retry, (1750, 2));
+}
+
+#[tokio::test]
 async fn self_end_and_one_shot_publish_ended() {
     let server = Server::start().await;
     let f = common::fixture("lifecycle-self-end", common::Options::with_worker());

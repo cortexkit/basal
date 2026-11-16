@@ -200,13 +200,16 @@ fn aggregate<P: rusqlite::Params>(
     let mut statement = conn.prepare(sql)?;
     let mut rows = statement.query(params)?;
     while let Some(row) = rows.next()? {
-        let (at, sample) = evidence(row)?;
+        let at = if finding.samples.len() < SAMPLE_CAP {
+            let (at, sample) = evidence(row)?;
+            finding.samples.push(sample);
+            at
+        } else {
+            row.get(0)?
+        };
         finding.count += 1;
         finding.first_seen_ms = finding.first_seen_ms.min(at);
         finding.last_seen_ms = finding.last_seen_ms.max(at);
-        if finding.samples.len() < SAMPLE_CAP {
-            finding.samples.push(sample);
-        }
     }
     if finding.count == 0 {
         return Ok(None);
@@ -215,6 +218,34 @@ fn aggregate<P: rusqlite::Params>(
         finding.last_seen_ms = now;
     }
     Ok(Some(finding))
+}
+
+fn sampled<T>(
+    items: impl IntoIterator<Item = (i64, T)>,
+    mut f: Finding,
+    now: i64,
+    mut sample: impl FnMut(i64, T) -> Value,
+) -> Option<Finding> {
+    let mut earliest = Vec::with_capacity(SAMPLE_CAP + 1);
+    for (at, item) in items {
+        f.count += 1;
+        f.first_seen_ms = f.first_seen_ms.min(at);
+        // Insert after equal timestamps to preserve the iterator's stable order.
+        let index = earliest.partition_point(|(time, _)| *time <= at);
+        if index < SAMPLE_CAP {
+            earliest.insert(index, (at, item));
+            earliest.truncate(SAMPLE_CAP);
+        }
+    }
+    if f.count == 0 {
+        return None;
+    }
+    f.last_seen_ms = now;
+    f.samples = earliest
+        .into_iter()
+        .map(|(at, item)| sample(at, item))
+        .collect();
+    Some(f)
 }
 
 fn store_findings_with(
@@ -233,7 +264,7 @@ fn store_findings_with(
                     "Use flow.reconcile with run_id and resolution cancel or retrigger; never resend unknown writes automatically."),
                 |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"flow_id":r.get::<_,String>(1)?,"run_id":r.get::<_,String>(2)?}))) }, Some(now))?);
         }
-        for flow in log.flows.clone() {
+        for flow in &log.flows {
             if flow.auto_disabled || (flow.enabled && flow.consecutive_failures >= FAILURE_THRESHOLD as u64) {
                 let disabled_at: Option<i64> = conn.query_row("SELECT disabled_at FROM flows WHERE flow_id=?1",
                     [&flow.flow_id], |r| r.get(0))?;
@@ -251,21 +282,13 @@ fn store_findings_with(
             }
         }
         {
-            let sample = |at, flow: &str, id: &str| (at, json!({"at_ms":at,"flow_id":flow,"run_id":id}));
-            let deadline: Vec<_> = log.runs.iter().filter(|r| !r.state.is_terminal()).filter_map(|r|r.deadline_at.filter(|at|*at<=now.saturating_sub(OVERDUE_GRACE_MS)).map(|at|sample(at,&r.flow_id,&r.run_id))).collect();
-            let deferred = log.deferred.iter().filter(|(_,_,_,at)|*at<=now.saturating_sub(OVERDUE_GRACE_MS)).map(|(id,flow,p,at)| { let (at,mut value)=sample(*at,flow,id); value["position"]=json!(p); (at,value) }).collect();
-            let reconcile = log.runs.iter().filter(|r|r.state==basal_core::RunState::NeedsReconcile && r.admitted_at<=now.saturating_sub(STUCK_MS)).map(|r|sample(r.admitted_at,&r.flow_id,&r.run_id)).collect();
-            for (mut evidence, mut f) in [
-                (deadline, finding("runs_overdue", "deadline", "warn", "Unfinished runs are past their recorded deadlines.", "Inspect run state and the deadline sweep; diagnostics never cancels runs.")),
-                (deferred, finding("runs_overdue", "deferred", "warn", "Deferred calls are past their scheduled retry times.", "Inspect flow.health and deferred-call wake processing.")),
-                (reconcile, finding("reconcile_pending", "runs", "warn", "Runs admitted over an hour ago now need operator reconciliation; state-entry time is unavailable.", "Inspect unknown calls and use flow.reconcile only after establishing their outcomes.")),
-            ] {
-                evidence.sort_by_key(|(at,_)|*at);
-                if let Some((first,_))=evidence.first() {
-                    f.first_seen_ms = *first; f.last_seen_ms=now; f.count=evidence.len() as u64;
-                    f.samples=evidence.into_iter().take(SAMPLE_CAP).map(|(_,v)|v).collect(); findings.push(f);
-                }
-            }
+            let sample = |at, r: &basal_core::Run| json!({"at_ms":at,"flow_id":r.flow_id,"run_id":r.run_id});
+            let deadline = log.runs.iter().filter(|r| !r.state.is_terminal()).filter_map(|r|r.deadline_at.filter(|at|*at<=now.saturating_sub(OVERDUE_GRACE_MS)).map(|at|(at,r)));
+            let deferred = log.deferred.iter().filter(|(_,_,_,at)|*at<=now.saturating_sub(OVERDUE_GRACE_MS)).map(|r|(r.3,r));
+            let reconcile = log.runs.iter().filter(|r|r.state==basal_core::RunState::NeedsReconcile && r.admitted_at<=now.saturating_sub(STUCK_MS)).map(|r|(r.admitted_at,r));
+            findings.extend(sampled(deadline, finding("runs_overdue", "deadline", "warn", "Unfinished runs are past their recorded deadlines.", "Inspect run state and the deadline sweep; diagnostics never cancels runs."), now, sample));
+            findings.extend(sampled(deferred, finding("runs_overdue", "deferred", "warn", "Deferred calls are past their scheduled retry times.", "Inspect flow.health and deferred-call wake processing."), now, |at,(id,flow,p,_)|json!({"at_ms":at,"flow_id":flow,"run_id":id,"position":p})));
+            findings.extend(sampled(reconcile, finding("reconcile_pending", "runs", "warn", "Runs admitted over an hour ago now need operator reconciliation; state-entry time is unavailable.", "Inspect unknown calls and use flow.reconcile only after establishing their outcomes."), now, sample));
         }
         findings.extend(aggregate(conn,
             "SELECT created_at,flow_id,run_id,position,seq FROM decision_cards WHERE state='open' AND created_at<=?1 ORDER BY created_at,seq",
@@ -356,6 +379,46 @@ mod tests {
 
     const NOW: i64 = 1_777_593_600_000;
     const SECRET: &str = "PRIVATE-provider-error-script-arguments-event-body";
+
+    #[test]
+    fn earliest_samples_render_only_the_stable_prefix_and_keep_totals() {
+        let mut rendered = 0;
+        let f = sampled(
+            (0..1000).rev().map(|i| (i / 2, i)),
+            finding("test", "test", "warn", "test", "test"),
+            1000,
+            |at, i| {
+                rendered += 1;
+                json!({"at":at,"id":i})
+            },
+        )
+        .unwrap();
+        assert_eq!(rendered, SAMPLE_CAP);
+        assert_eq!(f.count, 1000);
+        assert_eq!(f.first_seen_ms, 0);
+        assert_eq!(f.last_seen_ms, 1000);
+        assert_eq!(
+            f.samples,
+            vec![
+                json!({"at":0,"id":1}),
+                json!({"at":0,"id":0}),
+                json!({"at":1,"id":3}),
+                json!({"at":1,"id":2}),
+                json!({"at":2,"id":5})
+            ]
+        );
+    }
+
+    #[test]
+    fn sql_samples_do_not_render_omitted_rows() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        let mut rendered = 0;
+        let f = aggregate(&c, "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000) SELECT x FROM n ORDER BY x", [], finding("test","test","warn","test","test"), |r| { rendered += 1; let at: i64 = r.get(0)?; Ok((at,json!({"at":at}))) }, None).unwrap().unwrap();
+        assert_eq!(rendered, SAMPLE_CAP);
+        assert_eq!(f.count, 1000);
+        assert_eq!(f.first_seen_ms, 1);
+        assert_eq!(f.last_seen_ms, 1000);
+    }
 
     struct Fixture {
         rt: basal_core::Runtime,

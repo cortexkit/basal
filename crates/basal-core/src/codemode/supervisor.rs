@@ -2882,20 +2882,29 @@ const REJECTION_MESSAGE_BYTES: usize = 4096;
 
 /// `number` is the call's 1-based number among the run's tool calls.
 fn rejection_message(tool: &str, number: u64, message: &str, reason: Option<&str>) -> String {
-    let mut text = message
+    let mut text = String::new();
+    for line in message
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
+    {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        append_rejection_prefix(&mut text, line);
+        if text.len() > REJECTION_MESSAGE_BYTES {
+            break;
+        }
+    }
     if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty())
+        && text.len() <= REJECTION_MESSAGE_BYTES
         && !text.contains(reason)
     {
         if !text.is_empty() {
             text.push(' ');
         }
         text.push_str("Reason: ");
-        text.push_str(reason);
+        append_rejection_prefix(&mut text, reason);
         if !reason.ends_with(['.', '!', '?']) {
             text.push('.');
         }
@@ -2915,6 +2924,38 @@ fn rejection_message(tool: &str, number: u64, message: &str, reason: Option<&str
     }
 }
 
+fn append_rejection_prefix(text: &mut String, part: &str) {
+    let mut end = part.len().min(
+        REJECTION_MESSAGE_BYTES
+            .saturating_add(4)
+            .saturating_sub(text.len()),
+    );
+    while !part.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.push_str(&part[..end]);
+}
+
 #[cfg(test)]
 #[path = "supervisor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod producer_tests {
+    use super::*;
+
+    #[test]
+    fn rejection_message_does_not_join_the_omitted_tail() {
+        let message = " a long provider line é\n".repeat(100_000);
+        let largest = crate::dry_run_text::producer_alloc::largest(|| {
+            let text = rejection_message("tool", 1, &message, Some("detail"));
+            assert!(text.starts_with("tool (call 1) failed: a long provider line é a long"));
+            assert!(text.ends_with('…'));
+            assert!(text.len() <= REJECTION_MESSAGE_BYTES + 32);
+        });
+        assert!(
+            largest < 32_768,
+            "omitted refusal text allocated {largest} bytes"
+        );
+    }
+}

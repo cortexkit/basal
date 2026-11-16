@@ -98,14 +98,14 @@ pub fn render(manifest: &Manifest, summary: &Value) -> DryRunText {
         text.push(' ');
         text.push_str(sentence);
     }
+    let mut actions = CappedLines::new(WOULD_MAX_ITEMS, WOULD_ITEM_MAX_BYTES);
+    would(manifest, runs, |line| actions.push(line));
+    let mut failures = CappedLines::new(PROBLEMS_MAX_ITEMS, PROBLEM_ITEM_MAX_BYTES);
+    problems(manifest, runs, |line| failures.push(line));
     DryRunText {
         summary: bounded(&text, SUMMARY_MAX_BYTES),
-        would: capped(would(manifest, runs), WOULD_MAX_ITEMS, WOULD_ITEM_MAX_BYTES),
-        problems: capped(
-            problems(manifest, runs),
-            PROBLEMS_MAX_ITEMS,
-            PROBLEM_ITEM_MAX_BYTES,
-        ),
+        would: actions.finish(),
+        problems: failures.finish(),
     }
 }
 
@@ -413,47 +413,46 @@ fn run_name(run: &Value) -> String {
 
 /// The lines of `would`, distinct and in the order the flow first did each
 /// thing. `kv.set` calls are folded into one line counting distinct keys.
-fn would(manifest: &Manifest, runs: &[Value]) -> Vec<String> {
-    enum Line {
-        Text(String),
-        Stored,
-    }
-    let mut lines: Vec<Line> = Vec::new();
-    let mut seen = BTreeSet::new();
+fn would(manifest: &Manifest, runs: &[Value], mut push: impl FnMut(String)) {
     let mut stored_keys = BTreeSet::new();
     let mut unnamed_keys = 0usize;
+    for call in runs
+        .iter()
+        .flat_map(calls)
+        .filter(|call| call["kind"] == "kv.set")
+    {
+        if rejection(call).is_some_and(|code| code != CAPTURED_CODE) {
+            continue;
+        }
+        match text_field(&call["args"], &["key"]) {
+            Some(key) => {
+                stored_keys.insert(key);
+            }
+            None => unnamed_keys += 1,
+        }
+    }
+    let stored = stored_keys.len() + unnamed_keys;
+    let mut showed_stored = false;
     for call in runs.iter().flat_map(calls) {
         // A call basal refused is a problem, not something the flow does.
         if rejection(call).is_some_and(|code| code != CAPTURED_CODE) {
             continue;
         }
         if call["kind"] == "kv.set" {
-            match text_field(&call["args"], &["key"]) {
-                Some(key) => {
-                    stored_keys.insert(key);
-                }
-                None => unnamed_keys += 1,
-            }
-            if seen.insert("kv.set".to_owned()) {
-                lines.push(Line::Stored);
+            if !showed_stored {
+                showed_stored = true;
+                push(if stored == 1 {
+                    "Store 1 value".into()
+                } else {
+                    format!("Store {stored} values")
+                });
             }
             continue;
         }
-        if let Some(text) = describe(manifest, call)
-            && seen.insert(text.clone())
-        {
-            lines.push(Line::Text(text));
+        if let Some(text) = describe(manifest, call) {
+            push(text);
         }
     }
-    let stored = stored_keys.len() + unnamed_keys;
-    lines
-        .into_iter()
-        .map(|line| match line {
-            Line::Text(text) => text,
-            Line::Stored if stored == 1 => "Store 1 value".into(),
-            Line::Stored => format!("Store {stored} values"),
-        })
-        .collect()
 }
 
 /// One call in words, or `None` for calls that are not worth a line (clock
@@ -680,13 +679,7 @@ fn text_field(args: &Value, path: &[&str]) -> Option<String> {
 /// rejection is the dry run's own doing and is never listed. Nor is a script
 /// error raised after the script received a captured rejection, because the
 /// fake rejection may be what caused it.
-fn problems(manifest: &Manifest, runs: &[Value]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut push = |line: String| {
-        if !out.contains(&line) {
-            out.push(line);
-        }
-    };
+fn problems(manifest: &Manifest, runs: &[Value], mut push: impl FnMut(String)) {
     for run in runs {
         let name = run_name(run);
         if let Some(admission) = run.get("admission") {
@@ -749,7 +742,6 @@ fn problems(manifest: &Manifest, runs: &[Value]) -> Vec<String> {
             )),
         }
     }
-    out
 }
 
 // ---- Bounds and quoting -------------------------------------------------
@@ -807,22 +799,119 @@ fn quote(text: &str) -> String {
 /// At most `max_items` lines of at most `max_bytes` each; when there are
 /// more lines, the last one kept says how many were left out.
 fn capped(lines: Vec<String>, max_items: usize, max_bytes: usize) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    let mut out = CappedLines::new(max_items, max_bytes);
     for line in lines {
-        let line = bounded(&line, max_bytes);
-        if !line.is_empty() && !out.contains(&line) {
-            out.push(line);
+        out.push(line);
+    }
+    out.finish()
+}
+
+struct CappedLines {
+    // Exact distinct totals require remembering bounded identities, even for
+    // omitted lines. Only the displayed prefix is retained a second time.
+    seen: BTreeSet<String>,
+    lines: Vec<String>,
+    max_items: usize,
+    max_bytes: usize,
+}
+
+impl CappedLines {
+    fn new(max_items: usize, max_bytes: usize) -> Self {
+        Self {
+            seen: BTreeSet::new(),
+            lines: Vec::new(),
+            max_items,
+            max_bytes,
         }
     }
-    if out.len() > max_items {
-        let kept = max_items - 1;
-        let more = out.len() - kept;
-        out.truncate(kept);
-        out.push(format!("and {more} more"));
+
+    fn push(&mut self, line: String) {
+        let line = bounded(&line, self.max_bytes);
+        if line.is_empty() || self.seen.contains(&line) {
+            return;
+        }
+        if self.lines.len() < self.max_items {
+            self.lines.push(line.clone());
+        }
+        self.seen.insert(line);
     }
-    out
+
+    fn finish(mut self) -> Vec<String> {
+        if self.seen.len() > self.max_items {
+            let kept = self.max_items - 1;
+            self.lines.truncate(kept);
+            self.lines
+                .push(format!("and {} more", self.seen.len() - kept));
+        }
+        self.lines
+    }
 }
 
 #[cfg(test)]
 #[path = "dry_run_text_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod producer_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    struct Alloc;
+    std::thread_local! { static MAX: Cell<Option<usize>> = const { Cell::new(None) }; }
+    fn record(size: usize) {
+        let _ = MAX.try_with(|max| {
+            if let Some(old) = max.get() {
+                max.set(Some(old.max(size)));
+            }
+        });
+    }
+    unsafe impl GlobalAlloc for Alloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            record(layout.size());
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            record(layout.size());
+            unsafe { System.alloc_zeroed(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            record(size);
+            unsafe { System.realloc(ptr, layout, size) }
+        }
+    }
+    #[global_allocator]
+    static ALLOC: Alloc = Alloc;
+
+    pub(crate) fn largest(f: impl FnOnce()) -> usize {
+        MAX.with(|max| max.set(Some(0)));
+        f();
+        MAX.with(|max| max.replace(None).unwrap())
+    }
+}
+
+#[cfg(test)]
+mod producer_tests {
+    use super::*;
+
+    #[test]
+    fn dry_actions_do_not_allocate_an_all_actions_vector() {
+        let manifest = Manifest::parse(&serde_json::json!({
+            "id":"bounded", "version":1, "purpose":"Test action rendering", "explanation":"Render a synthetic action list without execution.",
+            "trigger":{"schedule":{"interval":"1h"}}, "ops":[]
+        }).to_string()).unwrap();
+        let calls: Vec<_> = (0..1000).map(|i| serde_json::json!({"kind":"op","module":"mock","op":format!("op_{i}"),"args":{}})).collect();
+        let summary = serde_json::json!({"runs":[{"state":"succeeded","calls":calls}]});
+        let largest = producer_alloc::largest(|| {
+            let text = render(&manifest, &summary);
+            assert_eq!(text.would[0], "Call mock op_0");
+            assert_eq!(text.would[7], "and 993 more");
+        });
+        assert!(
+            largest < 8192,
+            "an omitted-action vector allocated {largest} bytes"
+        );
+    }
+}

@@ -10,6 +10,8 @@ use std::task::{Poll, Waker};
 #[derive(Default)]
 pub struct OverviewChanges {
     dirty: Arc<AtomicBool>,
+    outbox_dirty: Arc<AtomicBool>,
+    outbox: Mutex<(bool, Option<Waker>)>,
     subscribers: AtomicUsize,
     state: Mutex<State>,
 }
@@ -33,7 +35,11 @@ impl OverviewChanges {
 
     pub(crate) fn install(&self, connection: &rusqlite::Connection) {
         let dirty = self.dirty.clone();
+        let outbox_dirty = self.outbox_dirty.clone();
         connection.update_hook(Some(move |_, database: &str, table: &str, _| {
+            if database == "main" && matches!(table, "outbox" | "template_event_outbox") {
+                outbox_dirty.store(true, Ordering::Relaxed);
+            }
             if database == "main"
                 && matches!(
                     table,
@@ -54,6 +60,36 @@ impl OverviewChanges {
     // transaction. A failed transaction consumes its flag but never publishes it.
     pub(crate) fn take_dirty(&self) -> bool {
         self.subscribers.load(Ordering::Acquire) != 0 && self.dirty.swap(false, Ordering::Relaxed)
+    }
+
+    pub(crate) fn take_outbox_dirty(&self) -> bool {
+        self.outbox_dirty.swap(false, Ordering::Relaxed)
+    }
+
+    pub(crate) fn publish_outbox(&self) {
+        let wake = {
+            let mut state = self.outbox.lock().unwrap_or_else(|p| p.into_inner());
+            state.0 = true;
+            state.1.take()
+        };
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+    }
+
+    /// A retained permit covers commits between the publisher's query and wait.
+    /// Only the bus publisher consumes this signal, independently of overview watches.
+    pub async fn outbox_changed(&self) {
+        poll_fn(|cx| {
+            let mut state = self.outbox.lock().unwrap_or_else(|p| p.into_inner());
+            if std::mem::take(&mut state.0) {
+                Poll::Ready(())
+            } else {
+                state.1 = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await;
     }
 
     pub fn subscribe(self: &Arc<Self>) -> OverviewSubscription {
@@ -135,3 +171,90 @@ impl Drop for OverviewSubscription {
 #[cfg(test)]
 #[path = "overview_changes_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+    use std::future::Future;
+    use std::task::Context;
+
+    #[test]
+    fn outbox_signal_is_retained_coalesced_and_separate_from_overview() {
+        let changes = Arc::new(OverviewChanges::default());
+        let mut overview = changes.subscribe();
+        changes.publish_outbox();
+        changes.publish_outbox();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(
+            Box::pin(changes.outbox_changed())
+                .as_mut()
+                .poll(&mut cx)
+                .is_ready()
+        );
+        assert!(
+            Box::pin(changes.outbox_changed())
+                .as_mut()
+                .poll(&mut cx)
+                .is_pending()
+        );
+        assert!(
+            Box::pin(overview.changed())
+                .as_mut()
+                .poll(&mut cx)
+                .is_pending()
+        );
+        changes.publish();
+        assert!(
+            Box::pin(overview.changed())
+                .as_mut()
+                .poll(&mut cx)
+                .is_ready()
+        );
+        assert!(
+            Box::pin(changes.outbox_changed())
+                .as_mut()
+                .poll(&mut cx)
+                .is_pending()
+        );
+    }
+
+    #[test]
+    fn only_committed_outbox_writes_wake_the_publisher() {
+        let dir = crate::test_support::timestamp_scratch("outbox-changes", "commits");
+        let store =
+            crate::Store::open(dir.join("store.db"), crate::Durability::throwaway()).unwrap();
+        let ready = || {
+            Box::pin(store.overview_changes().outbox_changed())
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_ready()
+        };
+        let insert = |tx: &rusqlite::Transaction<'_>| -> crate::Result<()> {
+            tx.execute(
+                "INSERT INTO outbox(at,kind,flow_id,body) VALUES (1,'flow.owner_notice','','{}')",
+                [],
+            )?;
+            Ok(())
+        };
+        assert!(!ready());
+        let result: crate::Result<()> = store.write(|tx| {
+            insert(tx)?;
+            Err(crate::CoreError::Invalid("rollback".into()))
+        });
+        assert!(result.is_err());
+        assert!(!ready());
+        store
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO meta(key,value) VALUES ('unrelated','value')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!ready(), "rollback must not leak into a later commit");
+        store.write(insert).unwrap();
+        assert!(ready(), "a durable outbox commit wakes without a timer");
+        assert!(!ready());
+    }
+}

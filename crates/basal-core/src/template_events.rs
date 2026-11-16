@@ -168,14 +168,28 @@ impl Runtime {
 
     pub fn pending_template_events(&self, limit: usize) -> Result<Vec<OutboxEvent>> {
         let now = self.config().clock.now_ms();
-        self.store().read(|c| {
+        let rows = self.store().read(|c| {
             let mut stmt = c.prepare("SELECT flow_id,seq,event_name,body FROM template_event_outbox WHERE published_at IS NULL AND retry_at<=?1 ORDER BY retry_at,flow_id,seq LIMIT ?2")?;
             Ok(stmt.query_map(params![now, limit as i64], |r| {
-                let body: String = r.get(3)?;
-                let value: Value = serde_json::from_str(&body).map_err(|e| rusqlite::Error::FromSqlConversionFailure(3,rusqlite::types::Type::Text,Box::new(e)))?;
-                Ok(OutboxEvent {flow_id:r.get(0)?,seq:r.get(1)?,event_name:r.get(2)?,agent_id:value["agent_id"].as_str().unwrap_or_default().into(),body})
+                Ok(OutboxEvent {flow_id:r.get(0)?,seq:r.get(1)?,event_name:r.get(2)?,agent_id:String::new(),body:r.get(3)?})
             })?.collect::<rusqlite::Result<Vec<_>>>()?)
-        })
+        })?;
+        rows.into_iter().map(|mut event| {
+            // Decode after releasing the read snapshot: malformed rows need a
+            // write transaction to advance their retry, just like failed sends.
+            match serde_json::from_str::<Value>(&event.body) {
+                Ok(value) => {
+                    event.agent_id = value["agent_id"].as_str().unwrap_or_default().into();
+                    Ok(event)
+                }
+                Err(error) => {
+                    if self.retry_template_row(&event)? {
+                        tracing::warn!(target: "events", flow_id=%event.flow_id, seq=event.seq, "malformed lifecycle outbox row; retaining it with durable backoff");
+                    }
+                    Err(crate::CoreError::Corrupt(error.to_string()))
+                }
+            }
+        }).collect()
     }
 
     pub fn template_event_published(&self, event: &OutboxEvent) -> Result<()> {
@@ -186,11 +200,15 @@ impl Runtime {
     }
 
     pub fn template_event_retry(&self, event: &OutboxEvent) -> Result<()> {
+        self.retry_template_row(event).map(|_| ())
+    }
+
+    fn retry_template_row(&self, event: &OutboxEvent) -> Result<bool> {
         self.store().write(|tx| {
             let attempts: u32 = tx.query_row("SELECT attempts FROM template_event_outbox WHERE flow_id=?1 AND seq=?2", params![event.flow_id,event.seq], |r|r.get(0))?;
             let delay = (250i64 * (1i64 << attempts.min(7))).min(30_000);
             tx.execute("UPDATE template_event_outbox SET attempts=attempts+1,retry_at=?3 WHERE flow_id=?1 AND seq=?2 AND published_at IS NULL", params![event.flow_id,event.seq,self.config().clock.now_ms().saturating_add(delay)])?;
-            Ok(())
+            Ok(attempts == 0)
         })
     }
 

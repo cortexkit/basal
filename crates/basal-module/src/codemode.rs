@@ -469,7 +469,7 @@ fn render_text(result: &mut Value) -> String {
             .unwrap_or("failed")
             .replace("budget_exhausted:", "budget_exhausted: ")
     };
-    let calls = result["calls"].as_array().cloned().unwrap_or_default();
+    let calls = result["calls"].as_array().map_or(&[][..], Vec::as_slice);
     let mut warnings = result["warnings"].as_array().cloned().unwrap_or_default();
     // Catalog diagnostics stay in the run record, but only belong in the
     // reply when the program called one of the affected tools.
@@ -490,7 +490,8 @@ fn render_text(result: &mut Value) -> String {
     {
         warnings.push(json!({"code":"calls_unsettled","message":"Some calls have unknown outcomes and may still be running; they were never retried."}));
     }
-    let mut text = format!(
+    let mut text = BoundedText::default();
+    text.push_fmt(format_args!(
         "{status} · {} ms · {} calls · person wait {} ms\n",
         result["duration_ms"],
         result
@@ -498,7 +499,7 @@ fn render_text(result: &mut Value) -> String {
             .and_then(Value::as_u64)
             .unwrap_or(calls.len() as u64),
         result["person_wait_ms"]
-    );
+    ));
     if let Some(budget) = result.get("budgets").and_then(|b| b.get("model_cost_usd")) {
         text.push_str(&format!(
             "Classifier dollars: ${} spent · ${} remaining (limit ${})\n",
@@ -512,7 +513,7 @@ fn render_text(result: &mut Value) -> String {
             "The program finished and its tool calls ran. Its return value was over the 16 KiB limit, so only its start is shown. Return counts, ids or the first items to fit.\n",
         );
     } else if let Some(error) = result.get("error") {
-        text.push_str(&error_text(error));
+        error_text(&mut text, error);
     }
     if let Some(head) = result.get("value_head").and_then(Value::as_str) {
         text.push_str("\nReturn value, cut:\n");
@@ -522,7 +523,7 @@ fn render_text(result: &mut Value) -> String {
         }
     }
     if let Some(value) = result.get("value") {
-        text.push_str(&return_value_text(value));
+        return_value_text(&mut text, value);
     }
     // Empty sections are left out rather than printed as bare headings.
     let output = result["output"].as_str().unwrap_or("");
@@ -538,8 +539,11 @@ fn render_text(result: &mut Value) -> String {
             "\nTool | Outcome | Waited on person | Duration (ms)\n--- | --- | --- | ---\n",
         );
     }
-    for call in &calls {
-        text.push_str(&format!(
+    for call in calls {
+        if text.full {
+            break;
+        }
+        text.push_fmt(format_args!(
             "{} | {} | {} | {}\n",
             call["tool"].as_str().unwrap_or(""),
             call["outcome"].as_str().unwrap_or(""),
@@ -552,48 +556,63 @@ fn render_text(result: &mut Value) -> String {
         text.push('\n');
     }
     for warning in &warnings {
-        text.push_str(&format!(
-            "Warning: {}\n",
-            warning
-                .get("message")
-                .and_then(Value::as_str)
-                .map_or_else(|| warning.to_string(), str::to_owned)
-        ));
+        if text.full {
+            break;
+        }
+        text.push_str("Warning: ");
+        if let Some(message) = warning.get("message").and_then(Value::as_str) {
+            text.push_str(message);
+        } else {
+            text.json(warning, false);
+        }
+        text.push('\n');
     }
     result["warnings"] = warnings.into();
-    text
+    text.finish()
 }
 
 /// The return value as a model reads it. A string is shown verbatim, so its
 /// line breaks stay line breaks instead of `\n` escapes inside quotes; objects
 /// and arrays are pretty-printed JSON with a 2-space indent; null (also what an
 /// `undefined` return becomes) is `none`. structuredContent keeps the raw value.
-fn return_value_text(value: &Value) -> String {
-    let body = match value {
-        Value::Null => return "\nReturn value: none\n".into(),
-        Value::String(text) => text.clone(),
-        Value::Array(_) | Value::Object(_) => {
-            serde_json::to_string_pretty(value).expect("JSON value")
-        }
-        other => other.to_string(),
-    };
-    let newline = if body.ends_with('\n') { "" } else { "\n" };
-    format!("\nReturn value:\n{body}{newline}")
+fn return_value_text(text: &mut BoundedText, value: &Value) {
+    if value.is_null() {
+        text.push_str("\nReturn value: none\n");
+        return;
+    }
+    text.push_str("\nReturn value:\n");
+    if let Value::String(body) = value {
+        text.push_str(body);
+    } else {
+        text.json(value, true);
+    }
+    if !value.as_str().is_some_and(|body| body.ends_with('\n')) {
+        text.push('\n');
+    }
 }
 
 /// The run error as plain text: its code, its message, and any provider
 /// detail as compact JSON on its own line.
-fn error_text(error: &Value) -> String {
+fn error_text(text: &mut BoundedText, error: &Value) {
     let code = error["code"].as_str().unwrap_or("error");
-    let mut text = match &error["message"] {
-        Value::String(message) => format!("Error ({code}): {message}\n"),
-        Value::Null => format!("Error ({code})\n"),
-        other => format!("Error ({code}): {other}\n"),
-    };
-    if let Some(detail) = error.get("detail") {
-        text.push_str(&format!("Error detail: {detail}\n"));
+    text.push_fmt(format_args!("Error ({code})"));
+    match &error["message"] {
+        Value::Null => {}
+        Value::String(message) => {
+            text.push_str(": ");
+            text.push_str(message);
+        }
+        other => {
+            text.push_str(": ");
+            text.json(other, false);
+        }
     }
-    text
+    text.push('\n');
+    if let Some(detail) = error.get("detail") {
+        text.push_str("Error detail: ");
+        text.json(detail, false);
+        text.push('\n');
+    }
 }
 
 fn render(id: &str, mut result: Value) -> Value {
@@ -702,6 +721,87 @@ fn serialized_size(value: &impl serde::Serialize) -> usize {
 const TEXT_TRUNCATED: &str = "\n[Model text truncated for the 3 MiB result limit.]\n";
 const STRUCTURED_OMITTED: &str = "\nStructured fields were omitted for size.\n";
 
+#[derive(Default)]
+struct BoundedText {
+    text: String,
+    escaped: usize,
+    full: bool,
+}
+
+fn escaped_bytes(byte: u8) -> usize {
+    match byte {
+        b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+        0..=31 => 6,
+        _ => 1,
+    }
+}
+
+impl BoundedText {
+    fn push_str(&mut self, part: &str) {
+        let _ = std::io::Write::write_all(self, part.as_bytes());
+    }
+    fn push(&mut self, ch: char) {
+        self.push_str(ch.encode_utf8(&mut [0; 4]));
+    }
+    fn push_fmt(&mut self, args: std::fmt::Arguments<'_>) {
+        let _ = std::io::Write::write_fmt(self, args);
+    }
+    fn json(&mut self, value: &Value, pretty: bool) {
+        if self.full {
+            return;
+        }
+        // A full writer stops serde's traversal as soon as the displayed prefix
+        // is known. Structured content still keeps the original value.
+        if pretty {
+            let _ = serde_json::to_writer_pretty(self, value);
+        } else {
+            let _ = serde_json::to_writer(self, value);
+        }
+    }
+    fn finish(self) -> String {
+        let mut text = self.text;
+        if self.full {
+            trim_text(&mut text);
+        }
+        text
+    }
+}
+
+impl std::io::Write for BoundedText {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.full {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        let limit = cortexkit_role_tool_provider::result::MAX_RESULT_BYTES - 4096 - 3;
+        let mut end = 0;
+        for &byte in bytes {
+            let cost = escaped_bytes(byte);
+            if self.escaped + cost > limit {
+                self.full = true;
+                break;
+            }
+            self.escaped += cost;
+            end += 1;
+        }
+        // JSON writes UTF-8 fragments; hold only a valid prefix when a fragment
+        // crosses the budget boundary.
+        let mut valid = end;
+        while std::str::from_utf8(&bytes[..valid]).is_err() {
+            valid -= 1;
+        }
+        self.text
+            .push_str(std::str::from_utf8(&bytes[..valid]).expect("UTF-8 prefix"));
+        if self.full {
+            Err(std::io::ErrorKind::WriteZero.into())
+        } else {
+            Ok(end)
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn bound_text(text: &mut String) {
     use cortexkit_role_tool_provider::result::MAX_RESULT_BYTES;
     // Leave room for identity, outcome, budget counters and omission markers.
@@ -710,26 +810,60 @@ fn bound_text(text: &mut String) {
     if serialized_size(text) < limit {
         return;
     }
-    let mut low = 0;
-    let mut high = text.len();
-    while low < high {
-        let middle = low + (high - low).div_ceil(2);
-        let mut end = middle;
-        while !text.is_char_boundary(end) {
-            end -= 1;
+    trim_text(text);
+}
+
+fn trim_text(text: &mut String) {
+    let limit = cortexkit_role_tool_provider::result::MAX_RESULT_BYTES - 4096;
+    let mut used = serialized_size(&TEXT_TRUNCATED);
+    let mut end = 0;
+    for (index, ch) in text.char_indices() {
+        let cost = ch
+            .encode_utf8(&mut [0; 4])
+            .bytes()
+            .map(escaped_bytes)
+            .sum::<usize>();
+        if used + cost >= limit {
+            break;
         }
-        let candidate = format!("{}{TEXT_TRUNCATED}", &text[..end]);
-        if serialized_size(&candidate) < limit {
-            low = middle;
-        } else {
-            high = middle - 1;
-        }
+        used += cost;
+        end = index + ch.len_utf8();
     }
-    while !text.is_char_boundary(low) {
-        low -= 1;
-    }
-    text.truncate(low);
+    text.truncate(end);
     text.push_str(TEXT_TRUNCATED);
+}
+
+#[cfg(test)]
+mod producer_tests {
+    use super::*;
+
+    #[test]
+    fn model_text_never_builds_the_omitted_output_tail() {
+        let mut result = json!({"status":"completed","duration_ms":1,"person_wait_ms":0,"output":"x".repeat(16*1024*1024),"calls":[],"warnings":[]});
+        let largest = producer_alloc::largest(|| {
+            let text = render_text(&mut result);
+            assert!(text.starts_with("completed · 1 ms · 0 calls · person wait 0 ms\n\nOutput:\n"));
+            assert!(text.ends_with(TEXT_TRUNCATED));
+            assert!(
+                serialized_size(&text)
+                    < cortexkit_role_tool_provider::result::MAX_RESULT_BYTES - 4096
+            );
+        });
+        assert!(
+            largest <= 8 * 1024 * 1024,
+            "omitted model text allocated {largest} bytes"
+        );
+    }
+
+    #[test]
+    fn streaming_text_cut_matches_the_escaped_unicode_prefix() {
+        let input = "é\u{0000}\"\\\n".repeat(400_000);
+        let mut expected = input.clone();
+        bound_text(&mut expected);
+        let mut writer = BoundedText::default();
+        writer.push_str(&input);
+        assert_eq!(writer.finish(), expected);
+    }
 }
 
 fn bounded_result(mut reply: cortexkit_role_tool_provider::result::ToolResult) -> Value {
@@ -999,5 +1133,46 @@ mod tests {
             .unwrap();
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod producer_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    struct Alloc;
+    std::thread_local! { static MAX: Cell<Option<usize>> = const { Cell::new(None) }; }
+    fn record(size: usize) {
+        let _ = MAX.try_with(|max| {
+            if let Some(old) = max.get() {
+                max.set(Some(old.max(size)));
+            }
+        });
+    }
+    unsafe impl GlobalAlloc for Alloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            record(layout.size());
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            record(layout.size());
+            unsafe { System.alloc_zeroed(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            record(size);
+            unsafe { System.realloc(ptr, layout, size) }
+        }
+    }
+    #[global_allocator]
+    static ALLOC: Alloc = Alloc;
+
+    pub(crate) fn largest(f: impl FnOnce()) -> usize {
+        MAX.with(|max| max.set(Some(0)));
+        f();
+        MAX.with(|max| max.replace(None).unwrap())
     }
 }
