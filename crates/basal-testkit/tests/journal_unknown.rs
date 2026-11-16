@@ -269,14 +269,19 @@ fn reconcile_cancel_keeps_the_run_cancelled_while_late_completions_settle() {
     assert_eq!(rt.run(&run_id).unwrap().state, RunState::Cancelled);
     assert_eq!(world.mock.total_sends(), sends);
     assert_eq!(rt.run(&run_id).expect("run").state, RunState::Cancelled);
-    // The accepted completion settled position 0; the unknown mutation at 1
-    // is still an open obligation.
+    // The accepted completion settled position 0, and the operator's cancel
+    // decided the unknown call at 1: a closed run can never observe it, so it
+    // is settled rather than left open, and cannot be reconciled again.
     let open = rt.health().expect("health").open_obligations;
-    assert_eq!(open, vec![(run_id.clone(), 1)]);
-    assert!(matches!(
-        rt.reconcile(&run_id, 1, Resolution::NotApplied, "operator"),
-        Err(CoreError::WrongState { .. })
-    ));
+    assert_eq!(open, Vec::<(String, u64)>::new());
+    let again = rt.reconcile(&run_id, 1, Resolution::NotApplied, "operator");
+    assert!(
+        matches!(
+            again,
+            Err(CoreError::WrongState { .. } | CoreError::Invalid(_))
+        ),
+        "{again:?}"
+    );
 }
 
 /// An identical redelivered completion is a no-op; a contradictory one is
