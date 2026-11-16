@@ -85,9 +85,9 @@ fn supervised_binary_exits_cleanly_after_daemon_eof() {
                     .spawn()
                     .unwrap(),
             );
-            // The module registers first; its hosts' consumer connects only
-            // after HELLO_ACK, because under a registration channel that
-            // connection is bound through the registered one.
+            // The module registers first. Its hosts' consumer connects only
+            // after HELLO_ACK: under a registration channel that consumer must
+            // present a claim minted over the registered module connection.
             let (mut stream, _) = listener.accept().await.unwrap();
             authenticate_server(
                 &mut stream,

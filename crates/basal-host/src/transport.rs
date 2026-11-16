@@ -882,12 +882,6 @@ impl SubcTransport {
         }
     }
 
-    /// How many `catalog.list` reads this transport has sent, whether for a
-    /// request or after a watch push.
-    pub fn catalog_reads(&self) -> u64 {
-        self.shared_catalog.reads()
-    }
-
     /// One `catalog.list`, offered to the shared copy. `replace` lets a read
     /// of the generation already held replace it (a refresh after a miss).
     fn read_catalog_snapshot(
@@ -895,7 +889,6 @@ impl SubcTransport {
         replace: bool,
     ) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
         let consumer = self.consumer()?;
-        self.shared_catalog.count_read();
         let catalog = self
             .handle
             .block_on(consumer.catalog_list())
@@ -1379,7 +1372,6 @@ impl Transport for SubcTransport {
     }
     fn catalog(&self) -> Result<Value, WireError> {
         let consumer = self.consumer()?;
-        self.shared_catalog.count_read();
         let catalog = self
             .handle
             .block_on(consumer.catalog_list())

@@ -15,7 +15,7 @@
 //! polling. Retrying a watch that could not be opened sleeps with backoff.
 
 use crate::catalog_snapshot::CatalogSnapshot;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subc_client_rs::consumer::SubcConsumer;
@@ -41,8 +41,6 @@ pub(crate) struct SharedCatalog {
     state: Mutex<State>,
     stopped: AtomicBool,
     stop: tokio::sync::Notify,
-    /// Every `catalog.list` this process sent, for measurements and tests.
-    reads: AtomicU64,
 }
 
 impl SharedCatalog {
@@ -113,15 +111,6 @@ impl SharedCatalog {
         state.announced = 0;
     }
 
-    pub(crate) fn count_read(&self) {
-        self.reads.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// How many `catalog.list` reads this transport has sent.
-    pub(crate) fn reads(&self) -> u64 {
-        self.reads.load(Ordering::Relaxed)
-    }
-
     /// Ends the follower; called when the transport shuts down.
     pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
@@ -176,7 +165,6 @@ pub(crate) async fn follow(
                     };
                     retry = RETRY_MIN;
                     if shared.announce(push.generation, first) {
-                        shared.count_read();
                         match consumer.catalog_list().await {
                             Ok(list) => {
                                 let snapshot = CatalogSnapshot::new(list);
