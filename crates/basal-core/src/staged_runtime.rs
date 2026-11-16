@@ -16,7 +16,7 @@ use crate::{
     model::{Run, RunState, StoredClass},
     preparation::CallPreparation,
     run_admission::RunAdmission,
-    run_driver::{self, Driver, Gate, Prepared, Reply, Terminal, TerminalEffects},
+    run_driver::{self, Driver, Gate, PrepareView, Prepared, Reply, Terminal, TerminalEffects},
     run_records::{
         Arrival, ArrivalDurability, CallIdentity, DispatchCount, Intent, Records, State,
     },
@@ -353,7 +353,7 @@ impl run_driver::Services for Services {
             }
         }
     }
-    fn prepare(&self, live: &LiveRun, call: &HostCall, state: &State) -> Result<Prepared> {
+    fn prepare(&self, live: &LiveRun, call: &HostCall, view: &PrepareView) -> Result<Prepared> {
         let rt = self.runtime()?;
         if let Some(reason) = rt.store().read(|c| {
             if crate::run_removal::removed(c, live)? {
@@ -364,25 +364,16 @@ impl run_driver::Services for Services {
         })? {
             let args = serde_json::from_str::<serde_json::Value>(call.args.as_str()).ok();
             return Ok(Prepared::Revoked {
-                class: state.calls.get(&call.position).map_or_else(
+                class: view.current.as_ref().map_or_else(
                     || rt.class_of(&call.kind, args.as_ref()),
                     |c| c.identity.class,
                 ),
                 reason,
             });
         }
-        let bytes: u64 = state
-            .calls
-            .values()
-            .map(|c| {
-                (c.identity.args.len()
-                    + c.intent.as_ref().map_or(0, |i| i.frozen_request.len())
-                    + c.arrival.as_ref().map_or(0, |a| a.value.len())
-                    + c.sync.as_ref().map_or(0, |s| s.value.len())) as u64
-            })
-            .sum();
-        if !state.calls.contains_key(&call.position)
-            && (state.calls.len() as u64 >= rt.config.limits.max_calls
+        let bytes = view.journal_bytes;
+        if view.current.is_none()
+            && (view.call_count >= rt.config.limits.max_calls
                 || bytes.saturating_add(call.args.len() as u64)
                     > rt.config.limits.max_journal_bytes)
         {
@@ -391,7 +382,7 @@ impl run_driver::Services for Services {
             ));
         }
         let run = rt.store().read(|c| {
-            crate::runs::load_staged(c, &live.run_id, Some(state), true, &rt.config.owner)
+            crate::run_readers::load_live(c, &live.run_id, &view.reader, &rt.config.owner)
         })?;
         let mut manifest =
             Manifest::parse_stored(&run.manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
@@ -409,7 +400,7 @@ impl run_driver::Services for Services {
             .read(|c| crate::classify_cost::load(c, &live.flow_id, live.flow_version))?;
         let lease = Lease {
             run_id: live.run_id.clone(),
-            generation: state.generation,
+            generation: view.generation,
             owner: rt.config.owner.clone(),
         };
         let approved = Some(manifest);
@@ -421,7 +412,7 @@ impl run_driver::Services for Services {
             input: &live.self_input,
             trigger: &live.trigger,
             tool_policies: &policies,
-            state,
+            view,
         }
         .prepare(call);
         let mut prepared = match preparation {
@@ -453,7 +444,7 @@ impl run_driver::Services for Services {
             }
         };
         if bytes.saturating_add(
-            (if state.calls.contains_key(&call.position) {
+            (if view.current.is_some() {
                 0
             } else {
                 call.args.len()
@@ -534,7 +525,7 @@ impl run_driver::Services for Services {
             prepared.request = Some(crate::run_readers::json(&input)?);
         }
         if let Some(deferred) = prepared.deferred {
-            let attempt = state.calls.get(&call.position).map_or(1, |c| {
+            let attempt = view.current.as_ref().map_or(1, |c| {
                 c.prior_deferrals.len() as u64 + u64::from(c.deferred.is_some()) + 1
             });
             let retry_not_before = self.retry_at(&rt, live, attempt, &deferred);
@@ -644,7 +635,9 @@ impl run_driver::Services for Services {
             },
         };
         let call = rt
-            .staged_read(&live.run_id, |s| s.calls.get(&intent.call.position).cloned())
+            .staged_read(&live.run_id, |s| {
+                s.calls.get(&intent.call.position).cloned()
+            })
             .flatten()
             .ok_or_else(|| CoreError::Corrupt("authorized call is absent from its actor".into()))?;
         let maybe_sent = if intent.call.class != StoredClass::Query && call.prior_maybe_sent() {

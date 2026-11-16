@@ -72,10 +72,72 @@ fn live_runs(
         .collect()
 }
 
+/// The fields of a reader's [`Run`] that come from the live actor state,
+/// copied under the actor. Building them reads the state without copying its
+/// calls, so host preparation can load its run without a whole-state copy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveFields {
+    fingerprint: Option<String>,
+    generation: u64,
+    readiness: u64,
+    awaited: Vec<u64>,
+    broken: u64,
+    lifecycle: RunState,
+    deadline_at: Option<i64>,
+    /// The first unresolved calls, as shown in `error_detail`.
+    unknown: Vec<serde_json::Value>,
+}
+
+impl LiveFields {
+    pub(crate) fn of(state: &State, active: bool) -> Self {
+        let unknown = state.calls.values().filter(|c| c.arrival.is_none() && c.unknown.is_some()).take(5).map(|call| {
+            let reason = call.unknown.as_deref().and_then(crate::run_records::parse_unknown_reason);
+            let code = if reason == Some(basal_host::UnknownReason::ProviderLostRun) { "unknown_run" } else { reason.map_or("unknown", |r| r.as_str()) };
+            serde_json::json!({"position":call.identity.position,"code":code,"reason":reason.map(|r| r.as_str()),"handle":call.accepted.as_ref().map(|h| h.chars().take(256).collect::<String>())})
+        }).collect();
+        Self {
+            fingerprint: state.fingerprint.clone(),
+            generation: state.generation,
+            readiness: state.readiness,
+            awaited: state.awaited.clone(),
+            broken: state.broken,
+            lifecycle: lifecycle(state, active),
+            deadline_at: state.claim.as_ref().map(|c| c.deadline_at),
+            unknown,
+        }
+    }
+}
+
 pub(crate) fn load(
     conn: &Connection,
     id: &str,
     snapshot: Option<&State>,
+    active: bool,
+    owner: &str,
+) -> Result<Run> {
+    load_with(
+        conn,
+        id,
+        snapshot.map(|s| LiveFields::of(s, active)),
+        active,
+        owner,
+    )
+}
+
+/// [`load`] for a caller that copied the live fields under the actor.
+pub(crate) fn load_live(
+    conn: &Connection,
+    id: &str,
+    fields: &LiveFields,
+    owner: &str,
+) -> Result<Run> {
+    load_with(conn, id, Some(fields.clone()), true, owner)
+}
+
+fn load_with(
+    conn: &Connection,
+    id: &str,
+    fields: Option<LiveFields>,
     active: bool,
     owner: &str,
 ) -> Result<Run> {
@@ -90,22 +152,13 @@ pub(crate) fn load(
     let history = sql::history(conn, id)?;
     let live = sql::live(conn, id)?;
     let history_lost = live.is_some() && sql::history_lost(conn, id)?;
-    // Borrow the caller's snapshot: preparation calls this once per new call,
-    // and copying the whole call history here made each call cost the run's
-    // full size.
-    let fresh;
-    let state = match snapshot {
-        Some(state) => state,
-        None => {
-            fresh = State::new(live.as_ref().map_or(0, |l| l.admitted_at));
-            &fresh
-        }
-    };
-    let unknown: Vec<_> = state.calls.values().filter(|c| c.arrival.is_none() && c.unknown.is_some()).take(5).map(|call| {
-        let reason = call.unknown.as_deref().and_then(crate::run_records::parse_unknown_reason);
-        let code = if reason == Some(basal_host::UnknownReason::ProviderLostRun) { "unknown_run" } else { reason.map_or("unknown", |r| r.as_str()) };
-        serde_json::json!({"position":call.identity.position,"code":code,"reason":reason.map(|r| r.as_str()),"handle":call.accepted.as_ref().map(|h| h.chars().take(256).collect::<String>())})
-    }).collect();
+    let state = fields.unwrap_or_else(|| {
+        LiveFields::of(
+            &State::new(live.as_ref().map_or(0, |l| l.admitted_at)),
+            active,
+        )
+    });
+    let unknown = &state.unknown;
     let (trigger_id, trigger, admitted_at, admit_seq) = if let Some(h) = &history {
         (
             h.trigger_id.clone(),
@@ -165,7 +218,7 @@ pub(crate) fn load(
                 if history_lost {
                     RunState::NeedsReconcile
                 } else {
-                    lifecycle(&state, active)
+                    state.lifecycle
                 }
             },
             |h| h.state,
@@ -198,10 +251,7 @@ pub(crate) fn load(
         flow_version: Some(identity.flow_version),
         admit_seq: Some(admit_seq),
         deadline_ms: live.as_ref().map(|l| l.deadline_ms),
-        deadline_at: history
-            .is_none()
-            .then(|| state.claim.as_ref().map(|c| c.deadline_at))
-            .flatten(),
+        deadline_at: history.is_none().then_some(state.deadline_at).flatten(),
     })
 }
 

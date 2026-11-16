@@ -10,7 +10,6 @@ use crate::{
 };
 use basal_proto::{CallKind, HostCall, JsonText, Primitive};
 use serde_json::Value;
-use std::collections::BTreeSet;
 
 /// A call ready to journal, including a board call waiting for its registry read.
 #[derive(Debug, Default)]
@@ -37,7 +36,8 @@ pub(crate) struct CallPreparation<'a> {
     pub(crate) input: &'a Value,
     pub(crate) trigger: &'a Value,
     pub(crate) tool_policies: &'a crate::classify_cost::ToolPolicies,
-    pub(crate) state: &'a crate::run_records::State,
+    /// The run as copied under its actor; preparation itself runs without it.
+    pub(crate) view: &'a crate::run_driver::PrepareView,
 }
 
 pub(crate) fn disabled_refusal() -> Refusal {
@@ -378,22 +378,7 @@ impl CallPreparation<'_> {
                         });
                     }
                 };
-                let targets = self
-                    .state
-                    .calls
-                    .values()
-                    .filter_map(|c| {
-                        if !matches!(c.identity.kind, CallKind::OpFor { .. }) {
-                            return None;
-                        }
-                        let value: Value =
-                            serde_json::from_str(c.intent.as_ref()?.frozen_request.as_str())
-                                .ok()?;
-                        value["agent"].as_str().map(str::to_owned)
-                    })
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>();
+                let targets = self.view.op_for_targets.iter().cloned().collect::<Vec<_>>();
                 if !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize {
                     return Err(Refusal::new(
                         "too_many_targets",

@@ -148,7 +148,7 @@ impl Services for Service {
         lock_order::assert_lock_free();
         Ok(self.gate.lock().unwrap().clone())
     }
-    fn prepare(&self, _: &LiveRun, call: &HostCall, state: &State) -> Result<Prepared> {
+    fn prepare(&self, _: &LiveRun, call: &HostCall, view: &PrepareView) -> Result<Prepared> {
         lock_order::assert_lock_free();
         if crate::kv::is_kv(&call.kind) {
             return Ok(Prepared::Kv(crate::kv::KvLimits::default()));
@@ -171,7 +171,7 @@ impl Services for Service {
         }
         if op == "read" {
             return Ok(Prepared::Local {
-                value: JsonText::new(state.overlay.get("counter").unwrap().clone().unwrap())
+                value: JsonText::new(view.overlay.get("counter").unwrap().clone().unwrap())
                     .unwrap(),
                 effect: None,
             });
@@ -773,7 +773,7 @@ fn finished_dispatch_wakes_the_frame_wait_and_keeps_synced_release_order() {
 }
 
 #[test]
-fn worker_loop_copies_the_run_state_once_per_call_not_per_pass() {
+fn worker_loop_and_preparation_never_copy_the_whole_run_state() {
     const CALLS: u64 = 32;
     let f = Fixture::new();
     let a = f.claim(0);
@@ -788,14 +788,11 @@ fn worker_loop_copies_the_run_state_once_per_call_not_per_pass() {
         )
         .unwrap();
     assert_eq!(end, crate::ActivationEnd::Succeeded { value: "1".into() });
-    // Host preparation needs one owned copy for each new call. Every other
-    // read in the loop borrows the state under the actor; copying it on each
-    // pass made a run's cost grow with the square of its call count.
+    // The loop borrows the state under the actor and preparation gets a
+    // PrepareView; copying the whole state per pass or per call made a run's
+    // cost grow with the square of its call count.
     let copies = super::STATE_COPIES.with(std::cell::Cell::get);
-    assert!(
-        copies <= CALLS as usize,
-        "{copies} full state copies for {CALLS} calls"
-    );
+    assert_eq!(copies, 0, "{copies} full state copies for {CALLS} calls");
     assert_eq!(
         worker
             .delivered

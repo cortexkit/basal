@@ -346,28 +346,27 @@ impl TerminalWrite for Projection {
                 let arrival = call.arrival.as_ref();
                 let settled = arrival.is_some();
                 obligations.push(sql::Obligation {
-                        run_id: id.clone(),
-                        position: call.identity.position,
-                        handle: arrival
-                            .and_then(|a| a.handle.clone())
-                            .or_else(|| call.accepted.clone()),
-                        state: if settled {
-                            sql::ObligationState::Settled
-                        } else if call.unknown.is_some() {
-                            sql::ObligationState::Unknown
-                        } else {
-                            sql::ObligationState::Open
-                        },
-                        audit_at: intent.audit_at,
-                        detail: if settled {
-                            Value::Null
-                        } else {
-                            serde_json::to_value(call)
-                                .map_err(|e| CoreError::Invalid(e.to_string()))?
-                        },
-                        receipt: arrival.map(|a| sql::Receipt::Value(a.value_hash)),
-                        settled_at: settled.then_some(history.ended_at),
-                    });
+                    run_id: id.clone(),
+                    position: call.identity.position,
+                    handle: arrival
+                        .and_then(|a| a.handle.clone())
+                        .or_else(|| call.accepted.clone()),
+                    state: if settled {
+                        sql::ObligationState::Settled
+                    } else if call.unknown.is_some() {
+                        sql::ObligationState::Unknown
+                    } else {
+                        sql::ObligationState::Open
+                    },
+                    audit_at: intent.audit_at,
+                    detail: if settled {
+                        Value::Null
+                    } else {
+                        serde_json::to_value(call).map_err(|e| CoreError::Invalid(e.to_string()))?
+                    },
+                    receipt: arrival.map(|a| sql::Receipt::Value(a.value_hash)),
+                    settled_at: settled.then_some(history.ended_at),
+                });
             }
         }
         // One batch, so the run's receipts are decoded and rewritten once.

@@ -50,7 +50,8 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     /// Verify the exact version and code hash in run_identities against core's
     /// install status. Deferred and revoked answers must not activate a worker.
     fn install(&self, run: &LiveRun) -> Result<Gate>;
-    fn prepare(&self, run: &LiveRun, call: &HostCall, state: &State) -> Result<Prepared>;
+    /// Runs without the actor on a view copied under it (see [`PrepareView`]).
+    fn prepare(&self, run: &LiveRun, call: &HostCall, view: &PrepareView) -> Result<Prepared>;
     fn dispatch(&self, run: &LiveRun, intent: &Intent) -> Result<Reply>;
     /// Register dispatch work with the runtime's thread owner, including sends
     /// whose sibling has already ended the activation with a crash or error.
@@ -81,6 +82,66 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     }
     fn saturated(&self, _: &rusqlite::Transaction<'_>, _: &LiveRun, _: &str) -> Result<()> {
         Ok(())
+    }
+}
+
+/// What host preparation may read about a run, copied under the run actor so
+/// preparation can run without it (it may read the catalog or SQLite). It
+/// holds the call being prepared and aggregates over the others, never a copy
+/// of every call: a whole-state copy per call made a run's cost grow with the
+/// square of its call count.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrepareView {
+    pub generation: u64,
+    /// Calls recorded so far, including the one being prepared if present.
+    pub call_count: u64,
+    /// Replay-journal bytes of the recorded calls: arguments, frozen requests
+    /// and outcome values.
+    pub journal_bytes: u64,
+    /// The recorded state of the call being prepared, if it was issued before.
+    pub current: Option<crate::run_records::CallState>,
+    /// The run's pending KV writes, which reads see before SQLite.
+    pub overlay: std::collections::BTreeMap<String, Option<String>>,
+    /// Target agents of earlier `OpFor` calls; filled only when preparing one.
+    pub op_for_targets: BTreeSet<String>,
+    pub(crate) reader: crate::run_readers::LiveFields,
+}
+
+impl PrepareView {
+    pub fn of(state: &State, call: &HostCall) -> Self {
+        let journal_bytes = state
+            .calls
+            .values()
+            .map(|c| {
+                (c.identity.args.len()
+                    + c.intent.as_ref().map_or(0, |i| i.frozen_request.len())
+                    + c.arrival.as_ref().map_or(0, |a| a.value.len())
+                    + c.sync.as_ref().map_or(0, |s| s.value.len())) as u64
+            })
+            .sum();
+        let op_for_targets = if matches!(call.kind, basal_proto::CallKind::OpFor { .. }) {
+            state
+                .calls
+                .values()
+                .filter(|c| matches!(c.identity.kind, basal_proto::CallKind::OpFor { .. }))
+                .filter_map(|c| {
+                    let value: serde_json::Value =
+                        serde_json::from_str(c.intent.as_ref()?.frozen_request.as_str()).ok()?;
+                    value["agent"].as_str().map(str::to_owned)
+                })
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        Self {
+            generation: state.generation,
+            call_count: state.calls.len() as u64,
+            journal_bytes,
+            current: state.calls.get(&call.position).cloned(),
+            overlay: state.overlay.clone(),
+            op_for_targets,
+            reader: crate::run_readers::LiveFields::of(state, true),
+        }
     }
 }
 
@@ -533,18 +594,22 @@ impl Activation {
                 "call is not available to the flow profile".into(),
             ));
         }
-        let state = self.state()?;
-        if let Some((kind, detail)) = control_failure(&state) {
-            return Err(CoreError::Worker(format!("{kind}:{detail}")));
-        }
-        if state.calls.contains_key(&call.position) {
-            state.check_issued(&call)?;
-            return Err(CoreError::Worker("worker reissued a recorded call".into()));
-        }
-        let prepared = self.driver.services.prepare(&self.live, &call, &state)?;
+        // Read what this call needs under the actor; preparation then runs
+        // without it on the copied view.
+        let view = self.with_state(|state| {
+            if let Some((kind, detail)) = control_failure(state) {
+                return Err(CoreError::Worker(format!("{kind}:{detail}")));
+            }
+            if state.calls.contains_key(&call.position) {
+                state.check_issued(&call)?;
+                return Err(CoreError::Worker("worker reissued a recorded call".into()));
+            }
+            Ok(PrepareView::of(state, &call))
+        })??;
+        let prepared = self.driver.services.prepare(&self.live, &call, &view)?;
         let prepared = match prepared {
             Prepared::Kv(limits) => {
-                local::prepare(&self.driver.store, &self.live, &state, &call, limits)?
+                local::prepare(&self.driver.store, &self.live, &view, &call, limits)?
             }
             other => other,
         };
@@ -1001,10 +1066,10 @@ impl Activation {
                     kind: call.identity.kind.clone(),
                     args: call.identity.args.clone(),
                 };
-                let state = self.state()?;
-                let prepared = match self.driver.services.prepare(&self.live, &call, &state)? {
+                let view = self.with_state(|state| PrepareView::of(state, &call))?;
+                let prepared = match self.driver.services.prepare(&self.live, &call, &view)? {
                     Prepared::Kv(limits) => {
-                        local::prepare(&self.driver.store, &self.live, &state, &call, limits)?
+                        local::prepare(&self.driver.store, &self.live, &view, &call, limits)?
                     }
                     other => other,
                 };
