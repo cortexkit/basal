@@ -454,17 +454,33 @@ impl Driver {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Full state copies made through [`Activation::state`] on this thread,
+    /// so tests can bound how often the driver copies the whole history.
+    static STATE_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Activation {
+    /// A complete copy of the run's state, for callers that must use it after
+    /// releasing the actor (host preparation, worker replay prefix). Each copy
+    /// costs the whole call history; prefer [`Self::with_state`] for reads.
     pub fn state(&self) -> Result<State> {
+        #[cfg(test)]
+        STATE_COPIES.with(|copies| copies.set(copies.get() + 1));
+        self.with_state(State::clone)
+    }
+
+    /// Reads the state in place under the run actor. `read` must not block or
+    /// do I/O: it runs with the actor held.
+    pub(crate) fn with_state<T>(&self, read: impl FnOnce(&State) -> T) -> Result<T> {
         self.run
-            .activate(self.generation, |a| Ok(a.records().state().clone()))
+            .activate(self.generation, |a| Ok(read(a.records().state())))
     }
 
     pub fn deadline_passed(&self) -> Result<bool> {
-        Ok(self
-            .state()?
-            .claim
-            .is_some_and(|claim| self.driver.services.now_ms() >= claim.deadline_at))
+        let now = self.driver.services.now_ms();
+        self.with_state(|state| state.claim.as_ref().is_some_and(|claim| now >= claim.deadline_at))
     }
 
     pub fn fingerprint(&self, value: String) -> Result<bool> {
@@ -918,9 +934,24 @@ impl Activation {
         after_snapshot: impl FnOnce(),
     ) -> Result<Vec<Dispatch>> {
         let mut dispatches = Vec::new();
-        let snapshot = self.state()?;
+        // Copy only the calls the loop below can act on. Settled, accepted and
+        // already reported calls are skipped there, and copying the whole
+        // history on every pass made each new call cost the run's full size.
+        let snapshot: Vec<CallState> = self.with_state(|state| {
+            state
+                .calls
+                .values()
+                .filter(|call| {
+                    !reported.contains(&call.identity.position)
+                        && call.arrival.is_none()
+                        && call.sync.is_none()
+                        && call.accepted.is_none()
+                })
+                .cloned()
+                .collect()
+        })?;
         after_snapshot();
-        for call in snapshot.calls.values() {
+        for call in &snapshot {
             // LongRunning lets the worker finish with Suspended. Keep its
             // acceptance or deferral intact until that suspension is handled;
             // a retry would consume the deferral before park can check it.

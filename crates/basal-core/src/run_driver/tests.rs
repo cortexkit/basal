@@ -608,14 +608,42 @@ fn expired_run_never_resends_or_starts_worker() {
 }
 
 /// A worker read through a split receiver, as the driver reads real workers:
-/// it issues one query, blocks on it, and finishes once the outcome arrives.
+/// it issues `calls` queries one at a time, blocking on each, and finishes
+/// once the last outcome arrives.
 struct SplitWorker {
     welcome: basal_proto::Welcome,
     generation: u64,
+    calls: u64,
     frames: Option<std::sync::mpsc::Sender<basal_proto::WorkerMessage>>,
     receiver: Option<SplitReceiver>,
     log: Arc<MemoryLog>,
     delivered: Vec<basal_proto::Outcome>,
+}
+impl SplitWorker {
+    fn new(f: &Fixture, generation: u64, calls: u64) -> Self {
+        let (frames, receiver) = std::sync::mpsc::channel();
+        Self {
+            welcome: Worker::new(Vec::new()).welcome,
+            generation,
+            calls,
+            frames: Some(frames),
+            receiver: Some(SplitReceiver {
+                frames: receiver,
+                service: f.service.clone(),
+                reads: 0,
+            }),
+            log: f.log.clone(),
+            delivered: Vec::new(),
+        }
+    }
+    fn issue(position: u64) -> Vec<basal_proto::WorkerMessage> {
+        vec![
+            basal_proto::WorkerMessage::HostCall(call(position, "query")),
+            basal_proto::WorkerMessage::Blocked {
+                awaiting: vec![position],
+            },
+        ]
+    }
 }
 struct SplitReceiver {
     frames: std::sync::mpsc::Receiver<basal_proto::WorkerMessage>,
@@ -650,10 +678,7 @@ impl crate::channel::WorkerChannel for SplitWorker {
     ) -> std::result::Result<(), crate::ChannelError> {
         use basal_proto::{ActivationResult, ParentMessage, WorkerMessage};
         let reply = match message {
-            ParentMessage::Activate(_) => vec![
-                WorkerMessage::HostCall(call(0, "query")),
-                WorkerMessage::Blocked { awaiting: vec![0] },
-            ],
+            ParentMessage::Activate(_) => Self::issue(0),
             ParentMessage::Deliver(outcome) => {
                 let records = self.log.records.lock().unwrap();
                 let synced = *self.log.synced.lock().unwrap();
@@ -665,12 +690,16 @@ impl crate::channel::WorkerChannel for SplitWorker {
                     "an outcome was delivered before its arrival was synced"
                 );
                 self.delivered.push(outcome.clone());
-                vec![WorkerMessage::Finished {
-                    activation_id: self.generation,
-                    result: ActivationResult::Completed {
-                        value: JsonText::new("1").unwrap(),
-                    },
-                }]
+                if outcome.position + 1 < self.calls {
+                    Self::issue(outcome.position + 1)
+                } else {
+                    vec![WorkerMessage::Finished {
+                        activation_id: self.generation,
+                        result: ActivationResult::Completed {
+                            value: JsonText::new("1").unwrap(),
+                        },
+                    }]
+                }
             }
             other => panic!("unexpected parent message {other:?}"),
         };
@@ -704,19 +733,7 @@ fn finished_dispatch_wakes_the_frame_wait_and_keeps_synced_release_order() {
     *f.service.poll.lock().unwrap() = Duration::from_secs(600);
     *f.service.held_dispatches.lock().unwrap() = Some(Vec::new());
     let a = f.claim(0);
-    let (frames, receiver) = std::sync::mpsc::channel();
-    let mut worker = SplitWorker {
-        welcome: Worker::new(Vec::new()).welcome,
-        generation: a.generation,
-        frames: Some(frames),
-        receiver: Some(SplitReceiver {
-            frames: receiver,
-            service: f.service.clone(),
-            reads: 0,
-        }),
-        log: f.log.clone(),
-        delivered: Vec::new(),
-    };
+    let mut worker = SplitWorker::new(&f, a.generation, 1);
     let end = a
         .drive(
             &mut worker,
@@ -755,6 +772,40 @@ fn finished_dispatch_wakes_the_frame_wait_and_keeps_synced_release_order() {
         .collect();
     assert_eq!(order, vec!["intent:0", "arrived:0", "released:0:0"]);
     assert_eq!(*f.service.acks.lock().unwrap(), vec![0]);
+}
+
+#[test]
+fn worker_loop_copies_the_run_state_once_per_call_not_per_pass() {
+    const CALLS: u64 = 32;
+    let f = Fixture::new();
+    let a = f.claim(0);
+    let mut worker = SplitWorker::new(&f, a.generation, CALLS);
+    super::STATE_COPIES.with(|copies| copies.set(0));
+    let end = a
+        .drive(
+            &mut worker,
+            request(),
+            Arc::new(Effects),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(end, crate::ActivationEnd::Succeeded { value: "1".into() });
+    // Host preparation needs one owned copy for each new call. Every other
+    // read in the loop borrows the state under the actor; copying it on each
+    // pass made a run's cost grow with the square of its call count.
+    let copies = super::STATE_COPIES.with(std::cell::Cell::get);
+    assert!(
+        copies <= CALLS as usize,
+        "{copies} full state copies for {CALLS} calls"
+    );
+    assert_eq!(
+        worker
+            .delivered
+            .iter()
+            .map(|o| (o.position, o.delivery_order))
+            .collect::<Vec<_>>(),
+        (0..CALLS).map(|p| (p, p)).collect::<Vec<_>>()
+    );
 }
 
 struct Effects;

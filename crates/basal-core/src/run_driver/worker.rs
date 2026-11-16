@@ -127,6 +127,16 @@ impl Frames {
     }
 }
 
+/// Calls whose possible send is unresolved and still need reconciliation.
+fn unresolved_positions(state: &crate::run_records::State) -> Vec<u64> {
+    state
+        .calls
+        .values()
+        .filter(|c| c.unknown.is_some() && c.arrival.is_none())
+        .map(|c| c.identity.position)
+        .collect()
+}
+
 impl Activation {
     fn terminal(&self, state: RunState, effects: &Arc<dyn TerminalEffects>) -> Terminal {
         Terminal::new(
@@ -279,13 +289,8 @@ impl Activation {
         for dispatch in self.recover_dispatches_for_worker(&reported)? {
             pending.push(spawn(dispatch)?);
         }
-        let state = self.state()?;
-        let unknown: Vec<_> = state
-            .calls
-            .values()
-            .filter(|c| c.unknown.is_some() && c.arrival.is_none())
-            .map(|c| c.identity.position)
-            .collect();
+        let (unknown, prefix) =
+            self.with_state(|state| (unresolved_positions(state), state.prefix()))?;
         if !unknown.is_empty() {
             return Ok(ActivationEnd::NeedsReconcile { positions: unknown });
         }
@@ -303,7 +308,7 @@ impl Activation {
         request.self_input = crate::model::json(self.live.self_input.to_string(), "self input")?;
         request.params_input =
             crate::model::json(self.live.params_input.to_string(), "params input")?;
-        request.prefix = state.prefix();
+        request.prefix = prefix;
         self.script_started()?;
         if worker
             .send(&ParentMessage::Activate(Box::new(request.clone())))
@@ -339,17 +344,14 @@ impl Activation {
             for dispatch in self.recover_dispatches_for_worker(&reported)? {
                 pending.push(spawn(dispatch)?);
             }
-            let unknown: Vec<_> = self
-                .state()?
-                .calls
-                .values()
-                .filter(|c| c.unknown.is_some() && c.arrival.is_none())
-                .map(|c| c.identity.position)
-                .collect();
+            // One borrowed read under the actor instead of copying the whole
+            // call history on every pass of this loop.
+            let (unknown, control) =
+                self.with_state(|state| (unresolved_positions(state), control_failure(state)))?;
             if !unknown.is_empty() {
                 return Ok(ActivationEnd::NeedsReconcile { positions: unknown });
             }
-            if let Some((kind, detail)) = control_failure(&self.state()?) {
+            if let Some((kind, detail)) = control {
                 worker.kill();
                 return self.fail(kind, detail, effects);
             }
@@ -371,18 +373,17 @@ impl Activation {
                         return Ok(ActivationEnd::Requeued);
                     }
                 } else {
-                    let state = self.state()?;
-                    let positions: Vec<_> = awaiting
-                        .iter()
-                        .copied()
-                        .filter(|p| {
-                            state
-                                .calls
-                                .get(p)
-                                .is_some_and(|c| c.accepted.is_some() || c.deferred.is_some())
-                                && reported.insert(*p)
-                        })
-                        .collect();
+                    let positions: Vec<_> = self.with_state(|state| {
+                        awaiting
+                            .iter()
+                            .copied()
+                            .filter(|p| {
+                                state.calls.get(p).is_some_and(|c| {
+                                    c.accepted.is_some() || c.deferred.is_some()
+                                }) && reported.insert(*p)
+                            })
+                            .collect()
+                    })?;
                     if !positions.is_empty()
                         && worker
                             .send(&ParentMessage::LongRunning { positions })
@@ -433,7 +434,7 @@ impl Activation {
                         self.requeue(true)?;
                         return Ok(ActivationEnd::Requeued);
                     }
-                    if let Some((kind, detail)) = control_failure(&self.state()?) {
+                    if let Some((kind, detail)) = self.with_state(control_failure)? {
                         worker.kill();
                         return self.fail(kind, detail, effects);
                     }
@@ -479,15 +480,19 @@ impl Activation {
                             position,
                             message,
                         }) => {
-                            let readiness = self
-                                .state()?
-                                .calls
-                                .get(&position)
-                                .and_then(|c| c.arrival.as_ref())
-                                .is_some_and(|a| {
-                                    a.settlement == Settlement::Rejected
-                                        && crate::ops::typed_scope_rejection(a.value.as_str(), true)
-                                });
+                            let readiness = self.with_state(|state| {
+                                state
+                                    .calls
+                                    .get(&position)
+                                    .and_then(|c| c.arrival.as_ref())
+                                    .is_some_and(|a| {
+                                        a.settlement == Settlement::Rejected
+                                            && crate::ops::typed_scope_rejection(
+                                                a.value.as_str(),
+                                                true,
+                                            )
+                                    })
+                            })?;
                             self.fail(
                                 if readiness {
                                     "readiness_rejection"
