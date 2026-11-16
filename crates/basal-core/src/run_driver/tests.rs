@@ -663,9 +663,7 @@ impl crate::channel::WorkerReceiver for SplitReceiver {
                 std::thread::spawn(job);
             }
         }
-        self.frames
-            .recv()
-            .map_err(|_| crate::ChannelError::Closed)
+        self.frames.recv().map_err(|_| crate::ChannelError::Closed)
     }
 }
 impl crate::channel::WorkerChannel for SplitWorker {

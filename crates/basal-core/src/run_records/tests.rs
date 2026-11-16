@@ -182,11 +182,7 @@ fn rejected_appends_and_previews_leave_calls_overlay_and_counters_unchanged() {
     // A valid record whose log write fails is applied in memory first, so it
     // must be reverted too, including its kv overlay effect.
     log.fail_append.store(true, Ordering::SeqCst);
-    assert!(
-        records
-            .append(1, Body::Arrived(local(2, 1, "2")))
-            .is_err()
-    );
+    assert!(records.append(1, Body::Arrived(local(2, 1, "2"))).is_err());
     log.fail_append.store(false, Ordering::SeqCst);
     assert_eq!(records.state(), &before);
     assert_eq!(log.frames.lock().unwrap().len(), frames);

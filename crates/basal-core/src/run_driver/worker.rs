@@ -373,17 +373,18 @@ impl Activation {
                         return Ok(ActivationEnd::Requeued);
                     }
                 } else {
-                    let positions: Vec<_> = self.with_state(|state| {
-                        awaiting
-                            .iter()
-                            .copied()
-                            .filter(|p| {
-                                state.calls.get(p).is_some_and(|c| {
-                                    c.accepted.is_some() || c.deferred.is_some()
-                                }) && reported.insert(*p)
-                            })
-                            .collect()
-                    })?;
+                    let positions: Vec<_> =
+                        self.with_state(|state| {
+                            awaiting
+                                .iter()
+                                .copied()
+                                .filter(|p| {
+                                    state.calls.get(p).is_some_and(|c| {
+                                        c.accepted.is_some() || c.deferred.is_some()
+                                    }) && reported.insert(*p)
+                                })
+                                .collect()
+                        })?;
                     if !positions.is_empty()
                         && worker
                             .send(&ParentMessage::LongRunning { positions })

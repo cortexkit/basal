@@ -28,7 +28,9 @@ struct Pending {
 enum Message {
     Commit(Pending),
     /// An announced closer of this flow returned without committing.
-    Withdrawn { flow: String },
+    Withdrawn {
+        flow: String,
+    },
 }
 
 /// Closers that announced a commit the committer thread has not yet received,
@@ -338,7 +340,9 @@ mod tests {
             .unwrap();
         drop(sender);
         let (s, h) = (store.clone(), hooks.clone());
-        let worker = std::thread::spawn(move || run(s, h, receiver, None, &Announced::default(), GROUP_WAIT));
+        let worker = std::thread::spawn(move || {
+            run(s, h, receiver, None, &Announced::default(), GROUP_WAIT)
+        });
         br.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         ar.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         worker.join().unwrap();

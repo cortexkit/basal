@@ -480,7 +480,12 @@ impl Activation {
 
     pub fn deadline_passed(&self) -> Result<bool> {
         let now = self.driver.services.now_ms();
-        self.with_state(|state| state.claim.as_ref().is_some_and(|claim| now >= claim.deadline_at))
+        self.with_state(|state| {
+            state
+                .claim
+                .as_ref()
+                .is_some_and(|claim| now >= claim.deadline_at)
+        })
     }
 
     pub fn fingerprint(&self, value: String) -> Result<bool> {
