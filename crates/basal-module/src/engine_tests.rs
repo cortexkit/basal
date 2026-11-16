@@ -935,8 +935,7 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
 fn connection_end_drain_leaves_a_cut_run_running_for_recovery() {
     shutdown_cut_run_is_recovered(|module| {
         use subc_client_rs::ModuleHandler;
-        let handler =
-            crate::serve::BasalHandler::overview_test(Arc::new(module), Arc::default());
+        let handler = crate::serve::BasalHandler::overview_test(Arc::new(module), Arc::default());
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -945,6 +944,13 @@ fn connection_end_drain_leaves_a_cut_run_running_for_recovery() {
             handler
                 .on_connection_end(subc_client_rs::ConnectionEnd::Goodbye)
                 .await;
+            // The hook alone stopped the module; nothing else has run a
+            // shutdown yet when it returns.
+            assert_eq!(
+                handler.health().await.detail.as_deref(),
+                Some("basal is stopping"),
+                "on_connection_end must drain before it returns"
+            );
             assert!(handler.drain().await, "the drain finished within its limit");
         });
     });

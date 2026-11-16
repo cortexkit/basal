@@ -198,10 +198,9 @@ fn a_generation_push_triggers_exactly_one_reread_and_feeds_change_subscribers() 
     let wire = wire(true);
     let changes = Arc::new(AtomicUsize::new(0));
     let seen = changes.clone();
-    wire.transport
-        .on_catalog_change(Arc::new(move || {
-            seen.fetch_add(1, Ordering::SeqCst);
-        }));
+    wire.transport.on_catalog_change(Arc::new(move || {
+        seen.fetch_add(1, Ordering::SeqCst);
+    }));
     watching(&wire);
     assert_eq!(wire.daemon.lists.load(Ordering::SeqCst), 1);
     let changes_before = changes.load(Ordering::SeqCst);

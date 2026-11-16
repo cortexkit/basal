@@ -649,13 +649,14 @@ impl SubcTransport {
                     self.consumer()
                         .map_err(|e| contextual(e, module, action))?
                         .request(
-                    &handle,
-                    bytes,
-                    CallOptions {
-                        timeout: self.timeout,
-                        ..Default::default()
-                    },
-                ));
+                            &handle,
+                            bytes,
+                            CallOptions {
+                                timeout: self.timeout,
+                                ..Default::default()
+                            },
+                        ),
+                );
                 if result
                     .as_ref()
                     .is_err_and(|e| target_route_ended(flow, e.outcome_cause()))
@@ -1765,7 +1766,12 @@ mod tests {
             let handle = transport.scoped_handle("a", &target).unwrap().unwrap();
             transport
                 .handle
-                .block_on(transport.consumer().unwrap().close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             assert!(matches!(
                 transport.management_for_flow("a", "broca", "echo", json!({})),
@@ -1795,7 +1801,12 @@ mod tests {
                 .unwrap();
             transport
                 .handle
-                .block_on(transport.consumer().unwrap().close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             assert!(matches!(
                 transport.management_for_model("a", identity.clone(), "broca", "echo", b"{}"),
@@ -2409,7 +2420,12 @@ mod tests {
             let handle = cached_run_route(&transport, &options);
             transport
                 .handle
-                .block_on(transport.consumer().unwrap().close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             transport.routes.lock().unwrap().connection_restored();
             for name in ["late_results", "late_results.ack", "tool.withdraw"] {
@@ -2660,7 +2676,12 @@ mod tests {
             let handle = cached_run_route(&transport, &options);
             transport
                 .handle
-                .block_on(transport.consumer().unwrap().close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             assert_eq!(call("run:call:2").unwrap(), json!({"k":"run:call:2"}));
             assert_eq!(opens.lock().unwrap().len(), 2, "a fresh route was opened");
@@ -2693,7 +2714,12 @@ mod tests {
             let handle = cached_run_route(&transport, &options);
             transport
                 .handle
-                .block_on(transport.consumer().unwrap().close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             transport.routes.lock().unwrap().connection_restored();
             assert!(

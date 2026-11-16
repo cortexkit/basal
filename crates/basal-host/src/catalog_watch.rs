@@ -78,7 +78,8 @@ impl SharedCatalog {
             return;
         }
         let newer = state.snapshot.as_ref().is_none_or(|held| {
-            snapshot.generation > held.generation || (replace && snapshot.generation == held.generation)
+            snapshot.generation > held.generation
+                || (replace && snapshot.generation == held.generation)
         });
         if newer {
             state.snapshot = Some(snapshot.clone());
@@ -222,12 +223,18 @@ mod tests {
         shared.offer(&snapshot(3), false);
         assert_eq!(shared.current().unwrap().generation, 3);
         assert!(shared.announce(4, false), "a newer push needs a read");
-        assert!(shared.current().is_none(), "never serve a copy older than announced");
+        assert!(
+            shared.current().is_none(),
+            "never serve a copy older than announced"
+        );
         shared.offer(&snapshot(4), false);
         assert!(!shared.announce(4, false), "a repeated push needs no read");
         assert_eq!(shared.current().unwrap().generation, 4);
         shared.end_watch();
         assert!(shared.current().is_none(), "an ended watch stops serving");
-        assert!(shared.announce(1, true), "a new watch reads even an older number");
+        assert!(
+            shared.announce(1, true),
+            "a new watch reads even an older number"
+        );
     }
 }

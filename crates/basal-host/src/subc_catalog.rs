@@ -282,7 +282,11 @@ impl SubcCatalog {
         match self.transport.refresh_catalog_snapshot(&snapshot) {
             Some(Ok(fresh)) => Ok(fresh),
             Some(Err(error)) => {
-                tracing::debug!(?error, module, "catalog refresh after a missing module failed");
+                tracing::debug!(
+                    ?error,
+                    module,
+                    "catalog refresh after a missing module failed"
+                );
                 Ok(snapshot)
             }
             None => Ok(snapshot),
