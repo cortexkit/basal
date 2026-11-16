@@ -828,6 +828,19 @@ fn op_for_install(
     })
 }
 
+fn module_choice_error(
+    written: &str,
+    field: &str,
+    value: &str,
+    error: InstallError,
+) -> InstallError {
+    if crate::templates::is_placeholder(written) {
+        InstallError::Manifest(crate::templates::module_choice_error(field, value))
+    } else {
+        error
+    }
+}
+
 pub(crate) fn validate_inner(
     manifest: &Manifest,
     author: &str,
@@ -848,113 +861,154 @@ pub(crate) fn validate_inner(
     let mut warnings = Vec::new();
     let mut tool_policies = crate::classify_cost::ToolPolicies::new();
     let audience = agentless_audience_label(manifest);
-    let mut trigger_modules: Vec<&str> = Vec::new();
+    let mut trigger_modules = Vec::new();
     if let Some(events) = &manifest.trigger.events {
-        for e in events {
-            let Some(decl) = catalog.event(&e.module, &e.name, e.version) else {
-                return Err(InstallError::UnknownEvent {
-                    module: e.module.clone(),
-                    name: e.name.clone(),
-                    version: e.version,
-                });
-            };
-            for key in e.header_match.keys() {
-                if !decl.headers.contains(key) {
-                    return Err(InstallError::UnknownEventHeader {
-                        module: e.module.clone(),
-                        name: e.name.clone(),
-                        version: e.version,
-                        key: key.clone(),
-                    });
-                }
+        for (index, event) in events.iter().enumerate() {
+            for module in crate::templates::module_choices(manifest, &event.module)
+                .map_err(InstallError::Manifest)?
+            {
+                let mut e = event.clone();
+                e.module = module;
+                let checked = (|| {
+                    let Some(decl) = catalog.event(&e.module, &e.name, e.version) else {
+                        return Err(InstallError::UnknownEvent {
+                            module: e.module.clone(),
+                            name: e.name.clone(),
+                            version: e.version,
+                        });
+                    };
+                    for key in e.header_match.keys() {
+                        if !decl.headers.contains(key) {
+                            return Err(InstallError::UnknownEventHeader {
+                                module: e.module.clone(),
+                                name: e.name.clone(),
+                                version: e.version,
+                                key: key.clone(),
+                            });
+                        }
+                    }
+                    if let EventBody::Resolved { resolve_op } = &decl.body {
+                        let kind =
+                            op_for_install(catalog, &e.module, resolve_op)?.and_then(|d| d.kind);
+                        if kind != Some(OpKind::Query) {
+                            return Err(InstallError::ResolveOpNotQuery {
+                                module: e.module.clone(),
+                                op: resolve_op.clone(),
+                            });
+                        }
+                        // A different enum parameter may choose another module at
+                        // instantiation, even when its alternatives are identical.
+                        let granted = manifest.ops.iter().any(|grant| {
+                            grant.op == *resolve_op
+                                && (grant.module == event.module || grant.module == e.module)
+                        });
+                        if !granted {
+                            return Err(InstallError::EventBodyOpNotGranted {
+                                module: e.module.clone(),
+                                op: resolve_op.clone(),
+                            });
+                        }
+                    }
+                    Ok(())
+                })();
+                checked.map_err(|error| {
+                    module_choice_error(
+                        &event.module,
+                        &format!("trigger.events[{index}].module"),
+                        &e.module,
+                        error,
+                    )
+                })?;
+                trigger_modules.push(e.module);
             }
-            if let EventBody::Resolved { resolve_op } = &decl.body {
-                let kind = op_for_install(catalog, &e.module, resolve_op)?.and_then(|d| d.kind);
-                if kind != Some(OpKind::Query) {
-                    return Err(InstallError::ResolveOpNotQuery {
-                        module: e.module.clone(),
-                        op: resolve_op.clone(),
-                    });
-                }
-                if !manifest.lists_op(&e.module, resolve_op) {
-                    return Err(InstallError::EventBodyOpNotGranted {
-                        module: e.module.clone(),
-                        op: resolve_op.clone(),
-                    });
-                }
-            }
-            trigger_modules.push(&e.module);
         }
     }
     let reads_text = manifest.facts.as_ref().is_some_and(|f| f.text);
-    for op_ref in &manifest.ops {
-        let OpRef { module, op, .. } = op_ref;
-        let pair = || (module.clone(), op.clone());
-        if denylist.contains(module, op) {
-            let (module, op) = pair();
-            return Err(InstallError::ShellCapable { module, op });
-        }
-        let Some(decl) = op_for_install(catalog, module, op)? else {
-            let (module, op) = pair();
-            return Err(InstallError::UnknownOp { module, op });
-        };
-        let tool = catalog.tool_contract(module, op).map_err(|error| {
-            InstallError::ToolContractUnreadable {
-                module: module.clone(),
-                op: op.clone(),
-                reason: format!("{error:?}"),
-            }
-        })?;
-        crate::flow_ops::validate(catalog, module, op, tool.as_ref())?;
-        tool_policies.insert(
-            (module.clone(), op.clone()),
-            crate::classify_cost::policy_for_entry(manifest, module, op, tool.as_ref())?,
-        );
-        if decl.shell_capable {
-            let (module, op) = pair();
-            return Err(InstallError::ShellCapable { module, op });
-        }
-        if let Some(warning) = agentless_audience_op_warning(audience, op_ref, decl.kind) {
-            warnings.push(warning);
-        }
-        let Some(kind) = decl.kind else {
-            let (module, op) = pair();
-            return Err(InstallError::UnmarkedOp { module, op });
-        };
-        if kind == OpKind::Mutate {
-            if trigger_modules.contains(&module.as_str()) && !decl.cause_echo {
-                // Only an explicit `false` exempts: the module's promise that
-                // no call to this tool makes it emit an event, so the call
-                // cannot loop back into a trigger. Absent or `true` may emit.
-                // Reuse the provider metadata already read for admission.
-                let declared = match &tool {
-                    Some(tool) => Ok(tool
-                        .get("emits_events")
-                        .and_then(serde_json::Value::as_bool)),
-                    None => catalog.emits_events(module, op),
-                };
-                if declared == Ok(Some(false)) {
+    for (index, grant) in manifest.ops.iter().enumerate() {
+        for choice in crate::templates::module_choices(manifest, &grant.module)
+            .map_err(InstallError::Manifest)?
+        {
+            let mut op_ref = grant.clone();
+            op_ref.module = choice;
+            let checked = (|| {
+                let OpRef { module, op, .. } = &op_ref;
+                let pair = || (module.clone(), op.clone());
+                if denylist.contains(module, op) {
                     let (module, op) = pair();
-                    warnings.push(Warning::LoopExemptNoEvents { module, op });
-                } else if loop_override {
-                    let (module, op) = pair();
-                    warnings.push(Warning::LoopOverride { module, op });
-                } else {
-                    let (module, op) = pair();
-                    return Err(match declared {
-                        Err(e) => InstallError::LoopRuleDeclarationUnreadable {
-                            module,
-                            op,
-                            reason: format!("{e:?}"),
-                        },
-                        Ok(_) => InstallError::LoopRule { module, op },
-                    });
+                    return Err(InstallError::ShellCapable { module, op });
                 }
-            }
-            if reads_text {
-                let (module, op) = pair();
-                warnings.push(Warning::PrivateTextWithOutboundOp { module, op });
-            }
+                let Some(decl) = op_for_install(catalog, module, op)? else {
+                    let (module, op) = pair();
+                    return Err(InstallError::UnknownOp { module, op });
+                };
+                let tool = catalog.tool_contract(module, op).map_err(|error| {
+                    InstallError::ToolContractUnreadable {
+                        module: module.clone(),
+                        op: op.clone(),
+                        reason: format!("{error:?}"),
+                    }
+                })?;
+                crate::flow_ops::validate(catalog, module, op, tool.as_ref())?;
+                tool_policies.insert(
+                    (module.clone(), op.clone()),
+                    crate::classify_cost::policy_for_entry(manifest, module, op, tool.as_ref())?,
+                );
+                if decl.shell_capable {
+                    let (module, op) = pair();
+                    return Err(InstallError::ShellCapable { module, op });
+                }
+                if let Some(warning) = agentless_audience_op_warning(audience, &op_ref, decl.kind) {
+                    warnings.push(warning);
+                }
+                let Some(kind) = decl.kind else {
+                    let (module, op) = pair();
+                    return Err(InstallError::UnmarkedOp { module, op });
+                };
+                if kind == OpKind::Mutate {
+                    if trigger_modules.contains(module) && !decl.cause_echo {
+                        // Only an explicit `false` exempts: the module's promise that
+                        // no call to this tool makes it emit an event, so the call
+                        // cannot loop back into a trigger. Absent or `true` may emit.
+                        // Reuse the provider metadata already read for admission.
+                        let declared = match &tool {
+                            Some(tool) => Ok(tool
+                                .get("emits_events")
+                                .and_then(serde_json::Value::as_bool)),
+                            None => catalog.emits_events(module, op),
+                        };
+                        if declared == Ok(Some(false)) {
+                            let (module, op) = pair();
+                            warnings.push(Warning::LoopExemptNoEvents { module, op });
+                        } else if loop_override {
+                            let (module, op) = pair();
+                            warnings.push(Warning::LoopOverride { module, op });
+                        } else {
+                            let (module, op) = pair();
+                            return Err(match declared {
+                                Err(e) => InstallError::LoopRuleDeclarationUnreadable {
+                                    module,
+                                    op,
+                                    reason: format!("{e:?}"),
+                                },
+                                Ok(_) => InstallError::LoopRule { module, op },
+                            });
+                        }
+                    }
+                    if reads_text {
+                        let (module, op) = pair();
+                        warnings.push(Warning::PrivateTextWithOutboundOp { module, op });
+                    }
+                }
+                Ok(())
+            })();
+            checked.map_err(|error| {
+                module_choice_error(
+                    &grant.module,
+                    &format!("ops[{index}].module"),
+                    &op_ref.module,
+                    error,
+                )
+            })?;
         }
     }
     if reads_text && let Some(net) = &manifest.net {

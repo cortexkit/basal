@@ -113,7 +113,14 @@ pub fn render(manifest: &Manifest, summary: &Value) -> DryRunText {
 
 fn trigger_sentence(manifest: &Manifest, window: &Value, runs: &[Value]) -> String {
     match window["kind"].as_str() {
-        Some("schedule") => schedule_sentence(manifest, window, runs),
+        Some("schedule") => {
+            let mut sentence = schedule_sentence(manifest, window, runs);
+            if manifest.trigger.events.is_some() {
+                sentence.push(' ');
+                sentence.push_str(&events_sentence(manifest));
+            }
+            sentence
+        }
         Some("at") => match window["at"].as_str().and_then(time_words) {
             Some(at) => format!("Runs once, at {at}; the dry run ran it ahead of time."),
             None => "Runs once, at a set time; the dry run ran it ahead of time.".into(),

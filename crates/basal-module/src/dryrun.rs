@@ -112,8 +112,8 @@ impl Mode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DryTrigger {
     /// The fires the flow's schedule would have produced over the window
-    /// ending now. A flow with an events trigger has none: event replay
-    /// needs the event plane.
+    /// ending now. An events-only flow has none: historical bus notices
+    /// are not replayed. A combined trigger replays its schedule normally.
     Schedule { window: Option<Duration> },
     /// One trigger with this payload.
     Synthetic(Value),
@@ -362,10 +362,16 @@ impl DryRunner {
         request: &BorrowedRequest<'_>,
     ) -> Result<(Vec<(String, Value)>, Value), DryRunError> {
         match &request.trigger {
-            DryTrigger::Synthetic(payload) => Ok((
-                vec![("dry-run:synthetic".to_owned(), payload.clone())],
-                json!({ "kind": "synthetic" }),
-            )),
+            DryTrigger::Synthetic(payload) => {
+                let mut payload = payload.clone();
+                if payload.get("event").is_some() && payload.get("kind").is_none() {
+                    payload["kind"] = json!("event");
+                }
+                Ok((
+                    vec![("dry-run:synthetic".to_owned(), payload)],
+                    json!({ "kind": "synthetic" }),
+                ))
+            }
             DryTrigger::Schedule { window } => {
                 let Some(spec) = &manifest.trigger.schedule else {
                     return Ok((

@@ -480,6 +480,24 @@ mod tests {
     }
 
     #[test]
+    fn combined_trigger_render_shows_both_parts() {
+        let manifest = Manifest::parse(
+            &json!({
+                "id":"diagnosis", "version":1, "purpose":"Receive findings with a backstop.",
+                "explanation":"Read findings after a notice or on the slow schedule.",
+                "trigger":{"schedule":{"interval":"6h"},
+                    "events":[{"module":"synapse","name":"findings_changed","version":1}]}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            render_trigger(&manifest.trigger),
+            "every 6 hours; on synapse findings_changed"
+        );
+    }
+
+    #[test]
     fn phone_trigger_renderer_covers_schedules_and_multiple_events() {
         for (spec, expected) in [
             (json!({"interval":"5m"}), "every 5 minutes"),

@@ -21,7 +21,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `purpose` | string | yes | | 1 to 1024 bytes, no control characters except newline. Shown on the card. |
 | `explanation` | string | for new intake | absent in older stored versions | 1 to 1500 Unicode scalar values, plain text, not blank or whitespace-only; no control characters except newline. The author's explanation, shown as **What it does** on the approval card. |
 | `changes` | string | for a subsequent version | absent on a first version | 1 to 600 Unicode scalar values, with the same character rules as `explanation`. What changed from the previous version and why, shown as **What changed** on the approval card. Refused on a first version. |
-| `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
+| `trigger` | object | yes | | At least one of `events` and `schedule`; both are allowed (below). |
 | `audience` | `{kind, id?}` | no | none | Approved delivery reach: global, workspace or agent. See below. |
 | `abilities` | list of `{key, token, scope}` | no | absent | At most 16 named capability grants for an automation pack. Runtime is not available yet; see below. |
 | `destinations` | list of `{key, kind, severity_max?}` | no | absent | At most 16 card-bound output destinations for an automation pack. Runtime is not available yet; see below. |
@@ -337,7 +337,7 @@ and only queries may retry.
   | `each_cap` | integer | 3 | With `each` only: 1 to 10; the newest missed due times are kept. |
 
   The newest due time is on time when it is at most the grace period (60 s by default) old; every older due time in the window is missed and follows `missed`. `once` fires one catch-up identified by the last missed due time; `each` keeps the newest `each_cap` missed due times and fires them oldest first. An on-time due time always fires, after any catch-up. A fire's trigger id is `schedule:<due time, RFC 3339 UTC>` (`schedule:2026-03-29T01:00:00Z`), and admission deduplicates on flow and trigger id, so one due time starts at most one run. The script sees `trigger` as `{ "kind": "schedule", "due": "..." }`; a catch-up fire adds `"catch_up": { "policy", "missed_count", "missed_window": { "first", "last" } }`, counting every missed due time, including those `each_cap` dropped. A scheduled fire, like every trigger, runs the flow's version approved and enabled when it is admitted.
-- Both, or neither, is refused.
+- Both `events` and `schedule` may be present. Each admits runs independently for the same flow, and runs still execute one at a time. A schedule is a plain backstop: it fires on its interval or cron even when events arrived; events do not postpone it. A combined trigger cannot use `schedule.at`, because the one-shot fire ends the instance; intake refuses it with `trigger_combined_at`. Neither part present is refused with `trigger_kinds`.
 
 `match` has at most **8** keys. Keys are header names: **1–64 bytes** of
 `a-z`, `0-9`, or `_`, and must appear in that event version's catalog `headers`

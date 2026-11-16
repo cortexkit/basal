@@ -680,3 +680,36 @@ fn omitted_digest_action_in_dry_runs_is_the_recipient_digest_max() {
         assert_eq!(f.mock.total_sends(), 0);
     }
 }
+
+#[test]
+fn combined_trigger_dry_run_accepts_either_synthetic_kind_and_replays_schedule() {
+    let f = fixture("dry-combined", Options::with_worker());
+    let mut manifest = events_manifest("combined");
+    manifest["trigger"]["schedule"] = json!({"interval":"6h"});
+    let reply = install(&f, &agent("SYNAPSE"), "return trigger.kind;", &manifest);
+    assert_eq!(reply["dry_run"]["window"]["kind"], "schedule");
+    assert_eq!(reply["dry_run"]["runs"].as_array().unwrap().len(), 4);
+    for run in reply["dry_run"]["runs"].as_array().unwrap() {
+        assert_eq!(run["result"], "schedule");
+    }
+    for (payload, expected) in [
+        (
+            json!({"kind":"schedule","due":"2026-05-01T00:00:00Z"}),
+            "schedule",
+        ),
+        (
+            json!({"event":{"module":"plexus","name":"pull_request_review","version":1,
+            "event_key":"0".repeat(64),"headers":{},"body":{"verified":true}}}),
+            "event",
+        ),
+    ] {
+        let summary = dry_run(
+            &f,
+            &agent("SYNAPSE"),
+            json!({"flow_id":"combined","trigger":payload}),
+        )
+        .unwrap();
+        assert_eq!(summary["runs"][0]["state"], "succeeded", "{summary}");
+        assert_eq!(summary["runs"][0]["result"], expected, "{summary}");
+    }
+}

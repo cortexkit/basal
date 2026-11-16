@@ -46,6 +46,29 @@ fn placeholder(field: &str) -> ManifestError {
         field: field.into(),
     }
 }
+fn module_field(field: &str) -> bool {
+    (field.starts_with("trigger.events[") || field.starts_with("ops["))
+        && field.ends_with("].module")
+}
+
+pub(crate) fn module_choice_error(field: &str, value: &str) -> ManifestError {
+    placeholder(&format!("{field} (value {value:?})"))
+}
+
+/// The approved alternatives for a module slot, or its single literal module.
+pub(crate) fn module_choices(
+    manifest: &Manifest,
+    module: &str,
+) -> Result<Vec<String>, ManifestError> {
+    let Some(name) = module.strip_prefix("$params.") else {
+        return Ok(vec![module.into()]);
+    };
+    match declarations(manifest)?.remove(name) {
+        Some(Parameter::Enum { values }) => Ok(values),
+        _ => Err(placeholder(module)),
+    }
+}
+
 pub(crate) fn is_placeholder(text: &str) -> bool {
     text.starts_with("$params.")
 }
@@ -183,6 +206,13 @@ pub(crate) fn check(manifest: &Manifest) -> Result<(), ManifestError> {
                         field == "trigger.schedule.interval"
                     }
                     Parameter::Timestamp { .. } => field == "trigger.schedule.at",
+                    Parameter::Enum { values } if module_field(field) => {
+                        for value in values {
+                            crate::manifest::check_module_name(field, value)
+                                .map_err(|_| module_choice_error(field, value))?;
+                        }
+                        true
+                    }
                     Parameter::String { .. } | Parameter::Enum { .. } => {
                         field.starts_with("trigger.events[") && field.contains("].match.")
                     }
@@ -537,10 +567,14 @@ pub fn effective(manifest: &mut Manifest, values: &Value) {
     }
     if let Some(events) = &mut manifest.trigger.events {
         for event in events {
+            replace(&mut event.module, false);
             for pattern in event.header_match.values_mut() {
                 replace(pattern, false);
             }
         }
+    }
+    for grant in &mut manifest.ops {
+        replace(&mut grant.module, false);
     }
 }
 

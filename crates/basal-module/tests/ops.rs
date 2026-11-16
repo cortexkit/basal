@@ -905,3 +905,46 @@ fn retired_flow_enable_has_a_typed_retirement_not_permission_denied() {
         assert_eq!(error.detail, Some(retirement.clone()));
     }
 }
+
+#[test]
+fn combined_trigger_install_card_keeps_both_parts() {
+    let f = fixture("ops-combined-card", Options::default());
+    let mut manifest = events_manifest(FLOW);
+    manifest["trigger"]["schedule"] = json!({"interval":"6h"});
+    let reply = install(&f, &agent(OWNER), SCRIPT, &manifest);
+    let card = f.consent.card(reply["card_id"].as_str().unwrap()).unwrap();
+    assert_eq!(card.fields["trigger"]["schedule"]["interval"], "6h");
+    assert_eq!(card.fields["trigger"]["events"][0]["module"], "plexus");
+    assert_eq!(card.fields["trigger"]["events"][0]["origin"], "external");
+}
+
+#[test]
+fn combined_trigger_at_intake_returns_typed_code() {
+    let f = fixture("ops-combined-at", Options::default());
+    let mut manifest = events_manifest(FLOW);
+    manifest["trigger"]["schedule"] = json!({"at":"$params.when"});
+    manifest["params"] = json!({"when":{"type":"timestamp","max_ahead":"7d"}});
+    manifest["template"] = json!({"max_per_agent":10,"max_lifetime":"7d"});
+    let error = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "package.register",
+            json!({"script":SCRIPT,"manifest":manifest.to_string()}),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "trigger_combined_at");
+    assert!(error.message.contains("one-shot schedule.at"));
+    manifest.as_object_mut().unwrap().remove("params");
+    manifest.as_object_mut().unwrap().remove("template");
+    manifest["trigger"]["schedule"]["at"] = json!("2026-11-01T09:00:00Z");
+    let error = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({"script":SCRIPT,"manifest":manifest.to_string()}),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "trigger_combined_at");
+}

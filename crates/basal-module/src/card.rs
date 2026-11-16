@@ -84,10 +84,12 @@ pub struct CardInput<'a> {
 
 pub fn fields(input: &CardInput<'_>) -> Value {
     let m = input.manifest;
-    let trigger = match (&m.trigger.schedule, &m.trigger.events) {
-        (Some(schedule), _) => json!({ "schedule": schedule }),
-        (None, Some(events)) => json!({
-            "events": events.iter().map(|e| {
+    let mut trigger = json!({});
+    if let Some(schedule) = &m.trigger.schedule {
+        trigger["schedule"] = json!(schedule);
+    }
+    if let Some(events) = &m.trigger.events {
+        trigger["events"] = json!(events.iter().map(|e| {
                 let origin = input
                     .catalog
                     .event(&e.module, &e.name, e.version)
@@ -100,10 +102,8 @@ pub fn fields(input: &CardInput<'_>) -> Value {
                     fields["max_age"] = json!(max_age);
                 }
                 fields
-            }).collect::<Vec<_>>(),
-        }),
-        (None, None) => Value::Null,
-    };
+            }).collect::<Vec<_>>());
+    }
     let ops: Vec<Value> = m
         .ops
         .iter()

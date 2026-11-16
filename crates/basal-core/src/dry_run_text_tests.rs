@@ -570,3 +570,22 @@ fn a_one_shot_reminder_names_its_time() {
         ["End this flow instance, so it doesn't run again"]
     );
 }
+
+#[test]
+fn combined_trigger_dry_run_text_names_schedule_and_events() {
+    let mut m = hourly_manifest();
+    m.trigger.events = Some(
+        serde_json::from_value(json!([
+            {"module":"synapse","name":"findings_changed","version":1}
+        ]))
+        .unwrap(),
+    );
+    let report = summary(day_window(24, 0), vec![]);
+    let text = render(&m, &report);
+    assert!(text.summary.contains("hour"), "{}", text.summary);
+    assert!(
+        text.summary.contains("synapse findings_changed events"),
+        "{}",
+        text.summary
+    );
+}

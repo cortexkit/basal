@@ -109,18 +109,12 @@ fn manifest_refuses_unknown_fields() {
 }
 
 #[test]
-fn trigger_needs_exactly_one_kind() {
+fn trigger_needs_at_least_one_kind() {
     let both = manifest_with(|m| {
         m["trigger"]["schedule"] = json!({ "interval": "15m" });
     });
     let neither = manifest_with(|m| m["trigger"] = json!({}));
-    assert_eq!(
-        Manifest::parse(&both.to_string()),
-        Err(ManifestError::TriggerKinds {
-            events: true,
-            schedule: true
-        })
-    );
+    assert!(Manifest::parse(&both.to_string()).is_ok());
     assert_eq!(
         Manifest::parse(&neither.to_string()),
         Err(ManifestError::TriggerKinds {
