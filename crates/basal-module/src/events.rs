@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const BATCH: usize = 32;
+const PULL_WAIT: Duration = Duration::from_secs(60);
+const BACKLOG_REFRESH: Duration = Duration::from_secs(60);
 const DURABLE: &str = "m_basal";
 // cortexkit-bus-nats reserves these for the transport id and SHA-256 body digest.
 // Its private codec does not export their names, so batch decoding names them here.
@@ -44,7 +46,10 @@ pub struct Health {
     pub disconnected_since_ms: Option<i64>,
     pub error: Option<String>,
     pub retry_in_ms: u64,
-    /// Pending plus delivered-but-unacknowledged notices at the last consumer poll.
+    /// Estimated pending plus delivered-but-unacknowledged notices: sampled
+    /// before a nonempty batch or every 60 seconds at idle, then reduced by
+    /// successfully committed/acknowledged notices. Poll failures retain the
+    /// estimate; arrivals between polls can make it stale. Not a liveness probe.
     pub backlog: u64,
     pub batches: u64,
     pub notices: u64,
@@ -57,11 +62,22 @@ pub struct Health {
     pub model_wakes: u64,
     pub malformed: u64,
     pub first_batch_notices: Option<usize>,
+    /// Processing time after the first notices arrive, including the backlog
+    /// poll and durable commit, but not the preceding idle pull wait.
     pub first_batch_elapsed_ms: Option<u64>,
     pub first_batch_oldest_age_ms: Option<i64>,
     /// The last lifecycle-event publish failure, cleared by the next pass that
     /// publishes without error. Publishing never stops event delivery.
     pub outbox_error: Option<String>,
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    pub outbox_passes_for_test: u64,
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    pub pull_requests_for_test: u64,
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    pub backlog_polls_for_test: u64,
 }
 
 impl Health {
@@ -679,11 +695,45 @@ pub async fn publish_outbox(
     connection: &NatsConnection,
     account: &str,
 ) -> Result<usize, String> {
+    publish_outbox_pass(rt, connection, account)
+        .await
+        .map_err(|error| error.message)
+}
+
+struct OutboxError {
+    message: String,
+    retry_unavailable: bool,
+}
+
+impl From<basal_core::CoreError> for OutboxError {
+    fn from(error: basal_core::CoreError) -> Self {
+        Self {
+            retry_unavailable: matches!(
+                error,
+                basal_core::CoreError::Store(_) | basal_core::CoreError::Cut
+            ),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<String> for OutboxError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            retry_unavailable: false,
+        }
+    }
+}
+
+async fn publish_outbox_pass(
+    rt: &Runtime,
+    connection: &NatsConnection,
+    account: &str,
+) -> Result<usize, OutboxError> {
     let names = AccountNames::derive(account).map_err(|e| e.to_string())?;
     let stream = connection.stream(&names.streams().event);
-    let pending = rt
-        .pending_template_events(BATCH)
-        .map_err(|e| e.to_string())?;
+    let pending = rt.pending_template_events(BATCH)?;
     let mut published = 0;
     for event in pending {
         let subject = names
@@ -705,17 +755,16 @@ pub async fn publish_outbox(
         match receipt {
             Ok(receipt) => {
                 tracing::debug!(target: "events", event_key=%event.event_key(), duplicate=receipt.duplicate(), "lifecycle event acknowledged");
-                rt.template_event_published(&event)
-                    .map_err(|e| e.to_string())?;
+                rt.template_event_published(&event)?;
                 published += 1;
             }
             Err(error) => {
-                rt.template_event_retry(&event).map_err(|e| e.to_string())?;
-                return Err(error.to_string());
+                rt.template_event_retry(&event)?;
+                return Err(error.to_string().into());
             }
         }
     }
-    for event in rt.pending_bus_events(BATCH).map_err(|e| e.to_string())? {
+    for event in rt.pending_bus_events(BATCH)? {
         let subject = match event.reader.as_deref() {
             Some(reader) => names.event_subject_with_reader("basal", event.name, 1, reader),
             None => names.event_subject("basal", event.name, 1),
@@ -740,12 +789,12 @@ pub async fn publish_outbox(
         .await;
         match receipt {
             Ok(_) => {
-                rt.bus_event_published(&event).map_err(|e| e.to_string())?;
+                rt.bus_event_published(&event)?;
                 published += 1;
             }
             Err(error) => {
-                rt.bus_event_retry(&event).map_err(|e| e.to_string())?;
-                return Err(error);
+                rt.bus_event_retry(&event)?;
+                return Err(error.into());
             }
         }
     }
@@ -765,6 +814,66 @@ async fn refresh_backlog(health: &Mutex<Health>, poll: impl Future<Output = Resu
         }
     };
     health.lock().unwrap_or_else(|p| p.into_inner()).backlog = backlog;
+}
+
+async fn outbox_loop(
+    rt: &Runtime,
+    connection: &NatsConnection,
+    account: &str,
+    health: &Mutex<Health>,
+) -> Result<(), String> {
+    loop {
+        // Drain a prior commit permit before querying. A commit during the pass
+        // leaves a permit for the wait below, so no newly committed row is lost.
+        let changes = rt.store().overview_changes();
+        let changed = changes.outbox_changed();
+        tokio::pin!(changed);
+        let _ = futures_util::poll!(&mut changed);
+        let outbox = publish_outbox_pass(rt, connection, account).await;
+        let retry_unavailable = outbox
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.retry_unavailable);
+        {
+            let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                h.outbox_passes_for_test += 1;
+            }
+            match outbox {
+                Ok(_) => h.outbox_error = None,
+                Err(error) => {
+                    let error = error.message;
+                    if h.outbox_error.as_deref() != Some(error.as_str()) {
+                        tracing::warn!(target: "events", "lifecycle event publish failed: {error}");
+                    }
+                    h.outbox_error = Some(error);
+                }
+            }
+        }
+        if retry_unavailable {
+            // A broken store cannot persist backoff. Ignore commit permits for
+            // one second before trying again; the outer cancellation still wins.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
+        let next = rt.next_bus_event_at().map_err(|e| e.to_string())?;
+        let retry = async {
+            match next {
+                Some(at) => {
+                    tokio::time::sleep(Duration::from_millis(
+                        at.saturating_sub(rt.config().clock.now_ms()).max(0) as u64,
+                    ))
+                    .await
+                }
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = changes.outbox_changed() => {},
+            _ = retry => {},
+        }
+    }
 }
 
 async fn reader_loop(
@@ -789,38 +898,42 @@ async fn reader_loop(
                 h.connected = true; h.disconnected_since_ms = None; h.error = None; h.retry_in_ms = 0;
             }
             delay = 250;
+            let intake = async {
+            let mut refresh_at = tokio::time::Instant::now();
             while !stop.load(Ordering::Acquire) {
                 if now_ms() / 1000 >= credential.exp.saturating_sub(60) { break; }
                 if connection.client().connection_state() != async_nats::connection::State::Connected { return Err("event bus disconnected".into()); }
-                // A failed lifecycle publish (the bus refusing basal's publish
-                // permission, say) must never stop event delivery: the row keeps
-                // its own durable backoff, and this pass still pulls. Ending the
-                // session here once stalled every event-triggered flow.
-                let outbox = publish_outbox(&rt, &connection, &credential.acct).await;
-                {
-                    let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
-                    match outbox {
-                        Ok(_) => h.outbox_error = None,
-                        Err(error) => {
-                            if h.outbox_error.as_deref() != Some(error.as_str()) {
-                                tracing::warn!(target: "events", "lifecycle event publish failed: {error}");
-                            }
-                            h.outbox_error = Some(error);
-                        }
-                    }
-                }
+                #[cfg(any(test, feature = "test-support"))]
+                { health.lock().unwrap_or_else(|p| p.into_inner()).pull_requests_for_test += 1; }
+                let stream = consumer.fetch().max_messages(BATCH).expires(PULL_WAIT).messages().await.map_err(|e| e.to_string())?;
+                // Yield the first available notice without waiting for the pull
+                // expiry; retain the stream so the rest of the fetch is not lost.
+                let mut batches = stream.ready_chunks(BATCH);
+                loop {
+                let messages = tokio::select! {
+                    batch = batches.next() => match batch {
+                        Some(batch) => batch.into_iter().collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?,
+                        None => break,
+                    },
+                    _ = tokio::time::sleep_until(refresh_at) => Vec::new(),
+                };
                 let start = Instant::now();
-                let messages = pull(&consumer).await?;
+                if !messages.is_empty() || tokio::time::Instant::now() >= refresh_at {
+                #[cfg(any(test, feature = "test-support"))]
+                { health.lock().unwrap_or_else(|p| p.into_inner()).backlog_polls_for_test += 1; }
                 refresh_backlog(&health, async {
                     consumer.info().await
                         .map(|info| info.num_pending.saturating_add(u64::try_from(info.num_ack_pending).unwrap_or(u64::MAX)))
                         .map_err(|e| e.to_string())
                 }).await;
+                refresh_at = tokio::time::Instant::now() + BACKLOG_REFRESH;
+                }
                 if messages.is_empty() { continue; }
                 let oldest = messages.iter().filter_map(|m| m.info().ok()).map(|i| now_ms().saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)).max();
                 let (report, malformed) = commit_batch_report(rt.clone(), custody.clone(), consent.clone(), &messages, true).await?;
                 let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
+                h.backlog = h.backlog.saturating_sub(messages.len() as u64);
                 if h.first_batch_notices.is_none() {
                     h.first_batch_notices = Some(messages.len()); h.first_batch_elapsed_ms = Some(elapsed); h.first_batch_oldest_age_ms = oldest;
                     tracing::info!(target: "events", notices=messages.len(), elapsed_ms=elapsed, oldest_age_ms=oldest, admitted=report.admitted, queued=report.queued, overflow=report.overflow, "first retained event batch committed");
@@ -835,8 +948,16 @@ async fn reader_loop(
                 h.skipped_before_install += report.skipped_before_install as u64;
                 h.filtered_out += report.filtered_out as u64;
                 h.stale_dropped += report.stale_dropped as u64;
+                }
             }
             Ok::<_, String>(())
+            };
+            // Publisher failures keep their durable retries and never stall
+            // intake. Shutdown drops both waits only outside SQLite work.
+            tokio::select! {
+                result = intake => result,
+                result = outbox_loop(&rt, &connection, &credential.acct, &health) => result,
+            }
         }.await;
         {
             let mut h = health.lock().unwrap_or_else(|p| p.into_inner());

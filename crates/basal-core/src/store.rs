@@ -286,8 +286,9 @@ impl Store {
             let _time = crate::clock::WriteTime::enter(now);
             let result = f(tx);
             let dirty = self.overview_changes.take_dirty();
+            let outbox_dirty = self.overview_changes.take_outbox_dirty();
             match result {
-                Ok(v) => Ok((v, dirty)),
+                Ok(v) => Ok((v, dirty, outbox_dirty)),
                 Err(e) => {
                     // `with_conn_fenced` rolls the transaction back when the
                     // closure returns an SQLite error, so save the closure's
@@ -302,7 +303,7 @@ impl Store {
         if let Some(e) = failure {
             return Err(e);
         }
-        let (value, dirty) = out.map_err(backend)?;
+        let (value, dirty, outbox_dirty) = out.map_err(backend)?;
         // A cut that landed while the transaction ran happened "after" the
         // commit: the caller must not act on it, exactly as a process that
         // died right after committing would not.
@@ -310,6 +311,9 @@ impl Store {
         drop(_order);
         if dirty {
             self.overview_changes.publish();
+        }
+        if outbox_dirty {
+            self.overview_changes.publish_outbox();
         }
         Ok(value)
     }

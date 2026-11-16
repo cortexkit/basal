@@ -308,6 +308,118 @@ async fn reader_admits_v2_with_blocking_catalog_and_stays_alive() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_reader_parks_and_outbox_commit_wakes_publisher() {
+    let server = Server::start().await;
+    let (rt, transport) = fixture(&server).await;
+    let reader = Reader::start(rt.clone(), transport);
+    wait_health(&reader, |h| h.notices > 0 && h.outbox_passes_for_test > 0).await;
+    // Let the publisher consume its own acknowledgement's commit signal.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let before = reader.health();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let idle = reader.health();
+    assert_eq!(idle.pull_requests_for_test, before.pull_requests_for_test);
+    assert_eq!(idle.backlog_polls_for_test, before.backlog_polls_for_test);
+    assert_eq!(idle.outbox_passes_for_test, before.outbox_passes_for_test);
+    rt.store()
+        .write(|tx| {
+            basal_core::bus_outbox::enqueue_late_result_wake(
+                tx,
+                "reserved:prefrontal-core",
+                123,
+                1000,
+            )
+        })
+        .unwrap();
+    let published = wait_health(&reader, |h| {
+        h.outbox_passes_for_test > idle.outbox_passes_for_test
+    })
+    .await;
+    assert!(published.connected);
+    assert!(published.outbox_error.is_none(), "{published:?}");
+    assert!(rt.pending_bus_events(32).unwrap().is_empty());
+    drop(reader);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnected_idle_reader_reconnects_and_publishes_committed_rows() {
+    let mut server = Server::start().await;
+    let (rt, transport) = fixture(&server).await;
+    let reader = Reader::start(rt.clone(), transport);
+    wait_health(&reader, |h| h.notices > 0).await;
+    server.child.kill().unwrap();
+    server.child.wait().unwrap();
+    // A fetch is bounded by 60 seconds even if the disconnected peer never
+    // answers; cancellation remains independent of this reconnect bound.
+    let until = Instant::now() + Duration::from_secs(65);
+    while reader.health().connected {
+        assert!(Instant::now() < until, "disconnection did not reach health");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    rt.store()
+        .write(|tx| {
+            basal_core::bus_outbox::enqueue_late_result_wake(
+                tx,
+                "reserved:prefrontal-core",
+                124,
+                1000,
+            )
+        })
+        .unwrap();
+    let port = server.url.rsplit(':').next().unwrap();
+    let log = std::fs::OpenOptions::new()
+        .append(true)
+        .open(server.dir.join("server.log"))
+        .unwrap();
+    server.child = std::process::Command::new("nats-server")
+        .args(["-js", "-a", "127.0.0.1", "-p", port, "-sd"])
+        .arg(server.dir.join("jetstream"))
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    wait_health(&reader, |h| h.connected && h.error.is_none()).await;
+    let until = Instant::now() + Duration::from_secs(10);
+    while !rt.pending_bus_events(32).unwrap().is_empty() {
+        assert!(
+            Instant::now() < until,
+            "reconnect did not drain the committed outbox"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(reader);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_bus_row_advances_retry_and_publisher_parks() {
+    let server = Server::start().await;
+    let (rt, transport) = fixture(&server).await;
+    // Valid JSON with a missing feed sequence exercises the stored-body refusal
+    // without bypassing SQLite's JSON constraint.
+    rt.store().write(|tx| {
+        tx.execute("INSERT INTO outbox(at,kind,flow_id,recipient,body,bus_retry_at) VALUES (1000,'codemode.late_result_ready','','prefrontal-core','{}',1000)", [])?;
+        Ok(())
+    }).unwrap();
+    let reader = Reader::start(rt.clone(), transport);
+    wait_health(&reader, |h| h.outbox_passes_for_test >= 2).await;
+    let retry: (i64,u32) = rt.store().read(|c| Ok(c.query_row("SELECT bus_retry_at,bus_attempts FROM outbox WHERE kind='codemode.late_result_ready'", [], |r| Ok((r.get(0)?,r.get(1)?)))?)).unwrap();
+    assert_eq!(retry, (1250, 1));
+    assert!(rt.pending_bus_events(32).unwrap().is_empty());
+    assert_eq!(rt.next_bus_event_at().unwrap(), Some(1250));
+    let passes = reader.health().outbox_passes_for_test;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        reader.health().outbox_passes_for_test - passes <= 2,
+        "a malformed row must not cause a tight publish loop"
+    );
+    drop(reader);
+    rt.config().clock.set(1250);
+    assert!(rt.pending_bus_events(32).is_err());
+    assert_eq!(rt.next_bus_event_at().unwrap(), Some(1750));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reader_panic_reports_dead_health_and_restarts() {
     let server = Server::start().await;
     let (rt, transport) = fixture(&server).await;
