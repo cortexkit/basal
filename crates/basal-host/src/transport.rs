@@ -208,6 +208,11 @@ pub trait Transport: Send + Sync {
         Err(WireError::ScopeCut("run custody route unavailable".into()))
     }
     fn catalog(&self) -> Result<Value, WireError>;
+    /// Typed acquisition avoids rebuilding a whole JSON registry. The default
+    /// adapts legacy test transports; the production transport reads directly.
+    fn catalog_snapshot(&self) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
+        crate::catalog_snapshot::CatalogSnapshot::from_value(self.catalog()?)
+    }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError>;
     /// Preserve route-open miss codes for callers that can rediscover a renamed
     /// module. Ordinary management calls retain their NeverSent retry behavior.
@@ -1215,6 +1220,14 @@ impl Transport for SubcTransport {
         Ok(
             json!({"generation": catalog.generation, "modules": catalog.modules, "subc_ops": catalog.subc_ops}),
         )
+    }
+    fn catalog_snapshot(&self) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
+        let catalog = self
+            .handle
+            .block_on(self.consumer.catalog_list())
+            .map_err(map_error)?;
+        self.catalog_changes.observe(json!(catalog.generation));
+        Ok(crate::catalog_snapshot::CatalogSnapshot::new(catalog))
     }
     fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
         self.catalog_changes.subscribe(notify);

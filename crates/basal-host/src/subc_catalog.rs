@@ -49,6 +49,7 @@ pub fn declared_event(events: &[EventDeclaration], name: &str, version: u32) -> 
 }
 
 /// Only explicit declarations count; roles and subject names do not declare events.
+#[cfg(test)]
 fn catalog_event_declarations(entry: &Value) -> Option<Vec<EventDeclaration>> {
     entry
         .get("events")?
@@ -165,11 +166,13 @@ pub struct SubcCatalog {
     transport: Arc<dyn Transport>,
     denylist: Vec<(String, String)>,
     daemon_capabilities: Arc<DaemonCapabilities>,
+    snapshot: Option<Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError>>,
 }
 impl SubcCatalog {
     pub fn new(transport: Arc<dyn Transport>) -> Self {
         Self {
             transport,
+            snapshot: None,
             daemon_capabilities: Arc::new(DaemonCapabilities::default()),
             denylist: vec![
                 ("aft".into(), "bash".into()),
@@ -192,33 +195,19 @@ impl SubcCatalog {
         module: &str,
         op: &str,
     ) -> Result<(Option<CatalogOp>, bool), WireError> {
-        let catalog = self.transport.catalog()?;
-        let modules = catalog
-            .get("modules")
-            .and_then(Value::as_array)
-            .ok_or_else(|| WireError::Unknown("catalog modules missing".into()))?;
-        let Some(entry) = modules
-            .iter()
-            .find(|e| e.get("module_id").and_then(Value::as_str) == Some(module))
-        else {
+        let catalog = self.snapshot()?;
+        let Some(entry) = catalog.module(module) else {
             return Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
                 crate::flow_refusal::RefusalReason::ProviderNotCatalogued,
                 module,
                 op,
             )));
         };
-        let roles: Vec<ProviderRole> = serde_json::from_value(
-            entry
-                .get("roles")
-                .cloned()
-                .ok_or_else(|| WireError::Unknown("catalog roles missing".into()))?,
-        )
-        .map_err(|e| WireError::Unknown(format!("catalog roles: {e}")))?;
         let mut found = None;
-        for role in roles {
+        for role in &entry.roles {
             let candidate = match role {
                 ProviderRole::ManagementSurface { operations, .. } => {
-                    operations.into_iter().find(|o| o.name == op).map(|o| {
+                    operations.iter().find(|o| o.name == op).map(|o| {
                         (
                             Surface::Management,
                             match o.kind {
@@ -230,7 +219,7 @@ impl SubcCatalog {
                     })
                 }
                 ProviderRole::ToolProvider { tools, .. } => {
-                    tools.into_iter().find(|t| t.name == op).map(|t| {
+                    tools.iter().find(|t| t.name == op).map(|t| {
                         (
                             Surface::Tool,
                             if t.execution_mode == ExecutionMode::Pure {
@@ -268,10 +257,13 @@ impl SubcCatalog {
                 });
             }
         }
-        let flow_capable = entry["capabilities"]["provides"]
-            .as_array()
-            .is_some_and(|caps| caps.iter().any(|c| c == "flow-scopes/v1"));
+        let flow_capable = entry.provides("flow-scopes/v1");
         Ok((found, flow_capable))
+    }
+    fn snapshot(&self) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
+        self.snapshot
+            .clone()
+            .unwrap_or_else(|| self.transport.catalog_snapshot())
     }
     /// Reads `module`'s own declaration of whether its tool `op` can make it
     /// emit an event: the typed `emits_events` of the tool's entry in the
@@ -378,6 +370,14 @@ impl SubcCatalog {
     }
 }
 impl Catalog for SubcCatalog {
+    fn request_snapshot(&self) -> Option<Arc<dyn Catalog>> {
+        Some(Arc::new(Self {
+            transport: self.transport.clone(),
+            denylist: self.denylist.clone(),
+            daemon_capabilities: self.daemon_capabilities.clone(),
+            snapshot: Some(self.snapshot()),
+        }))
+    }
     fn workspace_name(&self, id: &str) -> Result<Option<String>, WireError> {
         Ok(self
             .workspace_entry(id)?
@@ -438,62 +438,30 @@ impl Catalog for SubcCatalog {
         self.known_workspace(id)
     }
     fn supports_flow_scopes(&self, module: &str) -> bool {
-        self.transport
-            .catalog()
-            .ok()
-            .and_then(|c| {
-                c["modules"].as_array().and_then(|modules| {
-                    modules.iter().find(|m| m["module_id"] == module).map(|m| {
-                        m["capabilities"]["provides"]
-                            .as_array()
-                            .is_some_and(|caps| caps.iter().any(|c| c == "flow-scopes/v1"))
-                    })
-                })
-            })
-            .unwrap_or(false)
+        self.snapshot().ok().is_some_and(|c| {
+            c.module(module)
+                .is_some_and(|m| m.provides("flow-scopes/v1"))
+        })
     }
     fn supports_flow_calls(&self, module: &str) -> bool {
-        self.transport
-            .catalog()
-            .ok()
-            .and_then(|c| {
-                c["modules"].as_array().and_then(|modules| {
-                    modules.iter().find(|m| m["module_id"] == module).map(|m| {
-                        m["capabilities"]["provides"]
-                            .as_array()
-                            .is_some_and(|caps| {
-                                caps.iter()
-                                    .any(|c| c == "flow-scopes/v1" || c == "call-modes/v1")
-                            })
-                    })
-                })
-            })
-            .unwrap_or(false)
+        self.snapshot().ok().is_some_and(|c| {
+            c.module(module)
+                .is_some_and(|m| m.provides("flow-scopes/v1") || m.provides("call-modes/v1"))
+        })
     }
     fn flow_operations(&self, module: &str) -> Result<Option<Vec<String>>, WireError> {
-        let catalog = self.transport.catalog()?;
-        let modules = catalog["modules"]
-            .as_array()
-            .ok_or_else(|| WireError::Unreadable("catalog modules missing".into()))?;
-        let entry = modules
-            .iter()
-            .find(|entry| entry["module_id"] == module)
-            .ok_or_else(|| {
-                WireError::Unreadable(format!("module {module} missing from catalog"))
-            })?;
-        serde_json::from_value(entry.get("flow_operations").cloned().unwrap_or(Value::Null))
-            .map_err(|e| WireError::Unreadable(format!("catalog flow_operations: {e}")))
+        let catalog = self.snapshot()?;
+        let entry = catalog.module(module).ok_or_else(|| {
+            WireError::Unreadable(format!("module {module} missing from catalog"))
+        })?;
+        Ok(entry.flow_operations.clone())
     }
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {
         if !self.daemon_capabilities.supports_catalog_events() {
             return None;
         }
-        let catalog = self.transport.catalog().ok()?;
-        let entry = catalog["modules"]
-            .as_array()?
-            .iter()
-            .find(|e| e["module_id"] == module)?;
-        declared_event(&catalog_event_declarations(entry)?, name, version)
+        let catalog = self.snapshot().ok()?;
+        declared_event(catalog.module(module)?.events.as_ref()?, name, version)
     }
     fn op(&self, module: &str, op: &str) -> Option<OpDecl> {
         self.lookup_op(module, op).ok().flatten()

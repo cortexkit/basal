@@ -10,8 +10,9 @@
 
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 #[cfg(any(test, feature = "test-support"))]
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Read-only tool used by install validation and the event-body fetch that
 /// runs before an event-triggered script starts.
@@ -81,6 +82,11 @@ pub const AGENT_REGISTRY_UNAVAILABLE: &str = "agent_registry_unavailable";
 /// The declarations basal validates manifests against. Implementations
 /// must be safe to call from several threads.
 pub trait Catalog: Send + Sync {
+    /// Freeze daemon declarations for this request. Static catalogs need no
+    /// replacement. Callers must acquire this outside the store write lock.
+    fn request_snapshot(&self) -> Option<Arc<dyn Catalog>> {
+        None
+    }
     fn supports_flow_scopes(&self, _module: &str) -> bool {
         false
     }

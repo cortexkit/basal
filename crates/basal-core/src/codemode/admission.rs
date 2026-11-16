@@ -899,7 +899,9 @@ pub fn admit_tool(
                 })
                 .map_err(|e| json!({"code":"storage_unavailable","message":e.to_string()}))?;
         }
-        let daemon = transport.catalog().map_err(super::scope::error_value)?;
+        let daemon = transport
+            .catalog_snapshot()
+            .map_err(super::scope::error_value)?;
         // Reading each opted-in provider's own tool catalog makes live calls,
         // so it runs here, outside every store write. The reads go over the
         // run's own scope, which core registered before answering the open:
@@ -914,7 +916,7 @@ pub fn admit_tool(
             scope: &run_scope_selector,
             identity: &read_identity,
         };
-        let resolved = run_scope::catalog(
+        let resolved = run_scope::catalog_from_snapshot(
             transport,
             &read,
             &daemon,
