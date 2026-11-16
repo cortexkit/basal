@@ -60,6 +60,13 @@ impl CatalogSnapshot {
         for module in modules {
             if let Some(module) = module.as_object_mut() {
                 module.entry("control_ops").or_insert(serde_json::json!([]));
+                // Test catalogs may omit an event's filter hints; that doesn't
+                // change whether the event is declared.
+                if let Some(events) = module.get_mut("events").and_then(|e| e.as_array_mut()) {
+                    for event in events.iter_mut().filter_map(|e| e.as_object_mut()) {
+                        event.entry("headers").or_insert(serde_json::json!([]));
+                    }
+                }
             }
         }
         serde_json::from_value(value)

@@ -137,7 +137,7 @@ fn header_filters_require_declared_catalog_keys_at_install_and_dry_run() {
                 }),
             )
             .unwrap_err();
-        assert_eq!(error.code, "event_header_not_declared");
+        assert_eq!(error.code, "event_header_not_declared", "{error:?}");
         assert!(error.message.contains("repo"), "{error:?}");
         let error = dry_run(&f).unwrap_err();
         assert_eq!(error.code, "event_header_not_declared");
@@ -235,8 +235,20 @@ fn recorded_live_plexus_catalog_accepts_github_pr_changed_v1() {
     let installed = install(&f, "github_pr_changed", 1).unwrap();
     println!("live catalog plexus.github_pr_changed v1 install: {installed}");
     for (name, version) in [("undeclared_event", 1), ("github_pr_changed", 99)] {
-        let refused = install(&f, name, version).unwrap_err();
-        assert_eq!(refused.code, "event_not_declared");
+        // A new flow version, so the stored v1's VersionExists refusal (a
+        // cheap check that precedes catalog validation) doesn't answer first.
+        let mut m = manifest(name, version);
+        m["version"] = json!(version + 1);
+        m["changes"] = json!("Listens to a different event version.");
+        let refused = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "flow.install",
+                json!({"script":"return 7;","manifest":m.to_string()}),
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, "event_not_declared", "{refused:?}");
         println!(
             "live catalog plexus.{name} v{version} install: {}",
             refused.code
