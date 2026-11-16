@@ -393,16 +393,10 @@ mod privacy {
         // Bound all socket operations and startup waits only to prevent hangs;
         // there is no assertion about how quickly startup completes.
         tokio::time::timeout(Duration::from_secs(300), async {
-            let (mut consumer, _) = listener.accept().await.expect("host connection");
-            authenticate_server(
-                &mut consumer,
-                &key,
-                &daemon_id,
-                "0.44.5",
-                Duration::from_secs(30),
-            )
-            .await
-            .expect("authenticate hosts");
+            // ck-basal opens its module connection first and connects its
+            // hosts' consumer only after HELLO_ACK, because a supervised
+            // consumer must present a claim minted over the registered module
+            // connection. Accepting in the other order deadlocks startup.
             let (mut stream, _) = listener.accept().await.expect("module connection");
             authenticate_server(
                 &mut stream,
@@ -441,6 +435,18 @@ mod privacy {
             )
             .expect("ack");
             write_frame(&mut stream, &ack).await.expect("write ack");
+            // Hold the authenticated consumer open, unanswered, while workers
+            // start: the probe needs a live daemon connection, not its replies.
+            let (mut consumer, _) = listener.accept().await.expect("host connection");
+            authenticate_server(
+                &mut consumer,
+                &key,
+                &daemon_id,
+                "0.44.5",
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("authenticate hosts");
             worker_startup::wait_for_worker_startup(&mut stream, Duration::from_secs(180))
                 .await
                 .expect("production worker greeted without a spawn failure");
