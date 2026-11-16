@@ -30,3 +30,25 @@ BASAL_WRITE_VECTORS=1 RUST_TEST_THREADS=1 cargo test --locked -p basal-module --
 ```
 
 Run the same command without `BASAL_WRITE_VECTORS=1` to check for drift.
+
+## Overview watch
+
+`overview-watch.json` captures `flow.overview_watch {"include_removed":true}`
+from the real SDK handler: the open snapshot, the snapshot after disabling a
+flow, and the empty protocol `StreamEnd` on cancel. `read` and `changedRead`
+are the corresponding bare `flow.overview` answers. `snapshot` and `changed`
+are the actual app-read-watch-v1 StreamData JSON bodies, including the SHA-256
+digest of each encoded answer. `end` records the protocol frame type and its
+empty body bytes; it is not a JSON notice emitted to the app.
+
+The asynchronous SDK generator owns exactly this sample and its checksum;
+the existing generator continues to own every other sample. Regenerate the
+watch sample first, then run the existing command above:
+
+```sh
+BASAL_WRITE_VECTORS=1 RUST_TEST_THREADS=1 cargo test --locked -p basal-module --lib overview_watch_vectors_match_real_handler_and_sha256sums
+```
+
+Without `BASAL_WRITE_VECTORS=1`, the same test checks frame and checksum drift.
+Both generators support `BASAL_PRINT_PHONE_VECTORS=1` to print their generated
+files without rewriting the checkout.

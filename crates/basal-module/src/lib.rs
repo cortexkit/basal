@@ -34,6 +34,7 @@ pub mod manifest;
 pub mod metrics;
 pub mod module;
 pub mod ops;
+mod overview_watch;
 pub mod pool;
 pub mod process;
 // Exercise evidence capture in ordinary unit tests without enabling a kill

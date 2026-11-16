@@ -11,21 +11,31 @@ struct Entry {
     raw_manifest: Value,
 }
 
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverviewParams {
+    agent_id: Option<String>,
+    workspace_id: Option<String>,
+    #[serde(default)]
+    include_removed: bool,
+}
+
+fn overview_params(caller: &Caller, params: Value) -> Result<OverviewParams, OpError> {
+    operator(caller, "flow.overview")?;
+    let p: OverviewParams = decode(params)?;
+    if p.agent_id.as_deref().is_some_and(|id| !stable_agent_id(id)) {
+        return Err(invalid_params("agent_id must be a stable agent_ id"));
+    }
+    Ok(p)
+}
+
 impl Module {
+    pub(crate) fn validate_overview(&self, caller: &Caller, params: Value) -> Result<(), OpError> {
+        overview_params(caller, params).map(|_| ())
+    }
+
     pub(super) fn op_overview(&self, caller: &Caller, params: Value) -> OpResult {
-        operator(caller, "flow.overview")?;
-        #[derive(Default, Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Params {
-            agent_id: Option<String>,
-            workspace_id: Option<String>,
-            #[serde(default)]
-            include_removed: bool,
-        }
-        let p: Params = decode(params)?;
-        if p.agent_id.as_deref().is_some_and(|id| !stable_agent_id(id)) {
-            return Err(invalid_params("agent_id must be a stable agent_ id"));
-        }
+        let p = overview_params(caller, params)?;
         // Entorhinal owns live placement. Read it once, before opening even a
         // read snapshot, so a slow registry never holds the store connection.
         let membership = p

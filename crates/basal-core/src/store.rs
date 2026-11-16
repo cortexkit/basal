@@ -77,6 +77,7 @@ pub struct Pragmas {
 
 pub struct Store {
     inner: SqliteStore,
+    overview_changes: std::sync::Arc<crate::overview_changes::OverviewChanges>,
     cut: AtomicBool,
     store_id: String,
     clock: Mutex<crate::clock::Clock>,
@@ -112,8 +113,13 @@ impl Store {
             },
         };
         let inner = open_sqlite(&descriptor).map_err(backend)?;
+        let overview_changes =
+            std::sync::Arc::new(crate::overview_changes::OverviewChanges::default());
         inner
             .with_conn(|c| {
+                // SqliteStore has one writer connection, shared by migrations
+                // and fenced writes. Install before either can mutate it.
+                overview_changes.install(c);
                 c.pragma_update(
                     None,
                     "synchronous",
@@ -128,6 +134,7 @@ impl Store {
             .map_err(backend)?;
         let mut store = Self {
             inner,
+            overview_changes,
             cut: AtomicBool::new(false),
             store_id: String::new(),
             clock: Mutex::new(crate::clock::Clock::system()),
@@ -186,6 +193,10 @@ impl Store {
 
     pub fn store_id(&self) -> &str {
         &self.store_id
+    }
+
+    pub fn overview_changes(&self) -> &std::sync::Arc<crate::overview_changes::OverviewChanges> {
+        &self.overview_changes
     }
 
     pub(crate) fn is_fresh(&self) -> bool {
@@ -273,8 +284,10 @@ impl Store {
                 .unwrap_or_else(|p| p.into_inner())
                 .now_ms();
             let _time = crate::clock::WriteTime::enter(now);
-            match f(tx) {
-                Ok(v) => Ok(v),
+            let result = f(tx);
+            let dirty = self.overview_changes.take_dirty();
+            match result {
+                Ok(v) => Ok((v, dirty)),
                 Err(e) => {
                     // `with_conn_fenced` rolls the transaction back when the
                     // closure returns an SQLite error, so save the closure's
@@ -289,11 +302,15 @@ impl Store {
         if let Some(e) = failure {
             return Err(e);
         }
-        let value = out.map_err(backend)?;
+        let (value, dirty) = out.map_err(backend)?;
         // A cut that landed while the transaction ran happened "after" the
         // commit: the caller must not act on it, exactly as a process that
         // died right after committing would not.
         self.check_cut()?;
+        drop(_order);
+        if dirty {
+            self.overview_changes.publish();
+        }
         Ok(value)
     }
 

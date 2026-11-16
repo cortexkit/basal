@@ -150,6 +150,7 @@ impl Routes {
 
 #[derive(Clone)]
 pub struct BasalHandler {
+    overview_watches: Arc<crate::overview_watch::Registry>,
     phase: Arc<Mutex<Phase>>,
     routes: Arc<Routes>,
     configure: Arc<Configure>,
@@ -169,8 +170,23 @@ pub struct BasalHandler {
 use basal_proto::util::lock;
 
 impl BasalHandler {
+    #[cfg(test)]
+    pub(crate) fn overview_test(
+        module: Arc<Module>,
+        registry: Arc<crate::overview_watch::Registry>,
+    ) -> Self {
+        let mut handler = Self::new(Box::new(|_| unreachable!()), Box::new(|| unreachable!()));
+        *lock(&handler.phase) = Phase::Ready(module);
+        handler
+            .initialized
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        handler.overview_watches = registry;
+        handler
+    }
+
     pub fn new(configure: Configure, hosts: MakeHosts) -> Self {
         Self {
+            overview_watches: Arc::default(),
             phase: Arc::new(Mutex::new(Phase::Starting)),
             routes: Arc::new(Routes::default()),
             configure: Arc::new(configure),
@@ -192,6 +208,7 @@ impl BasalHandler {
     /// future does not cancel the blocking closure it already started.
     pub async fn shutdown(&self) {
         let _serial = self.shutdown.lock().await;
+        self.overview_watches.stop();
         let module = match std::mem::replace(&mut *lock(&self.phase), Phase::Stopped) {
             Phase::Ready(module) => Some(module),
             Phase::Stopped => return,
@@ -505,7 +522,7 @@ struct WireRequest {
     params: Value,
 }
 
-fn op_error_outcome(e: crate::ops::OpError) -> HandlerOutcome {
+pub(crate) fn op_error_outcome(e: crate::ops::OpError) -> HandlerOutcome {
     match e.detail {
         Some(detail) => HandlerOutcome::ErrorWithDetail {
             code: e.code,
@@ -581,6 +598,16 @@ impl ModuleHandler for BasalHandler {
         };
         let method = request.method;
         let params = request.params;
+        if method == "flow.overview_watch" {
+            return crate::overview_watch::serve(
+                self.overview_watches.clone(),
+                module,
+                caller,
+                params,
+                ctx,
+            )
+            .await;
+        }
         let outcome = tokio::task::spawn_blocking(move || {
             if method == "diagnostics.findings" {
                 if !diagnostics_admitted {
@@ -614,6 +641,7 @@ impl ModuleHandler for BasalHandler {
     }
 
     async fn on_route_gone(&self, handle: &RouteHandle) {
+        self.overview_watches.end_route(handle);
         self.routes.forget(handle);
     }
 

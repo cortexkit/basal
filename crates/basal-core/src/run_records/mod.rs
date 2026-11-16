@@ -110,6 +110,8 @@ impl RecordLog for RunLog<Record> {
 }
 
 pub struct Records {
+    overview_changes: Option<Arc<crate::overview_changes::OverviewChanges>>,
+    unresolved_calls: usize,
     #[cfg(any(test, feature = "test-support"))]
     detail_store: Option<Arc<crate::Store>>,
     run_id: String,
@@ -132,6 +134,8 @@ impl Records {
     }
     pub fn new(run_id: String, admitted_ms: i64, log: Arc<dyn RecordLog>) -> Self {
         Self {
+            overview_changes: None,
+            unresolved_calls: 0,
             #[cfg(any(test, feature = "test-support"))]
             detail_store: None,
             run_id,
@@ -290,12 +294,49 @@ impl Records {
             Body::Intent(intent) => Some(intent.call.position),
             _ => None,
         };
+        // Only these records can change the reader's reconciliation predicate.
+        // Count the affected call, not every call on every ordinary append.
+        let reconcile_delta = match &body {
+            Body::Unknown { position, .. } | Body::CallScopeCut { position } => Some(*position),
+            Body::Arrived(arrival) => Some(arrival.position),
+            Body::Resolution(resolution) => Some(resolution.position),
+            _ => None,
+        }
+        .filter(|_| self.overview_changes.is_some())
+        .map(|position| {
+            let unresolved = |state: &State| {
+                state
+                    .calls
+                    .get(&position)
+                    .is_some_and(|call| call.unknown.is_some() && call.arrival.is_none())
+            };
+            (unresolved(&self.state), unresolved(&next))
+        });
         let lsn = self.log.append(Record {
             run_id: self.run_id.clone(),
             generation,
             body,
         })?;
         self.state = next;
+        if let Some((before, after)) = reconcile_delta {
+            let previous = self.unresolved_calls;
+            self.unresolved_calls =
+                self.unresolved_calls + usize::from(after) - usize::from(before);
+            #[cfg(any(test, feature = "test-support"))]
+            debug_assert_eq!(
+                self.unresolved_calls,
+                self.state
+                    .calls
+                    .values()
+                    .filter(|call| call.unknown.is_some() && call.arrival.is_none())
+                    .count()
+            );
+            if (previous == 0) != (self.unresolved_calls == 0)
+                && let Some(changes) = &self.overview_changes
+            {
+                changes.publish();
+            }
+        }
         if let Some(position) = intent_position {
             self.intent_cuts.entry(position).or_insert(lsn);
         }
@@ -443,6 +484,15 @@ impl Records {
 impl RunRecords for Records {
     type Identity = Record;
     type Refusal = Record;
+    fn observe_overview(&mut self, changes: Arc<crate::overview_changes::OverviewChanges>) {
+        self.unresolved_calls = self
+            .state
+            .calls
+            .values()
+            .filter(|call| call.unknown.is_some() && call.arrival.is_none())
+            .count();
+        self.overview_changes = Some(changes);
+    }
     fn append_identity(&mut self, identity: &Record) -> Result<Lsn> {
         if identity.run_id != self.run_id
             || !matches!(
