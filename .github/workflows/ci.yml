@@ -21,6 +21,13 @@ concurrency:
 env:
   CARGO_TERM_COLOR: never
   PYTHONDONTWRITEBYTECODE: 1
+  # Every test binary statically links all of its dependencies, and each
+  # feature mode builds its own set, so full debug info took the Linux build
+  # folder past 80 GB and the linker then died with SIGBUS on a full disk.
+  # Line tables keep file:line and function names in panics and backtraces.
+  # CI builds start cold, so incremental state is only extra disk.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: 0
 
 jobs:
   lint:
@@ -148,7 +155,9 @@ jobs:
       - &final-build-size
         name: Measure final build folder
         shell: bash
-        run: du -sk target
+        run: |
+          du -sk target
+          df -k .
       # Cache entries are immutable. Only main publishes a new run-scoped entry;
       # PRs read the newest main prefix without consuming cache quota.
       - name: Save Cargo build cache
