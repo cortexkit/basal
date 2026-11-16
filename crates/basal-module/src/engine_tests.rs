@@ -924,6 +924,42 @@ fn module(spawn_panics: bool) -> (crate::module::Module, std::path::PathBuf, Arc
 
 #[test]
 fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
+    shutdown_cut_run_is_recovered(drop);
+}
+
+/// The same cut, reached the way a daemon connection end reaches it. Under a
+/// registration channel the SDK exits the process when `on_connection_end`
+/// returns, so that hook alone must leave the same durable state. A planned
+/// stop (GOODBYE) is the case serve did not drain before.
+#[test]
+fn connection_end_drain_leaves_a_cut_run_running_for_recovery() {
+    shutdown_cut_run_is_recovered(|module| {
+        use subc_client_rs::ModuleHandler;
+        let handler = crate::serve::BasalHandler::overview_test(Arc::new(module), Arc::default());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            handler
+                .on_connection_end(subc_client_rs::ConnectionEnd::Goodbye)
+                .await;
+            // The hook alone stopped the module; nothing else has run a
+            // shutdown yet when it returns.
+            assert_eq!(
+                handler.health().await.detail.as_deref(),
+                Some("basal is stopping"),
+                "on_connection_end must drain before it returns"
+            );
+            assert!(handler.drain().await, "the drain finished within its limit");
+        });
+    });
+}
+
+/// Cuts a run in the middle of a host call by ending the module with `stop`,
+/// then checks the run stays `running` with no failure recorded and no
+/// failing-flow notice, and that startup recovery puts it back in line.
+fn shutdown_cut_run_is_recovered(stop: impl FnOnce(crate::module::Module) + Send + 'static) {
     use basal_core::{Clock, RunState, Runtime};
     use basal_host::{CallClass, CallRequest, Dispatched, Host, TransportError};
     use std::sync::mpsc;
@@ -1060,7 +1096,7 @@ fn shutdown_cut_run_is_recovered_without_failure_or_rejected_outcome() {
     *module.engine.inner.joining.lock().unwrap() = Some(Arc::new(move || {
         let _ = joining.send(());
     }));
-    let shutdown = thread::spawn(move || drop(module));
+    let shutdown = thread::spawn(move || stop(module));
     // Module shutdown has killed the leased child before joining activations.
     // Only now release the host call and its shutdown-induced RPC error. Host
     // entry, not the timing of the worker's Blocked frame, fixes this cut.

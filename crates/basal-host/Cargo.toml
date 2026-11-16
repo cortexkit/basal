@@ -44,7 +44,9 @@ serde.workspace = true
 sha2.workspace = true
 subc-client-rs.workspace = true
 subc-protocol.workspace = true
-tokio.workspace = true
+# The catalog watch sleeps between reopen attempts and is stopped through a
+# Notify, so it names the features it uses rather than inheriting them.
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 webpki-roots.workspace = true
 

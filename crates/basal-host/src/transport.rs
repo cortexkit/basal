@@ -213,6 +213,16 @@ pub trait Transport: Send + Sync {
     fn catalog_snapshot(&self) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
         crate::catalog_snapshot::CatalogSnapshot::from_value(self.catalog()?)
     }
+    /// One fresh read after a module was missing from `seen`, when `seen`
+    /// came from a shared cached copy that may lag a module's registration.
+    /// `None` means a fresh read would show nothing new: `seen` was itself
+    /// read for the caller, or the transport keeps no shared copy.
+    fn refresh_catalog_snapshot(
+        &self,
+        _seen: &Arc<crate::catalog_snapshot::CatalogSnapshot>,
+    ) -> Option<Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError>> {
+        None
+    }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError>;
     /// Preserve route-open miss codes for callers that can rediscover a renamed
     /// module. Ordinary management calls retain their NeverSent retry behavior.
@@ -443,10 +453,19 @@ fn outcome_unknown(cause: Option<OutcomeUnknownCause>, message: String) -> WireE
 }
 
 pub struct SubcTransport {
-    catalog_changes: CatalogChanges,
+    catalog_changes: Arc<CatalogChanges>,
+    /// The watch-fed catalog every request shares; see `catalog_watch`.
+    shared_catalog: Arc<crate::catalog_watch::SharedCatalog>,
     runtime: Option<tokio::runtime::Runtime>,
     handle: tokio::runtime::Handle,
-    consumer: SubcConsumer,
+    /// Set once by `attach`. Under a daemon registration channel a consumer
+    /// can only be bound after the module's HELLO_ACK, so the transport is
+    /// built first and connected later; see `consumer()` for callers that
+    /// arrive in between.
+    consumer: std::sync::OnceLock<Arc<SubcConsumer>>,
+    connection: Mutex<Connection>,
+    connection_settled: std::sync::Condvar,
+    on_close: Option<Arc<dyn Fn() + Send + Sync>>,
     identity: BindIdentity,
     timeout: Duration,
     routes: Arc<Mutex<crate::flow_scope::ScopedRoutes<subc_client_rs::RouteHandle>>>,
@@ -458,6 +477,17 @@ pub struct SubcTransport {
             std::sync::Weak<tokio::sync::Mutex<()>>,
         >,
     >,
+}
+
+/// Where the transport's one daemon connection stands.
+enum Connection {
+    /// Built, not yet attached.
+    Pending,
+    Ready,
+    /// Attaching failed; calls refuse with this reason.
+    Failed(String),
+    /// Shut down, before or after attaching.
+    Closed,
 }
 
 #[derive(Default)]
@@ -536,6 +566,7 @@ impl SubcTransport {
         bind: BindIdentity,
         budget: Option<Duration>,
     ) -> Result<subc_client_rs::RouteHandle, WireError> {
+        let consumer = self.consumer()?;
         self.handle.block_on(async {
             let opening = async {
                 let key = {
@@ -576,8 +607,7 @@ impl SubcTransport {
                 {
                     options = run_tool_route_options(options);
                 }
-                let handle = self
-                    .consumer
+                let handle = consumer
                     .open_route_scoped(target.clone(), bind, plan.scope.selector(), options)
                     .await
                     .map_err(|e| bind_error(map_error(e), flow.starts_with("codemode:")))?;
@@ -587,10 +617,7 @@ impl SubcTransport {
                     .unwrap_or_else(|p| p.into_inner())
                     .install(flow, plan, handle);
                 if !result.as_ref().is_ok_and(|installed| *installed == handle) {
-                    let _ = self
-                        .consumer
-                        .close_handle(&handle, Default::default())
-                        .await;
+                    let _ = consumer.close_handle(&handle, Default::default()).await;
                 }
                 result
             };
@@ -618,14 +645,18 @@ impl SubcTransport {
             .map_err(|e| contextual(e, module, action))?
         {
             Some(handle) => {
-                let result = self.handle.block_on(self.consumer.request(
-                    &handle,
-                    bytes,
-                    CallOptions {
-                        timeout: self.timeout,
-                        ..Default::default()
-                    },
-                ));
+                let result = self.handle.block_on(
+                    self.consumer()
+                        .map_err(|e| contextual(e, module, action))?
+                        .request(
+                            &handle,
+                            bytes,
+                            CallOptions {
+                                timeout: self.timeout,
+                                ..Default::default()
+                            },
+                        ),
+                );
                 if result
                     .as_ref()
                     .is_err_and(|e| target_route_ended(flow, e.outcome_cause()))
@@ -668,34 +699,78 @@ impl SubcTransport {
         result.map_err(|e| contextual(e, module, action))
     }
 
-    /// Must be constructed and used on blocking threads, not inside a Tokio task.
-    pub fn connect(timeout: Duration) -> Result<Arc<Self>, WireError> {
-        Self::connect_with_file(timeout, None, None)
+    /// Builds the transport without connecting it. Calls made before
+    /// [`Self::attach`] finishes wait for it, at most the call timeout, and
+    /// then refuse as never sent. Must be constructed and used on blocking
+    /// threads, not inside a Tokio task.
+    pub fn deferred(timeout: Duration) -> Result<Arc<Self>, WireError> {
+        Self::unconnected(timeout, None)
     }
+
+    fn unconnected(
+        timeout: Duration,
+        on_close: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Arc<Self>, WireError> {
+        let runtime =
+            tokio::runtime::Runtime::new().map_err(|e| WireError::NeverSent(e.to_string()))?;
+        Ok(Arc::new(Self {
+            catalog_changes: Arc::default(),
+            shared_catalog: Arc::default(),
+            handle: runtime.handle().clone(),
+            runtime: Some(runtime),
+            consumer: std::sync::OnceLock::new(),
+            connection: Mutex::new(Connection::Pending),
+            connection_settled: std::sync::Condvar::new(),
+            on_close,
+            // Core's answer ownership is principal plus session. This label must
+            // remain stable across process restarts, not include a process id.
+            identity: BindIdentity::new("basal", "basal:flows"),
+            timeout,
+            routes: Arc::default(),
+            run_watchers: Arc::default(),
+            open_gates: Mutex::new(std::collections::HashMap::new()),
+            target_scopes: Mutex::new(crate::target_scope::TargetScopes::default()),
+        }))
+    }
+
+    #[cfg(test)]
     fn connect_with_file(
         timeout: Duration,
         file: Option<&std::path::Path>,
         on_close: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<Arc<Self>, WireError> {
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let transport = Self::unconnected(timeout, on_close)?;
+        transport.attach_to(file)?;
+        Ok(transport)
+    }
+
+    /// Opens the daemon connection, through the connection file the daemon
+    /// named for this process. Call it once, on a blocking thread, after the
+    /// module's registration is acknowledged and its serve future is running:
+    /// under a registration channel the connection is bound by a claim the
+    /// module connection mints. A failure is final; calls then refuse.
+    pub fn attach(&self) -> Result<(), WireError> {
+        self.attach_to(None)
+    }
+
+    fn attach_to(&self, file: Option<&std::path::Path>) -> Result<(), WireError> {
         let opts = ConsumerOptions {
-            call_timeout: timeout,
+            call_timeout: self.timeout,
             ..Default::default()
         };
-        let consumer = match file {
-            Some(file) => runtime.block_on(SubcConsumer::connect(file, opts)),
-            None => runtime.block_on(SubcConsumer::connect_default(opts)),
-        }
-        .map_err(|e| WireError::NeverSent(e.to_string()))?;
-        let routes = Arc::new(Mutex::new(crate::flow_scope::ScopedRoutes::<
-            subc_client_rs::RouteHandle,
-        >::default()));
-        let route_events = routes.clone();
-        let run_watchers: Arc<Mutex<std::collections::HashMap<String, Arc<RunScopeEnded>>>> =
-            Arc::default();
-        let scope_events = run_watchers.clone();
-        let restored_routes = routes.clone();
+        let connected = match file {
+            Some(file) => self.handle.block_on(SubcConsumer::connect(file, opts)),
+            None => self.handle.block_on(SubcConsumer::connect_default(opts)),
+        };
+        let consumer = match connected {
+            Ok(consumer) => Arc::new(consumer),
+            Err(error) => {
+                let error = error.to_string();
+                self.settle(Connection::Failed(error.clone()));
+                return Err(WireError::NeverSent(error));
+            }
+        };
+        let restored_routes = self.routes.clone();
         consumer.on_connection_state(move |state| {
             if matches!(state, ConnectionState::Restored { .. }) {
                 restored_routes
@@ -705,7 +780,10 @@ impl SubcTransport {
             }
         });
         let mut pushes = consumer.control_pushes(256);
-        runtime.spawn(async move {
+        let route_events = self.routes.clone();
+        let scope_events = self.run_watchers.clone();
+        let on_close = self.on_close.clone();
+        self.handle.spawn(async move {
             while let Some(push) = pushes.recv().await {
                 if push.op != "route.closed" {
                     continue;
@@ -733,20 +811,92 @@ impl SubcTransport {
                 }
             }
         });
-        Ok(Arc::new(Self {
-            catalog_changes: CatalogChanges::default(),
-            handle: runtime.handle().clone(),
-            runtime: Some(runtime),
-            consumer,
-            // Core's answer ownership is principal plus session. This label must
-            // remain stable across process restarts, not include a process id.
-            identity: BindIdentity::new("basal", "basal:flows"),
-            timeout,
-            routes,
-            run_watchers,
-            open_gates: Mutex::new(std::collections::HashMap::new()),
-            target_scopes: Mutex::new(crate::target_scope::TargetScopes::default()),
-        }))
+        let changes = self.catalog_changes.clone();
+        self.handle.spawn(crate::catalog_watch::follow(
+            consumer.clone(),
+            self.shared_catalog.clone(),
+            move |generation| changes.observe(json!(generation)),
+        ));
+        let mut connection = self.connection.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(*connection, Connection::Closed) {
+            drop(connection);
+            self.shared_catalog.stop();
+            self.handle.block_on(consumer.close());
+            return Err(WireError::NeverSent(
+                "basal's daemon connection was shut down while it opened".into(),
+            ));
+        }
+        let _ = self.consumer.set(consumer);
+        *connection = Connection::Ready;
+        self.connection_settled.notify_all();
+        Ok(())
+    }
+
+    fn settle(&self, state: Connection) {
+        let mut connection = self.connection.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(*connection, Connection::Pending) {
+            *connection = state;
+        }
+        self.connection_settled.notify_all();
+    }
+
+    /// The connected consumer. Before `attach` has finished, waits for it at
+    /// most one call timeout; a call that cannot get a connection refuses as
+    /// never sent, because nothing left basal.
+    fn consumer(&self) -> Result<&SubcConsumer, WireError> {
+        if let Some(consumer) = self.consumer.get() {
+            return Ok(consumer);
+        }
+        let deadline = std::time::Instant::now() + self.timeout;
+        let mut connection = self.connection.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            match &*connection {
+                Connection::Ready => {
+                    return self.consumer.get().map(|c| &**c).ok_or_else(|| {
+                        WireError::NeverSent("basal's daemon connection is missing".into())
+                    });
+                }
+                Connection::Failed(why) => {
+                    return Err(WireError::NeverSent(format!(
+                        "basal's daemon connection could not be opened: {why}"
+                    )));
+                }
+                Connection::Closed => {
+                    return Err(WireError::NeverSent(
+                        "basal's daemon connection is closed".into(),
+                    ));
+                }
+                Connection::Pending => {}
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(WireError::NeverSent(
+                    "basal's daemon connection is not open yet".into(),
+                ));
+            }
+            connection = self
+                .connection_settled
+                .wait_timeout(connection, left)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+    }
+
+    /// One `catalog.list`, offered to the shared copy. `replace` lets a read
+    /// of the generation already held replace it (a refresh after a miss).
+    fn read_catalog_snapshot(
+        &self,
+        replace: bool,
+    ) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
+        let consumer = self.consumer()?;
+        let catalog = self
+            .handle
+            .block_on(consumer.catalog_list())
+            .map_err(map_error)?;
+        self.catalog_changes.observe(json!(catalog.generation));
+        let snapshot = crate::catalog_snapshot::CatalogSnapshot::new(catalog);
+        self.shared_catalog.offer(&snapshot, replace);
+        Ok(snapshot)
     }
     fn call(&self, target: RouteTarget, body: Value, management: bool) -> Result<Value, WireError> {
         let bytes = serde_json::to_vec(&body).map_err(|e| WireError::NeverSent(e.to_string()))?;
@@ -774,7 +924,7 @@ impl SubcTransport {
         // dead channel when the daemon proves it was not forwarded.
         let response = self
             .handle
-            .block_on(self.consumer.call(
+            .block_on(self.consumer()?.call(
                 target,
                 identity,
                 bytes,
@@ -854,7 +1004,7 @@ impl SubcTransport {
                     contextual(e, module, op)
                 }
             })?;
-        let result = self.handle.block_on(self.consumer.request(
+        let result = self.handle.block_on(self.consumer()?.request(
             &handle,
             management_bytes(op, params)?,
             CallOptions {
@@ -892,16 +1042,22 @@ impl SubcTransport {
                 },
                 &identity,
             );
-        if let Some(handle) = handle {
+        if let Some(handle) = handle
+            && let Some(consumer) = self.consumer.get()
+        {
             let _ = self
                 .handle
-                .block_on(self.consumer.close_handle(&handle, Default::default()));
+                .block_on(consumer.close_handle(&handle, Default::default()));
         }
     }
 }
 impl Transport for SubcTransport {
     fn shutdown(&self) {
-        self.handle.block_on(self.consumer.close());
+        self.shared_catalog.stop();
+        self.settle(Connection::Closed);
+        if let Some(consumer) = self.consumer.get() {
+            self.handle.block_on(consumer.close());
+        }
     }
 
     fn flow_read_exact(
@@ -910,9 +1066,9 @@ impl Transport for SubcTransport {
         identity: &BindIdentity,
         path: &str,
     ) -> Result<Value, WireError> {
+        let consumer = self.consumer()?;
         self.handle.block_on(async {
-            let handle = self
-                .consumer
+            let handle = consumer
                 // AFT serves file.read_exact on its tool-provider route and
                 // refuses its management surface under a flow-read scope, so
                 // the child scope can never reach AFT's management operations.
@@ -936,8 +1092,7 @@ impl Transport for SubcTransport {
                         map_error(error)
                     }
                 })?;
-            let result = self
-                .consumer
+            let result = consumer
                 .request(
                     &handle,
                     // A flat request AFT intercepts before tool-call parsing.
@@ -953,10 +1108,7 @@ impl Transport for SubcTransport {
                 .await
                 .map_err(map_error)
                 .and_then(|bytes| decode_response(&bytes, false));
-            let _ = self
-                .consumer
-                .close_handle(&handle, Default::default())
-                .await;
+            let _ = consumer.close_handle(&handle, Default::default()).await;
             result
         })
     }
@@ -1045,10 +1197,12 @@ impl Transport for SubcTransport {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .configure(flow, scope);
-        for handle in dropped {
-            let _ = self
-                .handle
-                .block_on(self.consumer.close_handle(&handle, Default::default()));
+        if let Some(consumer) = self.consumer.get() {
+            for handle in dropped {
+                let _ = self
+                    .handle
+                    .block_on(consumer.close_handle(&handle, Default::default()));
+            }
         }
     }
     fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
@@ -1057,10 +1211,12 @@ impl Transport for SubcTransport {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retain_flow_routes_for(flow_id, live);
-        for handle in dropped {
-            let _ = self
-                .handle
-                .block_on(self.consumer.close_handle(&handle, Default::default()));
+        if let Some(consumer) = self.consumer.get() {
+            for handle in dropped {
+                let _ = self
+                    .handle
+                    .block_on(consumer.close_handle(&handle, Default::default()));
+            }
         }
     }
     fn watch_run_scope(&self, run: &str, ended: Arc<RunScopeEnded>) {
@@ -1125,6 +1281,9 @@ impl Transport for SubcTransport {
             request["preset"] = Value::String(preset.clone());
         }
         let body = serde_json::to_vec(&request).map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let consumer = self
+            .consumer()
+            .map_err(|error| contextual(error, module, name))?;
         // A re-opened attempt gets only what is left of the call's reply time.
         let deadline = std::time::Instant::now() + options.reply_timeout;
         // The program calling this tool owns no flow scope, so its route's
@@ -1141,7 +1300,7 @@ impl Transport for SubcTransport {
             },
             |handle| {
                 self.handle.block_on(
-                    self.consumer.request(
+                    consumer.request(
                         &handle,
                         body.clone(),
                         CallOptions {
@@ -1194,7 +1353,7 @@ impl Transport for SubcTransport {
                 "custody request deadline passed".into(),
             ));
         }
-        let reply = self.handle.block_on(self.consumer.request(
+        let reply = self.handle.block_on(self.consumer()?.request(
             &handle,
             body,
             CallOptions {
@@ -1212,22 +1371,32 @@ impl Transport for SubcTransport {
         decode_response(&bytes, false)
     }
     fn catalog(&self) -> Result<Value, WireError> {
+        let consumer = self.consumer()?;
         let catalog = self
             .handle
-            .block_on(self.consumer.catalog_list())
+            .block_on(consumer.catalog_list())
             .map_err(map_error)?;
         self.catalog_changes.observe(json!(catalog.generation));
         Ok(
             json!({"generation": catalog.generation, "modules": catalog.modules, "subc_ops": catalog.subc_ops}),
         )
     }
+    /// The shared watch-fed copy when it is current, otherwise one read.
     fn catalog_snapshot(&self) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
-        let catalog = self
-            .handle
-            .block_on(self.consumer.catalog_list())
-            .map_err(map_error)?;
-        self.catalog_changes.observe(json!(catalog.generation));
-        Ok(crate::catalog_snapshot::CatalogSnapshot::new(catalog))
+        if let Some(snapshot) = self.shared_catalog.current() {
+            return Ok(snapshot);
+        }
+        self.read_catalog_snapshot(false)
+    }
+    fn refresh_catalog_snapshot(
+        &self,
+        seen: &Arc<crate::catalog_snapshot::CatalogSnapshot>,
+    ) -> Option<Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError>> {
+        // Only a copy served from the cache can be behind a module that just
+        // registered; a copy this request read itself is already the newest.
+        self.shared_catalog
+            .is_serving(seen)
+            .then(|| self.read_catalog_snapshot(true))
     }
     fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
         self.catalog_changes.subscribe(notify);
@@ -1291,9 +1460,9 @@ impl Transport for SubcTransport {
             timeout: self.timeout,
             ..Default::default()
         };
+        let consumer = self.consumer()?;
         self.handle.block_on(async {
-            let handle = self
-                .consumer
+            let handle = consumer
                 // The same route shape the run's own tool calls open: the
                 // run's scope and the consumer capabilities a run declares,
                 // so the provider answers for the binds the program will use.
@@ -1317,8 +1486,7 @@ impl Transport for SubcTransport {
                         None => map_error(error),
                     }
                 })?;
-            let result = self
-                .consumer
+            let result = consumer
                 .request(&handle, body, options())
                 .await
                 .map_err(run_scope_error)
@@ -1326,10 +1494,7 @@ impl Transport for SubcTransport {
             // Callers pass identities that are not reused (one per codemode
             // run), so the route is closed rather than left in the client's
             // route cache.
-            let _ = self
-                .consumer
-                .close_handle(&handle, Default::default())
-                .await;
+            let _ = consumer.close_handle(&handle, Default::default()).await;
             result
         })
     }
@@ -1502,6 +1667,10 @@ pub fn management_bytes(op: &str, params: &[u8]) -> Result<Vec<u8>, WireError> {
 mod run_scope_wire_tests;
 
 #[cfg(test)]
+#[path = "catalog_watch_wire_tests.rs"]
+mod catalog_watch_wire_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::UnknownReason;
@@ -1589,7 +1758,12 @@ mod tests {
             let handle = transport.scoped_handle("a", &target).unwrap().unwrap();
             transport
                 .handle
-                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             assert!(matches!(
                 transport.management_for_flow("a", "broca", "echo", json!({})),
@@ -1619,7 +1793,12 @@ mod tests {
                 .unwrap();
             transport
                 .handle
-                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             assert!(matches!(
                 transport.management_for_model("a", identity.clone(), "broca", "echo", b"{}"),
@@ -2233,7 +2412,12 @@ mod tests {
             let handle = cached_run_route(&transport, &options);
             transport
                 .handle
-                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             transport.routes.lock().unwrap().connection_restored();
             for name in ["late_results", "late_results.ack", "tool.withdraw"] {
@@ -2484,7 +2668,12 @@ mod tests {
             let handle = cached_run_route(&transport, &options);
             transport
                 .handle
-                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             assert_eq!(call("run:call:2").unwrap(), json!({"k":"run:call:2"}));
             assert_eq!(opens.lock().unwrap().len(), 2, "a fresh route was opened");
@@ -2517,7 +2706,12 @@ mod tests {
             let handle = cached_run_route(&transport, &options);
             transport
                 .handle
-                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .block_on(
+                    transport
+                        .consumer()
+                        .unwrap()
+                        .close_handle(&handle, Default::default()),
+                )
                 .unwrap();
             transport.routes.lock().unwrap().connection_restored();
             assert!(

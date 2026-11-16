@@ -1967,10 +1967,12 @@ impl Driver {
             self.release_provider_wait(call.position);
             return self.unavailable(call, queued, &module, false);
         }
+        // A fresh look at the provider before every call. The transport's
+        // shared catalog copy answers it without a read while it is current.
         let declaration = self
             .shared
             .transport
-            .catalog()
+            .catalog_snapshot()
             .ok()
             .and_then(|catalog| live_declaration(&catalog, &module, &op));
         if self.wall()? {
@@ -2421,22 +2423,22 @@ impl Driver {
 /// errors into missing operations, which cannot distinguish a restart from a
 /// tool that was removed. None means the provider or readable declarations are
 /// unavailable, not that the tool was removed.
-fn live_declaration(catalog: &Value, module: &str, op: &str) -> Option<bool> {
+fn live_declaration(
+    catalog: &basal_host::catalog_snapshot::CatalogSnapshot,
+    module: &str,
+    op: &str,
+) -> Option<bool> {
     use subc_protocol::manifest::ProviderRole;
-    let entry = catalog
-        .get("modules")?
-        .as_array()?
+    let count = catalog
+        .module(module)?
+        .roles
         .iter()
-        .find(|entry| entry.get("module_id").and_then(Value::as_str) == Some(module))?;
-    let roles: Vec<ProviderRole> = serde_json::from_value(entry.get("roles")?.clone()).ok()?;
-    let count = roles
-        .into_iter()
         .map(|role| match role {
             ProviderRole::ToolProvider { tools, .. } => {
-                tools.into_iter().filter(|tool| tool.name == op).count()
+                tools.iter().filter(|tool| tool.name == op).count()
             }
             ProviderRole::ManagementSurface { operations, .. } => operations
-                .into_iter()
+                .iter()
                 .filter(|operation| operation.name == op)
                 .count(),
             _ => 0,

@@ -1,4 +1,6 @@
-//! Daemon declarations are read on demand so revocations do not linger in a cache.
+//! Daemon declarations come from the transport's catalog: a shared copy the
+//! daemon's catalog watch keeps current, or a read per request when no watch
+//! is open, so a revocation never outlives the generation that announced it.
 use crate::transport::{Transport, WireError};
 use crate::{Catalog, EventBody, EventDecl, EventOrigin, OpDecl, OpKind};
 use serde_json::{Value, json};
@@ -195,7 +197,7 @@ impl SubcCatalog {
         module: &str,
         op: &str,
     ) -> Result<(Option<CatalogOp>, bool), WireError> {
-        let catalog = self.snapshot()?;
+        let catalog = self.snapshot_for(module)?;
         let Some(entry) = catalog.module(module) else {
             return Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
                 crate::flow_refusal::RefusalReason::ProviderNotCatalogued,
@@ -264,6 +266,31 @@ impl SubcCatalog {
         self.snapshot
             .clone()
             .unwrap_or_else(|| self.transport.catalog_snapshot())
+    }
+    /// A snapshot to look `module` up in. When the module is missing from a
+    /// copy the transport served from its shared cache, the module may have
+    /// registered after that copy was read, so the transport reads once more.
+    /// A failed refresh keeps the first answer: the module stays missing.
+    fn snapshot_for(
+        &self,
+        module: &str,
+    ) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
+        let snapshot = self.snapshot()?;
+        if snapshot.module(module).is_some() {
+            return Ok(snapshot);
+        }
+        match self.transport.refresh_catalog_snapshot(&snapshot) {
+            Some(Ok(fresh)) => Ok(fresh),
+            Some(Err(error)) => {
+                tracing::debug!(
+                    ?error,
+                    module,
+                    "catalog refresh after a missing module failed"
+                );
+                Ok(snapshot)
+            }
+            None => Ok(snapshot),
+        }
     }
     /// Reads `module`'s own declaration of whether its tool `op` can make it
     /// emit an event: the typed `emits_events` of the tool's entry in the
@@ -438,19 +465,19 @@ impl Catalog for SubcCatalog {
         self.known_workspace(id)
     }
     fn supports_flow_scopes(&self, module: &str) -> bool {
-        self.snapshot().ok().is_some_and(|c| {
+        self.snapshot_for(module).ok().is_some_and(|c| {
             c.module(module)
                 .is_some_and(|m| m.provides("flow-scopes/v1"))
         })
     }
     fn supports_flow_calls(&self, module: &str) -> bool {
-        self.snapshot().ok().is_some_and(|c| {
+        self.snapshot_for(module).ok().is_some_and(|c| {
             c.module(module)
                 .is_some_and(|m| m.provides("flow-scopes/v1") || m.provides("call-modes/v1"))
         })
     }
     fn flow_operations(&self, module: &str) -> Result<Option<Vec<String>>, WireError> {
-        let catalog = self.snapshot()?;
+        let catalog = self.snapshot_for(module)?;
         let entry = catalog.module(module).ok_or_else(|| {
             WireError::Unreadable(format!("module {module} missing from catalog"))
         })?;
@@ -460,7 +487,7 @@ impl Catalog for SubcCatalog {
         if !self.daemon_capabilities.supports_catalog_events() {
             return None;
         }
-        let catalog = self.snapshot().ok()?;
+        let catalog = self.snapshot_for(module).ok()?;
         declared_event(catalog.module(module)?.events.as_ref()?, name, version)
     }
     fn op(&self, module: &str, op: &str) -> Option<OpDecl> {

@@ -71,13 +71,24 @@ fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // The hosts' connection consumes and closes subc's launch-nonce pipe.
-    // Establish it before the handler can start the pool, including warm spares.
+    // Read subc's launch inputs before this process spawns anything, workers
+    // and the privacy probe included. The launch nonce's pipe stays
+    // inheritable until its first read, so a child spawned earlier could take
+    // the module's credential; deciding whether a registration channel was
+    // handed over marks that descriptor close-on-exec the same way.
+    if let Err(error) = subc_client_rs::launch_nonce() {
+        tracing::error!("cannot read the launch nonce before worker startup: {error}");
+        return ExitCode::FAILURE;
+    }
+    let _ = subc_os::registration_channel::supervised();
+    // The hosts share one daemon connection, opened once the module is
+    // registered (see `run`): under a registration channel the connection is
+    // bound by a claim that only the registered module connection can mint.
     let transport =
-        match basal_host::transport::SubcTransport::connect(std::time::Duration::from_secs(30)) {
+        match basal_host::transport::SubcTransport::deferred(std::time::Duration::from_secs(30)) {
             Ok(transport) => transport,
             Err(error) => {
-                tracing::error!("cannot consume launch nonce before worker startup: {error:?}");
+                tracing::error!("cannot prepare the daemon connection: {error:?}");
                 return ExitCode::FAILURE;
             }
         };
@@ -125,6 +136,7 @@ fn serve() -> ExitCode {
     let initialized_models = models.clone();
     let ready_models = models;
     let event_transport = transport.clone();
+    let attach_transport = transport.clone();
     // Startup hooks and the backup catalog need the resolved store path.
     let store_path_cell = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
     let configured_store = store_path_cell.clone();
@@ -229,7 +241,7 @@ fn serve() -> ExitCode {
             models.wake.start(&host);
         }
     }));
-    match run(handler, scope_connection) {
+    match run(handler, scope_connection, attach_transport) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("module exited: {e}");
@@ -276,17 +288,41 @@ fn runtime_hooks(
 async fn run(
     handler: BasalHandler,
     scope_connection: basal_module::scope_connection::ScopeConnection,
+    transport: Arc<basal_host::transport::SubcTransport>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // The SDK wrapper preserves launch argument, module-id and nonce handling
-    // while returning the handle from serve_with_handle. Its future must stay
-    // on this runtime while blocking admission threads await describe replies.
+    // while returning the handle from serve_from_env_with_handle. Its future
+    // must stay on this runtime while blocking admission threads await
+    // describe replies.
     let (handle, serving) =
         subc_client_rs::serve_from_env_with_handle(manifest(), handler.clone()).await?;
     scope_connection.attach(handle, tokio::runtime::Handle::current());
-    let result = serving.await;
-    // Also drain on GOODBYE or a protocol failure, before Tokio waits for any
-    // blocking request closures left behind by the SDK's async cancellation.
-    handler.shutdown().await;
+    // Serve before connecting the hosts: under a registration channel the
+    // consumer's claim is minted over the module connection, which only a
+    // running serve future reads. Startup work that calls the daemon before
+    // the connection opens waits for it, bounded by the call timeout.
+    let serving = tokio::spawn(serving);
+    match tokio::task::spawn_blocking(move || transport.attach()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::error!("cannot open the daemon connection: {error:?}");
+            handler.drain().await;
+            std::process::exit(1);
+        }
+        Err(error) => {
+            tracing::error!("opening the daemon connection panicked: {error}");
+            handler.drain().await;
+            std::process::exit(1);
+        }
+    }
+    let result = serving.await?;
+    // Normally `on_connection_end` has drained already; a protocol failure
+    // ends serving without that hook, and drain runs only once.
+    if !handler.drain().await {
+        // The shutdown thread is still running; waiting for it here would
+        // outlast the daemon's stop budget. Startup recovery handles the rest.
+        std::process::exit(1);
+    }
     result?;
     Ok(())
 }
