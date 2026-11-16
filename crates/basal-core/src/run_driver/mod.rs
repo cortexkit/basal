@@ -67,6 +67,13 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     fn now_ms(&self) -> i64;
     #[cfg(test)]
     fn before_worker_release(&self) {}
+    /// Longest wait for a worker frame between the activation loop's checks.
+    /// Tests lengthen it to prove that a finished dispatch wakes the loop
+    /// without relying on this poll.
+    #[cfg(test)]
+    fn worker_poll(&self) -> Duration {
+        worker::WORKER_POLL
+    }
     /// Shutdown kills worker channels without turning their closure into a
     /// failed activation or publishing a late host reply.
     fn stopping(&self) -> bool {
