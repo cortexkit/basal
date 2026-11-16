@@ -2,6 +2,7 @@
 //! records. Records, terminal projections and worker control are adapters.
 
 mod committer;
+pub(crate) use committer::Expected;
 pub mod lock_order;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -264,6 +265,13 @@ impl Run<crate::run_records::Records> {
             actor.generation,
             actor.records.state().clone(),
         )
+    }
+
+    /// Reads live state in place under the actor, for readers that need a few
+    /// fields rather than a copy of the whole call history. `read` must not
+    /// block, do I/O or take another lock.
+    pub(crate) fn read_state<T>(&self, read: impl FnOnce(&crate::run_records::State) -> T) -> T {
+        read(self.actor.lock().records.state())
     }
 
     pub(crate) fn closed_hint(&self, commit_seq: u64) {
@@ -782,6 +790,12 @@ impl<R: RunRecords> RunStore<R> {
             .collect();
         store.read(|conn| f(conn, &runs))
     }
+    /// Tells the terminal committer that a run of `flow` is being driven and
+    /// may complete soon, so other flows' terminal groups wait for it rather
+    /// than committing alone. Dropping the result withdraws it.
+    pub(crate) fn expect_completion(&self, flow: &str) -> committer::Expected {
+        self.committer.expect(flow)
+    }
     pub fn close(
         &self,
         run: &Arc<Run<R>>,
@@ -814,6 +828,10 @@ impl<R: RunRecords> RunStore<R> {
             Some(generation) => run.owner_lost(generation),
             None => CoreError::Unavailable("another closer is active".into()),
         })?;
+        // Tell the committer a terminal write for this flow is on its way, so
+        // a group forming for another flow waits for it; an early return
+        // below withdraws it.
+        let closing = self.committer.expect(&run.flow);
         {
             let mut actor = run.actor.lock();
             if let Some(generation) = generation {
@@ -859,7 +877,7 @@ impl<R: RunRecords> RunStore<R> {
             .unwrap_or_default();
         builder.prepare(&mut actor.records)?;
         let write = builder.build(&run.id, &actor.records, reservations)?;
-        self.committer.commit(run.id.clone(), write)?;
+        closing.commit(run.id.clone(), write)?;
         accounting.runs.remove(&run.id);
         run.routing.store(Routing::Closed as u8, Ordering::Release);
         if !self.retain_detail.load(Ordering::Acquire) {

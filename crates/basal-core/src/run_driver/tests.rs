@@ -94,6 +94,7 @@ struct Service {
     dispatch_revoked: AtomicBool,
     before_release: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     held_dispatches: Mutex<Option<Vec<DispatchJob>>>,
+    poll: Mutex<Duration>,
 }
 impl CloseDriver for Service {
     fn stop_worker(&self, _: &str) -> Result<()> {
@@ -147,7 +148,7 @@ impl Services for Service {
         lock_order::assert_lock_free();
         Ok(self.gate.lock().unwrap().clone())
     }
-    fn prepare(&self, _: &LiveRun, call: &HostCall, state: &State) -> Result<Prepared> {
+    fn prepare(&self, _: &LiveRun, call: &HostCall, view: &PrepareView) -> Result<Prepared> {
         lock_order::assert_lock_free();
         if crate::kv::is_kv(&call.kind) {
             return Ok(Prepared::Kv(crate::kv::KvLimits::default()));
@@ -170,7 +171,7 @@ impl Services for Service {
         }
         if op == "read" {
             return Ok(Prepared::Local {
-                value: JsonText::new(state.overlay.get("counter").unwrap().clone().unwrap())
+                value: JsonText::new(view.overlay.get("counter").unwrap().clone().unwrap())
                     .unwrap(),
                 effect: None,
             });
@@ -247,6 +248,9 @@ impl Services for Service {
         if let Some(hook) = hook {
             hook();
         }
+    }
+    fn worker_poll(&self) -> Duration {
+        *self.poll.lock().unwrap()
     }
     fn now_ms(&self) -> i64 {
         self.now.load(Ordering::Acquire)
@@ -603,6 +607,202 @@ fn expired_run_never_resends_or_starts_worker() {
     );
 }
 
+/// A worker read through a split receiver, as the driver reads real workers:
+/// it issues `calls` queries one at a time, blocking on each, and finishes
+/// once the last outcome arrives.
+struct SplitWorker {
+    welcome: basal_proto::Welcome,
+    generation: u64,
+    calls: u64,
+    frames: Option<std::sync::mpsc::Sender<basal_proto::WorkerMessage>>,
+    receiver: Option<SplitReceiver>,
+    log: Arc<MemoryLog>,
+    delivered: Vec<basal_proto::Outcome>,
+}
+impl SplitWorker {
+    fn new(f: &Fixture, generation: u64, calls: u64) -> Self {
+        let (frames, receiver) = std::sync::mpsc::channel();
+        Self {
+            welcome: Worker::new(Vec::new()).welcome,
+            generation,
+            calls,
+            frames: Some(frames),
+            receiver: Some(SplitReceiver {
+                frames: receiver,
+                service: f.service.clone(),
+                reads: 0,
+            }),
+            log: f.log.clone(),
+            delivered: Vec::new(),
+        }
+    }
+    fn issue(position: u64) -> Vec<basal_proto::WorkerMessage> {
+        vec![
+            basal_proto::WorkerMessage::HostCall(call(position, "query")),
+            basal_proto::WorkerMessage::Blocked {
+                awaiting: vec![position],
+            },
+        ]
+    }
+}
+struct SplitReceiver {
+    frames: std::sync::mpsc::Receiver<basal_proto::WorkerMessage>,
+    service: Arc<Service>,
+    reads: usize,
+}
+impl crate::channel::WorkerReceiver for SplitReceiver {
+    fn recv(&mut self) -> std::result::Result<basal_proto::WorkerMessage, crate::ChannelError> {
+        self.reads += 1;
+        if self.reads == 3 {
+            // The driver has handled the call and the Blocked frame and now
+            // waits for a frame that only the delivery will cause. Finish the
+            // held dispatch only now, so nothing but its completion can end
+            // that wait.
+            let held = self.service.held_dispatches.lock().unwrap().take();
+            for job in held.unwrap_or_default() {
+                std::thread::spawn(job);
+            }
+        }
+        self.frames.recv().map_err(|_| crate::ChannelError::Closed)
+    }
+}
+impl crate::channel::WorkerChannel for SplitWorker {
+    fn welcome(&self) -> &basal_proto::Welcome {
+        &self.welcome
+    }
+    fn send(
+        &mut self,
+        message: &basal_proto::ParentMessage,
+    ) -> std::result::Result<(), crate::ChannelError> {
+        use basal_proto::{ActivationResult, ParentMessage, WorkerMessage};
+        let reply = match message {
+            ParentMessage::Activate(_) => Self::issue(0),
+            ParentMessage::Deliver(outcome) => {
+                let records = self.log.records.lock().unwrap();
+                let synced = *self.log.synced.lock().unwrap();
+                assert!(
+                    records[..synced].iter().any(|r| matches!(
+                        &r.body,
+                        Body::Arrived(a) if a.position == outcome.position
+                    )),
+                    "an outcome was delivered before its arrival was synced"
+                );
+                self.delivered.push(outcome.clone());
+                if outcome.position + 1 < self.calls {
+                    Self::issue(outcome.position + 1)
+                } else {
+                    vec![WorkerMessage::Finished {
+                        activation_id: self.generation,
+                        result: ActivationResult::Completed {
+                            value: JsonText::new("1").unwrap(),
+                        },
+                    }]
+                }
+            }
+            other => panic!("unexpected parent message {other:?}"),
+        };
+        for frame in reply {
+            if let Some(frames) = &self.frames {
+                frames.send(frame).unwrap();
+            }
+        }
+        Ok(())
+    }
+    fn recv(
+        &mut self,
+        _: Duration,
+    ) -> std::result::Result<basal_proto::WorkerMessage, crate::ChannelError> {
+        panic!("the driver reads split workers through their receiver")
+    }
+    fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
+        Box::new(self.receiver.take().expect("one receiver per activation"))
+    }
+    // Killing ends a blocked receive, as it does for a real worker.
+    fn kill(&mut self) {
+        self.frames = None;
+    }
+}
+
+#[test]
+fn finished_dispatch_wakes_the_frame_wait_and_keeps_synced_release_order() {
+    let f = Fixture::new();
+    // A frame poll longer than the activation timeout: only the finished
+    // dispatch itself can wake the driver in time to deliver the outcome.
+    *f.service.poll.lock().unwrap() = Duration::from_secs(600);
+    *f.service.held_dispatches.lock().unwrap() = Some(Vec::new());
+    let a = f.claim(0);
+    let mut worker = SplitWorker::new(&f, a.generation, 1);
+    let end = a
+        .drive(
+            &mut worker,
+            request(),
+            Arc::new(Effects),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(end, crate::ActivationEnd::Succeeded { value: "1".into() });
+    assert!(f.service.held_dispatches.lock().unwrap().is_none());
+    assert_eq!(
+        worker
+            .delivered
+            .iter()
+            .map(|o| (o.position, o.delivery_order, o.value.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, "42")]
+    );
+    // The call's records keep their causal order: the intent, then the
+    // arrival, then its release under the shared delivery counter.
+    let order: Vec<_> = f
+        .log
+        .records
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| match &r.body {
+            Body::Intent(i) => Some(format!("intent:{}", i.call.position)),
+            Body::Arrived(a) => Some(format!("arrived:{}", a.position)),
+            Body::Released {
+                position,
+                delivery_order,
+            } => Some(format!("released:{position}:{delivery_order}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, vec!["intent:0", "arrived:0", "released:0:0"]);
+    assert_eq!(*f.service.acks.lock().unwrap(), vec![0]);
+}
+
+#[test]
+fn worker_loop_and_preparation_never_copy_the_whole_run_state() {
+    const CALLS: u64 = 32;
+    let f = Fixture::new();
+    let a = f.claim(0);
+    let mut worker = SplitWorker::new(&f, a.generation, CALLS);
+    super::STATE_COPIES.with(|copies| copies.set(0));
+    let end = a
+        .drive(
+            &mut worker,
+            request(),
+            Arc::new(Effects),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(end, crate::ActivationEnd::Succeeded { value: "1".into() });
+    // The loop borrows the state under the actor and preparation gets a
+    // PrepareView; copying the whole state per pass or per call made a run's
+    // cost grow with the square of its call count.
+    let copies = super::STATE_COPIES.with(std::cell::Cell::get);
+    assert_eq!(copies, 0, "{copies} full state copies for {CALLS} calls");
+    assert_eq!(
+        worker
+            .delivered
+            .iter()
+            .map(|o| (o.position, o.delivery_order))
+            .collect::<Vec<_>>(),
+        (0..CALLS).map(|p| (p, p)).collect::<Vec<_>>()
+    );
+}
+
 struct Effects;
 impl TerminalEffects for Effects {
     fn capture(&self, _: &LiveRun, _: &State, _: RunState) -> Result<Box<dyn TerminalWrite>> {
@@ -683,6 +883,7 @@ impl Fixture {
             dispatch_revoked: AtomicBool::new(false),
             before_release: Mutex::new(None),
             held_dispatches: Mutex::new(None),
+            poll: Mutex::new(worker::WORKER_POLL),
         });
         let cut = Arc::new(Cut(Mutex::new(None)));
         let registry = Arc::new(RunStore::new_staged(store.clone(), Arc::new(NoHooks)));

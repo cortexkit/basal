@@ -544,6 +544,73 @@ pub fn insert_obligation(tx: &Transaction<'_>, row: &Obligation) -> Result<()> {
     if row.state == ObligationState::Settled {
         return save_receipt(tx, row);
     }
+    insert_unsettled(tx, row)
+}
+
+/// Inserts one run's obligations in order, with the same checks as
+/// [`insert_obligation`]. The run's saved receipts are decoded and rewritten
+/// once for the whole batch: per row, a terminal close with many calls decoded
+/// and re-encoded every earlier receipt inside the SQLite write lock.
+pub fn insert_obligations(tx: &Transaction<'_>, run_id: &str, rows: &[Obligation]) -> Result<()> {
+    // Decoded on first use; `None` inside means the run has no history row.
+    let mut saved: Option<Option<BTreeMap<u64, SavedReceipt>>> = None;
+    let mut changed = false;
+    for row in rows {
+        if row.run_id != run_id {
+            return Err(CoreError::Invalid("obligation batch spans runs".into()));
+        }
+        let receipts = match &mut saved {
+            Some(receipts) => receipts,
+            None => saved.insert(saved_receipts(tx, run_id)?),
+        };
+        let open: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM obligations WHERE run_id=?1 AND position=?2)",
+            params![run_id, number(row.position)?],
+            |r| r.get(0),
+        )?;
+        if open
+            || receipts
+                .as_ref()
+                .is_some_and(|r| r.contains_key(&row.position))
+        {
+            return Err(CoreError::Invalid("duplicate obligation".into()));
+        }
+        if row.state != ObligationState::Settled {
+            insert_unsettled(tx, row)?;
+            continue;
+        }
+        let settled_at = row
+            .settled_at
+            .ok_or_else(|| CoreError::Invalid("incomplete receipt".into()))?;
+        let value_hash = match row.receipt {
+            Some(Receipt::Value(hash)) => Some(hash),
+            Some(Receipt::Unknown) => None,
+            None => return Err(CoreError::Invalid("incomplete receipt".into())),
+        };
+        receipts
+            .as_mut()
+            .ok_or_else(|| CoreError::NoSuchRun(run_id.into()))?
+            .insert(
+                row.position,
+                SavedReceipt {
+                    handle: row.handle.clone(),
+                    audit_at: row.audit_at,
+                    value_hash,
+                    settled_at,
+                },
+            );
+        changed = true;
+    }
+    if changed && let Some(Some(receipts)) = &saved {
+        tx.execute(
+            "UPDATE run_history SET receipts=?2 WHERE run_id=?1",
+            params![run_id, encode(receipts)?],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_unsettled(tx: &Transaction<'_>, row: &Obligation) -> Result<()> {
     let hash = match row.receipt {
         Some(Receipt::Value(hash)) => Some(hash),
         _ => None,

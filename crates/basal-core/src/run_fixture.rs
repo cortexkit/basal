@@ -363,8 +363,8 @@ impl Runtime {
             .store()
             .read(|c| sql::live(c, id))?
             .ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
-        let state = self
-            .staged_snapshot(id)
+        let view = self
+            .staged_read(id, |state| crate::run_driver::PrepareView::of(state, call))
             .ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
         let services = super::Services {
             shared: Arc::downgrade(&self.shared),
@@ -372,7 +372,7 @@ impl Runtime {
             acknowledgements: Default::default(),
             audit_actor: None,
         };
-        crate::run_driver::Services::prepare(&services, &live, call, &state)
+        crate::run_driver::Services::prepare(&services, &live, call, &view)
     }
     /// Recover and send only calls whose durable identities authorize a retry.
     pub fn fixture_dispatch_pending(&self, id: &str) -> Result<()> {

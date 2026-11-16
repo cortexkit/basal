@@ -16,7 +16,7 @@ fn refused(code: &str, message: &str) -> Prepared {
 pub(super) fn prepare(
     store: &Store,
     live: &LiveRun,
-    state: &State,
+    view: &super::PrepareView,
     call: &HostCall,
     limits: crate::kv::KvLimits,
 ) -> Result<Prepared> {
@@ -44,7 +44,7 @@ pub(super) fn prepare(
             })?
             .collect::<rusqlite::Result<BTreeMap<_, _>>>()?)
     })?;
-    for (key, value) in &state.overlay {
+    for (key, value) in &view.overlay {
         if let Some(value) = value {
             values.insert(key.clone(), value.clone());
         } else {

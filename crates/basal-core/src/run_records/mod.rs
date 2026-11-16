@@ -184,10 +184,26 @@ impl Records {
         self.last_lsn
     }
 
-    pub(crate) fn preview(&self, generation: u64, body: &Body) -> Result<State> {
-        let mut next = self.state.clone();
-        next.apply(generation, body)?;
-        Ok(next)
+    /// Runs `read` on the state as it would be after appending `body`, then
+    /// puts the state back. Nothing is logged. The record is applied in place
+    /// and reverted, rather than applied to a copy of the whole history.
+    pub(crate) fn with_preview<T>(
+        &mut self,
+        generation: u64,
+        body: &Body,
+        read: impl FnOnce(&State) -> T,
+    ) -> Result<T> {
+        let undo = self.state.undo_for(body);
+        #[cfg(test)]
+        let before = self.state.clone();
+        let result = self
+            .state
+            .apply(generation, body)
+            .map(|()| read(&self.state));
+        self.state.restore(undo);
+        #[cfg(test)]
+        assert_eq!(self.state, before, "a preview changed the run state");
+        result
     }
 
     /// The activation releases only awaited arrivals, in mailbox arrival order.
@@ -288,36 +304,54 @@ impl Records {
         }
         let sync = self.state.requires_sync(&body)?;
         // Validate before writing; failed appends must not change the overlay.
-        let mut next = self.state.clone();
-        next.apply(generation, &body)?;
-        let intent_position = match &body {
-            Body::Intent(intent) => Some(intent.call.position),
-            _ => None,
+        // The record is applied in place and reverted on failure, so an append
+        // costs the record's size rather than a copy of the whole history.
+        let unresolved = |state: &State, position: u64| {
+            state
+                .calls
+                .get(&position)
+                .is_some_and(|call| call.unknown.is_some() && call.arrival.is_none())
         };
         // Only these records can change the reader's reconciliation predicate.
         // Count the affected call, not every call on every ordinary append.
-        let reconcile_delta = match &body {
+        let reconcile_position = match &body {
             Body::Unknown { position, .. } | Body::CallScopeCut { position } => Some(*position),
             Body::Arrived(arrival) => Some(arrival.position),
             Body::Resolution(resolution) => Some(resolution.position),
             _ => None,
         }
-        .filter(|_| self.overview_changes.is_some())
-        .map(|position| {
-            let unresolved = |state: &State| {
-                state
-                    .calls
-                    .get(&position)
-                    .is_some_and(|call| call.unknown.is_some() && call.arrival.is_none())
-            };
-            (unresolved(&self.state), unresolved(&next))
-        });
-        let lsn = self.log.append(Record {
+        .filter(|_| self.overview_changes.is_some());
+        let was_unresolved = reconcile_position.map(|p| unresolved(&self.state, p));
+        let undo = self.state.undo_for(&body);
+        #[cfg(test)]
+        let before = self.state.clone();
+        let revert = |state: &mut State, undo| {
+            state.restore(undo);
+            #[cfg(test)]
+            assert_eq!(*state, before, "a rejected append changed the run state");
+        };
+        if let Err(error) = self.state.apply(generation, &body) {
+            revert(&mut self.state, undo);
+            return Err(error);
+        }
+        let intent_position = match &body {
+            Body::Intent(intent) => Some(intent.call.position),
+            _ => None,
+        };
+        let reconcile_delta = reconcile_position
+            .zip(was_unresolved)
+            .map(|(position, before)| (before, unresolved(&self.state, position)));
+        let lsn = match self.log.append(Record {
             run_id: self.run_id.clone(),
             generation,
             body,
-        })?;
-        self.state = next;
+        }) {
+            Ok(lsn) => lsn,
+            Err(error) => {
+                revert(&mut self.state, undo);
+                return Err(error);
+            }
+        };
         if let Some((before, after)) = reconcile_delta {
             let previous = self.unresolved_calls;
             self.unresolved_calls =

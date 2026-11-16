@@ -50,7 +50,8 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     /// Verify the exact version and code hash in run_identities against core's
     /// install status. Deferred and revoked answers must not activate a worker.
     fn install(&self, run: &LiveRun) -> Result<Gate>;
-    fn prepare(&self, run: &LiveRun, call: &HostCall, state: &State) -> Result<Prepared>;
+    /// Runs without the actor on a view copied under it (see [`PrepareView`]).
+    fn prepare(&self, run: &LiveRun, call: &HostCall, view: &PrepareView) -> Result<Prepared>;
     fn dispatch(&self, run: &LiveRun, intent: &Intent) -> Result<Reply>;
     /// Register dispatch work with the runtime's thread owner, including sends
     /// whose sibling has already ended the activation with a crash or error.
@@ -67,6 +68,13 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     fn now_ms(&self) -> i64;
     #[cfg(test)]
     fn before_worker_release(&self) {}
+    /// Longest wait for a worker frame between the activation loop's checks.
+    /// Tests lengthen it to prove that a finished dispatch wakes the loop
+    /// without relying on this poll.
+    #[cfg(test)]
+    fn worker_poll(&self) -> Duration {
+        worker::WORKER_POLL
+    }
     /// Shutdown kills worker channels without turning their closure into a
     /// failed activation or publishing a late host reply.
     fn stopping(&self) -> bool {
@@ -74,6 +82,67 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     }
     fn saturated(&self, _: &rusqlite::Transaction<'_>, _: &LiveRun, _: &str) -> Result<()> {
         Ok(())
+    }
+}
+
+/// What host preparation may read about a run. It is copied while holding the
+/// run actor (the per-run lock that serializes appends to the run's records),
+/// so preparation can run without that lock while it reads the catalog or
+/// SQLite. It holds the call being prepared and aggregates over the others,
+/// never a copy of every call: a whole-state copy per call made a run's cost
+/// grow with the square of its call count.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrepareView {
+    pub generation: u64,
+    /// Calls recorded so far, including the one being prepared if present.
+    pub call_count: u64,
+    /// Replay-journal bytes of the recorded calls: arguments, frozen requests
+    /// and outcome values.
+    pub journal_bytes: u64,
+    /// The recorded state of the call being prepared, if it was issued before.
+    pub current: Option<crate::run_records::CallState>,
+    /// The run's pending KV writes, which reads see before SQLite.
+    pub overlay: std::collections::BTreeMap<String, Option<String>>,
+    /// Target agents of earlier `OpFor` calls; filled only when preparing one.
+    pub op_for_targets: BTreeSet<String>,
+    pub(crate) reader: crate::run_readers::LiveFields,
+}
+
+impl PrepareView {
+    pub fn of(state: &State, call: &HostCall) -> Self {
+        let journal_bytes = state
+            .calls
+            .values()
+            .map(|c| {
+                (c.identity.args.len()
+                    + c.intent.as_ref().map_or(0, |i| i.frozen_request.len())
+                    + c.arrival.as_ref().map_or(0, |a| a.value.len())
+                    + c.sync.as_ref().map_or(0, |s| s.value.len())) as u64
+            })
+            .sum();
+        let op_for_targets = if matches!(call.kind, basal_proto::CallKind::OpFor { .. }) {
+            state
+                .calls
+                .values()
+                .filter(|c| matches!(c.identity.kind, basal_proto::CallKind::OpFor { .. }))
+                .filter_map(|c| {
+                    let value: serde_json::Value =
+                        serde_json::from_str(c.intent.as_ref()?.frozen_request.as_str()).ok()?;
+                    value["agent"].as_str().map(str::to_owned)
+                })
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        Self {
+            generation: state.generation,
+            call_count: state.calls.len() as u64,
+            journal_bytes,
+            current: state.calls.get(&call.position).cloned(),
+            overlay: state.overlay.clone(),
+            op_for_targets,
+            reader: crate::run_readers::LiveFields::of(state, true),
+        }
     }
 }
 
@@ -142,6 +211,10 @@ pub struct Activation {
     run: Arc<Run<Records>>,
     live: LiveRun,
     pub generation: u64,
+    /// While the activation lives its run may complete, so the terminal
+    /// committer keeps other flows' groups open for it instead of committing
+    /// them alone. Released once the run's own terminal write has committed.
+    completion: std::sync::Mutex<Option<crate::run_store::Expected>>,
 }
 
 pub enum Claim {
@@ -267,11 +340,13 @@ impl Driver {
                 generation,
             })?;
         run.activate(generation, |_| Ok(()))?;
+        let completion = Some(self.registry.expect_completion(&live.flow_id)).into();
         Ok(Activation {
             driver: self.clone(),
             run,
             live,
             generation,
+            completion,
         })
     }
     /// Timers and the host integration call this after making an awaited call
@@ -438,26 +513,49 @@ impl Driver {
             a.account(|records, _| Ok(((), accounting::rows(records.state(), &self.budgets)?)))?;
             Ok(next)
         })?;
+        let completion = Some(self.registry.expect_completion(&live.flow_id)).into();
         Ok(Claim::Active(Box::new(Activation {
             driver: self.clone(),
             run,
             live,
             generation,
+            completion,
         })))
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Full state copies made through [`Activation::state`] on this thread,
+    /// so tests can bound how often the driver copies the whole history.
+    static STATE_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Activation {
+    /// A complete copy of the run's state, for callers that must use it after
+    /// releasing the actor (host preparation, worker replay prefix). Each copy
+    /// costs the whole call history; prefer [`Self::with_state`] for reads.
     pub fn state(&self) -> Result<State> {
+        #[cfg(test)]
+        STATE_COPIES.with(|copies| copies.set(copies.get() + 1));
+        self.with_state(State::clone)
+    }
+
+    /// Reads the state in place under the run actor. `read` must not block or
+    /// do I/O: it runs with the actor held.
+    pub(crate) fn with_state<T>(&self, read: impl FnOnce(&State) -> T) -> Result<T> {
         self.run
-            .activate(self.generation, |a| Ok(a.records().state().clone()))
+            .activate(self.generation, |a| Ok(read(a.records().state())))
     }
 
     pub fn deadline_passed(&self) -> Result<bool> {
-        Ok(self
-            .state()?
-            .claim
-            .is_some_and(|claim| self.driver.services.now_ms() >= claim.deadline_at))
+        let now = self.driver.services.now_ms();
+        self.with_state(|state| {
+            state
+                .claim
+                .as_ref()
+                .is_some_and(|claim| now >= claim.deadline_at)
+        })
     }
 
     pub fn fingerprint(&self, value: String) -> Result<bool> {
@@ -505,18 +603,22 @@ impl Activation {
                 "call is not available to the flow profile".into(),
             ));
         }
-        let state = self.state()?;
-        if let Some((kind, detail)) = control_failure(&state) {
-            return Err(CoreError::Worker(format!("{kind}:{detail}")));
-        }
-        if state.calls.contains_key(&call.position) {
-            state.check_issued(&call)?;
-            return Err(CoreError::Worker("worker reissued a recorded call".into()));
-        }
-        let prepared = self.driver.services.prepare(&self.live, &call, &state)?;
+        // Read what this call needs under the actor; preparation then runs
+        // without it on the copied view.
+        let view = self.with_state(|state| {
+            if let Some((kind, detail)) = control_failure(state) {
+                return Err(CoreError::Worker(format!("{kind}:{detail}")));
+            }
+            if state.calls.contains_key(&call.position) {
+                state.check_issued(&call)?;
+                return Err(CoreError::Worker("worker reissued a recorded call".into()));
+            }
+            Ok(PrepareView::of(state, &call))
+        })??;
+        let prepared = self.driver.services.prepare(&self.live, &call, &view)?;
         let prepared = match prepared {
             Prepared::Kv(limits) => {
-                local::prepare(&self.driver.store, &self.live, &state, &call, limits)?
+                local::prepare(&self.driver.store, &self.live, &view, &call, limits)?
             }
             other => other,
         };
@@ -809,8 +911,9 @@ impl Activation {
             }
             let cut = a.account(|records, others| {
                 let body = Body::Intent(intent.clone());
-                let proposed = records.preview(self.generation, &body)?;
-                let rows = accounting::rows(&proposed, &self.driver.budgets)?;
+                let rows = records.with_preview(self.generation, &body, |proposed| {
+                    accounting::rows(proposed, &self.driver.budgets)
+                })??;
                 self.driver.store.read(|conn| {
                     accounting::check(
                         conn,
@@ -911,9 +1014,24 @@ impl Activation {
         after_snapshot: impl FnOnce(),
     ) -> Result<Vec<Dispatch>> {
         let mut dispatches = Vec::new();
-        let snapshot = self.state()?;
+        // Copy only the calls the loop below can act on. Settled, accepted and
+        // already reported calls are skipped there, and copying the whole
+        // history on every pass made each new call cost the run's full size.
+        let snapshot: Vec<CallState> = self.with_state(|state| {
+            state
+                .calls
+                .values()
+                .filter(|call| {
+                    !reported.contains(&call.identity.position)
+                        && call.arrival.is_none()
+                        && call.sync.is_none()
+                        && call.accepted.is_none()
+                })
+                .cloned()
+                .collect()
+        })?;
         after_snapshot();
-        for call in snapshot.calls.values() {
+        for call in &snapshot {
             // LongRunning lets the worker finish with Suspended. Keep its
             // acceptance or deferral intact until that suspension is handled;
             // a retry would consume the deferral before park can check it.
@@ -957,10 +1075,10 @@ impl Activation {
                     kind: call.identity.kind.clone(),
                     args: call.identity.args.clone(),
                 };
-                let state = self.state()?;
-                let prepared = match self.driver.services.prepare(&self.live, &call, &state)? {
+                let view = self.with_state(|state| PrepareView::of(state, &call))?;
+                let prepared = match self.driver.services.prepare(&self.live, &call, &view)? {
                     Prepared::Kv(limits) => {
-                        local::prepare(&self.driver.store, &self.live, &state, &call, limits)?
+                        local::prepare(&self.driver.store, &self.live, &view, &call, limits)?
                     }
                     other => other,
                 };
@@ -1222,6 +1340,13 @@ impl Activation {
             &terminal,
             self.driver.services.as_ref(),
         )?;
+        // The run's terminal write has committed; other groups need not wait.
+        drop(
+            self.completion
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take(),
+        );
         self.run.closed_hint(terminal.commit_seq());
         Ok(())
     }

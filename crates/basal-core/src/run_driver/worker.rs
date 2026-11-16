@@ -13,21 +13,63 @@ use crate::{
     runtime::ActivationEnd,
 };
 
+/// Longest wait for a worker frame before the activation loop rechecks its
+/// deadline and control state. Completed dispatches do not wait for it: they
+/// wake the loop through [`Wake::Settled`].
+pub(super) const WORKER_POLL: Duration = Duration::from_millis(100);
+
+/// Everything that can end the activation loop's wait. Worker frames and
+/// finished dispatches share one queue so that a host reply recorded on a
+/// dispatch thread wakes the loop at once instead of after a poll timeout.
+enum Wake {
+    Frame(std::result::Result<WorkerMessage, ChannelError>),
+    /// A dispatch thread has recorded its reply; an awaited outcome may now be
+    /// ready to release.
+    Settled,
+    /// The frame reader thread exited without delivering a final frame, for
+    /// example by panicking. The worker channel is treated as closed.
+    ReaderEnded,
+}
+
+/// What one wait of the activation loop produced.
+enum Received {
+    Frame(WorkerMessage),
+    /// Nothing from the worker; recheck dispatches and pending releases.
+    Recheck,
+}
+
+/// Sends `ReaderEnded` when the frame reader thread exits for any reason,
+/// including a panic, so the activation loop never waits on a reader that is
+/// gone. A wake sent after a final frame is never read.
+struct ReaderExit(mpsc::Sender<Wake>);
+impl Drop for ReaderExit {
+    fn drop(&mut self) {
+        let _ = self.0.send(Wake::ReaderEnded);
+    }
+}
+
 struct Frames {
-    messages: mpsc::Receiver<std::result::Result<WorkerMessage, ChannelError>>,
+    messages: mpsc::Receiver<Wake>,
     permit: mpsc::Sender<()>,
     in_flight: bool,
     finished: Arc<std::sync::atomic::AtomicBool>,
     reader: std::thread::JoinHandle<()>,
 }
 impl Frames {
-    fn start(worker: &mut dyn WorkerChannel) -> Self {
+    /// `wake` and `messages` are the two ends of the loop's wake queue, which
+    /// dispatch threads may already have used before the worker started.
+    fn start(
+        worker: &mut dyn WorkerChannel,
+        wake: mpsc::Sender<Wake>,
+        messages: mpsc::Receiver<Wake>,
+    ) -> Self {
         let mut receiver = worker.receiver();
-        let (send, messages) = mpsc::sync_channel(1);
         let (permit, receive) = mpsc::channel();
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let ended = finished.clone();
         let reader = std::thread::spawn(move || {
+            let send = wake.clone();
+            let _exit = ReaderExit(wake);
             loop {
                 if receive.recv().is_err() {
                     break;
@@ -40,7 +82,7 @@ impl Frames {
                     ended.store(true, std::sync::atomic::Ordering::Release);
                 }
                 let stop = done || message.is_err();
-                if send.send(message).is_err() || stop {
+                if send.send(Wake::Frame(message)).is_err() || stop {
                     break;
                 }
             }
@@ -53,20 +95,24 @@ impl Frames {
             reader,
         }
     }
-    fn recv(&mut self, timeout: Duration) -> std::result::Result<WorkerMessage, ChannelError> {
+    fn recv(&mut self, timeout: Duration) -> std::result::Result<Received, ChannelError> {
         // Read only after the driver finished the previous frame. A timeout
-        // leaves that read in flight rather than requesting another read.
+        // or a dispatch wake leaves that read in flight rather than requesting
+        // another read.
         if !self.in_flight {
             self.permit.send(()).map_err(|_| ChannelError::Closed)?;
             self.in_flight = true;
         }
         match self.messages.recv_timeout(timeout) {
-            Ok(message) => {
+            Ok(Wake::Frame(message)) => {
                 self.in_flight = false;
-                message
+                message.map(Received::Frame)
+            }
+            Ok(Wake::Settled) => Ok(Received::Recheck),
+            Ok(Wake::ReaderEnded) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(ChannelError::Closed)
             }
             Err(mpsc::RecvTimeoutError::Timeout) => Err(ChannelError::Timeout),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ChannelError::Closed),
         }
     }
     fn stop(self, worker: &mut dyn WorkerChannel) -> Result<()> {
@@ -79,6 +125,16 @@ impl Frames {
             .join()
             .map_err(|_| CoreError::Worker("worker receiver panicked".into()))
     }
+}
+
+/// Calls whose possible send is unresolved and still need reconciliation.
+fn unresolved_positions(state: &crate::run_records::State) -> Vec<u64> {
+    state
+        .calls
+        .values()
+        .filter(|c| c.unknown.is_some() && c.arrival.is_none())
+        .map(|c| c.identity.position)
+        .collect()
 }
 
 impl Activation {
@@ -214,23 +270,27 @@ impl Activation {
         )?;
         let mut pending = Vec::new();
         let mut reported = BTreeSet::new();
+        // Dispatch threads and the frame reader share this queue, so a host
+        // reply wakes the loop below as soon as it is recorded.
+        let (wake, woken) = mpsc::channel();
+        let mut woken = Some(woken);
         let spawn = |dispatch: Dispatch| {
             let (tx, rx) = mpsc::sync_channel(1);
+            let wake = wake.clone();
             self.driver.services.spawn_dispatch(Box::new(move || {
                 let _ = tx.send(dispatch.send());
+                // Dispatch::send returns only after the reply is appended, and
+                // after an outcome that needs it is synced. Waking afterwards
+                // lets the loop release it without weakening that ordering.
+                let _ = wake.send(Wake::Settled);
             }))?;
             Ok::<_, CoreError>(rx)
         };
         for dispatch in self.recover_dispatches_for_worker(&reported)? {
             pending.push(spawn(dispatch)?);
         }
-        let state = self.state()?;
-        let unknown: Vec<_> = state
-            .calls
-            .values()
-            .filter(|c| c.unknown.is_some() && c.arrival.is_none())
-            .map(|c| c.identity.position)
-            .collect();
+        let (unknown, prefix) =
+            self.with_state(|state| (unresolved_positions(state), state.prefix()))?;
         if !unknown.is_empty() {
             return Ok(ActivationEnd::NeedsReconcile { positions: unknown });
         }
@@ -248,7 +308,7 @@ impl Activation {
         request.self_input = crate::model::json(self.live.self_input.to_string(), "self input")?;
         request.params_input =
             crate::model::json(self.live.params_input.to_string(), "params input")?;
-        request.prefix = state.prefix();
+        request.prefix = prefix;
         self.script_started()?;
         if worker
             .send(&ParentMessage::Activate(Box::new(request.clone())))
@@ -262,31 +322,36 @@ impl Activation {
         let inline = worker.fixture_inline_recv();
         #[cfg(not(any(test, feature = "test-support")))]
         let inline = false;
-        if !inline {
-            *frames = Some(Frames::start(worker));
+        if !inline && let Some(woken) = woken.take() {
+            *frames = Some(Frames::start(worker, wake.clone(), woken));
         }
         let mut awaiting = Vec::new();
         loop {
-            for rx in &pending {
-                match rx.try_recv() {
-                    Ok(result) => result?,
-                    Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => {}
+            // Drop finished dispatches so each pass checks only those still
+            // running; the first recorded error ends the activation as before.
+            let mut failed = None;
+            pending.retain(|rx: &mpsc::Receiver<Result<()>>| match rx.try_recv() {
+                Ok(Ok(())) | Err(mpsc::TryRecvError::Disconnected) => false,
+                Ok(Err(error)) => {
+                    failed.get_or_insert(error);
+                    false
                 }
+                Err(mpsc::TryRecvError::Empty) => true,
+            });
+            if let Some(error) = failed {
+                return Err(error);
             }
             for dispatch in self.recover_dispatches_for_worker(&reported)? {
                 pending.push(spawn(dispatch)?);
             }
-            let unknown: Vec<_> = self
-                .state()?
-                .calls
-                .values()
-                .filter(|c| c.unknown.is_some() && c.arrival.is_none())
-                .map(|c| c.identity.position)
-                .collect();
+            // One borrowed read under the actor instead of copying the whole
+            // call history on every pass of this loop.
+            let (unknown, control) =
+                self.with_state(|state| (unresolved_positions(state), control_failure(state)))?;
             if !unknown.is_empty() {
                 return Ok(ActivationEnd::NeedsReconcile { positions: unknown });
             }
-            if let Some((kind, detail)) = control_failure(&self.state()?) {
+            if let Some((kind, detail)) = control {
                 worker.kill();
                 return self.fail(kind, detail, effects);
             }
@@ -308,18 +373,18 @@ impl Activation {
                         return Ok(ActivationEnd::Requeued);
                     }
                 } else {
-                    let state = self.state()?;
-                    let positions: Vec<_> = awaiting
-                        .iter()
-                        .copied()
-                        .filter(|p| {
-                            state
-                                .calls
-                                .get(p)
-                                .is_some_and(|c| c.accepted.is_some() || c.deferred.is_some())
-                                && reported.insert(*p)
-                        })
-                        .collect();
+                    let positions: Vec<_> =
+                        self.with_state(|state| {
+                            awaiting
+                                .iter()
+                                .copied()
+                                .filter(|p| {
+                                    state.calls.get(p).is_some_and(|c| {
+                                        c.accepted.is_some() || c.deferred.is_some()
+                                    }) && reported.insert(*p)
+                                })
+                                .collect()
+                        })?;
                     if !positions.is_empty()
                         && worker
                             .send(&ParentMessage::LongRunning { positions })
@@ -330,15 +395,17 @@ impl Activation {
                     }
                 }
             }
-            let wait = until
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(100));
-            let message = match frames
-                .as_mut()
-                .map_or_else(|| worker.recv(wait), |frames| frames.recv(wait))
-            {
-                Ok(message) => message,
-                Err(ChannelError::Timeout) => continue,
+            #[cfg(not(test))]
+            let poll = WORKER_POLL;
+            #[cfg(test)]
+            let poll = self.driver.services.worker_poll();
+            let wait = until.saturating_duration_since(Instant::now()).min(poll);
+            let message = match frames.as_mut().map_or_else(
+                || worker.recv(wait).map(Received::Frame),
+                |frames| frames.recv(wait),
+            ) {
+                Ok(Received::Frame(message)) => message,
+                Ok(Received::Recheck) | Err(ChannelError::Timeout) => continue,
                 Err(_) => {
                     self.requeue(true)?;
                     return Ok(ActivationEnd::Requeued);
@@ -368,7 +435,7 @@ impl Activation {
                         self.requeue(true)?;
                         return Ok(ActivationEnd::Requeued);
                     }
-                    if let Some((kind, detail)) = control_failure(&self.state()?) {
+                    if let Some((kind, detail)) = self.with_state(control_failure)? {
                         worker.kill();
                         return self.fail(kind, detail, effects);
                     }
@@ -414,15 +481,19 @@ impl Activation {
                             position,
                             message,
                         }) => {
-                            let readiness = self
-                                .state()?
-                                .calls
-                                .get(&position)
-                                .and_then(|c| c.arrival.as_ref())
-                                .is_some_and(|a| {
-                                    a.settlement == Settlement::Rejected
-                                        && crate::ops::typed_scope_rejection(a.value.as_str(), true)
-                                });
+                            let readiness = self.with_state(|state| {
+                                state
+                                    .calls
+                                    .get(&position)
+                                    .and_then(|c| c.arrival.as_ref())
+                                    .is_some_and(|a| {
+                                        a.settlement == Settlement::Rejected
+                                            && crate::ops::typed_scope_rejection(
+                                                a.value.as_str(),
+                                                true,
+                                            )
+                                    })
+                            })?;
                             self.fail(
                                 if readiness {
                                     "readiness_rejection"
