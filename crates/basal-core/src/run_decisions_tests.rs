@@ -297,7 +297,23 @@ fn cancel_card_commits_with_terminal_history_and_recovers_before_attach() {
 #[test]
 fn closed_resolution_is_sqlite_only_and_settles_usage_cost_and_exact_card() {
     let f = Fixture::new();
-    unknown(&f);
+    // An accepted call: without a handle, closing settles a query outright
+    // (closed_obligations::closing), and no card would be raised.
+    f.seed(true, true);
+    f.run()
+        .enter()
+        .unwrap()
+        .finish(|r| {
+            r.append(
+                1,
+                Body::Unknown {
+                    position: 0,
+                    reason: "basal_restarted".into(),
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
     f.close();
     let card = f.hosts.decisions_due(100).unwrap().remove(0);
     let before = f.log.records.lock().unwrap().len();
@@ -573,4 +589,164 @@ fn decisions_due_revalidates_callbacks_and_claims_that_write_no_record() {
         assert!(due.is_empty());
         assert_eq!(f.hosts.decisions_due(101).unwrap().len(), 1);
     }
+}
+
+/// An accepted call left unknown, which closing keeps `unknown` because a
+/// completion can still arrive under its handle.
+fn accepted_unknown(f: &Fixture) {
+    f.seed(true, true);
+    f.run()
+        .enter()
+        .unwrap()
+        .finish(|r| {
+            r.append(
+                1,
+                Body::Unknown {
+                    position: 0,
+                    reason: "basal_restarted".into(),
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn every_answer_to_a_closed_runs_card_settles_its_call() {
+    let applied = crate::reconcile::reconciled_as_applied();
+    for (choice, card_state, receipt) in [
+        (decisions::LEAVE, CardState::Declined, Receipt::Unknown),
+        (decisions::NOT_APPLIED, CardState::Applied, Receipt::Unknown),
+        (decisions::CANCEL, CardState::Applied, Receipt::Unknown),
+        (
+            decisions::APPLIED,
+            CardState::Applied,
+            Receipt::Value(crate::ids::payload_hash(applied.settlement, &applied.value)),
+        ),
+    ] {
+        let f = Fixture::new();
+        accepted_unknown(&f);
+        f.close();
+        assert_eq!(f.obligation().state, ObligationState::Unknown);
+        let card = f.hosts.decisions_due(100).unwrap().remove(0);
+        let (path, answer) = raised(&f, &card, choice);
+        assert_eq!(
+            f.hosts.answer_decision(&path, &answer, 101).unwrap().0,
+            Answered::Now(card_state),
+            "{choice}"
+        );
+        let row = f.obligation();
+        assert_eq!(
+            (row.state, row.receipt),
+            (ObligationState::Settled, Some(receipt)),
+            "{choice}"
+        );
+        assert!(f.hosts.decisions_due(102).unwrap().is_empty(), "{choice}");
+        f.store
+            .read(|c| {
+                assert_eq!(
+                    c.query_row(
+                        "SELECT COUNT(*) FROM token_ledger WHERE state='reserved'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )?,
+                    0,
+                    "{choice}"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn an_expired_closed_card_keeps_its_call_unknown() {
+    let f = Fixture::new();
+    accepted_unknown(&f);
+    f.close();
+    let card = f.hosts.decisions_due(100).unwrap().remove(0);
+    let (path, mut answer) = raised(&f, &card, decisions::LEAVE);
+    answer.choice = None;
+    assert_eq!(
+        f.hosts.answer_decision(&path, &answer, 101).unwrap().0,
+        Answered::Now(CardState::Expired)
+    );
+    assert_eq!(f.obligation().state, ObligationState::Unknown);
+}
+
+/// Older builds closed a timed-out call as `open` with nothing able to
+/// settle it, and left `unknown` rows standing after the operator answered
+/// their card. Startup brings both in line once, then finds nothing.
+#[test]
+fn startup_repair_ends_rows_older_closes_left_and_then_finds_nothing() {
+    let f = Fixture::new();
+    f.seed(true, false);
+    let query = serde_json::to_value(&f.state().calls[&0]).unwrap();
+    f.close();
+    let mut write = query.clone();
+    write["identity"]["class"] = json!("mutation");
+    f.store
+        .write(|tx| {
+            let row = |position: u64, handle: Option<&str>, state, detail: &serde_json::Value| {
+                let mut detail = detail.clone();
+                detail["identity"]["position"] = json!(position);
+                detail["intent"]["call"]["position"] = json!(position);
+                sql::insert_obligation(
+                    tx,
+                    &sql::Obligation {
+                        run_id: f.live.run_id.clone(),
+                        position,
+                        handle: handle.map(str::to_owned),
+                        state,
+                        audit_at: 20,
+                        detail,
+                        receipt: None,
+                        settled_at: None,
+                    },
+                )
+            };
+            row(5, None, ObligationState::Open, &query)?;
+            row(6, None, ObligationState::Open, &write)?;
+            row(7, Some("handle"), ObligationState::Unknown, &write)?;
+            row(8, Some("handle"), ObligationState::Open, &write)?;
+            row(9, Some("handle"), ObligationState::Unknown, &write)?;
+            tx.execute(
+                "INSERT INTO decision_cards(dedup_key,kind,flow_id,version,run_id,position,call_key,instance,card,state,created_at,answered_at,choice) VALUES
+                (?2,'reconcile','flow',1,?1,7,'',1,'{}','declined',90,95,'leave'),
+                (?3,'reconcile','flow',1,?1,9,'',1,'{}','expired', 90,95,NULL)",
+                params![
+                    f.live.run_id,
+                    decisions::reconcile_key(&f.live.flow_id, &f.live.run_id, 7),
+                    decisions::reconcile_key(&f.live.flow_id, &f.live.run_id, 9)
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(f.hosts.repair_closed_obligations().unwrap(), 3);
+    let state = |position| {
+        f.store
+            .read(|c| Ok(sql::obligation(c, &f.live.run_id, position)?.unwrap()))
+            .unwrap()
+    };
+    // A query settles; it has no effect to report.
+    assert_eq!(
+        (state(5).state, state(5).receipt),
+        (ObligationState::Settled, Some(Receipt::Unknown))
+    );
+    // A plain write is put in front of the operator, with its reason.
+    assert_eq!(state(6).state, ObligationState::Unknown);
+    assert_eq!(state(6).detail["unknown"], "basal_restarted");
+    // The operator left it: nothing else will ever settle it.
+    assert_eq!(state(7).state, ObligationState::Settled);
+    // A completion can still arrive under its handle.
+    assert_eq!(state(8).state, ObligationState::Open);
+    // An expired card was never answered.
+    assert_eq!(state(9).state, ObligationState::Unknown);
+    let cards = f.hosts.decisions_due(100).unwrap();
+    assert_eq!(
+        cards.iter().map(|c| c.position).collect::<Vec<_>>(),
+        [Some(6)]
+    );
+    assert_eq!(f.hosts.repair_closed_obligations().unwrap(), 0);
 }

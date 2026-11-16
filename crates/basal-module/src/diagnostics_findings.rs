@@ -263,6 +263,14 @@ fn store_findings_with(
                 [], finding("history_lost", "runs", "error", "Live runs lost their log during a restore and hold their flow slots.",
                     "Use flow.reconcile with run_id and resolution cancel or retrigger; never resend unknown writes automatically."),
                 |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"flow_id":r.get::<_,String>(1)?,"run_id":r.get::<_,String>(2)?}))) }, Some(now))?);
+            // A finished run's call without an outcome either waits on an
+            // open decision card or on nobody. Past an hour without a card,
+            // nothing will settle it unless someone looks.
+            findings.extend(aggregate(conn,
+                "SELECT o.audit_at,h.flow_id,o.run_id,o.position FROM obligations o JOIN run_history h USING(run_id) WHERE o.state<>'settled' AND o.audit_at<=?1 AND NOT EXISTS(SELECT 1 FROM decision_cards d WHERE d.run_id=o.run_id AND d.position=o.position AND d.state='open') ORDER BY o.audit_at,o.run_id,o.position",
+                [now.saturating_sub(STUCK_MS)], finding("reconcile_pending", "obligations", "warn", "Calls of finished runs have had no outcome for over an hour, and no decision card is open for them.",
+                    "Inspect the runs' unsettled calls; use flow.reconcile with an observed result once an outcome is established."),
+                |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"flow_id":r.get::<_,String>(1)?,"run_id":r.get::<_,String>(2)?,"position":r.get::<_,i64>(3)?}))) }, Some(now))?);
         }
         for flow in &log.flows {
             if flow.auto_disabled || (flow.enabled && flow.consecutive_failures >= FAILURE_THRESHOLD as u64) {
@@ -799,6 +807,35 @@ mod tests {
             seed(
                 store,
                 &format!("UPDATE decision_cards SET state='applied',answered_at={NOW}"),
+            );
+            quiet(store);
+        });
+    }
+
+    #[test]
+    fn finished_runs_unsettled_calls_without_an_open_card_are_reported_after_an_hour() {
+        with_store("closed-obligation", |store| {
+            run(store, "closed", "failed", NOW - 7_200_000, 1);
+            seed(
+                store,
+                &format!(
+                    "INSERT INTO obligations(run_id,position,state,audit_at,detail) VALUES('closed',3,'unknown',{},'{{}}')",
+                    NOW - 3_600_000 + 1
+                ),
+            );
+            quiet(store);
+            seed(store, "UPDATE obligations SET audit_at=audit_at-1");
+            let finding = only(store, "reconcile_pending", "obligations");
+            assert_eq!(
+                finding["samples"],
+                json!([{"at_ms":NOW - 3_600_000,"flow_id":"f","run_id":"closed","position":3}])
+            );
+            // An open card already puts the call in front of the operator.
+            seed(
+                store,
+                &format!(
+                    "INSERT INTO decision_cards(dedup_key,kind,flow_id,version,run_id,position,call_key,instance,card,state,created_at) VALUES ('c','reconcile','f',1,'closed',3,'',1,'{{}}','open',{NOW})"
+                ),
             );
             quiet(store);
         });

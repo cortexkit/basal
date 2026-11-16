@@ -217,26 +217,24 @@ impl RecoveredHosts {
             } else {
                 CardState::Declined
             };
-            let apply = || {
-                self.store.write(|tx| {
-                    let changed = cas(tx, &card, state, choice, now)?;
-                    if changed {
-                        crate::reconcile::audit_answer(
-                            tx,
-                            crate::decisions::OPERATOR_ACTOR,
-                            if choice.is_none() {
-                                "decision.expired"
-                            } else {
-                                "decision.declined"
-                            },
-                            Some(id),
-                            Some(position),
-                            "",
-                            Some(&answer.elicitation_id),
-                        )?;
-                    }
-                    Ok(changed)
-                })
+            let apply_in = |tx: &Transaction<'_>| {
+                let changed = cas(tx, &card, state, choice, now)?;
+                if changed {
+                    crate::reconcile::audit_answer(
+                        tx,
+                        crate::decisions::OPERATOR_ACTOR,
+                        if choice.is_none() {
+                            "decision.expired"
+                        } else {
+                            "decision.declined"
+                        },
+                        Some(id),
+                        Some(position),
+                        "",
+                        Some(&answer.elicitation_id),
+                    )?;
+                }
+                Ok(changed)
             };
             // Leave has no log record, but shares the answer's actor serialization
             // so it cannot win the card CAS halfway through an effective answer.
@@ -251,10 +249,29 @@ impl RecoveredHosts {
                         }) {
                             return Ok(false);
                         }
-                        apply()
+                        self.store.write(|tx| apply_in(tx))
                     })?
                 } else {
-                    apply()?
+                    // On a live run, leave keeps the run waiting for a later
+                    // answer. A closed run has nothing left to wait for, and no
+                    // second card is raised for the same attempt, so leaving it
+                    // settles the record. An expired card settles nothing; the
+                    // row stays visible in the self-diagnosis findings.
+                    self.registry()
+                        .accounting_write(&card.flow_id, &self.store, |tx| {
+                            let stands = choice.is_some() && closed_stands(tx, &card)?;
+                            let changed = apply_in(tx)?;
+                            if changed && stands {
+                                crate::closed_obligations::settle_answered(
+                                    tx,
+                                    id,
+                                    position,
+                                    decisions::LEAVE,
+                                    now,
+                                )?;
+                            }
+                            Ok(changed)
+                        })?
                 };
             return Ok((
                 if changed {
@@ -534,12 +551,18 @@ impl RecoveredHosts {
             .store
             .read(|c| sql::history(c, id))?
             .ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
-        let Resolution::ObservedResult(outcome) = resolution else {
-            return Err(CoreError::WrongState {
-                run_id: id.into(),
-                state: history.state,
-                operation: "reconcile",
-            });
+        let outcome = match resolution {
+            Resolution::ObservedResult(outcome) => outcome,
+            // The run is closed, so no answer can resend the call or hand a
+            // script its outcome. The answer settles the record instead.
+            other => {
+                let choice = match other {
+                    Resolution::ReconciledAsApplied => decisions::APPLIED,
+                    Resolution::NotApplied => decisions::NOT_APPLIED,
+                    _ => decisions::CANCEL,
+                };
+                return self.settle_closed_answer(id, position, choice, actor, card, now, &history);
+            }
         };
         self.registry()
             .accounting_write(&history.flow_id, &self.store, |tx| {
@@ -575,6 +598,52 @@ impl RecoveredHosts {
                 )?;
                 if let Some(card) = card {
                     cas(tx, card, CardState::Applied, Some("observed_result"), now)?;
+                }
+                sql::advance_log_hwm(tx, self.watermark.synced_lsn())?;
+                Ok(())
+            })?;
+        Ok(history.state)
+    }
+
+    /// Settles a closed run's `unknown` call for an answer other than an
+    /// observed result, under the same checks as one.
+    #[allow(clippy::too_many_arguments)]
+    fn settle_closed_answer(
+        &self,
+        id: &str,
+        position: u64,
+        choice: &str,
+        actor: &str,
+        card: Option<&DecisionRecord>,
+        now: i64,
+        history: &sql::RunHistory,
+    ) -> Result<RunState> {
+        self.registry()
+            .accounting_write(&history.flow_id, &self.store, |tx| {
+                let row = sql::obligation(tx, id, position)?
+                    .ok_or_else(|| CoreError::Invalid("no open obligation".into()))?;
+                if row.state != sql::ObligationState::Unknown {
+                    return Err(CoreError::Invalid("obligation is no longer unknown".into()));
+                }
+                if let Some(card) = card
+                    && (!closed_stands(tx, card)? || !card_open(tx, card)?)
+                {
+                    return Err(CoreError::Invalid("superseded obligation attempt".into()));
+                }
+                if !crate::closed_obligations::settle_answered(tx, id, position, choice, now)? {
+                    return Err(CoreError::Invalid("obligation changed".into()));
+                }
+                crate::reconcile::audit_answer(
+                    tx,
+                    actor,
+                    &format!("reconcile.{choice}"),
+                    Some(id),
+                    Some(position),
+                    "",
+                    card.and_then(|c| c.elicitation_id.as_deref()),
+                )?;
+                if let Some(card) = card {
+                    cas(tx, card, CardState::Applied, Some(choice), now)?;
                 }
                 sql::advance_log_hwm(tx, self.watermark.synced_lsn())?;
                 Ok(())

@@ -1082,6 +1082,60 @@ fn long_running_deferral_keeps_its_witness_until_suspension() {
     assert_eq!(next.release(&[1]).unwrap().unwrap().value.as_str(), "42");
 }
 
+/// A call whose reply timed out waits for a resend. When the run's deadline
+/// closes the run first, no resend and no reply can ever come, so the
+/// obligation must not be left `open` with nothing able to settle it.
+#[test]
+fn timed_out_query_and_keyed_write_settle_when_the_deadline_closes_their_run() {
+    let f = Fixture::new();
+    let a = f.claim(0);
+    let timed_out = || {
+        Reply::Deferred(Deferred {
+            position: 0,
+            retry_not_before: 30,
+            cause: "reply_timeout".into(),
+            audit_at: 20,
+            proven_unsent: false,
+            refund_dispatch: false,
+            attempt: None,
+        })
+    };
+    f.service
+        .replies
+        .lock()
+        .unwrap()
+        .extend([timed_out(), timed_out()]);
+    f.send(&a, 0, "query");
+    f.send(&a, 1, "keyed");
+    let mut terminal = f.terminal(RunState::Failed);
+    terminal.error_kind = Some("deadline".into());
+    a.finish(terminal).unwrap();
+    f.store
+        .read(|conn| {
+            for position in [0, 1] {
+                let row = sql::obligation(conn, &f.live.run_id, position)?.unwrap();
+                assert_eq!(
+                    (row.state, row.receipt),
+                    (sql::ObligationState::Settled, Some(sql::Receipt::Unknown)),
+                    "position {position}"
+                );
+            }
+            let reasons = conn
+                .prepare("SELECT detail FROM audit WHERE action='obligation.settled_unobserved' ORDER BY position")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                reasons,
+                [
+                    json!({"class":"query","reason":"reply_timeout"}).to_string(),
+                    json!({"class":"keyed_mutation","reason":"reply_timeout"}).to_string(),
+                ]
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[test]
 fn park_wake_does_not_lose_arrival_racing_suspension() {
     let f = Fixture::new();
