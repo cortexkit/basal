@@ -14,7 +14,8 @@ Standing rules for workers. Follow them without asking. Ask only about what the 
 ## Before you deliver
 
 - Before delivery: `cargo fmt --all --check`, `cargo clippy -p <changed packages> --all-targets --locked -- -D warnings`, and your filtered tests, all on Linux. Report the commands and results. Don't run `script/gate.sh` or its lanes, and don't call `ck motor run` (worker Seatbelt can't read MOTOR's connection file).
-- A bug fix comes with a test that fails without the fix. Show it once (revert the fix, run that test by name, restore) and quote the failure in your report.
+- A bug fix comes with a test that fails without the fix. Show it once (revert the fix, run that test by name, restore) and quote the failure in your report. A remote job can't edit tracked files, so make the revert in your own checkout with your edit tool, run only that test remotely, and restore the fix as soon as the job ends. Do one control at a time, and finish with `git diff` showing only your intended changes.
+- `Cargo.lock` updates that need the network: run them under `runon: "linux,net"` with `CARGO_NET_OFFLINE=false CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse`, and return `Cargo.lock` with `return_paths`. The build server's default index is a stale git copy, which can miss recent releases. An exact pin in `Cargo.toml` must be changed first; `cargo update --precise` can't cross it.
 - Run a sidekick comment review on your diff and fix what it flags.
 - Commit as `ualtinok <94532+ualtinok@users.noreply.github.com>`.
 - Design notes, field mappings, evidence and investigation write-ups go in the git-ignored `.cortexkit/internal-docs/` (they reach the main checkout when your work is settled). Never commit them under `crates/` or `docs/`; `docs/` is public user documentation. Anything a later engineer needs to read the code goes in a code comment.
