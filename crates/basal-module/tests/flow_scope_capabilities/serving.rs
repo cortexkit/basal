@@ -129,8 +129,22 @@ fn empty_management_list_refuses_every_op_and_dry_run_rechecks_the_list() {
     intake(&f, "flow.install", "echo").unwrap();
     management_ops(&wire, json!([]));
     for op in ["echo", "post"] {
-        let error = intake(&f, "flow.install", op).unwrap_err();
-        assert_eq!(error.code, "flow_op_not_served");
+        let mut manifest = manifest(op);
+        if op == "post" {
+            // Different grants need a new version so the immutable-byte check
+            // does not mask the catalog refusal. Keep echo an identical retry.
+            manifest["version"] = json!(2);
+            manifest["changes"] = json!("Requests post instead of echo to check the serving list.");
+        }
+        let error = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "flow.install",
+                json!({"script":"return 7;","manifest":manifest.to_string()}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "flow_op_not_served", "{op}: {error:?}");
         assert_eq!(error.detail.as_ref().unwrap()["allowed"], json!([]));
     }
     let error = dry_run(&f).unwrap_err();

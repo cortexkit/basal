@@ -71,6 +71,7 @@ fn set_core_capability(fake: &Fake, capability: &str, supported: bool) {
     } else {
         modules.push(json!({
             "module_id": "prefrontal-core",
+            "roles": [],
             "capabilities": {"provides": if supported {
                 vec![capability]
             } else {
@@ -86,6 +87,7 @@ fn add_routing_provider(fake: &Fake) {
         .unwrap()
         .push(json!({
             "module_id": "model-picker",
+            "roles": [],
             "capabilities": {"provides": ["routing/v1"]}
         }));
 }

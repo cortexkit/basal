@@ -215,7 +215,7 @@ fn install_id_capability(fake: &Fake, supported: bool) {
         }
     } else {
         modules.push(
-            json!({"module_id":"prefrontal-core","capabilities":{"provides":
+            json!({"module_id":"prefrontal-core","roles":[],"capabilities":{"provides":
             if supported { vec![capability] } else { vec![] }}}),
         );
     }
@@ -717,7 +717,7 @@ fn install_cards_only_use_core_install_request_and_never_wake_answer_polling() {
         fake.catalog.lock().unwrap()["modules"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"module_id":"cingulate","capabilities":{"provides":["consent/v1"]}}));
+            .push(json!({"module_id":"cingulate","roles":[],"capabilities":{"provides":["consent/v1"]}}));
         let f = common::fixture(
             "install-route",
             common::Options {
