@@ -522,6 +522,19 @@ async fn commit_batch_report(
                     }
                     continue;
                 }
+                // Basal's own body-carrying publications (owner notices and
+                // attribution facts) also arrive on its durable. They are
+                // messages for prefrontal and astrocyte, not flow triggers, so
+                // acknowledge them without counting them as malformed notices.
+                if subject.module == "basal"
+                    && subject.version == 1
+                    && matches!(
+                        subject.event.as_str(),
+                        "flow_owner_notice" | "attribution_fact"
+                    )
+                {
+                    continue;
+                }
                 if subject.module == "prefrontal-core"
                     && subject.event == "flow_install_changed"
                     && subject.version == 1

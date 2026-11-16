@@ -84,7 +84,13 @@ async fn reader_other_token_is_acked_silently_even_with_a_payload() {
         .await
         .unwrap();
     let mut consumer = bind(&server.bus, STREAM).await.unwrap();
-    let health = wait_health(&reader, |h| h.notices == 1).await;
+    // The fixture's flow approval also publishes basal's own attribution
+    // fact on the same durable; the reader counts it as a notice too.
+    let own: u64 = rt
+        .store()
+        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM attribution_facts", [], |r| r.get(0))?))
+        .unwrap();
+    let health = wait_health(&reader, |h| h.notices == 1 + own).await;
     assert_eq!(health.malformed, 0);
     assert_eq!(health.admitted, 0);
     assert_eq!(run_count(&rt), 0);
