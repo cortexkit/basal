@@ -832,8 +832,9 @@ impl Activation {
             }
             let cut = a.account(|records, others| {
                 let body = Body::Intent(intent.clone());
-                let proposed = records.preview(self.generation, &body)?;
-                let rows = accounting::rows(&proposed, &self.driver.budgets)?;
+                let rows = records.with_preview(self.generation, &body, |proposed| {
+                    accounting::rows(proposed, &self.driver.budgets)
+                })??;
                 self.driver.store.read(|conn| {
                     accounting::check(
                         conn,

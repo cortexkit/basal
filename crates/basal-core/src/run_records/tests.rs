@@ -145,6 +145,83 @@ fn append(records: &mut Records, body: Body) -> Lsn {
 }
 
 #[test]
+fn rejected_appends_and_previews_leave_calls_overlay_and_counters_unchanged() {
+    let (mut records, log) = journal();
+    let local = |position, arrival_seq, value: &str| {
+        let mut local = arrival(position, arrival_seq);
+        local.kv_effect = Some(KvEffect::Set {
+            key: "k".into(),
+            value: json(value),
+        });
+        local
+    };
+    append(&mut records, Body::Issued(identity(0, StoredClass::Local)));
+    append(&mut records, Body::Arrived(local(0, 0, "1")));
+    append(&mut records, Body::Intent(intent(1, StoredClass::Query)));
+    append(&mut records, Body::Issued(identity(2, StoredClass::Local)));
+    let before = records.state().clone();
+    let frames = log.frames.lock().unwrap().len();
+
+    // This resolution changes call 1 before its observed outcome is refused as
+    // a second outcome for call 0; the whole record must be undone.
+    let mut late = resolution(1);
+    late.choice = "not_applied".into();
+    late.observed_outcome = Some(arrival(0, 1));
+    assert!(records.append(1, Body::Resolution(late)).is_err());
+    assert!(
+        records
+            .append(
+                1,
+                Body::Released {
+                    position: 1,
+                    delivery_order: 0,
+                },
+            )
+            .is_err()
+    );
+    // A valid record whose log write fails is applied in memory first, so it
+    // must be reverted too, including its kv overlay effect.
+    log.fail_append.store(true, Ordering::SeqCst);
+    assert!(
+        records
+            .append(1, Body::Arrived(local(2, 1, "2")))
+            .is_err()
+    );
+    log.fail_append.store(false, Ordering::SeqCst);
+    assert_eq!(records.state(), &before);
+    assert_eq!(log.frames.lock().unwrap().len(), frames);
+
+    let previewed = records
+        .with_preview(1, &Body::Arrived(local(2, 1, "2")), |state| {
+            (
+                state.calls[&2].arrival.is_some(),
+                state.overlay.get("k").cloned(),
+                state.next_arrival_seq,
+            )
+        })
+        .unwrap();
+    assert_eq!(previewed, (true, Some(Some("2".to_owned())), 2));
+    assert!(
+        records
+            .with_preview(
+                1,
+                &Body::Released {
+                    position: 1,
+                    delivery_order: 0,
+                },
+                |_| (),
+            )
+            .is_err()
+    );
+    assert_eq!(records.state(), &before);
+    assert_eq!(log.frames.lock().unwrap().len(), frames);
+
+    append(&mut records, Body::Arrived(local(2, 1, "2")));
+    assert_eq!(records.state().overlay["k"].as_deref(), Some("2"));
+    assert_eq!(records.state().next_arrival_seq, 2);
+}
+
+#[test]
 fn every_record_roundtrips_with_strict_frame_types() {
     let bodies = vec![
         Body::Claimed {

@@ -160,6 +160,16 @@ pub struct State {
     pub commit_seq: Option<u64>,
 }
 
+/// The parts of a [`State`] one record can change, saved by
+/// [`State::undo_for`] so the change can be reverted.
+pub(super) struct Undo {
+    /// Every field except `calls`, `overlay` and `event_bodies`.
+    scalars: State,
+    event_bodies: usize,
+    calls: Vec<(u64, Option<CallState>)>,
+    overlay: Vec<(String, Option<Option<String>>)>,
+}
+
 impl State {
     pub fn new(admitted_ms: i64) -> Self {
         Self {
@@ -304,6 +314,113 @@ impl State {
             }
             _ => false,
         })
+    }
+
+    /// Saves exactly what [`Self::apply`] can change for `body`: the scalar
+    /// fields, the calls and overlay keys the record names, and the event-body
+    /// count. Restoring it after an apply, successful or not, returns the state
+    /// to where it was without copying the whole call history.
+    pub(super) fn undo_for(&self, body: &Body) -> Undo {
+        let mut positions = Vec::new();
+        let mut keys = Vec::new();
+        let mut arrival = |a: &Arrival, positions: &mut Vec<u64>| {
+            positions.push(a.position);
+            match &a.kv_effect {
+                Some(KvEffect::Set { key, .. } | KvEffect::Delete { key }) => {
+                    keys.push(key.clone());
+                }
+                None => {}
+            }
+        };
+        match body {
+            Body::Intent(intent) => positions.push(intent.call.position),
+            Body::Issued(identity) => positions.push(identity.position),
+            Body::Sync(sync) => positions.push(sync.call.position),
+            Body::Deferred(deferred) => positions.push(deferred.position),
+            Body::Accepted { position, .. }
+            | Body::Released { position, .. }
+            | Body::Unknown { position, .. }
+            | Body::CallScopeCut { position }
+            | Body::MeasuredUsage { position, .. } => positions.push(*position),
+            Body::Arrived(a) => arrival(a, &mut positions),
+            Body::Resolution(resolution) => {
+                positions.push(resolution.position);
+                if let Some(a) = &resolution.observed_outcome {
+                    arrival(a, &mut positions);
+                }
+            }
+            Body::Claimed { .. }
+            | Body::Activated
+            | Body::Requeued { .. }
+            | Body::Fingerprint { .. }
+            | Body::ScriptStarted
+            | Body::ScopeCut { .. }
+            | Body::EventBody { .. }
+            | Body::Parked { .. }
+            | Body::Woken
+            | Body::Closed { .. }
+            | Body::Snapshot { .. } => {}
+        }
+        Undo {
+            scalars: State {
+                admitted_ms: self.admitted_ms,
+                generation: self.generation,
+                claim: self.claim.clone(),
+                activation_count: self.activation_count,
+                broken: self.broken,
+                fingerprint: self.fingerprint.clone(),
+                script_started: self.script_started,
+                phase: self.phase.clone(),
+                deadline_exempt: self.deadline_exempt,
+                awaited: self.awaited.clone(),
+                parked: self.parked,
+                readiness: self.readiness,
+                // apply only appends event bodies; the count restores them.
+                event_bodies: Vec::new(),
+                calls: BTreeMap::new(),
+                overlay: BTreeMap::new(),
+                next_delivery_order: self.next_delivery_order,
+                next_arrival_seq: self.next_arrival_seq,
+                commit_seq: self.commit_seq,
+            },
+            event_bodies: self.event_bodies.len(),
+            calls: positions
+                .into_iter()
+                .map(|p| (p, self.calls.get(&p).cloned()))
+                .collect(),
+            overlay: keys
+                .into_iter()
+                .map(|k| {
+                    let old = self.overlay.get(&k).cloned();
+                    (k, old)
+                })
+                .collect(),
+        }
+    }
+
+    /// Puts back everything `undo` saved. A position or key saved twice holds
+    /// the same pre-apply value both times.
+    pub(super) fn restore(&mut self, undo: Undo) {
+        let calls = std::mem::take(&mut self.calls);
+        let overlay = std::mem::take(&mut self.overlay);
+        let mut event_bodies = std::mem::take(&mut self.event_bodies);
+        event_bodies.truncate(undo.event_bodies);
+        *self = undo.scalars;
+        self.calls = calls;
+        self.overlay = overlay;
+        self.event_bodies = event_bodies;
+        for (position, call) in undo.calls {
+            match call {
+                Some(call) => self.calls.insert(position, call),
+                None => self.calls.remove(&position),
+            };
+        }
+        for (key, value) in undo.overlay {
+            match value {
+                Some(value) => self.overlay.insert(key, value),
+                None => self.overlay.remove(&key),
+            };
+        }
     }
 
     pub(super) fn apply(&mut self, generation: u64, body: &Body) -> Result<()> {
