@@ -210,6 +210,10 @@ pub struct Activation {
     run: Arc<Run<Records>>,
     live: LiveRun,
     pub generation: u64,
+    /// While the activation lives its run may complete, so the terminal
+    /// committer keeps other flows' groups open for it instead of committing
+    /// them alone. Released once the run's own terminal write has committed.
+    completion: std::sync::Mutex<Option<crate::run_store::Expected>>,
 }
 
 pub enum Claim {
@@ -335,11 +339,13 @@ impl Driver {
                 generation,
             })?;
         run.activate(generation, |_| Ok(()))?;
+        let completion = Some(self.registry.expect_completion(&live.flow_id)).into();
         Ok(Activation {
             driver: self.clone(),
             run,
             live,
             generation,
+            completion,
         })
     }
     /// Timers and the host integration call this after making an awaited call
@@ -506,11 +512,13 @@ impl Driver {
             a.account(|records, _| Ok(((), accounting::rows(records.state(), &self.budgets)?)))?;
             Ok(next)
         })?;
+        let completion = Some(self.registry.expect_completion(&live.flow_id)).into();
         Ok(Claim::Active(Box::new(Activation {
             driver: self.clone(),
             run,
             live,
             generation,
+            completion,
         })))
     }
 }
@@ -1331,6 +1339,13 @@ impl Activation {
             &terminal,
             self.driver.services.as_ref(),
         )?;
+        // The run's terminal write has committed; other groups need not wait.
+        drop(
+            self.completion
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take(),
+        );
         self.run.closed_hint(terminal.commit_seq());
         Ok(())
     }

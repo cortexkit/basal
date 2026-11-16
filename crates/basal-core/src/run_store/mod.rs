@@ -2,6 +2,7 @@
 //! records. Records, terminal projections and worker control are adapters.
 
 mod committer;
+pub(crate) use committer::Expected;
 pub mod lock_order;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -789,6 +790,12 @@ impl<R: RunRecords> RunStore<R> {
             .collect();
         store.read(|conn| f(conn, &runs))
     }
+    /// Tells the terminal committer that a run of `flow` is being driven and
+    /// may complete soon, so other flows' terminal groups wait for it rather
+    /// than committing alone. Dropping the result withdraws it.
+    pub(crate) fn expect_completion(&self, flow: &str) -> committer::Expected {
+        self.committer.expect(flow)
+    }
     pub fn close(
         &self,
         run: &Arc<Run<R>>,
@@ -824,7 +831,7 @@ impl<R: RunRecords> RunStore<R> {
         // Tell the committer a terminal write for this flow is on its way, so
         // a group forming for another flow waits for it; an early return
         // below withdraws it.
-        let closing = self.committer.announce(&run.flow);
+        let closing = self.committer.expect(&run.flow);
         {
             let mut actor = run.actor.lock();
             if let Some(generation) = generation {

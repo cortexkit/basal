@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// The longest a terminal group stays open for closers that have announced
-/// they are about to commit. A group with no such closer commits at once.
+/// The longest a terminal group stays open for other flows' expected commits
+/// (see [`Expected`]). A group with none outstanding commits at once.
 const GROUP_WAIT: Duration = Duration::from_millis(25);
 /// A savepoint that keeps failing is a deterministic fault in that run's
 /// projection, not contention. Retrying it forever would spin the committer
@@ -27,13 +27,14 @@ struct Pending {
 
 enum Message {
     Commit(Pending),
-    /// An announced closer of this flow returned without committing.
+    /// An expected commit of this flow will not come: its activation ended
+    /// or its closer returned without committing.
     Withdrawn {
         flow: String,
     },
 }
 
-/// Closers that announced a commit the committer thread has not yet received,
+/// Expected terminal commits the committer thread has not yet seen settle,
 /// counted per flow.
 type Announced = Arc<Mutex<BTreeMap<String, usize>>>;
 
@@ -43,26 +44,44 @@ pub(super) struct Committer {
     thread: Option<JoinHandle<()>>,
 }
 
-/// A closer that has started closing a run and will commit its terminal
-/// write soon, unless it returns early. While it is outstanding, a group
-/// forming for another flow waits for it (up to [`GROUP_WAIT`]) so the two
-/// share one transaction. Dropping it uncommitted withdraws the announcement.
-pub(super) struct Closing<'a> {
-    committer: &'a Committer,
+/// A terminal commit of a run of this flow that may arrive soon: the run is
+/// being driven by an activation, or a closer has started closing it. While
+/// one is outstanding, a group forming for another flow waits for it (up to
+/// [`GROUP_WAIT`]) so concurrent completions share one transaction; with none,
+/// a group commits at once. Committing or dropping it settles the count.
+///
+/// It holds a sender to the committer thread, so it must not outlive the
+/// run store (activations and closers hold the store).
+pub(crate) struct Expected {
+    sender: Option<mpsc::Sender<Message>>,
     flow: Option<String>,
 }
 
-impl Closing<'_> {
+impl Expected {
     pub(super) fn commit(mut self, run_id: String, write: Box<dyn TerminalWrite>) -> Result<()> {
-        let flow = self.flow.take().expect("an announcement commits once");
-        self.committer.commit(run_id, flow, write)
+        let flow = self.flow.take().expect("an expected commit happens once");
+        let (reply, result) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or_else(|| CoreError::Unavailable("terminal committer stopped".into()))?
+            .send(Message::Commit(Pending {
+                run_id,
+                flow,
+                write,
+                reply,
+                attempts: 0,
+            }))
+            .map_err(|_| CoreError::Unavailable("terminal committer stopped".into()))?;
+        result
+            .recv()
+            .map_err(|_| CoreError::Unavailable("terminal committer stopped".into()))?
     }
 }
 
-impl Drop for Closing<'_> {
+impl Drop for Expected {
     fn drop(&mut self) {
         if let Some(flow) = self.flow.take()
-            && let Some(sender) = &self.committer.sender
+            && let Some(sender) = &self.sender
         {
             let _ = sender.send(Message::Withdrawn { flow });
         }
@@ -97,36 +116,18 @@ impl Committer {
             thread: Some(thread),
         }
     }
-    /// Call when a closer starts closing a run of `flow`, before it waits for
-    /// the run's dispatches, accounting lock and log sync.
-    pub(super) fn announce(&self, flow: &str) -> Closing<'_> {
+    /// Announces that a run of `flow` may commit its terminal write soon.
+    pub(super) fn expect(&self, flow: &str) -> Expected {
         *self
             .announced
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .entry(flow.to_owned())
             .or_default() += 1;
-        Closing {
-            committer: self,
+        Expected {
+            sender: self.sender.clone(),
             flow: Some(flow.to_owned()),
         }
-    }
-    fn commit(&self, run_id: String, flow: String, write: Box<dyn TerminalWrite>) -> Result<()> {
-        let (reply, result) = mpsc::sync_channel(1);
-        self.sender
-            .as_ref()
-            .unwrap()
-            .send(Message::Commit(Pending {
-                run_id,
-                flow,
-                write,
-                reply,
-                attempts: 0,
-            }))
-            .map_err(|_| CoreError::Unavailable("terminal committer stopped".into()))?;
-        result
-            .recv()
-            .map_err(|_| CoreError::Unavailable("terminal committer stopped".into()))?
     }
 }
 
@@ -158,8 +159,8 @@ fn run(
     announced: &Mutex<BTreeMap<String, usize>>,
     group_wait: Duration,
 ) {
-    // Each received message settles one announcement of its flow. Messages
-    // queued without an announcement (tests) find no count to settle.
+    // Each received message settles one expected commit of its flow. Messages
+    // queued without one (tests) find no count to settle.
     let receive = |message: Message, group: &mut Vec<Pending>| {
         let flow = match &message {
             Message::Commit(pending) => &pending.flow,
@@ -177,10 +178,10 @@ fn run(
             group.push(pending);
         }
     };
-    // Another flow's closer is still on its way to commit. A closer of a flow
-    // already in the group cannot be: each group member's closer holds its
-    // flow's accounting lock until its reply, so waiting for one would only
-    // delay this group by the whole window.
+    // Another flow's run may still commit soon. A run of a flow already in
+    // the group cannot join it: each group member's closer holds its flow's
+    // accounting lock until its reply, so waiting for one would only delay
+    // this group by the whole window.
     let others_announced = |group: &[Pending]| {
         let flows: BTreeSet<&str> = group.iter().map(|p| p.flow.as_str()).collect();
         announced
@@ -202,9 +203,9 @@ fn run(
             }
         }
         // Take every commit that has already arrived, then keep the group open
-        // only while another flow's closer has announced its commit. With
-        // none, a lone completion commits at once instead of waiting out the
-        // window; concurrent completions still share one transaction.
+        // only while another flow's commit is expected. With none, a lone
+        // completion commits at once instead of waiting out the window;
+        // concurrent completions still share one transaction.
         let until = Instant::now() + group_wait;
         loop {
             while let Ok(message) = receiver.try_recv() {
@@ -445,9 +446,9 @@ mod tests {
         (committer, hooks, dir)
     }
     /// Commits on another thread and reports whether it finished in time.
-    fn commit_within<'scope, 'env>(
-        scope: &'scope std::thread::Scope<'scope, 'env>,
-        closing: Closing<'env>,
+    fn commit_within<'scope>(
+        scope: &'scope std::thread::Scope<'scope, '_>,
+        closing: Expected,
         run_id: &str,
     ) -> mpsc::Receiver<Result<()>> {
         let (done, finished) = mpsc::channel();
@@ -463,7 +464,7 @@ mod tests {
     fn a_lone_completion_commits_without_waiting_out_the_group_window() {
         let (committer, hooks, dir) = committer("lone-completion");
         std::thread::scope(|scope| {
-            let done = commit_within(scope, committer.announce("flow"), "a");
+            let done = commit_within(scope, committer.expect("flow"), "a");
             assert_eq!(done.recv_timeout(PROMPT), Ok(Ok(())));
         });
         assert_eq!(
@@ -480,8 +481,8 @@ mod tests {
     #[test]
     fn announced_completions_of_other_flows_share_one_transaction() {
         let (committer, hooks, dir) = committer("announced-group");
-        let a = committer.announce("flow-a");
-        let b = committer.announce("flow-b");
+        let a = committer.expect("flow-a");
+        let b = committer.expect("flow-b");
         std::thread::scope(|scope| {
             let first = commit_within(scope, a, "a");
             // The second closer is still on its way; the group waits for it.
@@ -509,10 +510,10 @@ mod tests {
         let (committer, hooks, dir) = committer("same-flow");
         // A second closer of the same flow waits for the first one's
         // accounting lock, so it cannot join; the first commits alone.
-        let later = committer.announce("flow");
-        let withdrawn = committer.announce("other");
+        let later = committer.expect("flow");
+        let withdrawn = committer.expect("other");
         std::thread::scope(|scope| {
-            let first = commit_within(scope, committer.announce("flow"), "a");
+            let first = commit_within(scope, committer.expect("flow"), "a");
             std::thread::sleep(Duration::from_millis(50));
             drop(withdrawn);
             assert_eq!(first.recv_timeout(PROMPT), Ok(Ok(())));
