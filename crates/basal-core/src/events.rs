@@ -648,7 +648,7 @@ fn script_trigger(notice: &Notice, body: &[u8]) -> Result<JsonText> {
     let body: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| CoreError::Corrupt(e.to_string()))?;
     JsonText::new(
-        serde_json::json!({"event": {
+        serde_json::json!({"kind": "event", "event": {
             "module": module, "name": name, "version": version,
             "event_key": notice.event_key, "headers": notice.headers, "body": body
         }})

@@ -15,6 +15,9 @@ use std::sync::{
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const BODY: &str = "{\"changed\": true}";
 
+#[path = "events_tests/combined.rs"]
+mod combined;
+
 struct Source {
     replies: Mutex<Vec<std::result::Result<Dispatched, TransportError>>>,
     calls: Mutex<Vec<CallRequest>>,

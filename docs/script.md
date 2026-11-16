@@ -167,10 +167,13 @@ token never triggers a flow. Basal acknowledges notices addressed to other
 modules without decoding their bodies; its own control notices are handled
 separately from flow event-body fetching.
 
+A flow may declare both module events and a schedule. They admit separate runs of the same flow, still one at a time. Each run sees its own `trigger.kind`: `"event"` for an event and `"schedule"` for a timer fire. The schedule fires normally even if events arrived; it is not an inactivity timer.
+
 An event-triggered script receives `trigger` in this shape:
 
 ```json
 {
+  "kind": "event",
   "event": {
     "module": "plexus",
     "name": "github_pr_changed",
@@ -217,7 +220,7 @@ existing shape.
 For a capture-mode dry run, supply the complete synthetic `{event: {...}}`
 value above as the `flow.dry_run` request's `trigger`. The supplied `body` is
 already a JSON value, not stored text; it is delivered without a live body
-lookup or any other live call. Synthetic dry-run triggers exercise script logic,
+lookup or any other live call. When a synthetic event payload omits `kind`, basal adds `"kind": "event"`, matching a live event run. Synthetic dry-run triggers exercise script logic,
 not live notice admission. Optional `trigger.events[].match` filters skip
 non-matching notices before any run, body lookup, receipt or backlog entry, and
 count skips in `filtered_out` health. Patterns use only `*` (including across

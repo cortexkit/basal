@@ -219,7 +219,7 @@ fn decode_destinations<'de, D: serde::Deserializer<'de>>(
     Vec::deserialize(deserializer).map(Some)
 }
 
-/// What starts a run: module events or a schedule, never both.
+/// What starts a run: module events, a schedule, or both.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Trigger {
@@ -598,11 +598,12 @@ pub enum ManifestError {
     /// field, a wrong type, an unknown field or a duplicate key.
     Decode(String),
     UnsupportedFormat(u32),
-    /// Both trigger kinds, or neither.
+    /// Neither trigger kind is present.
     TriggerKinds {
         events: bool,
         schedule: bool,
     },
+    CombinedTriggerAt,
     Schedule(String),
     ParamsRequirePackage {
         field: String,
@@ -658,7 +659,11 @@ impl std::fmt::Display for ManifestError {
             Self::UnsupportedFormat(v) => write!(f, "manifest format {v} is not supported"),
             Self::TriggerKinds { events, schedule } => write!(
                 f,
-                "a trigger needs exactly one of events and schedule (events: {events}, schedule: {schedule})"
+                "a trigger needs at least one of events and schedule (events: {events}, schedule: {schedule})"
+            ),
+            Self::CombinedTriggerAt => write!(
+                f,
+                "a trigger with events cannot use the one-shot schedule.at"
             ),
             Self::Schedule(e) => write!(f, "schedule: {e}"),
             Self::ParamsRequirePackage { field } => {
@@ -761,6 +766,10 @@ fn check_name(
         ));
     }
     Ok(())
+}
+
+pub(crate) fn check_module_name(field: &str, module: &str) -> Result<(), ManifestError> {
+    check_name(field, module, MAX_NAME_BYTES, id_byte)
 }
 
 /// Flow ids and module ids: lower-case letters, digits, `-` and `_`.
@@ -1142,6 +1151,15 @@ impl Manifest {
     }
 
     fn check_stored(&self) -> Result<(), ManifestError> {
+        if self.trigger.events.is_some()
+            && self
+                .trigger
+                .schedule
+                .as_ref()
+                .is_some_and(|s| s.at.is_some())
+        {
+            return Err(ManifestError::CombinedTriggerAt);
+        }
         crate::templates::check(self)?;
         if self.format != MANIFEST_FORMAT {
             return Err(ManifestError::UnsupportedFormat(self.format));
@@ -1185,68 +1203,67 @@ impl Manifest {
         if self.purpose.chars().any(|c| c.is_control() && c != '\n') {
             return Err(invalid("purpose", "contains a control character"));
         }
-        match (&self.trigger.events, &self.trigger.schedule) {
-            (Some(events), None) => {
-                if events.is_empty() {
-                    return Err(invalid("trigger.events", "must name at least one event"));
+        if self.trigger.events.is_none() && self.trigger.schedule.is_none() {
+            return Err(ManifestError::TriggerKinds {
+                events: false,
+                schedule: false,
+            });
+        }
+        if let Some(events) = &self.trigger.events {
+            if events.is_empty() {
+                return Err(invalid("trigger.events", "must name at least one event"));
+            }
+            for e in events {
+                if !crate::templates::is_placeholder(&e.module) {
+                    check_module_name("trigger.events.module", &e.module)?;
                 }
-                for e in events {
-                    check_name("trigger.events.module", &e.module, MAX_NAME_BYTES, id_byte)?;
-                    check_name("trigger.events.name", &e.name, MAX_NAME_BYTES, |b| {
-                        token_byte(b) || b == b'.'
+                check_name("trigger.events.name", &e.name, MAX_NAME_BYTES, |b| {
+                    token_byte(b) || b == b'.'
+                })?;
+                if e.name.split('.').count() > 4 || e.name.split('.').any(str::is_empty) {
+                    return Err(invalid(
+                        "trigger.events.name",
+                        "must have 1 to 4 nonempty dot-separated tokens",
+                    ));
+                }
+                if e.name.split('.').any(|p| {
+                    p.strip_prefix('v')
+                        .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+                }) {
+                    return Err(invalid(
+                        "trigger.events.name",
+                        "tokens must not be v followed only by digits",
+                    ));
+                }
+                if e.version == 0 {
+                    return Err(invalid("trigger.events.version", "must be at least 1"));
+                }
+                if e.header_match.len() > 8 {
+                    return Err(invalid("trigger.events.match", "at most 8 keys"));
+                }
+                for (key, pattern) in &e.header_match {
+                    check_name("trigger.events.match", key, 64, |b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'
                     })?;
-                    if e.name.split('.').count() > 4 || e.name.split('.').any(str::is_empty) {
+                    if !crate::templates::is_placeholder(pattern) && !valid_header_pattern(pattern)
+                    {
                         return Err(invalid(
-                            "trigger.events.name",
-                            "must have 1 to 4 nonempty dot-separated tokens",
+                            "trigger.events.match",
+                            format!("{key}: pattern must be 1 to 256 bytes"),
                         ));
-                    }
-                    if e.name.split('.').any(|p| {
-                        p.strip_prefix('v')
-                            .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-                    }) {
-                        return Err(invalid(
-                            "trigger.events.name",
-                            "tokens must not be v followed only by digits",
-                        ));
-                    }
-                    if e.version == 0 {
-                        return Err(invalid("trigger.events.version", "must be at least 1"));
-                    }
-                    if e.header_match.len() > 8 {
-                        return Err(invalid("trigger.events.match", "at most 8 keys"));
-                    }
-                    for (key, pattern) in &e.header_match {
-                        check_name("trigger.events.match", key, 64, |b| {
-                            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'
-                        })?;
-                        if !crate::templates::is_placeholder(pattern)
-                            && !valid_header_pattern(pattern)
-                        {
-                            return Err(invalid(
-                                "trigger.events.match",
-                                format!("{key}: pattern must be 1 to 256 bytes"),
-                            ));
-                        }
                     }
                 }
-                check_list(
-                    "trigger.events",
-                    events
-                        .iter()
-                        .map(|e| (e.module.clone(), e.name.clone(), e.version)),
-                )?;
             }
-            (None, Some(schedule)) => {
-                crate::schedule::validate(&crate::templates::validation_schedule(self, schedule)?)
-                    .map_err(|e| ManifestError::Schedule(e.to_string()))?;
-            }
-            (events, schedule) => {
-                return Err(ManifestError::TriggerKinds {
-                    events: events.is_some(),
-                    schedule: schedule.is_some(),
-                });
-            }
+            check_list(
+                "trigger.events",
+                events
+                    .iter()
+                    .map(|e| (e.module.clone(), e.name.clone(), e.version)),
+            )?;
+        }
+        if let Some(schedule) = &self.trigger.schedule {
+            crate::schedule::validate(&crate::templates::validation_schedule(self, schedule)?)
+                .map_err(|e| ManifestError::Schedule(e.to_string()))?;
         }
         self.check_targets()
     }
@@ -1337,7 +1354,9 @@ impl Manifest {
                 .map(|c| (c.agent.clone(), c.source_kind.clone())),
         )?;
         for o in &self.ops {
-            check_name("ops.module", &o.module, MAX_NAME_BYTES, id_byte)?;
+            if !crate::templates::is_placeholder(&o.module) {
+                check_module_name("ops.module", &o.module)?;
+            }
             check_name("ops.op", &o.op, MAX_NAME_BYTES, op_byte)?;
             if o.for_target.is_some() && self.audience.is_none() {
                 return Err(ManifestError::ForTargetRequiresAudience);

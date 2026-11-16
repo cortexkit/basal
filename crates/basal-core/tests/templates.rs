@@ -588,3 +588,54 @@ fn lifecycle_migration_preserves_existing_instances_and_adds_outbox() {
             .is_none()
     );
 }
+
+#[test]
+fn enum_module_placeholders_expand_trigger_and_grant() {
+    let mut m = with_parameter(json!({"type":"enum","values":["synapse","other"]}));
+    m["trigger"]["events"] =
+        json!([{"module":"$params.value","name":"findings_changed","version":1}]);
+    m["ops"] = json!([{"module":"$params.value","op":"events_get"}]);
+    let mut manifest = parse(&m).unwrap();
+    let values = validate_values(&manifest, &json!({"value":"synapse"}), 0).unwrap();
+    effective(&mut manifest, &values);
+    assert_eq!(
+        manifest.trigger.events.as_ref().unwrap()[0].module,
+        "synapse"
+    );
+    assert_eq!(manifest.ops[0].module, "synapse");
+}
+
+#[test]
+fn module_placeholders_require_enum_in_each_position() {
+    for decl in [
+        json!({"type":"string","max_bytes":64}),
+        json!({"type":"integer","min":1,"max":2}),
+    ] {
+        for field in ["trigger.events[0].module", "ops[0].module"] {
+            let mut m = with_parameter(decl.clone());
+            if field.starts_with("trigger") {
+                m["trigger"]["events"] =
+                    json!([{"module":"$params.value","name":"findings_changed","version":1}]);
+            } else {
+                m["ops"] = json!([{"module":"$params.value","op":"events_get"}]);
+            }
+            assert!(
+                matches!(parse(&m), Err(ManifestError::TemplatePlaceholderInvalid { field: actual }) if actual == field)
+            );
+        }
+    }
+}
+
+#[test]
+fn combined_trigger_at_is_refused_with_typed_code() {
+    let mut m = with_parameter(json!({"type":"timestamp","max_ahead":"7d"}));
+    m["trigger"] = json!({"events":[{"module":"synapse","name":"findings_changed","version":1}],"schedule":{"at":"$params.value"}});
+    let error = parse(&m).unwrap_err();
+    assert_eq!(format!("{error:?}"), "CombinedTriggerAt");
+    assert_eq!(
+        error.to_string(),
+        "a trigger with events cannot use the one-shot schedule.at"
+    );
+    m["trigger"]["schedule"]["at"] = json!("2026-11-01T09:00:00Z");
+    assert!(matches!(parse(&m), Err(ManifestError::CombinedTriggerAt)));
+}
