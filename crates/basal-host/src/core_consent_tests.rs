@@ -36,6 +36,7 @@ impl Transport for Wire {
 
 struct Sink {
     open: AtomicBool,
+    saved_cursors: std::sync::atomic::AtomicUsize,
     calls: Arc<Mutex<Vec<&'static str>>>,
     inventory: mpsc::Sender<()>,
 }
@@ -45,6 +46,11 @@ fn cingulate() -> DecisionPath {
 }
 
 impl DecisionSink for Sink {
+    fn save_answer_cursor(&self, _: &DecisionPath, _: i64) -> Result<(), crate::SinkError> {
+        self.saved_cursors.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
     fn decision_paths(&self) -> Result<Vec<DecisionPath>, crate::SinkError> {
         Ok(vec![cingulate()])
     }
@@ -76,10 +82,50 @@ fn setup(open: bool, answered: bool) -> (Arc<Wire>, Arc<Sink>, mpsc::Receiver<()
     let (tx, rx) = mpsc::channel();
     let sink = Arc::new(Sink {
         open: AtomicBool::new(open),
+        saved_cursors: std::sync::atomic::AtomicUsize::new(0),
         calls: wire.calls.clone(),
         inventory: tx,
     });
     (wire, sink, rx)
+}
+
+#[test]
+fn card_settled_switches_open_card_interval_to_ten_minute_backstop() {
+    let (wire, sink, _) = setup(true, false);
+    let consent = CoreConsent::new(wire);
+    consent.attach(sink);
+    let mut delay = POLL_MIN;
+    for _ in 0..8 {
+        delay = next_poll_delay(delay, false);
+    }
+    assert_eq!(consent.state.poll_delay(delay), Duration::from_secs(5));
+    let seen = consent.raised_epoch();
+    consent.card_settled();
+    assert_ne!(consent.raised_epoch(), seen);
+    assert_eq!(consent.state.poll_delay(delay), Duration::from_secs(600));
+    consent.raised();
+    assert_eq!(consent.state.poll_delay(POLL_MIN), Duration::from_secs(600));
+    let restarted = CoreConsent::new(Arc::new(Wire::default()));
+    assert_eq!(restarted.state.poll_delay(delay), Duration::from_secs(5));
+}
+
+#[test]
+fn card_settled_unchanged_page_does_not_save_cursor_and_idle_stays_asleep() {
+    let (wire, sink, _) = setup(true, false);
+    let consent = CoreConsent::new(wire.clone());
+    consent.attach(sink.clone());
+    consent.card_settled();
+    consent.poll_once().unwrap();
+    assert_eq!(*wire.calls.lock().unwrap(), ["answers", "ack"]);
+    assert_eq!(sink.saved_cursors.load(Ordering::Acquire), 0);
+
+    let (wire, sink, _) = setup(false, false);
+    let idle = CoreConsent::new(wire.clone()).with_polling();
+    idle.attach(sink);
+    idle.card_settled();
+    assert!(!idle.state.poll_started.load(Ordering::Acquire));
+    idle.poll_once().unwrap();
+    assert!(wire.calls.lock().unwrap().is_empty());
 }
 
 #[test]

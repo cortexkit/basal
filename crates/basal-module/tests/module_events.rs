@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 mod broca;
 #[path = "module_events/bus_notices.rs"]
 mod bus_notices;
+#[path = "module_events/card_settled.rs"]
+mod card_settled;
 mod common;
 #[path = "module_events/hierarchical.rs"]
 mod hierarchical;
@@ -90,6 +92,10 @@ impl Server {
     }
 
     async fn with_ack_wait(ack_wait: Duration) -> Self {
+        Self::with_subject(ack_wait, "ck.account.event.>").await
+    }
+
+    async fn with_subject(ack_wait: Duration, subject: &str) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "basal-nats-{}-{}",
             std::process::id(),
@@ -136,7 +142,7 @@ impl Server {
         let stream = js
             .create_stream(async_nats::jetstream::stream::Config {
                 name: STREAM.into(),
-                subjects: vec!["ck.account.event.>".into()],
+                subjects: vec![subject.into()],
                 ..Default::default()
             })
             .await
@@ -144,7 +150,7 @@ impl Server {
         stream
             .create_consumer(async_nats::jetstream::consumer::pull::Config {
                 durable_name: Some("m_basal".into()),
-                filter_subject: "ck.account.event.>".into(),
+                filter_subject: subject.into(),
                 ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
                 ack_wait,
                 max_ack_pending: 1000,

@@ -1037,7 +1037,13 @@ Each provider's answer feed is read only while basal has an open card on it,
 or while a failed poll on that provider still needs a retry. If no card is open
 when basal starts, no poller is started: no thread, no timer and no page read.
 The first card raised starts it. Once every card is closed, the poller waits
-without a timer and reads nothing until the next card is raised. Basal applies each answer durably and idempotently before
+without a timer and reads nothing until the next card is raised. While cards
+are open, basal backs off to a 5-second poll until it sees a valid Cingulate
+`card_settled.v1.basal` bus pointer in this process. Each pointer wakes an
+immediate reread from basal's own cursor; pointers in a batch coalesce into one
+wake. After the first pointer, the timer is a 10-minute backstop instead. The
+pointer carries no answer and does not advance the saved cursor.
+Basal applies each answer durably and idempotently before
 acknowledging it on its own provider. The feed uses `consent.answers`
 continuations and a durable cursor, then `consent.ack` through the fully
 processed page, including empty final pages that cover withdrawals. A failed

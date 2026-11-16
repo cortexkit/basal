@@ -14,7 +14,7 @@ use basal_core::{
     Runtime,
     events::{Notice, Report, parse_subject, parse_subject_identity},
 };
-use basal_host::{Catalog, transport::Transport};
+use basal_host::{Catalog, Consent, transport::Transport};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cortexkit_bus_naming::AccountNames;
 use cortexkit_bus_nats::{ConnectConfig, NatsConnection};
@@ -136,13 +136,14 @@ async fn until_cancelled(cancel: &tokio::sync::Notify, work: impl Future<Output 
 
 impl Reader {
     pub fn start(rt: Runtime, transport: Arc<dyn Transport>) -> Self {
-        Self::start_with_custody(rt, transport, None)
+        Self::start_with_custody(rt, transport, None, None)
     }
 
     pub fn start_with_custody(
         rt: Runtime,
         transport: Arc<dyn Transport>,
         custody: Option<basal_core::codemode::supervisor::Supervisor>,
+        consent: Option<Arc<dyn Consent>>,
     ) -> Self {
         let health = Arc::new(Mutex::new(Health::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -163,6 +164,7 @@ impl Reader {
                     reader_loop(
                         rt.clone(),
                         custody.clone(),
+                        consent.clone(),
                         transport.clone(),
                         thread_health.clone(),
                         thread_stop.clone(),
@@ -343,13 +345,19 @@ pub async fn bind(connection: &NatsConnection, stream: &str) -> Result<PullConsu
 }
 
 pub fn decode(message: &jetstream::Message, catalog: &dyn Catalog) -> Result<Notice, String> {
+    // Flow bodies must be fetched under the flow's own scope so the publisher
+    // can check access; an inline body would bypass that check for subscribers.
     if !message.payload.is_empty() {
         return Err("event notice carries a body".into());
     }
-    decode_metadata(message, catalog)
+    decode_metadata(message, catalog, false)
 }
 
-fn decode_metadata(message: &jetstream::Message, catalog: &dyn Catalog) -> Result<Notice, String> {
+fn decode_metadata(
+    message: &jetstream::Message,
+    catalog: &dyn Catalog,
+    inline_control: bool,
+) -> Result<Notice, String> {
     let headers = message.headers.as_ref().ok_or("notice headers absent")?;
     let get = |name: &str| {
         headers
@@ -357,7 +365,15 @@ fn decode_metadata(message: &jetstream::Message, catalog: &dyn Catalog) -> Resul
             .map(|v| v.as_str().to_owned())
             .ok_or_else(|| format!("notice {name} absent"))
     };
-    let digest = get(CONTENT_DIGEST)?;
+    // Control bodies are for basal itself, not subscribing flows. Inline bodies
+    // need no digest, but a supplied digest must match; empty claim-check notices
+    // still require their digest to identify the publisher's stored body.
+    let digest = if inline_control && !message.payload.is_empty() {
+        get(CONTENT_DIGEST)
+            .unwrap_or_else(|_| ContentDigest::of_bytes(&message.payload).to_string())
+    } else {
+        get(CONTENT_DIGEST)?
+    };
     // Notices accept bare lowercase hex or `sha256:<lowercase hex>`, as
     // described in docs/script.md. Retain the exact notice spelling here;
     // body verification strips only that prefix and requires bare reply hex.
@@ -422,16 +438,41 @@ struct LateResultReady {
     _seq: std::num::NonZeroU64,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CardSettled {
+    #[serde(rename = "elicitation_id")]
+    _elicitation_id: String,
+    #[serde(rename = "feed")]
+    _feed: AnswerFeed,
+    #[serde(rename = "seq")]
+    _seq: std::num::NonZeroU64,
+}
+
+#[derive(Deserialize)]
+enum AnswerFeed {
+    #[serde(rename = "answers")]
+    Answers,
+}
+
 fn control_payload<T: serde::de::DeserializeOwned>(
     message: &jetstream::Message,
     catalog: &dyn Catalog,
 ) -> Result<T, String> {
-    let notice = decode_metadata(message, catalog)?;
+    let notice = decode_metadata(message, catalog, true)?;
     let digest = basal_core::events::digest_hex(&notice.digest).ok_or("invalid notice digest")?;
     if ContentDigest::of_bytes(&message.payload).to_string() != digest {
         return Err("control notice digest mismatch".into());
     }
     serde_json::from_slice(&message.payload).map_err(|_| "invalid control payload".into())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_control_payload(
+    message: &jetstream::Message,
+    catalog: &dyn Catalog,
+) -> Result<Value, String> {
+    control_payload(message, catalog)
 }
 
 fn malformed_notice_could_matter(rt: &Runtime, identity: Option<(&str, &str, u32)>) -> bool {
@@ -472,7 +513,7 @@ pub async fn commit_batch(
     messages: &[jetstream::Message],
     acknowledge: bool,
 ) -> Result<Report, String> {
-    commit_batch_report(rt, None, messages, acknowledge)
+    commit_batch_report(rt, None, None, messages, acknowledge)
         .await
         .map(|(report, _)| report)
 }
@@ -484,14 +525,25 @@ pub async fn commit_batch_with_custody(
     messages: &[jetstream::Message],
     acknowledge: bool,
 ) -> Result<Report, String> {
-    commit_batch_report(rt, Some(custody), messages, acknowledge)
+    commit_batch_report(rt, Some(custody), None, messages, acknowledge)
         .await
         .map(|(report, _)| report)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub async fn commit_batch_with_consent(
+    rt: Runtime,
+    consent: Arc<dyn Consent>,
+    messages: &[jetstream::Message],
+    acknowledge: bool,
+) -> Result<(Report, usize), String> {
+    commit_batch_report(rt, None, Some(consent), messages, acknowledge).await
 }
 
 async fn commit_batch_report(
     rt: Runtime,
     custody: Option<basal_core::codemode::supervisor::Supervisor>,
+    consent: Option<Arc<dyn Consent>>,
     messages: &[jetstream::Message],
     acknowledge: bool,
 ) -> Result<(Report, usize), String> {
@@ -501,6 +553,7 @@ async fn commit_batch_report(
     let mut commit = tokio::task::spawn_blocking(move || {
         let mut notices = Vec::new();
         let mut malformed = 0;
+        let mut card_settled = false;
         for m in &owned_messages {
             if let Ok(subject) = parse_subject(&m.subject) {
                 if let Some(reader) = subject.reader.as_deref() {
@@ -517,6 +570,19 @@ async fn commit_batch_report(
                             Err(reason) => {
                                 malformed += 1;
                                 tracing::warn!(target:"events", subject=%m.subject, %reason, "refusing malformed late-result wake before acknowledgement");
+                            }
+                        }
+                    }
+                    if reader == "basal"
+                        && subject.module == "cingulate"
+                        && subject.event == "card_settled"
+                        && subject.version == 1
+                    {
+                        match control_payload::<CardSettled>(m, rt.catalog()) {
+                            Ok(_) => card_settled = true,
+                            Err(reason) => {
+                                malformed += 1;
+                                tracing::warn!(target:"events", subject=%m.subject, %reason, "refusing malformed card-settled wake before acknowledgement");
                             }
                         }
                     }
@@ -571,6 +637,16 @@ async fn commit_batch_report(
                     }
                 }
             }
+        }
+        // A batch can cover several settled cards; one reread covers all of
+        // them from the reader's own cursor, without trusting the pointer seq.
+        if card_settled && let Some(consent) = &consent {
+            consent.card_settled();
+        }
+        // Control-only batches admit no flow work, so do not open an empty
+        // admission transaction merely to acknowledge their bus messages.
+        if notices.is_empty() {
+            return Ok((Report::default(), malformed));
         }
         rt.admit_events(&notices)
             .map(|report| (report, malformed))
@@ -694,6 +770,7 @@ async fn refresh_backlog(health: &Mutex<Health>, poll: impl Future<Output = Resu
 async fn reader_loop(
     rt: Runtime,
     custody: Option<basal_core::codemode::supervisor::Supervisor>,
+    consent: Option<Arc<dyn Consent>>,
     transport: Arc<dyn Transport>,
     health: Arc<Mutex<Health>>,
     stop: Arc<AtomicBool>,
@@ -741,7 +818,7 @@ async fn reader_loop(
                 }).await;
                 if messages.is_empty() { continue; }
                 let oldest = messages.iter().filter_map(|m| m.info().ok()).map(|i| now_ms().saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)).max();
-                let (report, malformed) = commit_batch_report(rt.clone(), custody.clone(), &messages, true).await?;
+                let (report, malformed) = commit_batch_report(rt.clone(), custody.clone(), consent.clone(), &messages, true).await?;
                 let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
                 if h.first_batch_notices.is_none() {
