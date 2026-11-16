@@ -54,12 +54,24 @@ struct Stream {
     wake: Mutex<()>,
     changed: Condvar,
     stopped: AtomicBool,
+    bus_seen: AtomicBool,
+    bus_pending: AtomicBool,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
 }
 impl Stream {
     fn notify(&self) {
         let _guard = self.wake.lock().unwrap();
         self.changed.notify_all();
+    }
+    fn backoff_cap(&self) -> Duration {
+        Duration::from_secs(if self.bus_seen.load(Ordering::SeqCst) {
+            30
+        } else {
+            2
+        })
+    }
+    fn ready(&self, wait: Duration) -> bool {
+        self.bus_pending.swap(false, Ordering::SeqCst) || wait.is_zero()
     }
 }
 
@@ -74,6 +86,35 @@ pub(in crate::codemode::supervisor) struct Custody {
 }
 
 impl Custody {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(in crate::codemode::supervisor) fn test_stream_state(
+        &self,
+        module: &str,
+        open: bool,
+    ) -> Option<(u64, bool)> {
+        let stream = if open {
+            Some(self.stream(module))
+        } else {
+            self.streams.lock().unwrap().get(module).cloned()
+        }?;
+        Some((
+            stream.backoff_cap().as_secs(),
+            stream.bus_pending.load(Ordering::SeqCst),
+        ))
+    }
+    pub(in crate::codemode::supervisor) fn late_result_ready(&self, module: &str) -> bool {
+        let stream = self.streams.lock().unwrap().get(module).cloned();
+        let Some(stream) = stream else {
+            return false;
+        };
+        if stream.stopped.load(Ordering::SeqCst) {
+            return false;
+        }
+        stream.bus_seen.store(true, Ordering::SeqCst);
+        stream.bus_pending.store(true, Ordering::SeqCst);
+        stream.notify();
+        true
+    }
     #[cfg(test)]
     pub(in crate::codemode::supervisor) fn on_idle(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         *self.idle.lock().unwrap() = Some(hook);
@@ -250,7 +291,7 @@ impl Custody {
                 drop(custody);
                 if let Some(target) = target {
                     let wait = due.saturating_duration_since(Instant::now());
-                    if wait.is_zero() {
+                    if stream.ready(wait) {
                         break target;
                     }
                     wake = stream.changed.wait_timeout(wake, wait).unwrap().0;
@@ -276,7 +317,7 @@ impl Custody {
                 }
                 Ok(false) => {
                     due = Instant::now() + backoff;
-                    backoff = (backoff * 2).min(Duration::from_secs(2));
+                    backoff = (backoff * 2).min(stream.backoff_cap());
                 }
                 Err(error) => {
                     if definitive_scope_end(&error) {
@@ -288,7 +329,7 @@ impl Custody {
                         tracing::warn!(provider = module, ?error, "late result intake will retry");
                     }
                     due = Instant::now() + backoff;
-                    backoff = (backoff * 2).min(Duration::from_secs(2));
+                    backoff = (backoff * 2).min(stream.backoff_cap());
                 }
             }
         }
@@ -540,5 +581,29 @@ pub(in crate::codemode::supervisor) fn definitive_scope_end(error: &WireError) -
             "scope_ended" | "scope_expired" | "scope_parent_ended" | "scope_not_live"
         ),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod bus_tests {
+    use super::*;
+
+    #[test]
+    fn bus_wake_interrupts_future_due_time_without_changing_other_provider_caps() {
+        let custody = Custody::default();
+        let aft = custody.stream("aft");
+        let other = custody.stream("cerebellum");
+        let future = Duration::from_secs(30);
+        assert!(!aft.ready(future));
+        assert_eq!(aft.backoff_cap(), Duration::from_secs(2));
+        assert!(!custody.late_result_ready("absent"));
+        assert!(custody.late_result_ready("aft"));
+        assert!(
+            aft.ready(future),
+            "a recorded bus wake bypasses the polling deadline"
+        );
+        assert!(!aft.ready(future), "one wake requests one immediate pass");
+        assert_eq!(aft.backoff_cap(), Duration::from_secs(30));
+        assert_eq!(other.backoff_cap(), Duration::from_secs(2));
     }
 }

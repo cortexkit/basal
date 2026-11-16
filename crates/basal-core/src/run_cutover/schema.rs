@@ -507,6 +507,10 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 50,
         statements: include_str!("../schema_template_events_v50.sql"),
     },
+    Migration {
+        version: 51,
+        statements: include_str!("../schema_bus_outbox_v51.sql"),
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,
@@ -1842,3 +1846,7 @@ mod payload_tests;
 #[cfg(test)]
 #[path = "../schema_template_event_tests.rs"]
 mod template_event_tests;
+
+#[cfg(test)]
+#[path = "../schema_bus_outbox_tests.rs"]
+mod bus_outbox_tests;

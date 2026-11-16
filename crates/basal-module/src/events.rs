@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use async_nats::jetstream::{self, consumer::PullConsumer};
 use basal_core::{
     Runtime,
-    events::{Notice, Report, parse_subject_identity},
+    events::{Notice, Report, parse_subject, parse_subject_identity},
 };
 use basal_host::{Catalog, transport::Transport};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -136,6 +136,14 @@ async fn until_cancelled(cancel: &tokio::sync::Notify, work: impl Future<Output 
 
 impl Reader {
     pub fn start(rt: Runtime, transport: Arc<dyn Transport>) -> Self {
+        Self::start_with_custody(rt, transport, None)
+    }
+
+    pub fn start_with_custody(
+        rt: Runtime,
+        transport: Arc<dyn Transport>,
+        custody: Option<basal_core::codemode::supervisor::Supervisor>,
+    ) -> Self {
         let health = Arc::new(Mutex::new(Health::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(tokio::sync::Notify::new());
@@ -154,6 +162,7 @@ impl Reader {
                     &thread_cancel,
                     reader_loop(
                         rt.clone(),
+                        custody.clone(),
                         transport.clone(),
                         thread_health.clone(),
                         thread_stop.clone(),
@@ -337,6 +346,10 @@ pub fn decode(message: &jetstream::Message, catalog: &dyn Catalog) -> Result<Not
     if !message.payload.is_empty() {
         return Err("event notice carries a body".into());
     }
+    decode_metadata(message, catalog)
+}
+
+fn decode_metadata(message: &jetstream::Message, catalog: &dyn Catalog) -> Result<Notice, String> {
     let headers = message.headers.as_ref().ok_or("notice headers absent")?;
     let get = |name: &str| {
         headers
@@ -394,6 +407,33 @@ pub fn decode(message: &jetstream::Message, catalog: &dyn Catalog) -> Result<Not
     Ok(notice)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallChange {
+    flow_id: String,
+    #[serde(rename = "seq")]
+    _seq: std::num::NonZeroU64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LateResultReady {
+    #[serde(rename = "seq")]
+    _seq: std::num::NonZeroU64,
+}
+
+fn control_payload<T: serde::de::DeserializeOwned>(
+    message: &jetstream::Message,
+    catalog: &dyn Catalog,
+) -> Result<T, String> {
+    let notice = decode_metadata(message, catalog)?;
+    let digest = basal_core::events::digest_hex(&notice.digest).ok_or("invalid notice digest")?;
+    if ContentDigest::of_bytes(&message.payload).to_string() != digest {
+        return Err("control notice digest mismatch".into());
+    }
+    serde_json::from_slice(&message.payload).map_err(|_| "invalid control payload".into())
+}
+
 fn malformed_notice_could_matter(rt: &Runtime, identity: Option<(&str, &str, u32)>) -> bool {
     let Some((module, name, _version)) = identity else {
         return false;
@@ -432,13 +472,26 @@ pub async fn commit_batch(
     messages: &[jetstream::Message],
     acknowledge: bool,
 ) -> Result<Report, String> {
-    commit_batch_report(rt, messages, acknowledge)
+    commit_batch_report(rt, None, messages, acknowledge)
+        .await
+        .map(|(report, _)| report)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub async fn commit_batch_with_custody(
+    rt: Runtime,
+    custody: basal_core::codemode::supervisor::Supervisor,
+    messages: &[jetstream::Message],
+    acknowledge: bool,
+) -> Result<Report, String> {
+    commit_batch_report(rt, Some(custody), messages, acknowledge)
         .await
         .map(|(report, _)| report)
 }
 
 async fn commit_batch_report(
     rt: Runtime,
+    custody: Option<basal_core::codemode::supervisor::Supervisor>,
     messages: &[jetstream::Message],
     acknowledge: bool,
 ) -> Result<(Report, usize), String> {
@@ -446,27 +499,69 @@ async fn commit_batch_report(
     // Decoding consults the synchronous daemon catalog. Keep it with SQLite
     // admission on the blocking pool, while the async task sends progress acks.
     let mut commit = tokio::task::spawn_blocking(move || {
-        let notices = owned_messages
-            .iter()
-            .filter_map(|m| {
-                // Parse the subject before decoding so a body error still leaves the event identity
-                // available to check whether the malformed notice could matter to a consumer.
-                let identity = parse_subject_identity(&m.subject).ok();
-                match decode(m, rt.catalog()) {
-                Ok(notice) => Some(notice),
+        let mut notices = Vec::new();
+        let mut malformed = 0;
+        for m in &owned_messages {
+            if let Ok(subject) = parse_subject(&m.subject) {
+                if let Some(reader) = subject.reader.as_deref() {
+                    if reader == "basal"
+                        && subject.event == "late_result_ready"
+                        && subject.version == 1
+                    {
+                        match control_payload::<LateResultReady>(m, rt.catalog()) {
+                            Ok(_) => {
+                                if let Some(custody) = &custody {
+                                    custody.late_result_ready(&subject.module);
+                                }
+                            }
+                            Err(reason) => {
+                                malformed += 1;
+                                tracing::warn!(target:"events", subject=%m.subject, %reason, "refusing malformed late-result wake before acknowledgement");
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if subject.module == "prefrontal-core"
+                    && subject.event == "flow_install_changed"
+                    && subject.version == 1
+                {
+                    match control_payload::<InstallChange>(m, rt.catalog()).and_then(|change| {
+                        if change.flow_id.is_empty() {
+                            Err("install change lacks flow_id".into())
+                        } else {
+                            Ok(change)
+                        }
+                    }) {
+                        Ok(change) => rt
+                            .install_changed(&change.flow_id)
+                            .map_err(|e| e.to_string())?,
+                        Err(reason) => {
+                            malformed += 1;
+                            tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed install change before acknowledgement");
+                        }
+                    }
+                    continue;
+                }
+            }
+            // Parse the subject before decoding so a body error still leaves the event identity
+            // available to check whether the malformed notice could matter to a consumer.
+            let identity = parse_subject_identity(&m.subject).ok();
+            match decode(m, rt.catalog()) {
+                Ok(notice) => notices.push(notice),
                 Err(reason) => {
+                    malformed += 1;
                     if malformed_notice_could_matter(&rt, identity) {
                         tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");
                     } else {
                         tracing::debug!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");
                     }
-                    None
                 }
             }
-            })
-            .collect::<Vec<_>>();
-        let malformed = owned_messages.len() - notices.len();
-        rt.admit_events(&notices).map(|report| (report, malformed))
+        }
+        rt.admit_events(&notices)
+            .map(|report| (report, malformed))
+            .map_err(|e| e.to_string())
     });
     let mut progress = tokio::time::interval_at(
         tokio::time::Instant::now() + Duration::from_secs(5),
@@ -502,7 +597,9 @@ pub async fn publish_outbox(
         .map_err(|e| e.to_string())?;
     let mut published = 0;
     for event in pending {
-        let subject = format!("ck.{account}.event.basal.{}.v1", event.event_name);
+        let subject = names
+            .event_subject("basal", &event.event_name, 1)
+            .map_err(|e| e.to_string())?;
         let headers = BTreeMap::from([
             ("flow_id".into(), event.flow_id.clone()),
             ("agent".into(), event.agent_id.clone()),
@@ -529,6 +626,40 @@ pub async fn publish_outbox(
             }
         }
     }
+    for event in rt.pending_bus_events(BATCH).map_err(|e| e.to_string())? {
+        let subject = match event.reader.as_deref() {
+            Some(reader) => names.event_subject_with_reader("basal", event.name, 1, reader),
+            None => names.event_subject("basal", event.name, 1),
+        }
+        .map_err(|e| e.to_string())?;
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(MESSAGE_ID, event.message_id.as_str());
+        headers.insert(
+            CONTENT_DIGEST,
+            ContentDigest::of_bytes(event.body.as_bytes())
+                .to_string()
+                .as_str(),
+        );
+        let receipt = async {
+            jetstream::new(connection.client())
+                .publish_with_headers(subject, headers, event.body.clone().into())
+                .await
+                .map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())
+        }
+        .await;
+        match receipt {
+            Ok(_) => {
+                rt.bus_event_published(&event).map_err(|e| e.to_string())?;
+                published += 1;
+            }
+            Err(error) => {
+                rt.bus_event_retry(&event).map_err(|e| e.to_string())?;
+                return Err(error);
+            }
+        }
+    }
     Ok(published)
 }
 
@@ -549,6 +680,7 @@ async fn refresh_backlog(health: &Mutex<Health>, poll: impl Future<Output = Resu
 
 async fn reader_loop(
     rt: Runtime,
+    custody: Option<basal_core::codemode::supervisor::Supervisor>,
     transport: Arc<dyn Transport>,
     health: Arc<Mutex<Health>>,
     stop: Arc<AtomicBool>,
@@ -596,7 +728,7 @@ async fn reader_loop(
                 }).await;
                 if messages.is_empty() { continue; }
                 let oldest = messages.iter().filter_map(|m| m.info().ok()).map(|i| now_ms().saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)).max();
-                let (report, malformed) = commit_batch_report(rt.clone(), &messages, true).await?;
+                let (report, malformed) = commit_batch_report(rt.clone(), custody.clone(), &messages, true).await?;
                 let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
                 if h.first_batch_notices.is_none() {

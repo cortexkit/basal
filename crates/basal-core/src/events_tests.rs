@@ -213,6 +213,27 @@ impl Fixture {
 
 #[path = "owner_notice_tests.rs"]
 mod owner_notices;
+
+#[test]
+fn reader_token_subjects_parse_via_naming_and_never_trigger_flows() {
+    let f = Fixture::new(60);
+    f.approve("flow");
+    for reader in ["basal", "other", "v2"] {
+        let mut notice = notice(0);
+        notice.subject.push('.');
+        notice.subject.push_str(reader);
+        assert_eq!(
+            parse_subject(&notice.subject).unwrap().reader.as_deref(),
+            Some(reader)
+        );
+        assert_eq!(
+            notice.identity().unwrap(),
+            ("plexus", "github_pr_changed", 1)
+        );
+        assert_eq!(f.rt.admit_events(&[notice]).unwrap().matched, 0);
+    }
+    assert_eq!(f.rt.admit_events(&[notice(1)]).unwrap().admitted, 1);
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
@@ -1381,7 +1402,7 @@ fn malformed_notices_are_refused_before_admission() {
         "ck.account.room.plexus.github_pr_changed.v1",
         "ck.account.event.plexus.github_pr_changed.v01",
         "ck.account.event.plexus.github_pr_changed.v0",
-        "ck.account.event.plexus.github_pr_changed.v1.extra",
+        "ck.account.event.plexus.github_pr_changed.v1.extra.more",
     ] {
         let mut invalid = notice(0);
         invalid.subject = subject.into();

@@ -256,6 +256,15 @@ impl basal_host::CompletionSink for ModelSink {
 }
 
 impl Supervisor {
+    /// Observe bus wake delivery without relying on intake-thread timing.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_late_stream(&self, provider: &str, open: bool) -> Option<(u64, bool)> {
+        self.0.custody.test_stream_state(provider, open)
+    }
+    /// Deliver a provider wake before the bus reader acknowledges its notice.
+    pub fn late_result_ready(&self, provider: &str) -> bool {
+        self.0.custody.late_result_ready(provider)
+    }
     /// Recover durable runs before exposing any operation. A recovery failure
     /// prevents startup rather than leaving old runs eligible for dispatch.
     pub fn new(

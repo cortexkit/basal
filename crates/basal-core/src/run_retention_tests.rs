@@ -274,6 +274,34 @@ fn history_predicates_keep_identity_dependencies_and_latest_reenable() {
 }
 
 #[test]
+fn outbox_retention_keeps_each_unfinished_delivery_path() {
+    let f = Fixture::new();
+    f.store
+        .write(|tx| {
+            tx.execute_batch(
+                "INSERT INTO outbox(at,kind,flow_id,body,delivered_at,bus_published_at) VALUES
+            (1,'flow.owner_notice','call-pending','{}',NULL,2),
+            (1,'flow.owner_notice','bus-pending','{}',2,NULL),
+            (1,'flow.owner_notice','done','{}',2,2),
+            (1,'codemode.late_result_ready','wake-pending','{}',NULL,NULL),
+            (1,'codemode.late_result_ready','wake-done','{}',NULL,2);",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    prune_history(&f.store, 100, 100, |_| vec![]).unwrap();
+    let kept = f
+        .store
+        .read(|c| {
+            Ok(c.prepare("SELECT flow_id FROM outbox ORDER BY flow_id")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .unwrap();
+    assert_eq!(kept, ["bus-pending", "call-pending", "wake-pending"]);
+}
+
+#[test]
 fn rate_windows_use_live_snapshot_and_transactional_closed_obligations() {
     let f = Fixture::new();
     f.add("closed", 100);

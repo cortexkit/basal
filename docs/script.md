@@ -160,6 +160,13 @@ revocations while idle.
 
 ## Module-event triggers
 
+The bus subject is `ck.<account>.event.<module>.<name>.v<N>`. The naming
+contract also permits one trailing reader token, for example
+`ck.<account>.event.aft.late_result_ready.v1.basal`. A subject with any reader
+token never triggers a flow. Basal acknowledges notices addressed to other
+modules without decoding their bodies; its own control notices are handled
+separately from flow event-body fetching.
+
 An event-triggered script receives `trigger` in this shape:
 
 ```json

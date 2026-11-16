@@ -200,6 +200,24 @@ impl Runtime {
         Ok(())
     }
 
+    /// A bus hint has no version: check pending cards oldest first, without
+    /// holding SQLite across a core read. With no pending card, the activation
+    /// gate still rechecks status and flow.install_revoked still handles revocation.
+    pub fn install_changed(&self, flow_id: &str) -> Result<()> {
+        let cards = self.store().read(|c| {
+            let ids = c.prepare("SELECT card_id FROM install_cards WHERE flow_id=?1 AND state='pending' ORDER BY version,attempt LIMIT 9")?
+                .query_map([flow_id], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            ids.iter().map(|id| crate::cards::load(c,id)).collect::<Result<Vec<_>>>()
+        })?;
+        if cards.len() > 8 {
+            tracing::warn!(target: "consent", flow_id, "install change has more than eight pending cards; remaining cards await reconciliation");
+        }
+        for card in cards.into_iter().take(8).flatten() {
+            self.reconcile_install_card(&card)?;
+        }
+        Ok(())
+    }
+
     fn reconcile_install_card(&self, card: &crate::cards::CardRecord) -> Result<()> {
         let flow_id = &card.flow_id;
         let version = card.version;

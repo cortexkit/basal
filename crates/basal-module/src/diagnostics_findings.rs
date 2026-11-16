@@ -292,7 +292,7 @@ fn store_findings_with(
                 sample["failure_code"] = json!(r.get::<_,Option<String>>(3)?);
                 Ok((at, sample)) }, Some(now))?);
         findings.extend(aggregate(conn,
-            "SELECT at,flow_id,seq FROM outbox WHERE delivered_at IS NULL AND kind<>'flow.owner_notice' AND NOT (kind='secret.revoke_flow_grants' AND failed_at IS NOT NULL) AND at<=?1 ORDER BY at,seq",
+            "SELECT at,flow_id,seq FROM outbox WHERE at<=?1 AND ((kind IN ('flow.owner_notice','codemode.late_result_ready') AND bus_published_at IS NULL) OR (kind NOT IN ('flow.owner_notice','codemode.late_result_ready') AND delivered_at IS NULL AND NOT (kind='secret.revoke_flow_grants' AND failed_at IS NOT NULL))) ORDER BY at,seq",
             [now.saturating_sub(STUCK_MS)],
             finding("outbox_stuck", "undelivered", "warn", "Outbox rows remain undelivered for over an hour.",
                 "Inspect basal outbox delivery and bus connectivity."), outbox_sample, Some(now))?);
@@ -773,6 +773,10 @@ mod tests {
                     ),
                 );
             }
+            seed(
+                store,
+                &format!("UPDATE outbox SET bus_published_at={NOW} WHERE kind='flow.owner_notice'"),
+            );
             quiet(store);
             seed(
                 store,
@@ -810,6 +814,10 @@ mod tests {
                     NOW - STUCK_MS
                 ),
             );
+            seed(
+                store,
+                &format!("UPDATE outbox SET bus_published_at={NOW} WHERE kind='flow.owner_notice'"),
+            );
             let finding = only(store, "owner_notices_stuck", "undelivered");
             assert_eq!(
                 finding["samples"][0]["failure_code"],
@@ -817,6 +825,40 @@ mod tests {
             );
             assert!(finding["samples"][1]["failure_code"].is_null());
             assert!(!finding.to_string().contains(SECRET));
+        });
+    }
+
+    #[test]
+    fn bus_and_call_outbox_findings_follow_their_own_delivery_path() {
+        with_store("bus-paths", |store| {
+            seed(
+                store,
+                &format!(
+                    "INSERT INTO outbox(at,kind,flow_id,body,bus_published_at) VALUES({},'flow.owner_notice','f','{{}}',{NOW})",
+                    NOW - STUCK_MS
+                ),
+            );
+            only(store, "owner_notices_stuck", "undelivered");
+            seed(
+                store,
+                &format!("UPDATE outbox SET delivered_at={NOW},bus_published_at=NULL"),
+            );
+            only(store, "outbox_stuck", "undelivered");
+            seed(
+                store,
+                &format!(
+                    "UPDATE outbox SET bus_published_at={NOW}; INSERT INTO outbox(at,kind,flow_id,body) VALUES({},'codemode.late_result_ready','','{{\"seq\":1}}')",
+                    NOW - STUCK_MS
+                ),
+            );
+            only(store, "outbox_stuck", "undelivered");
+            seed(
+                store,
+                &format!(
+                    "UPDATE outbox SET bus_published_at={NOW} WHERE kind='codemode.late_result_ready'"
+                ),
+            );
+            quiet(store);
         });
     }
 
@@ -887,6 +929,7 @@ mod tests {
                     "INSERT INTO outbox(at,kind,flow_id,body) VALUES (1,'flow.owner_notice','f','{}')",
                 );
             }
+            seed(store, &format!("UPDATE outbox SET bus_published_at={NOW}"));
             let finding = only(store, "owner_notices_stuck", "undelivered");
             assert_eq!(finding["count"], 8);
             assert_eq!(finding["samples"].as_array().unwrap().len(), 5);

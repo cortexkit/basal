@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 #[path = "module_events/broca.rs"]
 mod broca;
+#[path = "module_events/bus_notices.rs"]
+mod bus_notices;
 mod common;
 #[path = "module_events/hierarchical.rs"]
 mod hierarchical;

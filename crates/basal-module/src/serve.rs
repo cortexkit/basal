@@ -489,9 +489,10 @@ fn start(path: PathBuf, handler: &BasalHandler) {
                 }
                 ready();
                 if let Some(transport) = event_transport.as_ref() {
-                    *lock(&module.event_reader) = Some(crate::events::Reader::start(
+                    *lock(&module.event_reader) = Some(crate::events::Reader::start_with_custody(
                         module.rt.clone(),
                         transport.clone(),
+                        Some(module.codemode.supervisor()),
                     ));
                 }
                 let module = Arc::new(module);

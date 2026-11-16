@@ -33,8 +33,8 @@ or enable operation is performed. A failed store read is an error frame.
 | `runs_overdue` | `deadline`, `deferred` | warn | Unfinished run at least 1 minute past its recorded deadline, or active deferred call at least 1 minute past `retry_not_before`; allows the normal engine sweep. |
 | `reconcile_pending` | `runs`, `decisions` | warn | Reconcile run admitted at least 1 hour ago, or open decision card created at least 1 hour ago; avoids nagging during normal human response time. |
 | `grant_lost` | `disabled` | warn | Immediately for flows disabled with reason `grant_lost`. Count is disabled flows. |
-| `owner_notices_stuck` | `undelivered` | warn | Undelivered owner-notice rows at least 1 hour old, allowing normal retries. |
-| `outbox_stuck` | `undelivered` | warn | Other undelivered outbox rows at least 1 hour old, excluding permanent secret-revocation failures. |
+| `owner_notices_stuck` | `undelivered` | warn | Owner notices whose fallback call is undelivered for at least 1 hour, independently of bus publication. |
+| `outbox_stuck` | `undelivered` | warn | Owner-notice or late-result wake bus publications pending for at least 1 hour, plus other undelivered outbox rows, excluding permanent secret-revocation failures. A bus-only wake is never a pending call. |
 | `outbox_stuck` | `secret_revocations` | error | Immediately for undelivered secret revocations with `failed_at`: grants may still be live. |
 | `quarantined` | `schedules_and_fires`, `outcomes` | warn | Any `schedule.corrupt` audit events or quarantined call outcomes in the requested window. Counts are audit events or outcome rows. |
 | `worker_pool` | `flows`, `codemode` | warn | Immediately while either pool records a spawn error or retry backoff. |
@@ -204,6 +204,18 @@ Core-only; every other caller receives `not_permitted`. Params are exactly:
 Reply: `{}`. Core sends this at-least-once hint after an install card decision commits (approval, decline or expiry), never for policy approvals. Unknown triples and already settled cards are acknowledged and ignored. For an open known card basal reads `flow.install_status` once; the hint itself carries no authority. Only `active` with the installed hash approves, through the same transaction as policy approval and with core's approval kind and rule. `declined` and `expired` leave the version unapproved and settle the card; both are visible under `install_cards: [{version, attempt, state}]` in `flow.list` and `flow.health`. `pending` changes nothing, and `unknown` is logged. Mismatched hashes, revoked records and failed reads never approve.
 
 The activation gate still accepts only a matching `active` hash. `pending`, `declined` and `expired` are treated like `unknown` there: none means approved.
+
+Basal also reads `ck.<account>.event.prefrontal-core.flow_install_changed.v1`.
+Its payload is the control notice itself, `{flow_id, seq}` with a positive
+sequence, rather than an `events_get` reference. Basal checks all pending cards
+for that flow oldest version first, with one `flow.install_status` read per card,
+up to eight reads per notice (warning once if more remain), and applies the same
+reconciliation as the call hint. No pending card means no read. Core I/O never
+runs under SQLite's write lock. The reader acknowledges after the resulting
+commits or a no-change decision; malformed payloads are warned once and
+acknowledged without reading status. The activation gate and `flow.install_revoked`
+remain the backstops for settled installs. The call hint remains as fallback
+until prefrontal confirms this reader has run.
 
 ## flow.install_revoked
 
@@ -581,7 +593,17 @@ failure; without any admitted run, basal warns and skips the notice instead of
 sending an invalid id. Exact JSON request-byte vectors live in
 [`test-vectors/owner-notice/vectors.json`](../test-vectors/owner-notice/vectors.json).
 
-The existing outbox stores these notices with durable backoff metadata. Only
+The same committed `outbox` row also publishes
+`ck.<account>.event.basal.flow_owner_notice.v1`, without a reader token. Its
+payload is the exact call params above, and `Nats-Msg-Id` is `notice_id`. Bus
+publication uses independent `bus_published_at`, `bus_attempts` and
+`bus_retry_at` state: failures retry from 250 ms up to 30 s without blocking or
+replacing the call. A lost publication acknowledgement can retry the same id
+for JetStream deduplication. Retention waits for both delivery paths. Migration
+51 marks historical owner rows as already bus-published so old failures are
+not replayed. The call remains fallback until prefrontal confirms its reader.
+
+The existing outbox stores the call's durable backoff metadata. Only
 the oldest undelivered notice per flow is sent. SQLite is unlocked during the
 network call. `{accepted:true}` means core durably owns delivery, not that an
 owner has read it. `flow_not_installed`, `owner_unknown` and
