@@ -48,7 +48,7 @@ fn catalog_tool_bytes_are_unchanged_by_system_text_support() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&with_text["tools"]).unwrap())
         ),
-        "410bbd3e4b25a7e36d300667a6054bec6197d07a3b08fff7df1c4b660be12163"
+        "76df34f1039187c1c27f6c5b68bd2e7e2f29e25828f005dbd4e472b84cf4c184"
     );
 }
 

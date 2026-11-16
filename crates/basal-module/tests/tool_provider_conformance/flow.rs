@@ -110,29 +110,34 @@ fn flow_catalog_has_exact_capability_tag() {
 }
 
 #[test]
-fn flow_trigger_schema_types_preserve_all_json_payloads() {
+fn flow_trigger_schema_declares_an_object() {
     let catalog = basal_module::tool::catalog(json!({
         "params":{"capabilities":["basal:flow.manage/v1"]}
     }))
     .unwrap();
     assert_eq!(catalog["tools"][0]["name"], "flow");
     let schema = &catalog["tools"][0]["input_schema"];
-    assert_eq!(
-        schema["properties"]["trigger"]["type"],
-        json!(["object", "array", "string", "number", "boolean", "null"])
-    );
+    // One concrete type: a union of every JSON type says nothing, and some
+    // model providers refuse a `type` array outright.
+    assert_eq!(schema["properties"]["trigger"]["type"], json!("object"));
     let validator = basal_core::codemode::catalog::compile_input_schema(schema).unwrap();
     for trigger in [
         json!({"sample": true}),
-        json!([1, "sample"]),
+        json!({"event": {"repo": "a/b"}}),
+        json!({}),
+    ] {
+        let arguments = json!({"action":"dry_run","flow_id":"head-flow","trigger":trigger});
+        assert!(validator.is_valid(&arguments), "{arguments}");
+    }
+    for trigger in [
+        json!([1]),
         json!("sample"),
         json!(42),
-        json!(1.5),
         json!(false),
         Value::Null,
     ] {
         let arguments = json!({"action":"dry_run","flow_id":"head-flow","trigger":trigger});
-        assert!(validator.is_valid(&arguments), "{arguments}");
+        assert!(!validator.is_valid(&arguments), "{arguments}");
     }
     assert!(validator.is_valid(&json!({"action":"dry_run","flow_id":"head-flow"})));
 }
