@@ -547,7 +547,12 @@ fn flow_scope_gate(flow_scoped: bool, method: &str) -> Option<HandlerOutcome> {
         return None;
     }
     Some(HandlerOutcome::Error {
-        code: "flow_scope_not_supported".into(),
+        code: if method == "attribution.read" {
+            "not_permitted"
+        } else {
+            "flow_scope_not_supported"
+        }
+        .into(),
         message: format!("flows may call only diagnostics.findings on basal, not {method}"),
     })
 }
@@ -1007,6 +1012,9 @@ mod diagnostics_route_tests {
         // Without the gate this route would be its author agent to every op.
         assert!(matches!(routes.caller(&handle), Caller::Agent { .. }));
         assert!(flow_scope_gate(true, "diagnostics.findings").is_none());
+        assert!(
+            matches!(flow_scope_gate(true,"attribution.read"),Some(HandlerOutcome::Error{code,..}) if code=="not_permitted")
+        );
         for method in ["flow.list", "flow.install", "flow.disable"] {
             match flow_scope_gate(true, method) {
                 Some(HandlerOutcome::Error { code, .. }) => {

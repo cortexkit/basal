@@ -34,7 +34,7 @@ pub fn enqueue_late_result_wake(
 impl Runtime {
     pub fn pending_bus_events(&self, limit: usize) -> Result<Vec<BusEvent>> {
         self.store().read(|c| {
-            let mut stmt = c.prepare("SELECT seq,kind,recipient,body FROM outbox WHERE bus_published_at IS NULL AND kind IN ('flow.owner_notice','codemode.late_result_ready') AND bus_retry_at<=?1 ORDER BY bus_retry_at,seq LIMIT ?2")?;
+            let mut stmt = c.prepare("SELECT seq,kind,recipient,body FROM outbox WHERE bus_published_at IS NULL AND kind IN ('flow.owner_notice','codemode.late_result_ready','attribution.fact') AND bus_retry_at<=?1 ORDER BY bus_retry_at,seq LIMIT ?2")?;
             let rows = stmt.query_map(params![self.config().clock.now_ms(), limit as i64], |r| {
                 Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,String>(3)?))
             })?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -44,6 +44,8 @@ impl Runtime {
                     let reader = reader.ok_or_else(|| CoreError::Corrupt("wake lacks recipient".into()))?;
                     let feed_seq = value["seq"].as_i64().filter(|s| *s > 0).ok_or_else(|| CoreError::Corrupt("wake lacks sequence".into()))?;
                     ("late_result_ready", Some(reader.clone()), format!("{reader}:{feed_seq}"))
+                } else if kind == "attribution.fact" {
+                    ("attribution_fact", None, value["fact_id"].as_str().ok_or_else(|| CoreError::Corrupt("attribution fact lacks id".into()))?.to_owned())
                 } else {
                     ("flow_owner_notice", None, value["notice_id"].as_str().ok_or_else(|| CoreError::Corrupt("owner notice lacks id".into()))?.to_owned())
                 };

@@ -8,6 +8,51 @@ Package management is not agent-relayed: `package.register` is available to the 
 
 Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present unless a key is marked optional with `?`. `object` and `any` describe open JSON values.
 
+## attribution.read
+
+Read-only management **query**, admitted only for the daemon-attested,
+unscoped `reserved:astrocyte` caller. All other callers, including the operator,
+core, local callers and scoped routes, receive `not_permitted`.
+
+Request: `{"method":"attribution.read","params":{"after":0,"limit":100}}`.
+`after` is a nonnegative integer sequence cursor (default 0); `limit` is an
+integer from 1 to 500 (default 100). Unknown fields and invalid values are
+refused with `invalid_params`. Response: `{"facts":[object],"next":integer|null,
+"through":integer}`. Facts are in permanent insertion order after the cursor;
+`next` is the last returned sequence when another page remains, otherwise null.
+`through` is the highest sequence in the read snapshot, or 0 for an empty feed.
+Resume a fully drained feed from `through` to discover later facts.
+
+Each fact contains `fact_id`, `supersedes`, `subject`, `alfonso` (the owning
+agent id, or null when the owner is not an agent), `parent`,
+`workload`, `task`, `project_id` (null), `effective_from_ms` and `recorded_at_ms`.
+Bodies are under 4 KiB and contain ids and open names, not prompts, source text
+or paths. `workload` is 1–64 bytes of lowercase ASCII letters, digits, `_`, `-`;
+`task` additionally permits `.` and is at most 128 bytes. Facts cannot be updated
+or deleted. Each insertion atomically queues `attribution.fact` for
+`ck.{acct}.event.basal.attribution_fact.v1`, without a reader suffix, with the
+fact body and `Nats-Msg-Id` equal to `fact_id`.
+
+Flow facts begin at first approval, or instance creation. Their ids are
+`basal:flow:<flow_id>:v<approval version>` or `basal:flow:<flow_id>:created` for
+instances. A later approval changing owner appends a fact superseding the prior
+flow fact; same-owner approvals do not. Session facts use
+`basal:session:<exact session name>`, subject runner and harness `broca`, and never
+supersede. A flow session names its parent flow; a program session names the
+admitted bind's runner/harness/session only when basal holds all three. The
+current bind holds only harness/session, so program parents are null; basal
+never guesses a runner. Program ownership
+uses the worker's attested `on_behalf_of_agent`, otherwise the agent's id.
+
+Migration backfill uses current flow ownership, not reconstructed historical
+owner changes. Never-approved flows and program sessions whose owner record
+has already been pruned are excluded. A backfilled session's
+`effective_from_ms` is a **lower bound**, not the exact send time: it uses a
+retained intent/reservation time where available, otherwise the flow's first
+approval/instance creation or the program's admission time. **Live session
+facts use the prepare clock**. Samples and regeneration instructions are in
+[attribution-facts-v1](../test-vectors/attribution-facts-v1/README.md).
+
 ## basal diagnostics.findings
 
 Read-only management **query**, also listed in basal's `flow_operations` for
@@ -34,7 +79,7 @@ or enable operation is performed. A failed store read is an error frame.
 | `reconcile_pending` | `runs`, `decisions` | warn | Reconcile run admitted at least 1 hour ago, or open decision card created at least 1 hour ago; avoids nagging during normal human response time. |
 | `grant_lost` | `disabled` | warn | Immediately for flows disabled with reason `grant_lost`. Count is disabled flows. |
 | `owner_notices_stuck` | `undelivered` | warn | Owner notices whose fallback call is undelivered for at least 1 hour, independently of bus publication. |
-| `outbox_stuck` | `undelivered` | warn | Owner-notice or late-result wake bus publications pending for at least 1 hour, plus other undelivered outbox rows, excluding permanent secret-revocation failures. A bus-only wake is never a pending call. |
+| `outbox_stuck` | `undelivered` | warn | Owner-notice, late-result wake or attribution-fact bus publications pending for at least 1 hour, plus other undelivered outbox rows, excluding permanent secret-revocation failures. A bus-only event is never a pending call. |
 | `outbox_stuck` | `secret_revocations` | error | Immediately for undelivered secret revocations with `failed_at`: grants may still be live. |
 | `quarantined` | `schedules_and_fires`, `outcomes` | warn | Any `schedule.corrupt` audit events or quarantined call outcomes in the requested window. Counts are audit events or outcome rows. |
 | `worker_pool` | `flows`, `codemode` | warn | Immediately while either pool records a spawn error or retry backoff. |

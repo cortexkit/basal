@@ -36,6 +36,7 @@
 //! supplies real processes.
 
 pub mod admission;
+pub mod attribution;
 
 pub mod authorize;
 pub mod broca;

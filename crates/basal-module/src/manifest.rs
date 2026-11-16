@@ -25,6 +25,11 @@ pub const MODULE_ID: &str = "basal";
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
+        "attribution.read",
+        ManagementOperationKind::Query,
+        "Replay permanent ownership facts in sequence order; reserved:astrocyte only.",
+    ),
+    (
         "diagnostics.findings",
         ManagementOperationKind::Query,
         "Read bounded, privacy-safe diagnoses of basal's health and standing state.",

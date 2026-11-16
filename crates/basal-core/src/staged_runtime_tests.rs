@@ -34,6 +34,8 @@ struct TestHost {
     revokes: std::sync::atomic::AtomicUsize,
     accept: AtomicBool,
     class_override: Mutex<Option<CallClass>>,
+    attribution_probe: Mutex<Option<PathBuf>>,
+    facts_at_send: Mutex<Vec<Value>>,
 }
 impl Host for TestHost {
     fn install_status(
@@ -61,6 +63,23 @@ impl Host for TestHost {
         }
     }
     fn dispatch(&self, request: &CallRequest) -> std::result::Result<Dispatched, TransportError> {
+        if let Some(path) = self.attribution_probe.lock().unwrap().as_ref() {
+            let envelope: Value = serde_json::from_str(request.args.as_str()).unwrap();
+            let independent = rusqlite::Connection::open(path).unwrap();
+            let body = independent.query_row(
+                "SELECT body FROM attribution_facts WHERE fact_id=?1",
+                [format!(
+                    "basal:session:{}",
+                    envelope["session"].as_str().unwrap()
+                )],
+                |r| r.get::<_, String>(0),
+            );
+            self.facts_at_send.lock().unwrap().push(
+                body.ok()
+                    .map(|s| serde_json::from_str(&s).unwrap())
+                    .unwrap_or(Value::Null),
+            );
+        }
         self.sent.lock().unwrap().push(request.clone());
         if let Some(reply) = self.transports.lock().unwrap().pop_front() {
             return reply;
@@ -1064,6 +1083,43 @@ fn consecutive_runs_each_keep_their_own_dollar_cap() {
         assert!((f.rt.classify_cost_spent(&id).unwrap() - 0.9).abs() < 0.000001);
     }
     assert_eq!(f.host.sent.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn attribution_flow_session_is_committed_before_model_send() {
+    let f = Fixture::new(false);
+    f.install("owned", 1, llm("1h"));
+    f.rt.store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE flows SET owner='agent_owner' WHERE flow_id='owned'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    *f.host.attribution_probe.lock().unwrap() = Some(f.root.join("store.db"));
+    f.host.accept.store(true, Ordering::SeqCst);
+    let id = f.admit("owned", "first");
+    let mut worker = ScriptedWorker::new(vec![
+        call(0, Primitive::Llm, json!({"prompt":"not in the fact"})),
+        WorkerMessage::Blocked { awaiting: vec![0] },
+        suspended(vec![0]),
+    ]);
+    assert!(matches!(
+        f.rt.activate(&id, &mut worker).unwrap(),
+        ActivationEnd::Suspended { .. }
+    ));
+    let facts = f.host.facts_at_send.lock().unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0]["alfonso"], "agent_owner");
+    assert_eq!(facts[0]["parent"], json!({"kind":"flow","flow_id":"owned"}));
+    assert_eq!(
+        facts[0]["subject"],
+        json!({"kind":"session","runner":"broca","harness":"broca","session":format!("basal:flow-owned:{id}:0")})
+    );
+    assert!(!facts[0].to_string().contains("not in the fact"));
+    assert_eq!(facts[0]["effective_from_ms"], f.clock.now_ms());
 }
 
 #[test]

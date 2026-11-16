@@ -8,6 +8,7 @@ use basal_host::selector::{ModelSelector, RoutingSelector};
 use basal_host::{
     CallClass, CallRequest, CompletionSink, Dispatched, Host, TokenUsage, TransportError,
 };
+use rusqlite::OptionalExtension;
 
 #[derive(Default)]
 struct Routing {
@@ -60,6 +61,7 @@ struct ObservedBroca {
     fake: FakeBroca,
     store: Arc<Store>,
     frozen: Mutex<Vec<bool>>,
+    facts_at_send: Mutex<Vec<Value>>,
 }
 impl BrocaTransport for ObservedBroca {
     fn send(
@@ -70,6 +72,23 @@ impl BrocaTransport for ObservedBroca {
         let send: SendParams = serde_json::from_slice(params).unwrap();
         let frozen = self.store.read(|c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM codemode_models m JOIN codemode_calls c USING(run_id,position) WHERE c.idempotency_key=?1 AND m.envelope IS NOT NULL AND c.entered_at IS NOT NULL)",[send.send_id.as_ref().unwrap()],|r|r.get(0))?)).unwrap();
         self.frozen.lock().unwrap().push(frozen);
+        let path = self
+            .store
+            .read(|c| Ok(c.path().unwrap().to_owned()))
+            .unwrap();
+        let independent = rusqlite::Connection::open(path).unwrap();
+        let body: Option<String> = independent
+            .query_row(
+                "SELECT body FROM attribution_facts WHERE fact_id=?1",
+                [format!("basal:session:{}", route.session)],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        self.facts_at_send.lock().unwrap().push(
+            body.map(|s| serde_json::from_str(&s).unwrap())
+                .unwrap_or(Value::Null),
+        );
         self.fake.send(route, params)
     }
     fn send_status(
@@ -167,6 +186,7 @@ impl ModelFixture {
             fake: FakeBroca::default(),
             store: f.host.store.clone(),
             frozen: Mutex::new(Vec::new()),
+            facts_at_send: Mutex::new(Vec::new()),
         });
         let broca = Arc::new(BrocaHost::new(
             wire.clone(),
@@ -916,6 +936,30 @@ impl Drop for ModelFixture {
     fn drop(&mut self) {
         self.f.cleanup(true);
     }
+}
+
+#[test]
+fn attribution_program_session_is_committed_before_broca_send() {
+    let f = ModelFixture::new();
+    f.f.host.store.set_clock(f.f.clock.clone());
+    f.f.host.store.write(|tx| {
+        tx.execute("UPDATE codemode_runs SET agent_id='',worker_scope='worker',on_behalf_of_agent='agent_head',bind_identity=?1 WHERE run_id='r'",
+            [json!({"harness":"claude","session":"parent-session"}).to_string()])?;
+        Ok(())
+    }).unwrap();
+    f.model(0);
+    let facts = f.wire.facts_at_send.lock().unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0]["fact_id"], "basal:session:basal:codemode-r:0");
+    assert_eq!(facts[0]["alfonso"], "agent_head");
+    assert_eq!(facts[0]["parent"], Value::Null, "a harness is not a runner");
+    assert_eq!(
+        facts[0]["subject"],
+        json!({"kind":"session","runner":"broca","harness":"broca","session":"basal:codemode-r:0"})
+    );
+    assert_eq!(facts[0]["task"], "basal.codemode");
+    assert_eq!(facts[0]["effective_from_ms"], 100);
+    f.f.finish("null");
 }
 
 #[test]

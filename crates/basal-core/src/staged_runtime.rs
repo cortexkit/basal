@@ -654,6 +654,30 @@ impl run_driver::Services for Services {
         };
         // One invocation owns exactly one host send. A retry must return to the
         // actor for another checked, counted and synced Intent with the same key.
+        if matches!(
+            request.kind,
+            CallKind::Primitive(Primitive::Llm | Primitive::Classify)
+        ) {
+            let envelope: serde_json::Value = serde_json::from_str(request.args.as_str())
+                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            let session = envelope["session"]
+                .as_str()
+                .ok_or_else(|| CoreError::Corrupt("model envelope lacks session".into()))?;
+            // Also cover frozen intents recovered from before attribution was
+            // introduced. The write commits before entering the model host.
+            let exists: bool = rt.store().read(|c| {
+                Ok(c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM attribution_facts WHERE fact_id=?1)",
+                    [format!("basal:session:{session}")],
+                    |r| r.get(0),
+                )?)
+            })?;
+            if !exists {
+                rt.store().write(|tx| {
+                    crate::attribution::flow_session(tx, &live.flow_id, session, self.now_ms())
+                })?;
+            }
+        }
         let response = rt.shared.host.dispatch_classified(&request, class);
         if rt.is_stopping() {
             return Err(CoreError::Cut);

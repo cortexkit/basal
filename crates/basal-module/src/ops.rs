@@ -13,6 +13,7 @@
 //! | `flow.enable` | yes | no | only to undo a disable it made itself | no | no |
 //! | `package.register` | yes | no | no | no | yes |
 //! | `package.get`, `flow.instance.ensure`, `flow.instance.remove` | no | no | no | no | yes |
+//! | `attribution.read` | no | no | no | no | no (only attested `reserved:astrocyte`) |
 //!
 //! The operator is the daemon-attested `reserved:callosum`; a local caller
 //! is an unscoped `direct` key-holder, which any local process can be (see
@@ -50,6 +51,9 @@ use crate::module::Module;
 
 #[path = "phone_flows.rs"]
 mod phone_flows;
+
+#[path = "attribution.rs"]
+mod attribution;
 
 /// A refusal or failure, as the op's error frame carries it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,6 +323,7 @@ impl Module {
     /// Runs one op for `caller`.
     pub fn handle(&self, caller: &Caller, method: &str, params: Value) -> OpResult {
         let result = match method {
+            "attribution.read" => self.op_attribution_read(caller, params),
             "diagnostics.findings" => {
                 if matches!(caller, Caller::Operator | Caller::Core) {
                     self.diagnostics_findings(params)

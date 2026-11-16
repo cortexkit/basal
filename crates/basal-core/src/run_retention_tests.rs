@@ -283,9 +283,14 @@ fn outbox_retention_keeps_each_unfinished_delivery_path() {
             (1,'flow.owner_notice','call-pending','{}',NULL,2),
             (1,'flow.owner_notice','bus-pending','{}',2,NULL),
             (1,'flow.owner_notice','done','{}',2,2),
-            (1,'codemode.late_result_ready','wake-pending','{}',NULL,NULL),
-            (1,'codemode.late_result_ready','wake-done','{}',NULL,2);",
+             (1,'codemode.late_result_ready','wake-pending','{}',NULL,NULL),
+             (1,'codemode.late_result_ready','wake-done','{}',NULL,2),
+             (1,'attribution.fact','fact-pending','{}',NULL,NULL),
+             (1,'attribution.fact','fact-done','{}',NULL,2);",
             )?;
+            tx.execute("INSERT INTO flows(flow_id,owner,approved_version,created_at,first_approved_at) VALUES('forever','agent_owner',1,1,1)",[])?;
+            crate::attribution::flow_approved(tx,"forever",false,1)?;
+            tx.execute("UPDATE outbox SET bus_published_at=2 WHERE kind='attribution.fact' AND flow_id='forever'",[])?;
             Ok(())
         })
         .unwrap();
@@ -298,7 +303,16 @@ fn outbox_retention_keeps_each_unfinished_delivery_path() {
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .unwrap();
-    assert_eq!(kept, ["bus-pending", "call-pending", "wake-pending"]);
+    assert_eq!(
+        kept,
+        [
+            "bus-pending",
+            "call-pending",
+            "fact-pending",
+            "wake-pending"
+        ]
+    );
+    assert_eq!(f.count("attribution_facts"), 1);
 }
 
 #[test]

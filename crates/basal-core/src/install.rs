@@ -522,6 +522,10 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[cfg(test)]
+#[path = "attribution_install_tests.rs"]
+mod attribution_tests;
+
+#[cfg(test)]
 mod agentless_audience_warning_tests {
     use super::*;
 
@@ -1325,10 +1329,15 @@ fn approve_with_resolved_agents(
     }
     crate::grant_loss::clear(tx, flow_id, now_ms)?;
     let was_removed = crate::packages::removed(tx, flow_id)?;
+    let old_owner: Option<String> =
+        tx.query_row("SELECT owner FROM flows WHERE flow_id=?1", [flow_id], |r| {
+            r.get(0)
+        })?;
     tx.execute(
         "UPDATE flows SET approved_version = ?2, owner = ?3, first_approved_at = COALESCE(first_approved_at, ?4), removed=0, removed_by=NULL, removed_at=NULL WHERE flow_id = ?1",
         params![flow_id, version_i64(version), author, now_ms],
     )?;
+    crate::attribution::flow_approved(tx, flow_id, old_owner.as_deref() != Some(&author), now_ms)?;
     let approval = schedule_approved(tx, flow_id, version, now_ms, schedule)?;
     // When core revokes the approved version (see `revoke`), it disables the
     // flow with core as the actor. That disable says only that core no longer
@@ -1910,7 +1919,7 @@ impl Runtime {
         self.store().read(|c| {
             let mut stmt = c.prepare(
                 "SELECT kind, flow_id, body FROM outbox \
-                 WHERE delivered_at IS NULL AND kind NOT IN ('refusal_committed','codemode.late_result_ready') ORDER BY seq",
+                 WHERE delivered_at IS NULL AND kind NOT IN ('refusal_committed','codemode.late_result_ready','attribution.fact') ORDER BY seq",
             )?;
             let rows = stmt
                 .query_map([], |r| {

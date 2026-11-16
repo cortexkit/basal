@@ -44,12 +44,12 @@ async fn committed_outbox_survives_crash_before_publish() {
     assert_eq!(rt.live_instances().unwrap()["instances"][0]["flow_id"], id);
     assert_eq!(
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
-        1
+        2
     );
     assert!(rt.pending_template_events(32).unwrap().is_empty());
     let consumer = bind(&server.bus, STREAM).await.unwrap();
     let messages = pull(&consumer).await.unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
     assert_eq!(
         messages[0]
             .headers
@@ -88,14 +88,14 @@ async fn duplicate_publish_receipt_settles_outbox_after_ack_crash() {
     let rt = runtime(&path);
     assert_eq!(
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
-        1
+        2
     );
     assert!(rt.pending_template_events(32).unwrap().is_empty());
     let stream = async_nats::jetstream::new(server.bus.client())
         .get_stream(STREAM)
         .await
         .unwrap();
-    assert_eq!(stream.cached_info().state.messages, 1);
+    assert_eq!(stream.cached_info().state.messages, 2);
     assert_eq!(
         rt.template_event_body(&event.event_key()).unwrap().unwrap()["published_at"],
         1000
@@ -117,7 +117,7 @@ async fn rescheduled_outbox_survives_fire_commit_and_publish_ack_crashes() {
         let id = create(&rt, json!({"note":"rescheduled"}), "1h");
         assert_eq!(
             publish_outbox(&rt, &server.bus, "account").await.unwrap(),
-            1
+            2
         );
         rt.config().clock.set(61_000);
         assert_eq!(rt.scheduler().unwrap().tick().unwrap().planned.len(), 1);
@@ -167,7 +167,7 @@ async fn rescheduled_outbox_survives_fire_commit_and_publish_ack_crashes() {
             .get_stream(STREAM)
             .await
             .unwrap();
-        assert_eq!(stream.cached_info().state.messages, 2);
+        assert_eq!(stream.cached_info().state.messages, 3);
         let stored = rt.template_event_body(&event.event_key()).unwrap().unwrap();
         assert_eq!(stored["body"], event.body);
         assert_eq!(
@@ -211,7 +211,7 @@ async fn unavailable_bus_retries_with_durable_backoff_and_loses_nothing() {
     .unwrap();
     assert_eq!(
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
-        1
+        2
     );
     assert!(rt.pending_template_events(32).unwrap().is_empty());
 }
@@ -238,7 +238,7 @@ async fn self_end_and_one_shot_publish_ended() {
         publish_outbox(&f.module.rt, &server.bus, "account")
             .await
             .unwrap(),
-        2
+        3
     );
     let g = common::fixture("lifecycle-one-shot", common::Options::with_worker());
     g.catalog.add_named_agent(OWNER, "Owner");
@@ -264,7 +264,7 @@ async fn self_end_and_one_shot_publish_ended() {
         publish_outbox(&g.module.rt, &server.bus, "account")
             .await
             .unwrap(),
-        2
+        3
     );
     let messages = pull(&bind(&server.bus, STREAM).await.unwrap())
         .await
@@ -308,13 +308,23 @@ async fn captured_lifecycle_notices_bodies_and_snapshot_match_vectors() {
         publish_outbox(&f.module.rt, &server.bus, "account")
             .await
             .unwrap(),
-        4
+        5
     );
     let consumer = bind(&server.bus, STREAM).await.unwrap();
     let messages = pull(&consumer).await.unwrap();
-    assert_eq!(messages.len(), 4);
+    assert_eq!(messages.len(), 5);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.subject.ends_with(".attribution_fact.v1"))
+            .count(),
+        1
+    );
     let mut captures = Vec::new();
-    for message in messages {
+    for message in messages
+        .into_iter()
+        .filter(|m| !m.subject.ends_with(".attribution_fact.v1"))
+    {
         assert!(message.payload.is_empty());
         let notice = basal_module::events::decode(&message, f.module.rt.catalog()).unwrap();
         let event_name = message.subject.split('.').nth(4).unwrap();
@@ -452,7 +462,7 @@ async fn body_retention_starts_at_ack_and_never_prunes_unpublished_rows() {
     assert!(rt.template_event_body(&event_key).unwrap().is_some());
     assert_eq!(
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
-        2
+        3
     );
     let published = rt.config().clock.now_ms();
     rt.config()
