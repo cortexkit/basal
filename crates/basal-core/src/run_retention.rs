@@ -35,7 +35,7 @@ const HISTORY_PREDICATES: &[(&str, &str)] = &[
     ),
     (
         "outbox",
-        "kind<>'refusal_committed' AND ((kind='codemode.late_result_ready' AND bus_published_at<=?1) OR (kind<>'codemode.late_result_ready' AND delivered_at<=?1 AND (kind<>'flow.owner_notice' OR bus_published_at<=?1)))",
+        "kind<>'refusal_committed' AND ((kind IN ('codemode.late_result_ready','attribution.fact') AND bus_published_at<=?1) OR (kind NOT IN ('codemode.late_result_ready','attribution.fact') AND delivered_at<=?1 AND (kind<>'flow.owner_notice' OR bus_published_at<=?1)))",
     ),
     ("schedule_dropped", "at<=?1"),
     (

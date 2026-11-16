@@ -105,6 +105,7 @@ pub fn prepare(
         .map_err(storage)?;
     let send_id = super::store::call_key(&run.run_id, call.position);
     let flow_id = format!("codemode:{}", run.run_id);
+    let reused = saved.is_some();
     let envelope = if let Some(saved) = saved {
         saved
     } else {
@@ -192,11 +193,25 @@ pub fn prepare(
             }
             tx.execute("INSERT INTO classify_costs(kind,run_id,position,created_at,reserved,args) VALUES('program',?1,?2,?3,?4,?5)",params![run.run_id,call.position,run.admitted_at,dollars as f64 / 1_000_000.0,envelope])?;
             tx.execute("UPDATE codemode_models SET envelope=?3 WHERE run_id=?1 AND position=?2 AND envelope IS NULL",params![run.run_id,call.position,envelope])?;
+            crate::attribution::program_session(tx, &run.run_id,
+                &basal_host::broca::codemode_session(&run.run_id,call.position), crate::clock::write_time().expect("write transaction clock"))?;
             Ok(Ok(()))
         }).map_err(storage)?;
         saved?;
         envelope
     };
+    if reused {
+        store
+            .write(|tx| {
+                crate::attribution::program_session(
+                    tx,
+                    &run.run_id,
+                    &basal_host::broca::codemode_session(&run.run_id, call.position),
+                    crate::clock::write_time().expect("write transaction clock"),
+                )
+            })
+            .map_err(storage)?;
+    }
     Ok(CallRequest {
         flow_version: None,
         flow_id,

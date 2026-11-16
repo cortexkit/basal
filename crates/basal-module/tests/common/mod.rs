@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+pub mod attribution;
+
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};

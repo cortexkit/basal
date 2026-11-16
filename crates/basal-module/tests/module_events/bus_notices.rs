@@ -7,6 +7,121 @@ use basal_proto::CallKind;
 use serde_json::Value;
 use std::sync::Mutex;
 
+#[tokio::test]
+async fn attribution_outbox_publishes_once_and_vectors_match_real_paths() {
+    use sha2::{Digest, Sha256};
+    let server = Server::start().await;
+    let f = common::attribution::setup("attribution-bus");
+    let mut vectors = common::attribution::vectors(&f);
+    let pending = f.module.rt.pending_bus_events(500).unwrap();
+    assert_eq!(pending.len(), 4);
+    assert_eq!(
+        publish_outbox(&f.module.rt, &server.bus, "account")
+            .await
+            .unwrap(),
+        5
+    );
+    // A broker acknowledgement can survive a crash that loses basal's local
+    // published mark. The immutable fact id deduplicates that retry.
+    f.module
+        .rt
+        .store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE outbox SET bus_published_at=NULL WHERE kind='attribution.fact'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        publish_outbox(&f.module.rt, &server.bus, "account")
+            .await
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        publish_outbox(&f.module.rt, &server.bus, "account")
+            .await
+            .unwrap(),
+        0
+    );
+    let messages = pull(&bind(&server.bus, STREAM).await.unwrap())
+        .await
+        .unwrap();
+    let facts: Vec<_> = messages
+        .iter()
+        .filter(|m| m.subject.as_str() == "ck.account.event.basal.attribution_fact.v1")
+        .collect();
+    assert_eq!(facts.len(), 4);
+    for message in &facts {
+        let body: Value = serde_json::from_slice(&message.payload).unwrap();
+        assert_eq!(
+            header(message, "Nats-Msg-Id"),
+            body["fact_id"].as_str().unwrap()
+        );
+        assert!(
+            pending
+                .iter()
+                .any(|e| e.message_id == body["fact_id"].as_str().unwrap()
+                    && serde_json::from_str::<Value>(&e.body).unwrap() == body)
+        );
+    }
+    let message = facts
+        .iter()
+        .find(|m| {
+            serde_json::from_slice::<Value>(&m.payload).unwrap()["fact_id"]
+                == "basal:flow:attribution-flow:v1"
+        })
+        .unwrap();
+    vectors.insert("bus-message.json".into(),json!({"subject":message.subject.as_str(),"headers":{"Nats-Msg-Id":header(message,"Nats-Msg-Id")},"body":serde_json::from_slice::<Value>(&message.payload).unwrap()}));
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-vectors/attribution-facts-v1");
+    let write = std::env::var_os("BASAL_WRITE_VECTORS").is_some();
+    if write {
+        std::fs::create_dir_all(&dir).unwrap();
+    }
+    let mut sums = String::new();
+    for (name, value) in &vectors {
+        let actual = serde_json::to_string_pretty(value).unwrap() + "\n";
+        if write {
+            std::fs::write(dir.join(name), &actual).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join(name)).unwrap_or_default(),
+            actual,
+            "vector drift: {name}"
+        );
+        sums.push_str(&format!(
+            "{:x}  {name}\n",
+            Sha256::digest(actual.as_bytes())
+        ));
+    }
+    if write {
+        std::fs::write(dir.join("SHA256SUMS"), &sums).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join("SHA256SUMS")).unwrap(),
+        sums
+    );
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != "README.md")
+        .collect();
+    names.sort();
+    let mut expected: Vec<_> = vectors
+        .keys()
+        .cloned()
+        .chain(["SHA256SUMS".into()])
+        .collect();
+    expected.sort();
+    assert_eq!(
+        names, expected,
+        "every vector must be generated and checked"
+    );
+}
+
 #[derive(Default)]
 struct NoticeHost {
     calls: Mutex<Vec<Value>>,

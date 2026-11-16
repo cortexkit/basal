@@ -292,7 +292,7 @@ fn store_findings_with(
                 sample["failure_code"] = json!(r.get::<_,Option<String>>(3)?);
                 Ok((at, sample)) }, Some(now))?);
         findings.extend(aggregate(conn,
-            "SELECT at,flow_id,seq FROM outbox WHERE at<=?1 AND ((kind IN ('flow.owner_notice','codemode.late_result_ready') AND bus_published_at IS NULL) OR (kind NOT IN ('flow.owner_notice','codemode.late_result_ready') AND delivered_at IS NULL AND NOT (kind='secret.revoke_flow_grants' AND failed_at IS NOT NULL))) ORDER BY at,seq",
+            "SELECT at,flow_id,seq FROM outbox WHERE at<=?1 AND ((kind IN ('flow.owner_notice','codemode.late_result_ready','attribution.fact') AND bus_published_at IS NULL) OR (kind NOT IN ('flow.owner_notice','codemode.late_result_ready','attribution.fact') AND delivered_at IS NULL AND NOT (kind='secret.revoke_flow_grants' AND failed_at IS NOT NULL))) ORDER BY at,seq",
             [now.saturating_sub(STUCK_MS)],
             finding("outbox_stuck", "undelivered", "warn", "Outbox rows remain undelivered for over an hour.",
                 "Inspect basal outbox delivery and bus connectivity."), outbox_sample, Some(now))?);
@@ -857,6 +857,19 @@ mod tests {
                 &format!(
                     "UPDATE outbox SET bus_published_at={NOW} WHERE kind='codemode.late_result_ready'"
                 ),
+            );
+            quiet(store);
+            seed(
+                store,
+                &format!(
+                    "INSERT INTO outbox(at,kind,flow_id,body) VALUES({},'attribution.fact','f','{{}}')",
+                    NOW - STUCK_MS
+                ),
+            );
+            only(store, "outbox_stuck", "undelivered");
+            seed(
+                store,
+                &format!("UPDATE outbox SET bus_published_at={NOW} WHERE kind='attribution.fact'"),
             );
             quiet(store);
         });

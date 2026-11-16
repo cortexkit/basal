@@ -483,6 +483,21 @@ impl CallPreparation<'_> {
                     .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
                 let request = JsonText::new(envelope.to_string())
                     .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
+                // Preparation runs on a detached state snapshot, before the
+                // driver reacquires the actor to authorize its intent.
+                self.rt
+                    .store()
+                    .write(|tx| {
+                        crate::attribution::flow_session(
+                            tx,
+                            &self.run.flow_id,
+                            envelope["session"]
+                                .as_str()
+                                .expect("model envelope session"),
+                            self.rt.config().clock.now_ms(),
+                        )
+                    })
+                    .map_err(|e| Refusal::new("storage_unavailable", e.to_string()))?;
                 Ok(Prepared {
                     request: Some(request),
                     tokens: Some(clamped.reserve),

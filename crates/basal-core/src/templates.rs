@@ -648,6 +648,7 @@ impl crate::Runtime {
             expire_schedules(tx, now)?;
             tx.execute("INSERT INTO flows (flow_id,owner,approved_version,created_at,package,first_approved_at) VALUES (?1,?2,?3,?4,?5,?4) ON CONFLICT(flow_id) DO UPDATE SET approved_version=excluded.approved_version,removed=0,first_approved_at=COALESCE(flows.first_approved_at,excluded.first_approved_at)", params![id,agent,version,now,template])?;
             tx.execute("INSERT INTO template_instances(flow_id,params,expires_at,grant_guards) VALUES (?1,?2,?3,?5) ON CONFLICT(flow_id) DO UPDATE SET expires_at=excluded.expires_at,grant_guards=excluded.grant_guards,incarnation=template_instances.incarnation+?4", params![id,stored,expiry,i64::from(reopen),grant_guards])?;
+            crate::attribution::flow_approved(tx, &id, false, now)?;
             tx.execute("UPDATE template_instances SET expiry_notified=0 WHERE flow_id=?1 AND expires_at>?2", params![id,now])?;
             let event = if existing.is_none() || existing.as_ref().is_some_and(|e|e.3) {
                 Some("flow_instance_created")
