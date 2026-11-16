@@ -1,6 +1,7 @@
 """Tests for the Rust source file size guard using temporary repositories."""
 
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,18 +11,31 @@ import unittest
 SCRIPT = Path(__file__).resolve().parents[1] / "check-file-size.py"
 
 
+def isolated_git_env(home):
+    """Git with no system or global config, so a host hook or setting can't
+    change what the fixture repository holds."""
+    return {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+    }
+
+
 class FileSizeChecks(unittest.TestCase):
     def check(self, files):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            env = isolated_git_env(root)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True, env=env)
             for name, lines in files.items():
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("x\n" * lines)
-            subprocess.run(["git", "-C", str(root), "add", "--", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "add", "--", "."], check=True, env=env)
             return subprocess.run(
                 [sys.executable, str(SCRIPT), "--root", str(root)],
+                env=env,
                 text=True,
                 capture_output=True,
                 check=False,
