@@ -106,28 +106,29 @@ fn valid_event_key(key: &str) -> bool {
 }
 
 pub fn parse_subject_identity(subject: &str) -> Result<(&str, &str, u32)> {
-    let parts: Vec<_> = subject.split('.').collect();
-    if !(6..=9).contains(&parts.len())
-        || parts[0] != "ck"
-        || parts[2] != "event"
-        || parts.iter().any(|p| p.is_empty() || p.contains(['*', '>']))
-        || parts[4..parts.len() - 1].iter().any(|p| {
-            p.strip_prefix('v')
-                .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-        })
-    {
-        return Err(CoreError::Invalid("invalid event subject".into()));
-    }
-    let version_token = parts[parts.len() - 1];
-    let version = version_token
-        .strip_prefix('v')
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|v| *v > 0 && version_token == format!("v{v}"))
-        .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?;
-    // Borrow the dotted event name after the module and before its trailing version token.
-    let name_start: usize = parts[..4].iter().map(|p| p.len() + 1).sum();
-    let name_end = subject.len() - version_token.len() - 1;
-    Ok((parts[3], &subject[name_start..name_end], version))
+    let parsed = parse_subject(subject)?;
+    // The naming parser owns its strings; borrow identity from the original
+    // subject for notice matching without duplicating subject or reader parsing.
+    let module_start = subject
+        .split('.')
+        .take(3)
+        .map(|p| p.len() + 1)
+        .sum::<usize>();
+    let name_start = module_start + parsed.module.len() + 1;
+    Ok((
+        &subject[module_start..module_start + parsed.module.len()],
+        &subject[name_start..name_start + parsed.event.len()],
+        parsed.version,
+    ))
+}
+
+/// Validate both event forms with the fleet's canonical naming rules.
+pub fn parse_subject(subject: &str) -> Result<cortexkit_bus_naming::EventSubject> {
+    let invalid = |reason| CoreError::Invalid(format!("invalid event subject: {reason}"));
+    let account = subject.split('.').nth(1).unwrap_or_default();
+    cortexkit_bus_naming::AccountNames::derive(account)
+        .and_then(|names| names.parse_event_subject(subject))
+        .map_err(|error| invalid(error.to_string()))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -205,6 +206,9 @@ pub(crate) fn effective_manifest(
 }
 
 pub(crate) fn matches(manifest: &Manifest, notice: &Notice, flow_id: &str) -> Result<HeaderMatch> {
+    if parse_subject(&notice.subject)?.reader.is_some() {
+        return Ok(HeaderMatch::Unrelated);
+    }
     if notice
         .target_flow()?
         .is_some_and(|target| target != flow_id)
@@ -381,6 +385,9 @@ impl Runtime {
 /// nothing and is acknowledged like any other.
 pub(crate) fn broca_wakes(tx: &Transaction, notice: &Notice, now: i64) -> Result<usize> {
     use basal_host::broca::WakeKind;
+    if parse_subject(&notice.subject)?.reader.is_some() {
+        return Ok(0);
+    }
     let (module, name, version) = notice.identity()?;
     if module != "broca" || version != 1 {
         return Ok(0);

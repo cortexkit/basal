@@ -47,6 +47,9 @@ pub(crate) struct Codemode {
 }
 
 impl Codemode {
+    pub(crate) fn supervisor(&self) -> Supervisor {
+        self.supervisor.clone()
+    }
     pub(crate) fn new(
         store: Arc<Store>,
         hosts: &crate::module::Hosts,
@@ -822,8 +825,11 @@ fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBod
         )
         .with_result(render(id, result.clone()));
         store.write(|tx| {
-            tx.execute("INSERT OR IGNORE INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES (?1,?2,?3,?4)",
+            let inserted = tx.execute("INSERT OR IGNORE INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES (?1,?2,?3,?4)",
                 rusqlite::params![custodian,serde_json::to_string(&entry).unwrap(),event_id,settled_at])?;
+            if inserted != 0 {
+                basal_core::bus_outbox::enqueue_late_result_wake(tx, &custodian, tx.last_insert_rowid(), settled_at)?;
+            }
             tx.execute("UPDATE codemode_tool_calls SET published=1 WHERE carrier=?1 AND call_key=?2",rusqlite::params![carrier,key])?;
             Ok(())
         }).map_err(storage)?;
@@ -843,6 +849,10 @@ fn maintain_late(store: &Store, clock: &Clock) -> Result<(), ErrorBody> {
 #[cfg(test)]
 #[path = "codemode_result_tests.rs"]
 mod result_tests;
+
+#[cfg(test)]
+#[path = "codemode_bus_tests.rs"]
+mod bus_tests;
 
 #[cfg(test)]
 mod tests {

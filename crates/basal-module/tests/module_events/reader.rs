@@ -54,10 +54,49 @@ fn captured_logs() -> &'static CapturedLogs {
     })
 }
 
+pub(super) fn warning_count_for(subject: &str) -> usize {
+    captured_logs()
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(level, fields)| *level == tracing::Level::WARN && fields.contains(subject))
+        .count()
+}
+
 fn logged_at(logs: &CapturedLogs, level: tracing::Level, subject: &str, reason: &str) -> bool {
     logs.0.lock().unwrap().iter().any(|(seen_level, fields)| {
         *seen_level == level && fields.contains(subject) && fields.contains(reason)
     })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_other_token_is_acked_silently_even_with_a_payload() {
+    let logs = captured_logs();
+    let server = Server::start().await;
+    let (rt, transport) = fixture(&server).await;
+    let reader = Reader::start(rt.clone(), transport);
+    let subject = format!("{SUBJECT_V2}.other");
+    let js = async_nats::jetstream::new(server.bus.client());
+    js.publish(subject.clone(), "private payload".into())
+        .await
+        .unwrap()
+        .await
+        .unwrap();
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let health = wait_health(&reader, |h| h.notices == 1).await;
+    assert_eq!(health.malformed, 0);
+    assert_eq!(health.admitted, 0);
+    assert_eq!(run_count(&rt), 0);
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+    assert!(
+        !logs
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(level, fields)| *level == tracing::Level::WARN && fields.contains(&subject))
+    );
 }
 
 struct BlockingTransport {

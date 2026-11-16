@@ -1910,7 +1910,7 @@ impl Runtime {
         self.store().read(|c| {
             let mut stmt = c.prepare(
                 "SELECT kind, flow_id, body FROM outbox \
-                 WHERE delivered_at IS NULL AND kind <> 'refusal_committed' ORDER BY seq",
+                 WHERE delivered_at IS NULL AND kind NOT IN ('refusal_committed','codemode.late_result_ready') ORDER BY seq",
             )?;
             let rows = stmt
                 .query_map([], |r| {

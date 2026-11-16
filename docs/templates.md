@@ -247,6 +247,11 @@ When core refuses a sink write with `sink_instance_expired` or `sink_flow_not_in
 
 ## Lifecycle events
 
+These events continue to use `template_event_outbox`, independently of the
+shared `outbox` used for owner notices and codemode late-result wakes. All three
+use basal's existing bus connection and publisher loop; lifecycle payloads
+remain off the bus.
+
 An instance can end, expire or advance its schedule without any reply passing through the component that tracks it. So basal publishes a module event of module `basal` on each change below, and declares all five in its daemon manifest:
 
 | Event | Published when |

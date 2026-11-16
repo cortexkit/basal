@@ -202,6 +202,23 @@ followed by the same last sentence. Call numbers count from 1 in the order the
 program made its tool calls; sleeps are not counted. The final result is retrieved through `late_results`. Role-operation envelopes are not
 themselves content results; their nested completed results are.
 
+Each new `codemode_late_results` row also enqueues a bus wake in the same
+transaction. For a module custodian such as `reserved:broca`, basal publishes
+`ck.<account>.event.basal.late_result_ready.v1.broca` with payload `{seq}` (the
+feed row's sequence) and `Nats-Msg-Id` `broca:<seq>`. This is only a wake: the
+custodian still reads `late_results` and acknowledges it after its own commit.
+Direct callers without a module reader keep pulling the feed. Wake publication
+shares the owner-notice outbox publisher, with durable 250 ms–30 s retry state;
+a restart before publication cannot lose the wake, and pruning or acknowledging
+the feed does not remove an unpublished wake.
+
+As a custodian, basal consumes providers' `late_result_ready.v1.basal` notices
+on its existing `m_basal` durable. It immediately notifies that provider's live
+intake stream, then acknowledges the notice; absent streams are ignored without
+creating one. Polling remains a backstop: its 25 ms initial backoff caps at 2 s
+until that provider sends its first wake in this process, and at 30 s afterward.
+Wakes from one provider never raise another provider's cap.
+
 ## Errors and refusals
 
 Protocol errors remain protocol Error frames: unserved call modes

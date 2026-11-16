@@ -33,7 +33,10 @@ const HISTORY_PREDICATES: &[(&str, &str)] = &[
         "audit",
         "at<=?1 AND NOT EXISTS (SELECT 1 FROM run_identities r WHERE r.run_id=audit.run_id) AND NOT EXISTS (SELECT 1 FROM decision_cards d WHERE d.elicitation_id=audit.elicitation_id AND d.state='open')",
     ),
-    ("outbox", "delivered_at<=?1 AND kind<>'refusal_committed'"),
+    (
+        "outbox",
+        "kind<>'refusal_committed' AND ((kind='codemode.late_result_ready' AND bus_published_at<=?1) OR (kind<>'codemode.late_result_ready' AND delivered_at<=?1 AND (kind<>'flow.owner_notice' OR bus_published_at<=?1)))",
+    ),
     ("schedule_dropped", "at<=?1"),
     (
         "token_ledger",
