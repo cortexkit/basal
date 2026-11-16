@@ -165,7 +165,17 @@ pub struct BasalHandler {
     on_store_failure: Arc<OnStoreFailure>,
     startup: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
     shutdown: Arc<tokio::sync::Mutex<()>>,
+    drain_limit: Duration,
+    /// Set when a drain ran out of time, so the process exits rather than
+    /// waiting on the shutdown thread it left running.
+    drain_overran: Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// How long basal's drain may take once its daemon connection ends. The
+/// daemon gives a stopping module about 30 seconds in all, and the SDK spends
+/// a few of them finishing requests before `on_connection_end` runs. A normal
+/// drain takes well under a second.
+pub const DRAIN_LIMIT: Duration = Duration::from_secs(15);
 
 use basal_proto::util::lock;
 
@@ -201,7 +211,30 @@ impl BasalHandler {
             on_store_failure: Arc::new(Box::new(crate::fatal::exit_after_store_failure)),
             startup: Arc::new(Mutex::new(None)),
             shutdown: Arc::new(tokio::sync::Mutex::new(())),
+            drain_limit: DRAIN_LIMIT,
+            drain_overran: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// [`Self::shutdown`], bounded by [`DRAIN_LIMIT`]. Returns false when the
+    /// limit ran out first; the shutdown keeps running on its own thread, and
+    /// anything it had not finished is left for startup recovery, as after a
+    /// crash. Later calls return the first call's answer.
+    pub async fn drain(&self) -> bool {
+        let finished = tokio::time::timeout(self.drain_limit, self.shutdown())
+            .await
+            .is_ok();
+        if !finished {
+            tracing::error!(
+                limit = ?self.drain_limit,
+                "basal's shutdown did not finish in time; runs it cut stay running for startup recovery"
+            );
+            self.drain_overran
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        !self
+            .drain_overran
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// End admission before draining blocking work. Aborting an SDK request
@@ -653,10 +686,11 @@ impl ModuleHandler for BasalHandler {
     }
 
     async fn on_connection_end(&self, end: ConnectionEnd) {
-        if matches!(end, ConnectionEnd::Eof | ConnectionEnd::Reset) {
-            tracing::info!(?end, "daemon connection ended; stopping basal");
-            self.shutdown().await;
-        }
+        // Every end drains here, not after serve returns: under a daemon
+        // registration channel the SDK exits the process as soon as this hook
+        // returns, so code after serve never runs on that path.
+        tracing::info!(?end, "daemon connection ended; stopping basal");
+        self.drain().await;
     }
 
     async fn on_hello_ack(&self, ack: &ModuleHelloAckBody) {

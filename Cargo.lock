@@ -595,9 +595,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-role-tool-display"
-version = "0.1.5"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4984bdea7810ecef09c980ed4adca5eaae2cb3fe9f99b8c5d0dffdc1fb5109c2"
+checksum = "f85b7e6c09e45bff8fe81d698a75c477d960fe0bb1cea36b55aba8adc78d25e0"
 dependencies = [
  "serde",
  "serde_jcs",
@@ -608,9 +608,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-role-tool-provider"
-version = "0.15.5"
+version = "0.15.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95accce529549c4c6289845e9939d2e6eec954323a9208066c4f66dbe061f49b"
+checksum = "c6001f2f9e5643b5d64a2a03059031608b3b5926419089c95c746ed4eae3f1e2"
 dependencies = [
  "cortexkit-role-tool-display",
  "serde",
@@ -622,9 +622,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-role-tool-provider-conformance"
-version = "0.15.6"
+version = "0.15.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0853936badd2321818271cf7ae2d3c7e8ad7b33c14402d1f9861e061ca064ee7"
+checksum = "cc8632102e0400ea3857fee20ca70c039d1d011be574527cd28f52d254fe8ee9"
 dependencies = [
  "async-trait",
  "cortexkit-role-harness",
@@ -2108,6 +2108,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "ryu-js"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2365,14 +2371,15 @@ dependencies = [
 
 [[package]]
 name = "subc-client-rs"
-version = "0.38.5"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b82502280e3c5129d83f923e2eb0c6efd2a61d4c75ba55e0a793ffe6935a46e0"
+checksum = "296ac56f8e318d7fb29d1b127eb3871b7e361ea969941726f57212b414b602ee"
 dependencies = [
  "async-trait",
  "serde",
  "serde_json",
  "sha2",
+ "subc-config",
  "subc-control",
  "subc-os",
  "subc-protocol",
@@ -2383,42 +2390,60 @@ dependencies = [
 ]
 
 [[package]]
-name = "subc-control"
-version = "0.38.3"
+name = "subc-config"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13bb9734b7d1875179aeb96fb433c80bd7cf070102720d390bce829ce461370c"
+checksum = "701a3c1b6e06ed0fcec46bb155b09ed194c9d4871aefade0447eb67eebd6c324"
+dependencies = [
+ "regex",
+ "ryu",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "subc-control"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f972b679936ea9ca8ea154b57879d5996104d0d9ebbdf3b6c45a058cd27eaa2"
 dependencies = [
  "serde",
  "serde_json",
+ "subc-config",
  "subc-protocol",
 ]
 
 [[package]]
 name = "subc-os"
-version = "0.1.32"
+version = "0.1.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d85580cf274ba04c72459d770dafe6175557b32012be6c0e81820bdb4beca7b3"
+checksum = "40dad45881b7449d2d55429e2117a7aea18cef401a3fb3f8c3a0f9bd58cd661f"
 dependencies = [
  "libc",
  "rustix",
+ "tokio",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
 name = "subc-protocol"
-version = "0.36.3"
+version = "0.37.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6b7d9727133a0a466c89605017b4bbc33fc2c2be7887338b660220282e3be21"
+checksum = "6358a80bda1927e234a7d3c8750e2c7e67913af5355eaa971bb97ad012df2b57"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
+ "subc-config",
 ]
 
 [[package]]
 name = "subc-transport"
-version = "0.17.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6325aac419b20781eb63e3f5e5fa77404ad3596d5f088c7e50c35c198a768486"
+checksum = "cb73c4a8aebcba6e7dd4f6fa889fc02479b7510eaafb889199c33d9ecbe2351f"
 dependencies = [
  "getrandom 0.2.17",
  "hmac",

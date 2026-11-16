@@ -32,6 +32,7 @@ pub mod broca;
 pub mod builtins;
 pub mod catalog;
 pub mod catalog_snapshot;
+mod catalog_watch;
 pub mod cingulate_consent;
 pub mod consent;
 pub mod core_consent;

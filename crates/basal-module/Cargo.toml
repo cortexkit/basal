@@ -52,14 +52,15 @@ serde_json.workspace = true
 sha2.workspace = true
 subc-client-rs.workspace = true
 subc-protocol.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-
-# Only the macOS worker launch uses it: the module re-executes itself so
-# the worker is its own "responsible process" and holds none of the
-# module's macOS privacy grants (see src/process.rs).
-[target.'cfg(target_os = "macos")'.dependencies]
+# Startup asks it whether the daemon handed over a registration channel, which
+# also marks that descriptor close-on-exec before any child is spawned. The
+# macOS worker launch uses it too: the module re-executes itself so the
+# worker is its own "responsible process" and holds none of the module's
+# macOS privacy grants (see src/process.rs).
 subc-os.workspace = true
+# The connection-end drain is bounded with a Tokio timer.
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
 
 # Windows workers are started and owned by the launcher.
 [target.'cfg(windows)'.dependencies]
