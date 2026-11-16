@@ -6,8 +6,10 @@
 //! keys or spelled numbers. Each entry's `input_schema` is compiled once at
 //! admission and checks every input the program sends to that tool.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::ops::Deref;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use jsonschema::{Retrieve, Uri, Validator};
 use serde_json::Value;
@@ -87,7 +89,7 @@ impl std::error::Error for SchemaError {}
 /// from the source avoids presenting referenced or nested properties as inputs.
 #[derive(Debug)]
 pub struct InputSchema {
-    validator: Validator,
+    validator: Arc<Validator>,
     pub properties: Vec<String>,
     pub required: Vec<String>,
 }
@@ -116,10 +118,58 @@ impl Deref for InputSchema {
 /// and file loaders, and the retriever refuses every URI. Format keywords
 /// are annotations only, never assertions.
 pub fn compile_input_schema(schema: &Value) -> Result<InputSchema, SchemaError> {
-    check_members(schema)?;
-    let validator = options()
-        .build(schema)
-        .map_err(|e| SchemaError::Invalid(e.to_string()))?;
+    static CACHE: OnceLock<Mutex<SchemaCache>> = OnceLock::new();
+    compile_cached(
+        schema,
+        CACHE.get_or_init(|| Mutex::new(SchemaCache::default())),
+    )
+}
+
+// This cache stores compilation only, never tool authority. Changing compiler
+// options or the checks on `$ref`, `$dynamicRef` and `$schema` requires
+// changing the policy id as well.
+const COMPILER_POLICY: u8 = 1;
+const SCHEMA_CACHE_CAPACITY: usize = 256;
+
+type SchemaCacheEntry = ((u8, Vec<u8>), Arc<Validator>);
+
+#[derive(Default)]
+struct SchemaCache {
+    entries: VecDeque<SchemaCacheEntry>,
+    #[cfg(test)]
+    hits: usize,
+    #[cfg(test)]
+    misses: usize,
+}
+
+fn compile_cached(schema: &Value, cache: &Mutex<SchemaCache>) -> Result<InputSchema, SchemaError> {
+    let key = (
+        COMPILER_POLICY,
+        serde_json::to_vec(schema).expect("JSON value serializes"),
+    );
+    let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let validator = if let Some(index) = cache.entries.iter().position(|(k, _)| *k == key) {
+        let entry = cache.entries.remove(index).expect("cache entry exists");
+        let validator = entry.1.clone();
+        cache.entries.push_back(entry);
+        #[cfg(test)]
+        {
+            cache.hits += 1;
+        }
+        validator
+    } else {
+        #[cfg(test)]
+        {
+            cache.misses += 1;
+        }
+        let validator = Arc::new(compile_validator(schema)?);
+        if cache.entries.len() == SCHEMA_CACHE_CAPACITY {
+            cache.entries.pop_front();
+        }
+        cache.entries.push_back((key, validator.clone()));
+        validator
+    };
+    drop(cache);
     Ok(InputSchema {
         validator,
         properties: schema
@@ -136,6 +186,13 @@ pub fn compile_input_schema(schema: &Value) -> Result<InputSchema, SchemaError> 
             .map(str::to_owned)
             .collect(),
     })
+}
+
+fn compile_validator(schema: &Value) -> Result<Validator, SchemaError> {
+    check_members(schema)?;
+    options()
+        .build(schema)
+        .map_err(|e| SchemaError::Invalid(e.to_string()))
 }
 
 fn options() -> jsonschema::ValidationOptions<'static> {
@@ -195,6 +252,34 @@ impl Retrieve for NoRetrieval {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn schema_cache_reuses_exact_compilation_and_bounds_entries() {
+        let cache = Mutex::new(SchemaCache::default());
+        let schema = json!({"type":"integer", "minimum":2});
+        let first = compile_cached(&schema, &cache).unwrap();
+        let second = compile_cached(&schema, &cache).unwrap();
+        assert!(Arc::ptr_eq(&first.validator, &second.validator));
+        assert!(!second.is_valid(&json!(1)));
+        assert!(second.is_valid(&json!(2)));
+        {
+            let stats = cache.lock().unwrap();
+            assert_eq!((stats.hits, stats.misses), (1, 1));
+        }
+        for i in 0..SCHEMA_CACHE_CAPACITY {
+            compile_cached(&json!({"const":i}), &cache).unwrap();
+        }
+        assert_eq!(cache.lock().unwrap().entries.len(), SCHEMA_CACHE_CAPACITY);
+        let third = compile_cached(&schema, &cache).unwrap();
+        assert!(!Arc::ptr_eq(&first.validator, &third.validator));
+        for invalid in [
+            json!({"$ref":"https://example.com/s"}),
+            json!({"$schema":"http://json-schema.org/draft-07/schema#"}),
+        ] {
+            assert!(compile_cached(&invalid, &cache).is_err());
+            assert!(compile_cached(&invalid, &cache).is_err());
+        }
+    }
 
     // The oracle: canonical text written out by hand, hashed with BLAKE3
     // directly, never through `catalog_digest` or the canonicalizer.

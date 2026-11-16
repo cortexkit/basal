@@ -155,6 +155,25 @@ fn record_generation(
     Ok(())
 }
 
+fn check_registration(
+    conn: &Connection,
+    manifest: &Manifest,
+    hash: &[u8],
+) -> Result<(), PackageError> {
+    let has_earlier_version = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM package_versions WHERE package=?1 AND version<?2)",
+        params![manifest.id, manifest.version],
+        |row| row.get(0),
+    )?;
+    manifest
+        .check_version_text(has_earlier_version)
+        .map_err(|error| PackageError::Install(InstallError::Manifest(error)))?;
+    if get(conn, &manifest.id, manifest.version)?.is_some_and(|p| p.code_hash.as_slice() != hash) {
+        return Err(refused("package_version_conflict"));
+    }
+    Ok(())
+}
+
 impl Runtime {
     pub fn register_package(&self, script: &str, text: &str) -> Result<Value, PackageError> {
         if script.len() > basal_proto::MAX_SCRIPT_BYTES {
@@ -174,6 +193,12 @@ impl Runtime {
         if manifest.agents().iter().any(|(_, agent)| *agent != "$self") {
             return Err(refused("package_names_agent"));
         }
+        let hash = code_hash(script, text);
+        // Local intake errors, missing version text, then immutable bytes take
+        // precedence over remote validation. Repeat state-dependent checks in
+        // the write transaction, but never make catalog calls under its lock.
+        self.store()
+            .read(|conn| Ok(check_registration(conn, &manifest, &hash)))??;
         let validation = install::validate_inner(
             &manifest,
             "operator",
@@ -183,20 +208,9 @@ impl Runtime {
             true,
         )
         .map_err(PackageError::Install)?;
-        let hash = code_hash(script, text);
         decide(self, |tx| {
-            let has_earlier_version = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM package_versions WHERE package=?1 AND version<?2)",
-                params![manifest.id, manifest.version],
-                |row| row.get(0),
-            )?;
-            manifest
-                .check_version_text(has_earlier_version)
-                .map_err(|error| PackageError::Install(InstallError::Manifest(error)))?;
+            check_registration(tx, &manifest, &hash)?;
             let existing = get(tx, &manifest.id, manifest.version)?;
-            if existing.as_ref().is_some_and(|p| p.code_hash != hash) {
-                return Err(refused("package_version_conflict"));
-            }
             let new = existing.is_none();
             if new {
                 tx.execute("INSERT INTO package_versions (package,version,script,manifest,code_hash,registered_at) VALUES (?1,?2,?3,?4,?5,?6)", params![manifest.id,manifest.version,script,text,hash.as_slice(),self.config().clock.now_ms()])?;

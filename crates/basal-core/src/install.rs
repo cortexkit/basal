@@ -849,6 +849,8 @@ pub(crate) fn validate_inner(
     loop_override: bool,
     package: bool,
 ) -> std::result::Result<Validation, InstallError> {
+    let snapshot = catalog.request_snapshot();
+    let catalog = snapshot.as_deref().unwrap_or(catalog);
     validate_audience(manifest, catalog)?;
     if manifest.notice_sink().is_some()
         && !matches!(&manifest.audience, Some(crate::manifest::Audience::Agent { id }) if id == author)
@@ -1144,6 +1146,45 @@ pub fn check_version_text(
     manifest
         .check_version_text(has_earlier_version)
         .map_err(InstallError::Manifest)
+}
+
+fn check_install(
+    conn: &Connection,
+    manifest: &Manifest,
+    request: &InstallRequest,
+) -> std::result::Result<(), InstallError> {
+    check_version_text(conn, manifest)?;
+    let existing: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT code_hash FROM installs WHERE flow_id=?1 AND version=?2",
+            params![manifest.id, manifest.version],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if existing.as_slice() != code_hash(&request.script, &request.manifest).as_slice() {
+            return Err(InstallError::VersionExists {
+                flow_id: manifest.id.clone(),
+                version: manifest.version,
+            });
+        }
+        return Ok(());
+    }
+    let approved: Option<Option<u32>> = conn
+        .query_row(
+            "SELECT approved_version FROM flows WHERE flow_id=?1",
+            [&manifest.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(approved) = approved.flatten().filter(|v| *v >= manifest.version) {
+        return Err(InstallError::StaleVersion {
+            flow_id: manifest.id.clone(),
+            version: manifest.version,
+            approved,
+        });
+    }
+    Ok(())
 }
 
 /// Records a validated version. Installing the identical version again is
@@ -1795,6 +1836,11 @@ impl Runtime {
         }
         let manifest =
             Manifest::parse_ordinary(&request.manifest).map_err(InstallError::Manifest)?;
+        // Parse/intake errors precede version text, immutable-byte conflicts
+        // and stale versions; all precede catalog/provider validation. These
+        // state-dependent refusals are rechecked under the writer before use.
+        self.store()
+            .read(|conn| Ok(check_install(conn, &manifest, request)))??;
         let validation = validate_with_policies(
             &manifest,
             &request.author,
@@ -1804,7 +1850,7 @@ impl Runtime {
         )?;
         let now = self.config().clock.now_ms();
         decide(self, |tx| {
-            check_version_text(tx, &manifest)?;
+            check_install(tx, &manifest, request)?;
             record(tx, &manifest, request, validation, now)
         })
     }

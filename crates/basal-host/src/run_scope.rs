@@ -281,17 +281,55 @@ fn catalog_read_error(error: &WireError) -> String {
     }
 }
 
+/// Provider metadata indexed and checked once for the whole admission.
+struct IndexedAnswer {
+    answer: CatalogAnswer,
+    tools: BTreeMap<String, usize>,
+    invalid: Option<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static MODE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl IndexedAnswer {
+    fn new(answer: CatalogAnswer) -> Self {
+        let mut tools = BTreeMap::new();
+        let mut invalid = None;
+        for (index, tool) in answer.tools.iter().enumerate() {
+            #[cfg(test)]
+            MODE_VISITS.with(|visits| visits.set(visits.get() + 1));
+            if let Err(problem) = check_modes(tool) {
+                invalid.get_or_insert_with(|| {
+                    format!("its tool.catalog answer is invalid: {problem}")
+                });
+            }
+            if tools.insert(tool.name.clone(), index).is_some() {
+                invalid.get_or_insert_with(|| {
+                    format!("its tool.catalog lists {} more than once", tool.name)
+                });
+            }
+        }
+        Self {
+            answer,
+            tools,
+            invalid,
+        }
+    }
+}
+
 /// Whether the provider serves `entry` in codemode, as it declares it. A
 /// provider declaring the legacy capability serves every tool. A provider
 /// declaring `call-modes/v1` serves the tools whose `modes`, in its own
 /// `tool.catalog` answer, include `codemode`. `answers` holds each module's
-/// answer once read, so a provider listed for several entries is read once.
+/// indexed answer, so both network reads and validation happen once per provider.
 fn codemode_served(
     transport: &dyn Transport,
     read: &CatalogRead<'_>,
-    module: &Value,
+    module: &crate::catalog_snapshot::Module,
     entry: &CatalogEntry,
-    answers: &mut BTreeMap<String, Result<CatalogAnswer, WireError>>,
+    answers: &mut BTreeMap<String, Result<IndexedAnswer, WireError>>,
 ) -> Result<
     (
         Option<cortexkit_role_tool_provider::result::ResultFormat>,
@@ -299,11 +337,7 @@ fn codemode_served(
     ),
     (RefusalReason, String),
 > {
-    let provides = |token: &str| {
-        module["capabilities"]["provides"]
-            .as_array()
-            .is_some_and(|caps| caps.iter().any(|cap| cap == token))
-    };
+    let provides = |token: &str| module.provides(token);
     let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY);
     if !legacy && !provides(CALL_MODES_CAPABILITY) {
         return Err((
@@ -315,6 +349,7 @@ fn codemode_served(
     }
     let answer = answers.entry(entry.module.clone()).or_insert_with(|| {
         read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module)
+            .map(IndexedAnswer::new)
     });
     let answer = answer.as_ref().map_err(|error| {
         if run_refusal(error).is_some() {
@@ -336,29 +371,16 @@ fn codemode_served(
             ),
         )
     })?;
-    // An invalid modes list on any tool makes the whole answer invalid, not
-    // only that tool's entry.
-    for tool in &answer.tools {
-        check_modes(tool).map_err(|problem| {
-            (
-                RefusalReason::InvalidAnswer,
-                format!("its tool.catalog answer is invalid: {problem}"),
-            )
-        })?;
+    if let Some(problem) = &answer.invalid {
+        return Err((RefusalReason::InvalidAnswer, problem.clone()));
     }
-    let mut listed = answer.tools.iter().filter(|tool| tool.name == entry.op);
-    let Some(tool) = listed.next() else {
+    let Some(index) = answer.tools.get(&entry.op) else {
         return Err((
             RefusalReason::ModeNotServed,
             format!("its tool.catalog does not list {}", entry.op),
         ));
     };
-    if listed.next().is_some() {
-        return Err((
-            RefusalReason::InvalidAnswer,
-            format!("its tool.catalog lists {} more than once", entry.op),
-        ));
-    }
+    let tool = &answer.answer.tools[*index];
     if !legacy && !serves_call_mode(tool, &CallMode::Codemode) {
         return Err((
             RefusalReason::ModeNotServed,
@@ -438,9 +460,18 @@ pub fn catalog(
     entries: &[CatalogEntry],
     preset: Option<&str>,
 ) -> Result<ResolvedCatalog, WireError> {
-    let modules = daemon["modules"]
-        .as_array()
-        .ok_or_else(|| WireError::Unreadable("daemon catalog has no modules".into()))?;
+    let snapshot = crate::catalog_snapshot::CatalogSnapshot::from_value(daemon.clone())?;
+    catalog_from_snapshot(transport, read, &snapshot, entries, preset)
+}
+
+/// Assemble the run catalog from the request's already decoded daemon list.
+pub fn catalog_from_snapshot(
+    transport: &dyn Transport,
+    read: &CatalogRead<'_>,
+    daemon: &crate::catalog_snapshot::CatalogSnapshot,
+    entries: &[CatalogEntry],
+    preset: Option<&str>,
+) -> Result<ResolvedCatalog, WireError> {
     let mut answers = BTreeMap::new();
     // Each usable entry with its provider, so a provider that fails on a later
     // entry can still have its earlier entries removed.
@@ -457,10 +488,7 @@ pub fn catalog(
         // An entry the daemon doesn't declare is dropped with a gap, never
         // run with a schema core carried: one undeclared entry must not stop
         // the program from using every other tool.
-        let Some(module) = modules
-            .iter()
-            .find(|module| module["module_id"] == entry.module)
-        else {
+        let Some(module) = daemon.module(&entry.module) else {
             add_gap(
                 &mut gaps,
                 entry,
@@ -469,19 +497,7 @@ pub fn catalog(
             );
             continue;
         };
-        let roles: Vec<subc_protocol::manifest::ProviderRole> =
-            serde_json::from_value(module["roles"].clone())
-                .map_err(|e| WireError::Unreadable(e.to_string()))?;
-        let mut schemas = roles
-            .into_iter()
-            .filter_map(|role| match role {
-                subc_protocol::manifest::ProviderRole::ToolProvider { tools, .. } => Some(tools),
-                _ => None,
-            })
-            .flatten()
-            .filter(|tool| tool.name == entry.op)
-            .map(|tool| tool.schema);
-        let Some(schema) = schemas.next() else {
+        let Some(schema) = module.tool_schema(&entry.op)? else {
             add_gap(
                 &mut gaps,
                 entry,
@@ -492,9 +508,6 @@ pub fn catalog(
             );
             continue;
         };
-        if schemas.next().is_some() {
-            return Err(WireError::Unreadable("ambiguous tool declaration".into()));
-        }
         if failed.iter().any(|(module, ..)| *module == entry.module) {
             continue;
         }
@@ -531,7 +544,7 @@ pub fn catalog(
                 && usable.iter().any(|(usable, _)| *usable == module.as_str())
                 && answer
                     .as_ref()
-                    .is_ok_and(|answer| provider_serves_preset(answer, preset))
+                    .is_ok_and(|answer| provider_serves_preset(&answer.answer, preset))
         })
         .map(|(module, _)| module.clone())
         .collect();
@@ -864,6 +877,49 @@ mod call_mode_tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect()
+    }
+
+    #[test]
+    fn provider_modes_are_indexed_once_and_invalid_answers_drop_only_their_provider() {
+        let tools: Vec<_> = (0..64)
+            .map(|i| tool(&format!("t{i}"), Some(json!(["codemode"]))))
+            .collect();
+        let mut module = provider_module("mock", &[CALL_MODES_CAPABILITY]);
+        module["roles"][0]["tools"] = Value::Array((0..64).map(|i| json!({"name":format!("t{i}"),"execution_mode":"pure","schema":{"type":"object"}})).collect());
+        let entries: Vec<_> = (0..64).map(|i| entry(&format!("t{i}"))).collect();
+        let provider = Provider::answering(Ok(answer(tools.clone())));
+        MODE_VISITS.with(|visits| visits.set(0));
+        let resolved = resolve(&provider, &json!({"modules":[module.clone()]}), &entries);
+        assert_eq!(resolved.catalog.as_array().unwrap().len(), 64);
+        assert!(resolved.gaps.is_empty());
+        assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
+        MODE_VISITS.with(|visits| assert_eq!(visits.get(), 64));
+
+        for bad in [
+            tool("unused", Some(json!(["not-a-mode"]))),
+            tools[0].clone(),
+        ] {
+            let mut invalid = tools.clone();
+            invalid.push(bad);
+            let provider = Provider::answering_each([
+                ("mock", Ok(answer(invalid))),
+                (
+                    "other",
+                    Ok(answer(vec![tool("read", Some(json!(["codemode"])))])),
+                ),
+            ]);
+            let mut mixed = entries.clone();
+            mixed.push(module_entry("other", "read"));
+            let resolved = resolve(
+                &provider,
+                &json!({"modules":[module.clone(),provider_module("other", &[CALL_MODES_CAPABILITY])]}),
+                &mixed,
+            );
+            assert_eq!(names(&resolved), ["other_read"]);
+            assert_eq!(resolved.gaps.len(), 1);
+            assert_eq!(resolved.gaps[0].reason, RefusalReason::InvalidAnswer);
+            assert_eq!(resolved.gaps[0].tools.len(), 64);
+        }
     }
 
     /// The only gap in `resolved`.
