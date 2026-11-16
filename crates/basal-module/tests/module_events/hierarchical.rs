@@ -78,7 +78,13 @@ async fn hierarchical_names_install_decode_admit_and_dedupe_by_full_subject() {
     }
     assert_eq!(run_count(&rt), 2);
     drop(messages);
-    let redelivery = pull(&consumer).await.unwrap();
+    // Redelivery timers can expire across two one-second pulls on a slow
+    // runner, so collect until both messages are back.
+    let mut redelivery = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while redelivery.len() < 2 && std::time::Instant::now() < deadline {
+        redelivery.extend(pull(&consumer).await.unwrap());
+    }
     assert_eq!(redelivery.len(), 2);
     assert!(redelivery.iter().all(|m| m.info().unwrap().delivered >= 2));
     let report = commit_batch(rt.clone(), &redelivery, true).await.unwrap();
