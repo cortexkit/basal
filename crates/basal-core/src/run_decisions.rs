@@ -307,7 +307,14 @@ impl RecoveredHosts {
                         operation: "reconcile",
                         ..
                     }
-                ) || matches!(&error, CoreError::Invalid(detail) if detail == "attempt is no longer unknown") =>
+                ) || matches!(
+                    &error,
+                    CoreError::Invalid(detail)
+                        if detail == "attempt is no longer unknown"
+                            // A closed run's call already settled another way,
+                            // for example by flow.reconcile before this answer.
+                            || detail == "obligation is no longer unknown"
+                ) =>
             {
                 self.store.write(|tx| {
                     let changed = cas(tx, &card, CardState::Stale, choice, now)?;

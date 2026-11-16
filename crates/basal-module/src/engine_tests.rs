@@ -135,9 +135,12 @@ fn closed_obligations_and_open_cards_do_not_spin_idle_passes() {
                         },
                         args: basal_proto::JsonText::null(),
                     },
-                    basal_core::StoredClass::KeyedMutation,
+                    // Plain mutations: a closed run settles queries and keyed
+                    // mutations it can never observe, so only these stay
+                    // unknown and keep a reconcile card open.
+                    basal_core::StoredClass::Mutation,
                 ),
-                idempotency_key: Some(format!("key-{i}")),
+                idempotency_key: None,
                 frozen_request: basal_proto::JsonText::null(),
                 attempts: 1,
                 dispatch_count_window: None,
@@ -175,7 +178,7 @@ fn closed_obligations_and_open_cards_do_not_spin_idle_passes() {
         )
         .unwrap();
     }
-    // The first pass durably creates and raises the two reconcile cards.
+    // The first pass durably creates and raises the eight reconcile cards.
     engine.pass().unwrap();
     let inventory: (u64, u64, u64) = rt
         .store()
@@ -199,7 +202,7 @@ fn closed_obligations_and_open_cards_do_not_spin_idle_passes() {
             ))
         })
         .unwrap();
-    assert_eq!(inventory, (6, 2, 2));
+    assert_eq!(inventory, (0, 8, 8));
     let writes = rt.store().write_transactions_for_test();
     for _ in 0..32 {
         let seen = engine.inner.wake.snapshot();
