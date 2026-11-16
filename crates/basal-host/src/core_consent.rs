@@ -671,8 +671,16 @@ fn next_poll_delay(delay: Duration, raised: bool) -> Duration {
 }
 
 impl State {
-    fn poll_delay(&self, delay: Duration) -> Duration {
-        if self.card_settled_seen.load(Ordering::Acquire) {
+    fn poll_delay(&self, delay: Duration, last_poll_ok: bool) -> Duration {
+        // Pointers announce new answers, not a failed read's retry. A failed
+        // page or a path still owed a retry keeps the short backoff, so a
+        // Cingulate restart can't stall answers until the next settlement.
+        let retry_owed = !self
+            .retries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty();
+        if self.card_settled_seen.load(Ordering::Acquire) && last_poll_ok && !retry_owed {
             POLL_BACKSTOP
         } else {
             delay
@@ -1072,7 +1080,8 @@ impl CoreConsent {
                     delay = POLL_MIN;
                     continue;
                 }
-                if let Err(error) = poll(&state) {
+                let polled = poll(&state);
+                if let Err(error) = &polled {
                     tracing::warn!(%error, "consent polling failed; retrying without acknowledging answers");
                 }
                 if matches!(poll_allowed(&state), Ok(false)) {
@@ -1081,7 +1090,9 @@ impl CoreConsent {
                 let wake = state.wake.lock().unwrap_or_else(|p| p.into_inner());
                 let (wake, _) = state
                     .cond
-                    .wait_timeout_while(wake, state.poll_delay(delay), |w| w.0 == seen && !w.1)
+                    .wait_timeout_while(wake, state.poll_delay(delay, polled.is_ok()), |w| {
+                        w.0 == seen && !w.1
+                    })
                     .unwrap_or_else(|p| p.into_inner());
                 delay = next_poll_delay(delay, wake.0 != seen);
             }

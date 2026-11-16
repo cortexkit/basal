@@ -98,15 +98,36 @@ fn card_settled_switches_open_card_interval_to_ten_minute_backstop() {
     for _ in 0..8 {
         delay = next_poll_delay(delay, false);
     }
-    assert_eq!(consent.state.poll_delay(delay), Duration::from_secs(5));
+    assert_eq!(
+        consent.state.poll_delay(delay, true),
+        Duration::from_secs(5)
+    );
     let seen = consent.raised_epoch();
     consent.card_settled();
     assert_ne!(consent.raised_epoch(), seen);
-    assert_eq!(consent.state.poll_delay(delay), Duration::from_secs(600));
+    assert_eq!(
+        consent.state.poll_delay(delay, true),
+        Duration::from_secs(600)
+    );
     consent.raised();
-    assert_eq!(consent.state.poll_delay(POLL_MIN), Duration::from_secs(600));
+    assert_eq!(
+        consent.state.poll_delay(POLL_MIN, true),
+        Duration::from_secs(600)
+    );
+    // A failed page, or a path still owed a retry, keeps the short backoff.
+    assert_eq!(consent.state.poll_delay(delay, false), delay);
+    consent
+        .state
+        .retries
+        .lock()
+        .unwrap()
+        .insert(DecisionPath::Consent("cingulate".into()));
+    assert_eq!(consent.state.poll_delay(delay, true), delay);
     let restarted = CoreConsent::new(Arc::new(Wire::default()));
-    assert_eq!(restarted.state.poll_delay(delay), Duration::from_secs(5));
+    assert_eq!(
+        restarted.state.poll_delay(delay, true),
+        Duration::from_secs(5)
+    );
 }
 
 #[test]
