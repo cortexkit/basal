@@ -1,6 +1,6 @@
 //! Immutable daemon declarations for one request. Acquisition is separate from
-//! lookup so a future source observing daemon catalog changes can supply the
-//! same snapshot handle without changing callers.
+//! lookup so the transport's catalog watch can hand every request the same
+//! shared snapshot without changing callers.
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use subc_client_rs::consumer::CatalogList;
@@ -60,6 +60,8 @@ impl CatalogSnapshot {
         for module in modules {
             if let Some(module) = module.as_object_mut() {
                 module.entry("control_ops").or_insert(serde_json::json!([]));
+                // Test catalogs often list a module only for its capabilities.
+                module.entry("roles").or_insert(serde_json::json!([]));
             }
         }
         serde_json::from_value(value)

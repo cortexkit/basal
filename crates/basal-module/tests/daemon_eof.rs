@@ -85,16 +85,9 @@ fn supervised_binary_exits_cleanly_after_daemon_eof() {
                     .spawn()
                     .unwrap(),
             );
-            let (mut consumer, _) = listener.accept().await.unwrap();
-            authenticate_server(
-                &mut consumer,
-                &info.key,
-                &info.daemon_id,
-                "0.44.5",
-                Duration::from_secs(30),
-            )
-            .await
-            .unwrap();
+            // The module registers first; its hosts' consumer connects only
+            // after HELLO_ACK, because under a registration channel that
+            // connection is bound through the registered one.
             let (mut stream, _) = listener.accept().await.unwrap();
             authenticate_server(
                 &mut stream,
@@ -126,6 +119,16 @@ fn supervised_binary_exits_cleanly_after_daemon_eof() {
                         "storage": storage
                     }),
                 ),
+            )
+            .await
+            .unwrap();
+            let (mut consumer, _) = listener.accept().await.unwrap();
+            authenticate_server(
+                &mut consumer,
+                &info.key,
+                &info.daemon_id,
+                "0.44.5",
+                Duration::from_secs(30),
             )
             .await
             .unwrap();

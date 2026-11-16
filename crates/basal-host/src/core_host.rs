@@ -125,7 +125,21 @@ impl CoreHost {
 /// Whether core's entry in the daemon's current catalog lists `capability`
 /// among what it provides. A catalog that cannot be read provides nothing,
 /// so a field an older core would refuse is never sent on a guess.
+///
+/// The typed snapshot is the shared watch-fed copy in production, so the
+/// check usually costs no catalog read. A catalog that does not decode into
+/// typed entries (a test transport's partial JSON) is read as JSON instead.
 pub fn core_provides(transport: &dyn Transport, capability: &str) -> bool {
+    match transport.catalog_snapshot() {
+        Ok(catalog) => catalog
+            .module(CORE)
+            .is_some_and(|core| core.provides(capability)),
+        Err(WireError::Unreadable(_)) => core_provides_in_json(transport, capability),
+        Err(_) => false,
+    }
+}
+
+fn core_provides_in_json(transport: &dyn Transport, capability: &str) -> bool {
     transport
         .catalog()
         .ok()
