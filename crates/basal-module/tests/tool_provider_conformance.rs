@@ -808,7 +808,11 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
             "tool_result_legacy_route_unchanged",
             // The shared held-reply case requires provider-owned approval execution;
             // basal instead waits for providers and core to release their holds.
-            "tool_result_held_reply_route_gating"
+            "tool_result_held_reply_route_gating",
+            // Basal's tools do not declare system-text facts
+            // (the suite's SystemTextFacts capability, added in 0.15.9).
+            "system_text_facts_accepted",
+            "system_text_facts_malformed_refused"
         ]
         .into_iter()
         .collect()

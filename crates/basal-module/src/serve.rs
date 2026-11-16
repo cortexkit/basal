@@ -166,6 +166,9 @@ pub struct BasalHandler {
     startup: Arc<Mutex<Option<std::thread::JoinHandle<()>>>>,
     shutdown: Arc<tokio::sync::Mutex<()>>,
     drain_limit: Duration,
+    /// Production always drains when its one connection ends. Only a test
+    /// that serves one handler over several connections turns this off.
+    drain_on_connection_end: bool,
     /// Set when a drain ran out of time, so the process exits rather than
     /// waiting on the shutdown thread it left running.
     drain_overran: Arc<std::sync::atomic::AtomicBool>,
@@ -212,8 +215,18 @@ impl BasalHandler {
             startup: Arc::new(Mutex::new(None)),
             shutdown: Arc::new(tokio::sync::Mutex::new(())),
             drain_limit: DRAIN_LIMIT,
+            drain_on_connection_end: true,
             drain_overran: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Keep the module running when a connection ends, so a test can serve
+    /// the same handler over a replacement connection. Production never
+    /// reconnects a handler: the process exits once its connection ends.
+    #[cfg(feature = "test-support")]
+    pub fn keep_running_after_connection_end(mut self) -> Self {
+        self.drain_on_connection_end = false;
+        self
     }
 
     /// [`Self::shutdown`], bounded by [`DRAIN_LIMIT`]. Returns false when the
@@ -686,6 +699,9 @@ impl ModuleHandler for BasalHandler {
     }
 
     async fn on_connection_end(&self, end: ConnectionEnd) {
+        if !self.drain_on_connection_end {
+            return;
+        }
         // Every end drains here, not after serve returns: under a daemon
         // registration channel the SDK exits the process as soon as this hook
         // returns, so code after serve never runs on that path.

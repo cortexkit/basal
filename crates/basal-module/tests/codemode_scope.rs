@@ -116,7 +116,10 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 hooks: Arc::new(basal_core::NoHooks),
             }
         }),
-    );
+    )
+    // Both sessions serve this one handler; a planned stop now drains the
+    // module, which the second session must find still running.
+    .keep_running_after_connection_end();
     for session in 1..=2 {
         runtime.block_on(async {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
