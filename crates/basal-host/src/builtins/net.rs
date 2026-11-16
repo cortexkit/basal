@@ -660,22 +660,22 @@ impl Resolve for SystemResolver {
         port: u16,
         deadline: Instant,
     ) -> std::io::Result<Vec<SocketAddr>> {
-        // getaddrinfo cannot be cancelled. A single reusable worker and one
-        // queued job bound the resources even if the OS resolver gets stuck.
         let deadline = deadline.min(Instant::now() + self.timeout);
-        let (reply, receiver) = mpsc::sync_channel(1);
-        let job = DnsJob {
-            host: host.into(),
-            port,
-            deadline,
-            reply,
-        };
-        dns_worker().try_send(job).map_err(|_| dns_timeout())?;
-        receiver
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| dns_timeout())?
+        dns_pool().resolve(host, port, deadline)
     }
 }
+
+/// Lookups that may run at once. getaddrinfo cannot be cancelled, so a
+/// stuck system resolver holds its thread; a fixed set bounds the threads it
+/// can hold, and the rest keep resolving.
+const DNS_WORKERS: usize = 4;
+/// Lookups that may wait for a worker. Flows on the same schedule fetch at
+/// the same moment, so several lookups routinely arrive together; they queue
+/// until their deadline instead of failing at once. Beyond this, the resolver
+/// is genuinely overloaded and a lookup fails as busy.
+const DNS_QUEUE: usize = 64;
+
+type Lookup = dyn Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync;
 
 struct DnsJob {
     host: String,
@@ -683,29 +683,70 @@ struct DnsJob {
     deadline: Instant,
     reply: mpsc::SyncSender<std::io::Result<Vec<SocketAddr>>>,
 }
+
+struct DnsPool {
+    jobs: mpsc::SyncSender<DnsJob>,
+}
+
+impl DnsPool {
+    fn new(workers: usize, queue: usize, lookup: Arc<Lookup>) -> Self {
+        let (jobs, receiver) = mpsc::sync_channel::<DnsJob>(queue);
+        let receiver = Arc::new(Mutex::new(receiver));
+        for _ in 0..workers {
+            let receiver = receiver.clone();
+            let lookup = lookup.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let job = receiver.lock().unwrap_or_else(|p| p.into_inner()).recv();
+                    let Ok(job) = job else { return };
+                    // A job whose caller already gave up is skipped unresolved.
+                    let result = if Instant::now() >= job.deadline {
+                        Err(dns_timeout())
+                    } else {
+                        lookup(&job.host, job.port)
+                    };
+                    let _ = job.reply.send(result);
+                }
+            });
+        }
+        Self { jobs }
+    }
+
+    fn resolve(
+        &self,
+        host: &str,
+        port: u16,
+        deadline: Instant,
+    ) -> std::io::Result<Vec<SocketAddr>> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let job = DnsJob {
+            host: host.into(),
+            port,
+            deadline,
+            reply,
+        };
+        self.jobs.try_send(job).map_err(|_| dns_timeout())?;
+        receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| dns_timeout())?
+    }
+}
+
 fn dns_timeout() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::TimedOut,
         "DNS resolution timed out or busy",
     )
 }
-fn dns_worker() -> &'static mpsc::SyncSender<DnsJob> {
-    static WORKER: OnceLock<mpsc::SyncSender<DnsJob>> = OnceLock::new();
-    WORKER.get_or_init(|| {
-        let (sender, receiver) = mpsc::sync_channel::<DnsJob>(1);
-        std::thread::spawn(move || {
-            while let Ok(job) = receiver.recv() {
-                let result = if Instant::now() >= job.deadline {
-                    Err(dns_timeout())
-                } else {
-                    (job.host.as_str(), job.port)
-                        .to_socket_addrs()
-                        .map(Vec::from_iter)
-                };
-                let _ = job.reply.send(result);
-            }
-        });
-        sender
+
+fn dns_pool() -> &'static DnsPool {
+    static POOL: OnceLock<DnsPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        DnsPool::new(
+            DNS_WORKERS,
+            DNS_QUEUE,
+            Arc::new(|host: &str, port: u16| (host, port).to_socket_addrs().map(Vec::from_iter)),
+        )
     })
 }
 

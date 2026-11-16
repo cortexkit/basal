@@ -683,3 +683,48 @@ fn second_review_partial_response_after_possible_effect_keeps_the_reply() {
     assert!(value["body"].is_null());
     assert_eq!(value["body_error"], "secret_partial_response");
 }
+
+/// Flows on the same schedule fetch at the same moment. While the resolver's
+/// workers are busy, further lookups wait for one instead of failing as busy.
+#[test]
+fn simultaneous_lookups_queue_for_a_resolver_worker() {
+    let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let lookup: Arc<Lookup> = {
+        let (gate, started) = (gate.clone(), started.clone());
+        Arc::new(move |_: &str, port: u16| {
+            started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (open, wake) = &*gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = wake.wait(open).unwrap();
+            }
+            Ok(vec![SocketAddr::from(([127, 0, 0, 1], port))])
+        })
+    };
+    let pool = Arc::new(DnsPool::new(DNS_WORKERS, DNS_QUEUE, lookup));
+    let lookups = DNS_WORKERS + 4;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let callers: Vec<_> = (0..lookups)
+        .map(|i| {
+            let pool = pool.clone();
+            std::thread::spawn(move || pool.resolve("api.test", 443 + i as u16, deadline))
+        })
+        .collect();
+    // Every worker holds a lookup, so the rest are waiting in the queue.
+    while started.load(std::sync::atomic::Ordering::SeqCst) < DNS_WORKERS {
+        std::thread::yield_now();
+    }
+    {
+        let (open, wake) = &*gate;
+        *open.lock().unwrap() = true;
+        wake.notify_all();
+    }
+    for (i, caller) in callers.into_iter().enumerate() {
+        let addresses = caller.join().unwrap().expect("a queued lookup resolves");
+        assert_eq!(
+            addresses,
+            vec![SocketAddr::from(([127, 0, 0, 1], 443 + i as u16))]
+        );
+    }
+}
