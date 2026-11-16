@@ -25,6 +25,14 @@ fn a_lost_request_reply_still_wakes_the_owned_answer_inventory() {
     assert_ne!(consent.core.raised_epoch(), before);
 }
 
+#[test]
+fn card_settled_forwards_to_the_owned_answer_poller() {
+    let consent = CingulateConsent::new(Arc::new(LostReply));
+    let before = consent.core.raised_epoch();
+    consent.card_settled();
+    assert_ne!(consent.core.raised_epoch(), before);
+}
+
 fn grant_card() -> DecisionCard {
     DecisionCard {
         dedup_key: Some("grant-loss".into()),

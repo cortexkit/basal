@@ -649,6 +649,7 @@ struct State {
     transport: Arc<dyn Transport>,
     sink: Mutex<Option<Arc<dyn DecisionSink>>>,
     poll_started: AtomicBool,
+    card_settled_seen: AtomicBool,
     wake: Mutex<(u64, bool)>,
     cond: Condvar,
     /// Paths whose last poll failed. They are polled again even after their
@@ -659,6 +660,7 @@ struct State {
 
 const POLL_MIN: Duration = Duration::from_millis(250);
 const POLL_MAX: Duration = Duration::from_secs(5);
+const POLL_BACKSTOP: Duration = Duration::from_secs(10 * 60);
 
 fn next_poll_delay(delay: Duration, raised: bool) -> Duration {
     if raised {
@@ -669,6 +671,14 @@ fn next_poll_delay(delay: Duration, raised: bool) -> Duration {
 }
 
 impl State {
+    fn poll_delay(&self, delay: Duration) -> Duration {
+        if self.card_settled_seen.load(Ordering::Acquire) {
+            POLL_BACKSTOP
+        } else {
+            delay
+        }
+    }
+
     fn raised(&self) {
         let mut wake = self.wake.lock().unwrap_or_else(|p| p.into_inner());
         wake.0 = wake.0.wrapping_add(1);
@@ -691,6 +701,7 @@ impl CoreConsent {
                 transport,
                 sink: Mutex::new(None),
                 poll_started: AtomicBool::new(false),
+                card_settled_seen: AtomicBool::new(false),
                 wake: Mutex::new((0, false)),
                 cond: Condvar::new(),
                 retries: Mutex::new(BTreeSet::new()),
@@ -892,7 +903,11 @@ fn poll_consent_pages(
         if let Some(error) = problem {
             return Err(error);
         }
-        sink.save_answer_cursor(path, cursor).map_err(sink_error)?;
+        // An unchanged empty page must not open a write transaction just
+        // because a duplicate pointer or a periodic poll woke the reader.
+        if cursor != since {
+            sink.save_answer_cursor(path, cursor).map_err(sink_error)?;
+        }
         // An empty final page can cover withdrawals and other owners' rows.
         // Only the provider's returned cursor is acknowledged, never a guess.
         ack_consent(state, provider, cursor)?;
@@ -1016,6 +1031,14 @@ impl Consent for CoreConsent {
         }
         self.state.raised();
     }
+
+    fn card_settled(&self) {
+        // Keep legacy polling until this process has evidence that the
+        // publisher sends pointers. Signals received before the poller's next
+        // pass share that reread through its existing wake counter.
+        self.state.card_settled_seen.store(true, Ordering::Release);
+        self.state.raised();
+    }
 }
 
 impl CoreConsent {
@@ -1052,10 +1075,13 @@ impl CoreConsent {
                 if let Err(error) = poll(&state) {
                     tracing::warn!(%error, "consent polling failed; retrying without acknowledging answers");
                 }
+                if matches!(poll_allowed(&state), Ok(false)) {
+                    continue;
+                }
                 let wake = state.wake.lock().unwrap_or_else(|p| p.into_inner());
                 let (wake, _) = state
                     .cond
-                    .wait_timeout_while(wake, delay, |w| w.0 == seen && !w.1)
+                    .wait_timeout_while(wake, state.poll_delay(delay), |w| w.0 == seen && !w.1)
                     .unwrap_or_else(|p| p.into_inner());
                 delay = next_poll_delay(delay, wake.0 != seen);
             }

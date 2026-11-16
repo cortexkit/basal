@@ -357,6 +357,10 @@ pub trait Consent: Send + Sync {
     /// Tells the consent plane where to deliver decisions. Decisions made
     /// and not yet accepted are delivered again to the new sink.
     fn attach(&self, sink: Arc<dyn DecisionSink>);
+
+    /// A validated card-settled pointer arrived. Reread the answer feed from
+    /// the saved cursor; the pointer itself carries no answer or cursor commit.
+    fn card_settled(&self) {}
 }
 
 #[cfg(any(test, feature = "test-support"))]

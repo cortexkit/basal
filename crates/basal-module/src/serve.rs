@@ -493,6 +493,7 @@ fn start(path: PathBuf, handler: &BasalHandler) {
                         module.rt.clone(),
                         transport.clone(),
                         Some(module.codemode.supervisor()),
+                        Some(module.consent.clone()),
                     ));
                 }
                 let module = Arc::new(module);

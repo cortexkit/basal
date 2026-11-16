@@ -110,6 +110,10 @@ impl Consent for CingulateConsent {
     fn attach(&self, sink: Arc<dyn DecisionSink>) {
         self.core.attach(sink);
     }
+
+    fn card_settled(&self) {
+        self.core.card_settled();
+    }
 }
 
 #[cfg(test)]
