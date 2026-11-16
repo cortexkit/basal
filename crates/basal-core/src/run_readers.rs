@@ -90,9 +90,17 @@ pub(crate) fn load(
     let history = sql::history(conn, id)?;
     let live = sql::live(conn, id)?;
     let history_lost = live.is_some() && sql::history_lost(conn, id)?;
-    let state = snapshot
-        .cloned()
-        .unwrap_or_else(|| State::new(live.as_ref().map_or(0, |l| l.admitted_at)));
+    // Borrow the caller's snapshot: preparation calls this once per new call,
+    // and copying the whole call history here made each call cost the run's
+    // full size.
+    let fresh;
+    let state = match snapshot {
+        Some(state) => state,
+        None => {
+            fresh = State::new(live.as_ref().map_or(0, |l| l.admitted_at));
+            &fresh
+        }
+    };
     let unknown: Vec<_> = state.calls.values().filter(|c| c.arrival.is_none() && c.unknown.is_some()).take(5).map(|call| {
         let reason = call.unknown.as_deref().and_then(crate::run_records::parse_unknown_reason);
         let code = if reason == Some(basal_host::UnknownReason::ProviderLostRun) { "unknown_run" } else { reason.map_or("unknown", |r| r.as_str()) };
@@ -165,7 +173,7 @@ pub(crate) fn load(
         owner: (history.is_none() && active).then(|| owner.into()),
         generation: state.generation,
         readiness: state.readiness,
-        awaited: state.awaited,
+        awaited: state.awaited.clone(),
         result: history
             .as_ref()
             .and_then(|h| h.result.as_ref().map(ToString::to_string)),

@@ -266,6 +266,13 @@ impl Run<crate::run_records::Records> {
         )
     }
 
+    /// Reads live state in place under the actor, for readers that need a few
+    /// fields rather than a copy of the whole call history. `read` must not
+    /// block, do I/O or take another lock.
+    pub(crate) fn read_state<T>(&self, read: impl FnOnce(&crate::run_records::State) -> T) -> T {
+        read(self.actor.lock().records.state())
+    }
+
     pub(crate) fn closed_hint(&self, commit_seq: u64) {
         let mut actor = self.actor.lock();
         let generation = actor.generation;

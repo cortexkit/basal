@@ -713,6 +713,66 @@ fn a_rolled_back_terminal_bundle_keeps_admission_and_watermark() {
 }
 
 #[test]
+fn batched_obligations_store_the_same_rows_and_receipts_as_one_at_a_time() {
+    let rows: Vec<_> = (0..6u64)
+        .map(|position| {
+            let mut row = late("run", position);
+            if position % 3 != 2 {
+                row.state = ObligationState::Settled;
+                row.detail = Value::Null;
+                row.settled_at = Some(200 + position as i64);
+                row.receipt = Some(if position % 3 == 0 {
+                    Receipt::Value([position as u8; 32])
+                } else {
+                    Receipt::Unknown
+                });
+            }
+            row
+        })
+        .collect();
+    let stored = |conn: &Connection| {
+        let receipts: Option<String> = conn
+            .query_row(
+                "SELECT receipts FROM run_history WHERE run_id='run'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let rows: Vec<_> = (0..6)
+            .map(|p| obligation(conn, "run", p).unwrap())
+            .collect();
+        (receipts, rows)
+    };
+    let mut single = fixture();
+    finished(&mut single, "run");
+    let tx = single.transaction().unwrap();
+    for row in &rows {
+        insert_obligation(&tx, row).unwrap();
+    }
+    tx.commit().unwrap();
+    let mut batched = fixture();
+    finished(&mut batched, "run");
+    let tx = batched.transaction().unwrap();
+    insert_obligations(&tx, "run", &rows).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(stored(&batched), stored(&single));
+    assert!(stored(&batched).1.iter().all(Option::is_some));
+
+    // The batch refuses what single inserts refuse: a position already held
+    // as a receipt or an open obligation, a repeat inside the batch, a
+    // receipt for a run without history, and rows of another run.
+    let tx = batched.transaction().unwrap();
+    assert!(insert_obligations(&tx, "run", &rows[0..1]).is_err());
+    assert!(insert_obligations(&tx, "run", &rows[2..3]).is_err());
+    let fresh = late("run", 9);
+    assert!(insert_obligations(&tx, "run", &[fresh.clone(), fresh]).is_err());
+    let mut missing = rows[0].clone();
+    missing.run_id = "missing".into();
+    assert!(insert_obligations(&tx, "missing", &[missing]).is_err());
+    assert!(insert_obligations(&tx, "run", &[late("other", 1)]).is_err());
+}
+
+#[test]
 fn schema_rejects_incomplete_receipts_invalid_history_and_overflow() {
     let mut conn = fixture();
     finished(&mut conn, "run");

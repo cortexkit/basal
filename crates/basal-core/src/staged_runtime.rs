@@ -78,8 +78,8 @@ impl Services {
                 refusal.retry_delay_ms(now),
             ));
         let deadline = rt
-            .staged_snapshot(&live.run_id)
-            .and_then(|s| s.claim.map(|c| c.deadline_at))
+            .staged_read(&live.run_id, |s| s.claim.as_ref().map(|c| c.deadline_at))
+            .flatten()
             .unwrap_or(i64::MAX);
         now.saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX))
             .min(deadline)
@@ -644,8 +644,8 @@ impl run_driver::Services for Services {
             },
         };
         let call = rt
-            .staged_snapshot(&live.run_id)
-            .and_then(|s| s.calls.get(&intent.call.position).cloned())
+            .staged_read(&live.run_id, |s| s.calls.get(&intent.call.position).cloned())
+            .flatten()
             .ok_or_else(|| CoreError::Corrupt("authorized call is absent from its actor".into()))?;
         let maybe_sent = if intent.call.class != StoredClass::Query && call.prior_maybe_sent() {
             Some(call.ambiguous_reason())
@@ -903,8 +903,9 @@ impl run_driver::Services for Services {
     }
     fn refusal_committed(&self, live: &LiveRun, position: u64) {
         if let Ok(rt) = self.runtime()
-            && let Some(state) = rt.staged_snapshot(&live.run_id)
-            && let Some(call) = state.calls.get(&position)
+            && let Some(call) = rt
+                .staged_read(&live.run_id, |s| s.calls.get(&position).cloned())
+                .flatten()
             && let Some(intent) = &call.intent
             && let Some(deferred) = &call.deferred
             && let Ok(refusal) = serde_json::from_str(&deferred.cause)
@@ -1197,6 +1198,16 @@ impl Runtime {
             .get(id)
             .map(|r| r.reader_snapshot().3)
     }
+    /// Like [`Self::staged_snapshot`], but reads the live state in place
+    /// instead of copying the whole call history. `read` must not block.
+    pub(crate) fn staged_read<T>(&self, id: &str, read: impl FnOnce(&State) -> T) -> Option<T> {
+        self.shared
+            .staged_hosts
+            .as_ref()?
+            .registry()
+            .get(id)
+            .map(|r| r.read_state(read))
+    }
     pub(crate) fn staged_run(&self, id: &str) -> Result<Run> {
         let state = self.staged_snapshot(id);
         let owner = self.shared.staged_owners.lock().unwrap().get(id).cloned();
@@ -1441,8 +1452,8 @@ impl Runtime {
         };
         let result = if matches!(result, Ok(ActivationEnd::Requeued))
             && self
-                .staged_snapshot(&lease.run_id)
-                .is_some_and(|s| s.broken >= u64::from(self.config.max_broken_activations))
+                .staged_read(&lease.run_id, |s| s.broken)
+                .is_some_and(|broken| broken >= u64::from(self.config.max_broken_activations))
         {
             self.staged_finish(
                 &lease.run_id,

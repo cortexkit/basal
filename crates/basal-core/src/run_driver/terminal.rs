@@ -301,6 +301,7 @@ impl TerminalWrite for Projection {
             history.ended_at,
         )?;
         tx.execute("INSERT OR IGNORE INTO tombstones(kind,key,run_id,pruned_at) VALUES('trigger',?1,?2,?3)", params![crate::admission::trigger_key(&history.flow_id,&history.trigger_id),id,history.ended_at])?;
+        let mut obligations = Vec::new();
         for call in self.state.calls.values() {
             if matches!(
                 call.identity.class,
@@ -344,9 +345,7 @@ impl TerminalWrite for Projection {
                 // already acknowledged value without being quarantined.
                 let arrival = call.arrival.as_ref();
                 let settled = arrival.is_some();
-                sql::insert_obligation(
-                    tx,
-                    &sql::Obligation {
+                obligations.push(sql::Obligation {
                         run_id: id.clone(),
                         position: call.identity.position,
                         handle: arrival
@@ -368,10 +367,11 @@ impl TerminalWrite for Projection {
                         },
                         receipt: arrival.map(|a| sql::Receipt::Value(a.value_hash)),
                         settled_at: settled.then_some(history.ended_at),
-                    },
-                )?;
+                    });
             }
         }
+        // One batch, so the run's receipts are decoded and rewritten once.
+        sql::insert_obligations(tx, id, &obligations)?;
         self.effects.apply(tx)?;
         self.receipt.store(history.commit_seq, Ordering::Release);
         Ok(())
