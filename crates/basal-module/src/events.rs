@@ -447,8 +447,11 @@ struct InstallChange {
     _seq: std::num::NonZeroU64,
 }
 
+// A late-result wake only says "read the feed": the result itself comes from
+// `late_results`. Providers may describe the entry in extra fields (Cerebellum
+// sends `outcome`), so they are ignored rather than refusing the wake, which
+// would leave basal on its slow fallback poll.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct LateResultReady {
     #[serde(rename = "seq")]
     _seq: std::num::NonZeroU64,

@@ -452,6 +452,49 @@ async fn addressed_aft_wake_is_delivered_and_only_its_backoff_cap_rises() {
 }
 
 #[tokio::test]
+async fn a_wake_with_extra_fields_still_reaches_custody() {
+    use basal_core::codemode::supervisor::Supervisor;
+    let server = Server::start().await;
+    let rt = runtime(&server.dir.join("custody-extra.db"));
+    let supervisor = Supervisor::new(
+        Arc::new(
+            Store::open(
+                server.dir.join("supervisor/store.db"),
+                Durability::throwaway(),
+            )
+            .unwrap(),
+        ),
+        Arc::new(basal_module::unconfigured::UnconfiguredTransport),
+        Arc::new(NoWorkers),
+        rt.config().clock.clone(),
+        basal_proto::PreludeHash::of("test"),
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        supervisor.test_late_stream("cerebellum", true),
+        Some((2, false))
+    );
+    publish_control(
+        &server,
+        "ck.account.event.cerebellum.late_result_ready.v1.basal",
+        json!({"seq":7,"outcome":"unknown"}),
+        "basal:7",
+    )
+    .await;
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let messages = pull(&consumer).await.unwrap();
+    commit_batch_with_custody(rt.clone(), supervisor.clone(), &messages, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        supervisor.test_late_stream("cerebellum", false),
+        Some((30, true))
+    );
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+}
+
+#[tokio::test]
 async fn install_change_checks_pending_versions_oldest_first_and_caps_at_eight() {
     let server = Server::start().await;
     let host = Arc::new(NoticeHost::default());
