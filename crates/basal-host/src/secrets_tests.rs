@@ -224,6 +224,12 @@ fn flow_secrets_scope_and_declaration_refuse_before_release_and_errors_drop_vaul
         serde_json::from_str::<Value>(outcome.value.as_str()).unwrap()["code"],
         "not_found"
     );
+    // The failure is logged with its host and code, but never the path.
+    let logs = logs.lock().unwrap();
+    for part in ["net.fetch failed", "x.test", "vault_refused", "not_found"] {
+        assert!(logs.contains(part), "{part} missing from {logs}");
+    }
+    assert!(!logs.contains("/repos"), "{logs}");
 }
 
 #[test]

@@ -680,12 +680,17 @@ impl BuiltinHost {
                 .outcome(),
             ));
         }
-        let result =
-            if p == Primitive::NetFetch && envelope["args"]["options"].get("secret").is_some() {
-                self.secret_fetch(request, &envelope)
-            } else {
-                self.run_call(p, &envelope, Some(&request.idempotency_key))
-            };
+        let secret = envelope["args"]["options"].get("secret").is_some();
+        let result = if p == Primitive::NetFetch && secret {
+            self.secret_fetch(request, &envelope)
+        } else {
+            self.run_call(p, &envelope, Some(&request.idempotency_key))
+        };
+        if p == Primitive::NetFetch
+            && let Err(failure) = &result
+        {
+            log_fetch_failure(request, &envelope, secret, failure);
+        }
         match result {
             Ok(value) => Ok(Dispatched::Completed(match text(&value) {
                 Ok(value) => HostOutcome::fulfilled(value),
@@ -701,6 +706,37 @@ impl BuiltinHost {
             Err(Failure::Transport(e)) => Err(e),
         }
     }
+}
+
+/// A script sees why its fetch failed, but a flow that catches the error and
+/// reports only "unreachable" leaves no trace of the cause, and a succeeded
+/// run keeps no call detail. So each failed fetch is logged once: the host and
+/// the failure's code or transport reason. Never the path, query, headers,
+/// body or key; denial messages are left out because a server's words can
+/// reach them.
+fn log_fetch_failure(request: &CallRequest, envelope: &Value, secret: bool, failure: &Failure) {
+    let host = envelope["args"]["url"]
+        .as_str()
+        .and_then(|url| net::parse_url(url).ok())
+        .map(|url| url.host)
+        .unwrap_or_default();
+    let (kind, reason) = match failure {
+        Failure::Refused(denial) => ("refused", denial.code.to_owned()),
+        Failure::RefusedCode(code) => ("vault_refused", code.clone()),
+        Failure::Transport(error) => ("transport", error.to_string()),
+    };
+    tracing::info!(
+        target: "builtins",
+        flow_id = %request.flow_id,
+        run_id = %request.run_id,
+        position = request.position,
+        attempt = request.attempt,
+        %host,
+        secret,
+        kind,
+        %reason,
+        "net.fetch failed"
+    );
 }
 
 impl Host for BuiltinHost {
