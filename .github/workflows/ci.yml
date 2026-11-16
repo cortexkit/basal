@@ -69,6 +69,10 @@ jobs:
         run: |
           python3 script/check-tracked-ignored.py
           python3 -m unittest script.tests.check_tracked_ignored -v
+      - name: Check Rust source file sizes
+        run: |
+          python3 script/check-file-size.py
+          python3 -m unittest script.tests.check_file_size -v
       - name: Check offline placement cards
         run: |
           /bin/sh -n script/stage.sh

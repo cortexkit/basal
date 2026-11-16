@@ -333,8 +333,9 @@ fast() {
     run shellcheck -x script/*.sh
     run /bin/sh -n script/stage.sh
     run "$python" script/check-ckdev-names.py
-    run "$python" -m unittest script.tests.check_ckdev_names script.tests.check_local_paths script.tests.check_tracked_ignored script.tests.gate -v
+    run "$python" -m unittest script.tests.check_ckdev_names script.tests.check_local_paths script.tests.check_tracked_ignored script.tests.check_file_size script.tests.gate -v
     run "$python" script/check-tracked-ignored.py
+    run "$python" script/check-file-size.py
     run "$python" script/gate_support.py author "$base"
     run gitleaks version
     run "$python" script/gate_support.py snapshot "$scratch/linux"
