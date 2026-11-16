@@ -85,11 +85,12 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     }
 }
 
-/// What host preparation may read about a run, copied under the run actor so
-/// preparation can run without it (it may read the catalog or SQLite). It
-/// holds the call being prepared and aggregates over the others, never a copy
-/// of every call: a whole-state copy per call made a run's cost grow with the
-/// square of its call count.
+/// What host preparation may read about a run. It is copied while holding the
+/// run actor (the per-run lock that serializes appends to the run's records),
+/// so preparation can run without that lock while it reads the catalog or
+/// SQLite. It holds the call being prepared and aggregates over the others,
+/// never a copy of every call: a whole-state copy per call made a run's cost
+/// grow with the square of its call count.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrepareView {
     pub generation: u64,
