@@ -642,9 +642,14 @@ async fn commit_batch_report(
                             Ok(change)
                         }
                     }) {
-                        Ok(change) => rt
-                            .install_changed(&change.flow_id)
-                            .map_err(|e| e.to_string())?,
+                        Ok(change) => {
+                            rt.install_changed(&change.flow_id)
+                                .map_err(|e| e.to_string())?;
+                            // A moved flow waiting for approval here has no
+                            // card of its own: prefrontal's notice is its cue.
+                            rt.recheck_moved_flows(Some(&change.flow_id), None)
+                                .map_err(|e| e.to_string())?;
+                        }
                         Err(reason) => {
                             malformed += 1;
                             tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed install change before acknowledgement");

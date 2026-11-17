@@ -19,6 +19,8 @@ const FAILURE_THRESHOLD: i64 = 3;
 const OVERDUE_GRACE_MS: i64 = 60_000;
 // Human decisions and delivery retries may normally take minutes, not hours.
 const STUCK_MS: i64 = 3_600_000;
+/// How long a moved flow may wait for approval here before it is reported.
+const MOVED_PENDING_MS: i64 = 24 * 3_600_000;
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -310,6 +312,15 @@ fn store_findings_with(
             [], finding("grant_lost", "disabled", "warn", "Flows are disabled because a grant was lost.",
                 "Inspect grant status through flow.health; grant references and labels are omitted."),
             |r| { let at: i64 = r.get(0)?; Ok((at, json!({"flow_id":r.get::<_,String>(1)?,"at_ms":at}))) }, Some(now))?);
+        // A flow that moved in from another computer waits disabled until
+        // prefrontal here approves its code; a day without that is worth a
+        // look, so it never sits silently disabled.
+        findings.extend(aggregate(conn,
+            "SELECT since,flow_id,agent_id FROM agent_move_pending WHERE since<=?1 ORDER BY since,flow_id",
+            [now.saturating_sub(MOVED_PENDING_MS)],
+            finding("moved_flows_pending", "approval", "warn", "Flows moved in from another computer have waited over a day for approval here.",
+                "Check the flows' install status with prefrontal; an install of the flow from its agent raises a fresh card."),
+            |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"flow_id":r.get::<_,String>(1)?,"agent_id":r.get::<_,String>(2)?}))) }, Some(now))?);
         let outbox_sample = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(i64, Value)> {
             let at: i64 = r.get(0)?;
             Ok((at, json!({"at_ms":at, "flow_id":r.get::<_,String>(1)?, "seq":r.get::<_,i64>(2)?})))
@@ -838,6 +849,27 @@ mod tests {
                 ),
             );
             quiet(store);
+        });
+    }
+
+    #[test]
+    fn a_moved_flow_waiting_a_day_for_approval_is_reported() {
+        with_store("moved", |store| {
+            let since = NOW - MOVED_PENDING_MS + 1;
+            seed(
+                store,
+                &format!("INSERT INTO flows(flow_id,owner,created_at,state,disabled_by,disabled_reason,disabled_at) VALUES ('f','agent_a',0,'disabled','move','moved_pending_approval',1);
+                 INSERT INTO agent_move_pending(flow_id,agent_id,cut_id,version,code_hash,restore,since) VALUES ('f','agent_a','c',1,zeroblob(32),'{{}}',{since})"),
+            );
+            quiet(store);
+            seed(store, "UPDATE agent_move_pending SET since=since-1");
+            let finding = only(store, "moved_flows_pending", "approval");
+            assert_eq!(finding["count"], 1);
+            assert_eq!(finding["severity"], "warn");
+            assert_eq!(
+                finding["samples"],
+                json!([{"at_ms": since - 1, "flow_id": "f", "agent_id": "agent_a"}])
+            );
         });
     }
 

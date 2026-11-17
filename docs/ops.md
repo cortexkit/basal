@@ -80,6 +80,7 @@ or enable operation is performed. A failed store read is an error frame.
 | `runs_overdue` | `deadline`, `deferred` | warn | Unfinished run at least 1 minute past its recorded deadline, or active deferred call at least 1 minute past `retry_not_before`; allows the normal engine sweep. |
 | `reconcile_pending` | `runs`, `decisions` | warn | Reconcile run admitted at least 1 hour ago, or open decision card created at least 1 hour ago; avoids nagging during normal human response time. |
 | `grant_lost` | `disabled` | warn | Immediately for flows disabled with reason `grant_lost`. Count is disabled flows. |
+| `moved_flows_pending` | `approval` | warn | Flows that moved in from another computer approved there and have waited at least 24 hours for this computer's prefrontal to report the same code active. Count is waiting flows; samples name the flow and its agent. |
 | `owner_notices_stuck` | `undelivered` | warn | Owner notices whose fallback call is undelivered for at least 1 hour, independently of bus publication. |
 | `outbox_stuck` | `undelivered` | warn | Owner-notice, late-result wake or attribution-fact bus publications pending for at least 1 hour, plus other undelivered outbox rows, excluding permanent secret-revocation failures. A bus-only event is never a pending call. |
 | `outbox_stuck` | `secret_revocations` | error | Immediately for undelivered secret revocations with `failed_at`: grants may still be live. |
@@ -1132,6 +1133,56 @@ owner differs from the retired agent and its manifest no longer names that
 agent. For an operator-installed flow, removal of the retired target from all
 manifest agent fields is sufficient. Changing code while retaining the retired
 owner or target does not clear retirement.
+
+## Moving an agent's flows (`agent-data/v1`)
+
+When Entorhinal moves an agent to another computer, the agent's flows go with
+it: every flow whose owner is the agent (or, before any approval, whose
+versions it alone wrote), with all stored versions, schedules, template and
+package instances, `kv` state and run history (summaries and call metadata).
+Install cards, secret grants, rate windows and token and dollar ledgers stay
+behind, and so do events queued but not yet admitted: the receiver reports
+them as `dropped: {"queued_event": n}`, so the move reads as completed with
+losses. Operator flows with no owner agent never move.
+
+Basal serves the contract (`cortexkit-role-agent-data` 0.3.1, all ten ops) on
+the internal service `agent-data`, declared in the manifest with
+`agent-data/v1` in `capabilities.provides`. Only `reserved:entorhinal` on an
+unscoped route is served; every other caller is refused `caller_forbidden`
+before its request is read. `describe` declares ref kind `agent` and one store,
+`basal-flows`, with `sync_class: "agent"`; one ref `{ref_kind: "agent", ref:
+<agent_id>}` covers all of the agent's flows.
+
+- **Source.** `busy` reports `run_active` for a live run and `reconcile_open`
+  for an unsettled call outcome or open decision card, which the operator
+  settles on this computer first. `prepare` rechecks that and freezes the agent
+  in one store transaction: its flows admit nothing, due schedule times pass
+  unplanned (the schedule's `missed` policy settles them if the move is
+  aborted), and matching events wait in the flow's backlog. The flows are
+  encoded as a `basal-flows/1` stream (capped at 64 MiB; a larger agent is
+  refused `not_exportable`) and admitted through Engram's session door.
+  `release` leaves a tombstone naming the new holder; `abort` lifts the freeze.
+- **Receiver.** `import` reads the sealed cut through the door, checks its
+  digest and every carried code hash, and stages it without writing a live
+  row. A flow id that belongs to another owner here is refused
+  `local_advanced`, naming the flow and its owner: rename or remove one and
+  move again. `activate` writes the flows in one transaction. A flow that was
+  approved on the source arrives disabled with `disabled_by: "move"` and waits
+  until this computer's prefrontal reports the same code active; it is then
+  put back in the source's own enable state, and its schedule's `missed`
+  policy covers the time the move took. Basal checks right after `activate`,
+  at startup, after `package.register` or `flow.instance.ensure` of the flow's
+  template, and on prefrontal's `flow_install_changed` notice; a check that
+  can't reach prefrontal is retried with a doubling wait (at most 10 minutes).
+  Installing the flow again from its agent raises a fresh card as usual. A
+  moved flow still waiting after a day shows in `diagnostics.findings` as
+  `moved_flows_pending`.
+
+While an agent is frozen, `flow.install`, `flow.instantiate`, `flow.enable`
+and `flow.instance.ensure` for it are refused `agent_moving` (detail
+`{agent_id, retryable: true}`): retry after the move finishes. Once it has
+moved away they are refused `agent_moved` (detail `{agent_id, holder}`) until a
+move back replaces the tombstone.
 
 ## Run-log recovery and cutover
 

@@ -58,7 +58,8 @@ impl Runtime {
             let expiry: Option<i64> = c.query_row("SELECT MIN(expires_at) FROM template_instances t JOIN flows f USING(flow_id) WHERE f.removed=0 AND t.expiry_notified=0", [], |r| r.get(0))?;
             let codemode = crate::codemode::retention::next_sweep_at(c)?;
             let grant: Option<i64> = c.query_row("SELECT MIN(next_poll_at) FROM flow_grant_losses WHERE state='polling' AND echoable=1", [], |r| r.get(0))?;
-            Ok([schedule, deadline, retry, codemode, grant, expiry]
+            let moved = crate::agent_move::next_check_at(c)?;
+            Ok([schedule, deadline, retry, codemode, grant, expiry, moved]
                 .into_iter()
                 .flatten()
                 .min())
