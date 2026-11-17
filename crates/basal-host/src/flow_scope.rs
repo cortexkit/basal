@@ -456,7 +456,10 @@ mod tests {
     #[test]
     fn a_target_missing_from_the_scope_is_refused_naming_the_scope_targets() {
         let mut routes = ScopedRoutes::<u64>::default();
-        routes.configure("a", Some(registered(decode(&fixture()).unwrap().unwrap().selector)));
+        routes.configure(
+            "a",
+            Some(registered(decode(&fixture()).unwrap().unwrap().selector)),
+        );
         assert!(routes.ready("a", "broca", "diagnostics.findings").is_ok());
         let refusal = routes
             .ready("a", "synapse", "diagnostics.findings")
