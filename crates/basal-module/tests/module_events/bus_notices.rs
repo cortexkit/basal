@@ -257,7 +257,7 @@ async fn late_result_wakes_survive_restart_before_publish_and_dedupe_ack_crash()
     for custodian in ["reserved:broca", "reserved:prefrontal-core"] {
         rt.store().write(|tx| {
             tx.execute("INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES(?1,'{}',?1,1000)",[custodian])?;
-            basal_core::bus_outbox::enqueue_late_result_wake(tx,custodian,tx.last_insert_rowid(),1000)
+            basal_core::bus_outbox::enqueue_late_result_wake(tx,custodian,"key","ok",custodian,1000)
         }).unwrap();
     }
     drop(rt);
@@ -285,21 +285,125 @@ async fn late_result_wakes_survive_restart_before_publish_and_dedupe_ack_crash()
         .await
         .unwrap();
     assert_eq!(messages.len(), 2);
-    for (message, (module, seq)) in messages.iter().zip([("broca", 1), ("prefrontal-core", 2)]) {
+    for (message, module) in messages.iter().zip(["broca", "prefrontal-core"]) {
         assert_eq!(
             message.subject.as_str(),
             format!("ck.account.event.basal.late_result_ready.v1.{module}")
         );
-        assert_eq!(header(message, "Nats-Msg-Id"), format!("{module}:{seq}"));
+        assert_eq!(
+            header(message, "Nats-Msg-Id"),
+            format!("reserved:{module}:{module}")
+        );
         assert_eq!(
             serde_json::from_slice::<Value>(&message.payload).unwrap(),
-            json!({"seq":seq})
+            json!({"call_key":"key","outcome":"ok"})
         );
     }
 }
 
+fn late_ready_vector(path: &str) -> &'static str {
+    cortexkit_role_tool_provider::vectors::late_result_ready::FILES
+        .iter()
+        .find(|(name, _)| *name == path)
+        .unwrap()
+        .1
+}
+
+#[tokio::test]
+async fn late_result_publisher_matches_every_packaged_sample() {
+    let server = Server::start().await;
+    let rt = runtime(&server.dir.join("vectors.db"));
+    // The samples name provider `provider`; basal publishes the same payload
+    // and settlement id under its own provider token.
+    for (case, call_key, outcome, event_id) in [
+        ("ok", "call:ok", "ok", "settlement:1"),
+        ("error", "call:error", "tool_denied", "settlement:2"),
+        ("unknown", "call:unknown", "unknown", "settlement:3"),
+    ] {
+        rt.store()
+            .write(|tx| {
+                basal_core::bus_outbox::enqueue_late_result_wake(
+                    tx,
+                    "reserved:reader",
+                    call_key,
+                    outcome,
+                    event_id,
+                    1000,
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            publish_outbox(&rt, &server.bus, "account").await.unwrap(),
+            1
+        );
+        let messages = pull(&bind(&server.bus, STREAM).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        let message = &messages[0];
+        assert_eq!(
+            message.payload.as_ref(),
+            late_ready_vector(&format!("{case}/payload.json")).as_bytes()
+        );
+        assert_eq!(
+            header(message, "Nats-Msg-Id"),
+            late_ready_vector(&format!("{case}/nats-msg-id.txt")).trim_end()
+        );
+        let subject = late_ready_vector(&format!("{case}/subject.txt"))
+            .trim_end()
+            .replace(".provider.", ".basal.");
+        assert_eq!(message.subject.as_str(), format!("ck.account.{subject}"));
+        commit_batch(rt.clone(), &messages, true).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn legacy_sequence_wakes_are_retired_without_publish_or_backoff() {
+    let server = Server::start().await;
+    let path = server.dir.join("legacy.db");
+    let rt = runtime(&path);
+    rt.store().write(|tx| {
+        tx.execute("INSERT INTO outbox(at,kind,flow_id,recipient,body,bus_retry_at) VALUES (1000,'codemode.late_result_ready','','broca','{\"seq\":1}',1000)", [])?;
+        basal_core::bus_outbox::enqueue_late_result_wake(tx,"reserved:broca","call:new","ok","settlement:new",1000)
+    }).unwrap();
+    assert_eq!(
+        publish_outbox(&rt, &server.bus, "account").await.unwrap(),
+        1
+    );
+    let retired: (Option<i64>, u32) = rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT bus_published_at,bus_attempts FROM outbox WHERE body='{\"seq\":1}'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert!(retired.0.is_some());
+    assert_eq!(retired.1, 0);
+    drop(rt);
+    let rt = runtime(&path);
+    assert_eq!(
+        publish_outbox(&rt, &server.bus, "account").await.unwrap(),
+        0
+    );
+    assert_eq!(rt.next_bus_event_at().unwrap(), None);
+    let messages = pull(&bind(&server.bus, STREAM).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].payload.as_ref(),
+        br#"{"call_key":"call:new","outcome":"ok"}"#
+    );
+}
+
 async fn publish_control(server: &Server, subject: &str, body: Value, id: &str) {
-    let body = body.to_string();
+    publish_control_body(server, subject, &body.to_string(), id).await;
+}
+
+async fn publish_control_body(server: &Server, subject: &str, body: &str, id: &str) {
     let mut headers = async_nats::HeaderMap::new();
     headers.insert("Nats-Msg-Id", id);
     headers.insert(
@@ -309,7 +413,7 @@ async fn publish_control(server: &Server, subject: &str, body: Value, id: &str) 
             .as_str(),
     );
     async_nats::jetstream::new(server.bus.client())
-        .publish_with_headers(subject.to_owned(), headers, body.into())
+        .publish_with_headers(subject.to_owned(), headers, body.to_owned().into())
         .await
         .unwrap()
         .await
@@ -405,6 +509,72 @@ impl basal_core::channel::WorkerSource for NoWorkers {
 }
 
 #[tokio::test]
+async fn every_late_result_ready_sample_wakes_only_its_addressed_provider() {
+    use basal_core::codemode::supervisor::Supervisor;
+    let server = Server::start().await;
+    let rt = runtime(&server.dir.join("sample-reader.db"));
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    for case in ["ok", "error", "unknown"] {
+        let subject = "ck.account.event.aft.late_result_ready.v1.basal";
+        let warnings = super::reader::warning_count_for(subject);
+        let supervisor = Supervisor::new(
+            Arc::new(
+                Store::open(
+                    server.dir.join(case).join("store.db"),
+                    Durability::throwaway(),
+                )
+                .unwrap(),
+            ),
+            Arc::new(basal_module::unconfigured::UnconfiguredTransport),
+            Arc::new(NoWorkers),
+            rt.config().clock.clone(),
+            basal_proto::PreludeHash::of("test"),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(supervisor.test_late_stream("aft", true), Some((2, false)));
+        assert_eq!(
+            supervisor.test_late_stream("cerebellum", true),
+            Some((2, false))
+        );
+        let body = late_ready_vector(&format!("{case}/payload.json"));
+        publish_control_body(
+            &server,
+            "ck.account.event.aft.late_result_ready.v1.other",
+            body,
+            &format!("{case}:other"),
+        )
+        .await;
+        let messages = pull(&consumer).await.unwrap();
+        commit_batch_with_custody(rt.clone(), supervisor.clone(), &messages, true)
+            .await
+            .unwrap();
+        assert_eq!(supervisor.test_late_stream("aft", false), Some((2, false)));
+        publish_control_body(&server, subject, body, &format!("{case}:basal")).await;
+        let messages = pull(&consumer).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        commit_batch_with_custody(rt.clone(), supervisor.clone(), &messages, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            super::reader::warning_count_for(subject),
+            warnings,
+            "sample {case}"
+        );
+        assert_eq!(
+            supervisor.test_late_stream("aft", false),
+            Some((30, true)),
+            "sample {case}"
+        );
+        assert_eq!(
+            supervisor.test_late_stream("cerebellum", false),
+            Some((2, false))
+        );
+        assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+    }
+}
+
+#[tokio::test]
 async fn addressed_aft_wake_is_delivered_and_only_its_backoff_cap_rises() {
     use basal_core::codemode::supervisor::Supervisor;
     let server = Server::start().await;
@@ -432,8 +602,8 @@ async fn addressed_aft_wake_is_delivered_and_only_its_backoff_cap_rises() {
     publish_control(
         &server,
         "ck.account.event.aft.late_result_ready.v1.basal",
-        json!({"seq":1}),
-        "basal:1",
+        json!({"call_key":"call:1","outcome":"ok"}),
+        "settlement:1:basal",
     )
     .await;
     let mut consumer = bind(&server.bus, STREAM).await.unwrap();
@@ -478,8 +648,8 @@ async fn a_wake_with_extra_fields_still_reaches_custody() {
     publish_control(
         &server,
         "ck.account.event.cerebellum.late_result_ready.v1.basal",
-        json!({"seq":7,"outcome":"unknown"}),
-        "basal:7",
+        json!({"call_key":"call:7","outcome":"future_error_code","extra":{"ignored":true}}),
+        "settlement:7:basal",
     )
     .await;
     let mut consumer = bind(&server.bus, STREAM).await.unwrap();

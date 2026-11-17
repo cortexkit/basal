@@ -326,7 +326,9 @@ async fn idle_reader_parks_and_outbox_commit_wakes_publisher() {
             basal_core::bus_outbox::enqueue_late_result_wake(
                 tx,
                 "reserved:prefrontal-core",
-                123,
+                "call:123",
+                "ok",
+                "settlement:123",
                 1000,
             )
         })
@@ -362,7 +364,9 @@ async fn disconnected_idle_reader_reconnects_and_publishes_committed_rows() {
             basal_core::bus_outbox::enqueue_late_result_wake(
                 tx,
                 "reserved:prefrontal-core",
-                124,
+                "call:124",
+                "ok",
+                "settlement:124",
                 1000,
             )
         })

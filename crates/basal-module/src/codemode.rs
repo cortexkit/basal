@@ -950,6 +950,16 @@ fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBod
             })
             .map_err(storage)?;
         let event_id = run_id(&carrier, &format!("{key}:{id}:terminal"));
+        let rendered = render(id, result.clone());
+        let outcome = match rendered["isError"].as_bool() {
+            Some(true) => rendered["errorCode"]
+                .as_str()
+                .filter(|code| !code.is_empty())
+                .unwrap_or("unknown"),
+            _ if result["status"] == "completed" || cut_return(&result) => "ok",
+            _ => "unknown",
+        }
+        .to_owned();
         let entry = late_results::LateEntry::new(
             late_results::kinds::RESULT,
             scope.owner,
@@ -960,12 +970,12 @@ fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBod
             event_id.clone(),
             settled_at.max(0) as u64,
         )
-        .with_result(render(id, result.clone()));
+        .with_result(rendered);
         store.write(|tx| {
             let inserted = tx.execute("INSERT OR IGNORE INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES (?1,?2,?3,?4)",
                 rusqlite::params![custodian,serde_json::to_string(&entry).unwrap(),event_id,settled_at])?;
             if inserted != 0 {
-                basal_core::bus_outbox::enqueue_late_result_wake(tx, &custodian, tx.last_insert_rowid(), settled_at)?;
+                basal_core::bus_outbox::enqueue_late_result_wake(tx, &custodian, &key, &outcome, &event_id, settled_at)?;
             }
             tx.execute("UPDATE codemode_tool_calls SET published=1 WHERE carrier=?1 AND call_key=?2",rusqlite::params![carrier,key])?;
             Ok(())
