@@ -350,15 +350,36 @@ async fn disconnected_idle_reader_reconnects_and_publishes_committed_rows() {
     let (rt, transport) = fixture(&server).await;
     let reader = Reader::start(rt.clone(), transport);
     wait_health(&reader, |h| h.notices > 0).await;
+    // Leave the retained batch and its acknowledgements behind so the reader
+    // is parked on the same fetch when the server disappears.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let parked = reader.health();
+    assert!(parked.connected, "{parked:?}");
+    let stopped_at = Instant::now();
     server.child.kill().unwrap();
     server.child.wait().unwrap();
-    // A fetch is bounded by 60 seconds even if the disconnected peer never
-    // answers; cancellation remains independent of this reconnect bound.
-    let until = Instant::now() + Duration::from_secs(65);
+    // Disconnect notification must cancel the parked fetch, not wait for its
+    // 60-second expiry. Ten seconds leaves room for loaded CI machines.
+    let until = Instant::now() + Duration::from_secs(10);
     while reader.health().connected {
         assert!(Instant::now() < until, "disconnection did not reach health");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    let disconnected = reader.health();
+    println!(
+        "parked reader noticed disconnection in {:?}",
+        stopped_at.elapsed()
+    );
+    assert_eq!(
+        disconnected.disconnect_wakes_for_test,
+        parked.disconnect_wakes_for_test + 1,
+        "the connection-state notification must end the session"
+    );
+    assert_eq!(
+        disconnected.pull_requests_for_test, parked.pull_requests_for_test,
+        "the parked fetch must end without expiring and starting another pull"
+    );
+    assert!(disconnected.disconnected_since_ms.is_some());
     rt.store()
         .write(|tx| {
             basal_core::bus_outbox::enqueue_late_result_wake(

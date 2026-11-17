@@ -432,9 +432,9 @@ checksum = "86e6375d0a75f121ae3af801b1377880e89291ea840ae1cce57aa1d38dd27fa5"
 
 [[package]]
 name = "cortexkit-bus-nats"
-version = "0.5.0"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d321fc4091746e63c719f722f7658a26c40fdc20b41f0bf9cde0e78b6cea2234"
+checksum = "8b369f3963a5f825d33cca45eab822149ec8f3a321481dc04cbf2f414b2edc0b"
 dependencies = [
  "async-nats",
  "async-trait",
@@ -443,6 +443,7 @@ dependencies = [
  "cortexkit-bus-trait",
  "futures-util",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

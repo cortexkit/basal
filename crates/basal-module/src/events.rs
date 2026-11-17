@@ -17,7 +17,7 @@ use basal_core::{
 use basal_host::{Catalog, Consent, transport::Transport};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cortexkit_bus_naming::AccountNames;
-use cortexkit_bus_nats::{ConnectConfig, NatsConnection};
+use cortexkit_bus_nats::{ConnectConfig, NatsConnection, NatsConnectionState};
 use cortexkit_bus_trait::{ContentDigest, Stream};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -78,6 +78,9 @@ pub struct Health {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub backlog_polls_for_test: u64,
+    #[cfg(any(test, feature = "test-support"))]
+    #[serde(skip)]
+    pub disconnect_wakes_for_test: u64,
 }
 
 impl Health {
@@ -148,6 +151,15 @@ async fn until_cancelled(cancel: &tokio::sync::Notify, work: impl Future<Output 
         _ = cancel.notified() => {},
         _ = work => {},
     }
+}
+
+async fn until_disconnected(state: &mut tokio::sync::watch::Receiver<NatsConnectionState>) {
+    // Check the current value as well as later changes: a disconnect during
+    // setup must not be lost before the session starts waiting. Unknown future
+    // states and a closed watch also end the session rather than claiming health.
+    let _ = state
+        .wait_for(|state| !matches!(state, NatsConnectionState::Connected))
+        .await;
 }
 
 impl Reader {
@@ -340,6 +352,9 @@ async fn connect(
             Ok(auth)
         }
     })
+    // The reader session owns reconnects for both intake and publishing.
+    // Disable client reconnects so replacing a disconnected session cannot
+    // leave another connection retrying with its old credential.
     .max_reconnects(0)
     .connection_timeout(Duration::from_secs(2));
     NatsConnection::connect(
@@ -890,6 +905,8 @@ async fn reader_loop(
             let credential = credential(transport.clone(), prior.as_ref()).await?;
             prior = Some(credential.clone());
             let connection = connect(transport.clone(), &credential).await?;
+            let mut connection_state = connection.connection_state();
+            let work = async {
             let names = AccountNames::derive(&credential.acct).map_err(|e| e.to_string())?;
             let mut consumer = bind(&connection, &names.streams().event).await?;
             {
@@ -901,7 +918,6 @@ async fn reader_loop(
             let mut refresh_at = tokio::time::Instant::now();
             while !stop.load(Ordering::Acquire) {
                 if now_ms() / 1000 >= credential.exp.saturating_sub(60) { break; }
-                if connection.client().connection_state() != async_nats::connection::State::Connected { return Err("event bus disconnected".into()); }
                 #[cfg(any(test, feature = "test-support"))]
                 { health.lock().unwrap_or_else(|p| p.into_inner()).pull_requests_for_test += 1; }
                 let stream = consumer.fetch().max_messages(BATCH).expires(PULL_WAIT).messages().await.map_err(|e| e.to_string())?;
@@ -957,6 +973,18 @@ async fn reader_loop(
                 result = intake => result,
                 result = outbox_loop(&rt, &connection, &credential.acct, &health) => result,
             }
+            };
+            // A connection event ends both users of this session, even while a
+            // pull is parked. Only the existing outer loop rebuilds it.
+            tokio::select! {
+                biased;
+                _ = until_disconnected(&mut connection_state) => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    { health.lock().unwrap_or_else(|p| p.into_inner()).disconnect_wakes_for_test += 1; }
+                    Err("event bus disconnected".into())
+                },
+                result = work => result,
+            }
         }.await;
         {
             let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
@@ -981,6 +1009,37 @@ async fn reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn disconnect_watch_observes_current_and_future_connection_loss() {
+        for lost in [
+            NatsConnectionState::Disconnected,
+            NatsConnectionState::Closed,
+        ] {
+            let (sender, mut state) = tokio::sync::watch::channel(NatsConnectionState::Connected);
+            let disconnected = until_disconnected(&mut state);
+            tokio::pin!(disconnected);
+            assert!(futures_util::poll!(&mut disconnected).is_pending());
+            sender.send(lost).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), disconnected)
+                .await
+                .expect("connection loss must wake a parked session");
+
+            let (_sender, mut state) = tokio::sync::watch::channel(lost);
+            tokio::time::timeout(Duration::from_secs(1), until_disconnected(&mut state))
+                .await
+                .expect("connection loss before setup must not be missed");
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_watch_closure_ends_the_session() {
+        let (sender, mut state) = tokio::sync::watch::channel(NatsConnectionState::Connected);
+        drop(sender);
+        tokio::time::timeout(Duration::from_secs(1), until_disconnected(&mut state))
+            .await
+            .expect("a closed connection watch must not leave the session parked");
+    }
 
     #[tokio::test]
     async fn shutdown_cancels_a_parked_bus_wait() {
