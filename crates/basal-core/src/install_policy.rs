@@ -195,7 +195,7 @@ impl Runtime {
             id.map(|id| crate::cards::load(c, &id)).transpose().map(Option::flatten)
         })?;
         if let Some(card) = card {
-            self.reconcile_install_card(&card)?;
+            self.reconcile_install_card(&card, "install_decided")?;
         }
         Ok(())
     }
@@ -213,24 +213,37 @@ impl Runtime {
             tracing::warn!(target: "consent", flow_id, "install change has more than eight pending cards; remaining cards await reconciliation");
         }
         for card in cards.into_iter().take(8).flatten() {
-            self.reconcile_install_card(&card)?;
+            self.reconcile_install_card(&card, "install_changed_event")?;
         }
         Ok(())
     }
 
-    fn reconcile_install_card(&self, card: &crate::cards::CardRecord) -> Result<()> {
+    /// `signal` names what prompted the check: prefrontal's direct hint, its
+    /// bus event, or startup recovery. Logging it on a resolved card shows which
+    /// path settles cards in practice, so the redundant one can be retired.
+    /// Only a still-pending card is reconciled, so normally only the first
+    /// signal logs; two arriving in the same instant may both log.
+    fn reconcile_install_card(&self, card: &crate::cards::CardRecord, signal: &str) -> Result<()> {
         let flow_id = &card.flow_id;
         let version = card.version;
+        let resolved = |outcome: &str| {
+            tracing::info!(target: "consent", flow_id, version, attempt = ?card.attempt, signal, outcome, "install card resolved");
+        };
         match self.core_install_status_with_approval(flow_id, version) {
             Ok((InstallStatus::Active { code_hash, .. }, approval))
                 if code_hash == crate::ids::hex(&card.code_hash) =>
             {
                 self.approve_confirmed_install(flow_id, version, &card.code_hash, approval)?;
+                resolved("approved");
             }
             Ok((InstallStatus::Declined { .. }, _)) => {
-                self.settle_install_card(card, "declined")?
+                self.settle_install_card(card, "declined")?;
+                resolved("declined");
             }
-            Ok((InstallStatus::Expired { .. }, _)) => self.settle_install_card(card, "expired")?,
+            Ok((InstallStatus::Expired { .. }, _)) => {
+                self.settle_install_card(card, "expired")?;
+                resolved("expired");
+            }
             Ok((
                 InstallStatus::Rejected {
                     rejected_reason,
@@ -238,12 +251,15 @@ impl Runtime {
                     ..
                 },
                 _,
-            )) => self.settle_install_card_with_details(
-                card,
-                "rejected",
-                rejected_reason,
-                disposition,
-            )?,
+            )) => {
+                self.settle_install_card_with_details(
+                    card,
+                    "rejected",
+                    rejected_reason,
+                    disposition,
+                )?;
+                resolved("rejected");
+            }
             Ok((InstallStatus::Pending { .. }, _)) => {}
             Ok((InstallStatus::Unknown, _)) => {
                 tracing::warn!(target: "consent", flow_id, version, attempt = ?card.attempt, "core holds no install record for an open card");
@@ -294,7 +310,7 @@ impl Runtime {
                 .into_iter()
                 .find(|c| c.version == version);
             if let Some(card) = card {
-                self.reconcile_install_card(&card)?;
+                self.reconcile_install_card(&card, "startup_recovery")?;
             } else {
                 self.confirm_active_install(&flow_id, version, &crate::model::digest(hash)?, None)?;
             }
