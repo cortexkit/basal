@@ -431,6 +431,46 @@ fn unreachable_core_keeps_the_run_pending_without_a_hot_loop() {
     assert_eq!(f.module.rt.run(&run_id).unwrap().state, RunState::Succeeded);
 }
 
+#[test]
+fn renamed_core_before_the_first_snapshot_defers_on_the_legacy_route_miss() {
+    let fake = Fake::new();
+    let (f, consent) = gated(&fake, "gate-rename-before-snapshot");
+    install_approved(&f, &fake, &consent, true);
+    // The daemon has renamed core, but the transport has not observed a
+    // routing-identity snapshot. Its legacy default names an unregistered module.
+    *fake.catalog.lock().unwrap() = json!({"generation":2,"modules":[
+        {"module_id":"prefrontal","roles":[],"control_ops":[]}
+    ]});
+    assert_eq!(
+        basal_host::core_identity::core_module(fake.as_ref()),
+        "prefrontal-core"
+    );
+    fake.enqueue(
+        "flow.install_status",
+        vec![Err(WireError::NeverSent(
+            "unknown_module: prefrontal-core is not registered".into(),
+        ))],
+    );
+    let run_id = common::admit(&f, FLOW, "before-snapshot");
+    f.module.engine.run_until_idle(20).expect("deferred idle");
+    assert_eq!(
+        fake.calls_to("prefrontal-core", "flow.install_status")
+            .len(),
+        1
+    );
+    assert!(
+        fake.calls_to("prefrontal", "flow.install_status")
+            .is_empty()
+    );
+    let run = f.module.rt.run(&run_id).unwrap();
+    assert_eq!(run.state, RunState::Pending);
+    assert_eq!(run.error_kind, None);
+    assert_eq!(health_entry(&f)["state"], "enabled");
+    f.module.engine.pass().unwrap();
+    f.module.engine.wait_quiet();
+    assert_eq!(status_calls(&fake).len(), 1, "wait for the gate backoff");
+}
+
 /// A reply basal cannot read is no answer: the run waits, nothing is
 /// revoked.
 #[test]

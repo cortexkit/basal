@@ -75,6 +75,11 @@ pub trait Transport: Send + Sync {
     /// captures so notifications do not keep their state alive.
     fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
 
+    /// Core's routing identity, without I/O. Stand-ins use `LEGACY_CORE_MODULE`.
+    fn core_module(&self) -> &'static str {
+        crate::core_identity::LEGACY_CORE_MODULE
+    }
+
     /// Read a caller's file under the short-lived scope core registered for this
     /// flow-tool call, never with basal's own file grants.
     fn flow_read_exact(
@@ -98,7 +103,7 @@ pub trait Transport: Send + Sync {
             });
         }
         let reply = self.management(
-            crate::core_identity::core_module(self),
+            crate::core_identity::routed_module(&catalog, crate::subc_catalog::CORE),
             "package.approved_versions",
             json!({"package":package}),
         )?;
@@ -214,6 +219,8 @@ pub trait Transport: Send + Sync {
     ) -> Option<Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError>> {
         None
     }
+    /// Dispatch to an already resolved module id. Callers targeting core use
+    /// their declaration snapshot or `core_module`, never another catalog read.
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError>;
     /// Preserve route-open miss codes for callers that can rediscover a renamed
     /// module. Ordinary management calls retain their NeverSent retry behavior.
@@ -1116,7 +1123,7 @@ impl Transport for SubcTransport {
         let result = cache.resolve(
             &request.flow_id, &request.run_id, call, i64::try_from(now).unwrap_or(i64::MAX),
             |scope| self.routes.lock().unwrap_or_else(|p| p.into_inner()).ended(&scope.route_key()),
-            || self.management(crate::subc_catalog::CORE, "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
+            || self.management(self.core_module(), "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
         );
         let retired = cache.take_retired();
         drop(cache);
@@ -1223,7 +1230,6 @@ impl Transport for SubcTransport {
         op: &str,
         params: Value,
     ) -> Result<Value, WireError> {
-        let module = crate::core_identity::routed_module(self, module);
         self.call_for_flow(
             flow,
             RouteTarget::ManagementSurface {
@@ -1244,7 +1250,6 @@ impl Transport for SubcTransport {
         arguments: Value,
         call_key: &str,
     ) -> Result<Value, WireError> {
-        let module = crate::core_identity::routed_module(self, module);
         self.call_for_flow(
             flow,
             RouteTarget::ToolProvider {
@@ -1394,8 +1399,10 @@ impl Transport for SubcTransport {
     fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
         self.catalog_changes.subscribe(notify);
     }
+    fn core_module(&self) -> &'static str {
+        self.shared_catalog.core_module()
+    }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
-        let module = crate::core_identity::routed_module(self, module);
         self.call(
             RouteTarget::ManagementSurface {
                 module_id: module.into(),
@@ -1410,7 +1417,6 @@ impl Transport for SubcTransport {
         op: &str,
         params: Value,
     ) -> Result<Value, WireError> {
-        let module = crate::core_identity::routed_module(self, module);
         self.call_as_with_route_refusals(
             RouteTarget::ManagementSurface {
                 module_id: module.into(),
@@ -1429,7 +1435,6 @@ impl Transport for SubcTransport {
         arguments: Value,
         call_key: &str,
     ) -> Result<Value, WireError> {
-        let module = crate::core_identity::routed_module(self, module);
         let body = tool_body(name, arguments, call_key)?;
         self.call(
             RouteTarget::ToolProvider {
