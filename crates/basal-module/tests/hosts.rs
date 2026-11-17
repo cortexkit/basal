@@ -860,13 +860,16 @@ fn prefrontal_rename_stored_approval_dispatches_without_changing_manifest_bytes(
             .rt
             .store()
             .write(|tx| {
-                for (seq, custodian) in
-                    [(1, "reserved:prefrontal-core"), (2, "reserved:prefrontal")]
-                {
+                for (event_id, custodian) in [
+                    ("event:1", "reserved:prefrontal-core"),
+                    ("event:2", "reserved:prefrontal"),
+                ] {
                     basal_core::bus_outbox::enqueue_late_result_wake(
                         tx,
                         custodian,
-                        seq,
+                        "call:key",
+                        "ok",
+                        event_id,
                         common::T0,
                     )?;
                 }
@@ -887,6 +890,9 @@ fn prefrontal_rename_stored_approval_dispatches_without_changing_manifest_bytes(
                 .iter()
                 .all(|wake| wake.reader.as_deref() == Some(registered))
         );
+        for (wake, event_id) in wakes.iter().zip(["event:1", "event:2"]) {
+            assert_eq!(wake.message_id, format!("{event_id}:{registered}"));
+        }
         fake.enqueue("board.read", vec![Ok(json!({"read":true}))]);
         let run = common::admit(&f, "rename", "after-cut");
         f.module.engine.run_until_idle(50).unwrap();
