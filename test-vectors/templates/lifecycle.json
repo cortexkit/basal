@@ -54,7 +54,7 @@
     }
   ],
   "live": {
-    "reply": "{\"instances\":[{\"agent_id\":\"agent_47120287c700722b\",\"expires_at\":1777593720000,\"fire_is_due\":false,\"flow_id\":\"watch_e8dbc6f4ebb6e06d\",\"next_fire_at_ms\":null,\"seq\":3,\"template\":\"watch\",\"version\":1}]}",
+    "reply": "{\"instances\":[{\"agent_id\":\"agent_47120287c700722b\",\"expires_at\":1777593720000,\"fire_is_due\":false,\"flow_id\":\"watch_e8dbc6f4ebb6e06d\",\"next_fire_at_ms\":null,\"params\":{\"note\":\"watch Δ\"},\"seq\":3,\"template\":\"watch\",\"version\":1}]}",
     "request": "{}"
   }
 }

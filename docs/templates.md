@@ -189,10 +189,17 @@ Caller: prefrontal-core only; anyone else is refused with `not_permitted`. Reque
 
 ```json
 {"instances": [{"flow_id": "string", "template": "string", "version": 1,
-                "agent_id": "string", "expires_at": 1793001600000, "seq": 3}]}
+                "agent_id": "string", "params": {},
+                "expires_at": 1793001600000, "seq": 3}]}
 ```
 
 It lists every template instance that hasn't ended, including expired ones that haven't been ended, with each instance's current `seq` (see the events below).
+
+Each entry includes `params`, the instance's canonical, validated bound parameter
+object, including for expired instances. Core uses these values to resolve
+parameterized grants when rebuilding its instance scopes after a restart.
+Lifecycle event bodies are unchanged: only `flow_instance_expired` includes
+`params`.
 
 ### Stored-value compatibility and listing
 
