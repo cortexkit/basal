@@ -262,7 +262,9 @@ fn next_fire_at_remind_at_reply_created_live_and_vectors_agree() {
     let created: Value = serde_json::from_str(&created_bytes).unwrap();
     assert_eq!(created["next_fire_at_ms"], reply["next_fire_at_ms"]);
     assert_eq!(created["fire_is_due"], true);
-    assert_eq!(live(&f), created);
+    let mut expected_live = created.clone();
+    expected_live["params"] = reply["params"].clone();
+    assert_eq!(live(&f), expected_live);
     let mut old_reply = reply.clone();
     old_reply.as_object_mut().unwrap().remove("next_fire_at_ms");
     old_reply.as_object_mut().unwrap().remove("fire_is_due");
@@ -358,7 +360,9 @@ fn next_fire_at_waitable_interval_reschedules_once_per_advance() {
                 "next_fire_at_ms":T0+(advance+1)*60_000,"fire_is_due":false
             })
         );
-        assert_eq!(live(&f), snapshot);
+        let mut expected_live = snapshot;
+        expected_live["params"] = first["params"].clone();
+        assert_eq!(live(&f), expected_live);
     }
 }
 

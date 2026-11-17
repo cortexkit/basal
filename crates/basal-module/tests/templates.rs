@@ -102,7 +102,7 @@ fn live_snapshot_is_core_only_and_keeps_expired_not_ended_instances() {
         .unwrap();
     assert_eq!(
         reply,
-        json!({"instances":[{"flow_id":id(&a),"template":"watch","version":1,"agent_id":OWNER,"expires_at":a["expires_at"],"seq":2,"next_fire_at_ms":null,"fire_is_due":false}]})
+        json!({"instances":[{"flow_id":id(&a),"template":"watch","version":1,"agent_id":OWNER,"params":{"note":"expired"},"expires_at":a["expires_at"],"seq":2,"next_fire_at_ms":null,"fire_is_due":false}]})
     );
     assert_eq!(
         f.module
@@ -115,6 +115,54 @@ fn live_snapshot_is_core_only_and_keeps_expired_not_ended_instances() {
             .code,
         "invalid_params"
     );
+}
+
+#[test]
+fn live_snapshot_returns_each_instances_canonical_bound_params() {
+    let f = setup("live-snapshot-params", false);
+    let mut m = manifest();
+    m["params"]["module"] = json!({"type":"enum","values":["plexus","aft"]});
+    m["params"]["at"] = json!({"type":"timestamp","max_ahead":"1d"});
+    register(&f, &m, "return 1;");
+    let first = create(
+        &f,
+        OWNER,
+        json!({"module":"plexus","note":"watch Δ","at":"2026-05-01T01:00:00.000Z"}),
+        1,
+        "1h",
+    )
+    .unwrap();
+    let second = create(
+        &f,
+        OTHER,
+        json!({"module":"aft","note":"another watch","at":"2026-05-01T02:00:00Z"}),
+        1,
+        "1h",
+    )
+    .unwrap();
+    let reply = f
+        .module
+        .handle(&Caller::Core, "flow.instance.live", json!({}))
+        .unwrap();
+    assert_eq!(reply["instances"].as_array().unwrap().len(), 2);
+    for (instance, expected) in [
+        (
+            &first,
+            json!({"module":"plexus","note":"watch Δ","at":"2026-05-01T01:00:00Z"}),
+        ),
+        (
+            &second,
+            json!({"module":"aft","note":"another watch","at":"2026-05-01T02:00:00Z"}),
+        ),
+    ] {
+        let snapshot = reply["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["flow_id"] == instance["flow_id"])
+            .unwrap();
+        assert_eq!(snapshot["params"], expected);
+    }
 }
 
 #[test]

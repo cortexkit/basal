@@ -349,6 +349,10 @@ async fn captured_lifecycle_notices_bodies_and_snapshot_match_vectors() {
         .module
         .handle(&Caller::Core, "flow.instance.live", live_request.clone())
         .unwrap();
+    assert_eq!(
+        live_reply["instances"][0]["params"],
+        json!({"note":"watch Δ"})
+    );
     f.module.rt.end_instance(&id).unwrap();
     assert_eq!(
         publish_outbox(&f.module.rt, &server.bus, "account")

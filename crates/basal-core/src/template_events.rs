@@ -159,9 +159,16 @@ impl Runtime {
     pub fn live_instances(&self) -> Result<Value> {
         let now = self.config().clock.now_ms();
         self.store().read(|c| {
-            let mut stmt = c.prepare("SELECT t.flow_id FROM template_instances t JOIN flows f USING(flow_id) WHERE f.removed=0 ORDER BY t.flow_id")?;
-            let ids = stmt.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            let instances = ids.iter().map(|id| snapshot(c, id, now, None)).collect::<Result<Vec<_>>>()?;
+            let mut stmt = c.prepare("SELECT t.flow_id,t.params FROM template_instances t JOIN flows f USING(flow_id) WHERE f.removed=0 ORDER BY t.flow_id")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let instances = rows.iter().map(|(id, params)| {
+                let mut instance = snapshot(c, id, now, None)?;
+                // Bound values are needed to rebuild parameterized scopes, but
+                // only expiry events include them in their immutable bodies.
+                instance["params"] = serde_json::from_str(params)
+                    .map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
+                Ok(instance)
+            }).collect::<Result<Vec<_>>>()?;
             Ok(json!({"instances":instances}))
         })
     }
