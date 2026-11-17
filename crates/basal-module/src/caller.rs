@@ -50,9 +50,10 @@ use subc_protocol::BindIdentity;
 use subc_protocol::Principal;
 use subc_protocol::scope::{ScopeKind, ScopeStamp};
 
-/// The executive. It owns agents' session scopes and reads `flow.health`
-/// on its own cadence to decide whether a flow's claim holds.
-pub const CORE_MODULE: &str = "prefrontal-core";
+/// `prefrontal-core` remains in labels and harness fixtures. Admission also
+/// recognizes `prefrontal` through the shared identity helper.
+pub use basal_host::core_identity::LEGACY_CORE_MODULE as CORE_MODULE;
+use basal_host::core_identity::is_core_module;
 
 /// The module the daemon attests for the operator's own actions. Only a
 /// route it stamps `reserved:callosum` is the operator.
@@ -126,7 +127,7 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
     if let Some(scope) = scope {
         let core_owned = matches!(
             &scope.owner,
-            Principal::Reserved { module_id } if module_id == CORE_MODULE
+            Principal::Reserved { module_id } if is_core_module(module_id)
         );
         return match (
             &scope.attributes.agent_id,
@@ -150,7 +151,7 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
     match principal {
         Some(Principal::Reserved { module_id }) if module_id == OPERATOR_MODULE => Caller::Operator,
         Some(Principal::Direct) => Caller::Local,
-        Some(Principal::Reserved { module_id }) if module_id == CORE_MODULE => Caller::Core,
+        Some(Principal::Reserved { module_id }) if is_core_module(module_id) => Caller::Core,
         Some(Principal::Reserved { module_id }) => Caller::Module {
             module_id: module_id.clone(),
         },
@@ -231,7 +232,7 @@ pub struct WorkerScope {
 pub fn worker_scope(scope: &ScopeStamp) -> Option<WorkerScope> {
     let core_owned = matches!(
         &scope.owner,
-        Principal::Reserved { module_id } if module_id == CORE_MODULE
+        Principal::Reserved { module_id } if is_core_module(module_id)
     );
     let attributes = &scope.attributes;
     (core_owned
@@ -253,11 +254,11 @@ pub fn worker_scope(scope: &ScopeStamp) -> Option<WorkerScope> {
 pub fn diagnostics_admitted(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> bool {
     let Some(scope) = scope else {
         return matches!(principal, Some(Principal::Reserved { module_id })
-            if module_id == OPERATOR_MODULE || module_id == CORE_MODULE);
+            if module_id == OPERATOR_MODULE || is_core_module(module_id));
     };
     if !scope.owner_authorized
         || !matches!(scope.kind, ScopeKind::Head | ScopeKind::Ephemeral)
-        || !matches!(&scope.owner, Principal::Reserved { module_id } if module_id == CORE_MODULE)
+        || !matches!(&scope.owner, Principal::Reserved { module_id } if is_core_module(module_id))
     {
         return false;
     }
@@ -369,6 +370,24 @@ mod tests {
         assert!(!diagnostics_admitted(Some(&Principal::Direct), None));
         assert!(!diagnostics_admitted(Some(&reserved("foreign")), None));
         assert!(!diagnostics_admitted(None, None));
+    }
+
+    #[test]
+    fn both_core_names_are_admitted() {
+        for module in ["prefrontal", "prefrontal-core"] {
+            let principal = Principal::Reserved {
+                module_id: module.into(),
+            };
+            assert_eq!(from_route(Some(&principal), None), Caller::Core);
+            let head = scope(module, Some("SYNAPSE"), true);
+            assert!(matches!(
+                from_route(Some(&Principal::Direct), Some(&head)),
+                Caller::Agent { .. }
+            ));
+            assert!(diagnostics_admitted(Some(&principal), None));
+            assert!(diagnostics_admitted(Some(&Principal::Direct), Some(&head)));
+            assert!(worker_scope(&worker(module, true, ScopeAttributes::default())).is_some());
+        }
     }
 
     #[test]

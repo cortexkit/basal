@@ -151,7 +151,7 @@ fn read_tool_catalog_with(
     Ok(answer)
 }
 
-pub const CORE: &str = "prefrontal-core";
+pub use crate::core_identity::LEGACY_CORE_MODULE as CORE;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
     Management,
@@ -198,7 +198,7 @@ impl SubcCatalog {
         op: &str,
     ) -> Result<(Option<CatalogOp>, bool), WireError> {
         let catalog = self.snapshot_for(module)?;
-        let Some(entry) = catalog.module(module) else {
+        let Some(entry) = crate::core_identity::catalog_module(&catalog, module) else {
             return Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
                 crate::flow_refusal::RefusalReason::ProviderNotCatalogued,
                 module,
@@ -276,7 +276,7 @@ impl SubcCatalog {
         module: &str,
     ) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
         let snapshot = self.snapshot()?;
-        if snapshot.module(module).is_some() {
+        if crate::core_identity::catalog_module(&snapshot, module).is_some() {
             return Ok(snapshot);
         }
         match self.transport.refresh_catalog_snapshot(&snapshot) {
@@ -360,7 +360,11 @@ impl SubcCatalog {
             if let Some(c) = &cursor {
                 params["cursor"] = Value::String(c.clone());
             }
-            let reply = self.transport.management(CORE, "agent.list", params)?;
+            let reply = self.transport.management(
+                crate::core_identity::core_module(self.transport.as_ref()),
+                "agent.list",
+                params,
+            )?;
             let agents = reply
                 .get("agents")
                 .and_then(Value::as_array)
@@ -397,6 +401,12 @@ impl SubcCatalog {
     }
 }
 impl Catalog for SubcCatalog {
+    fn core_module(&self) -> &'static str {
+        self.snapshot()
+            .ok()
+            .and_then(|catalog| crate::core_identity::resolve(|id| catalog.module(id).is_some()))
+            .unwrap_or(CORE)
+    }
     fn request_snapshot(&self) -> Option<Arc<dyn Catalog>> {
         Some(Arc::new(Self {
             transport: self.transport.clone(),
@@ -466,19 +476,19 @@ impl Catalog for SubcCatalog {
     }
     fn supports_flow_scopes(&self, module: &str) -> bool {
         self.snapshot_for(module).ok().is_some_and(|c| {
-            c.module(module)
+            crate::core_identity::catalog_module(&c, module)
                 .is_some_and(|m| m.provides("flow-scopes/v1"))
         })
     }
     fn supports_flow_calls(&self, module: &str) -> bool {
         self.snapshot_for(module).ok().is_some_and(|c| {
-            c.module(module)
+            crate::core_identity::catalog_module(&c, module)
                 .is_some_and(|m| m.provides("flow-scopes/v1") || m.provides("call-modes/v1"))
         })
     }
     fn flow_operations(&self, module: &str) -> Result<Option<Vec<String>>, WireError> {
         let catalog = self.snapshot_for(module)?;
-        let entry = catalog.module(module).ok_or_else(|| {
+        let entry = crate::core_identity::catalog_module(&catalog, module).ok_or_else(|| {
             WireError::Unreadable(format!("module {module} missing from catalog"))
         })?;
         Ok(entry.flow_operations.clone())
@@ -488,7 +498,13 @@ impl Catalog for SubcCatalog {
             return None;
         }
         let catalog = self.snapshot_for(module).ok()?;
-        declared_event(catalog.module(module)?.events.as_ref()?, name, version)
+        declared_event(
+            crate::core_identity::catalog_module(&catalog, module)?
+                .events
+                .as_ref()?,
+            name,
+            version,
+        )
     }
     fn op(&self, module: &str, op: &str) -> Option<OpDecl> {
         self.lookup_op(module, op).ok().flatten()
@@ -532,7 +548,11 @@ impl Catalog for SubcCatalog {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let reply = self.transport.management(CORE, "agent.list", params)?;
+            let reply = self.transport.management(
+                crate::core_identity::core_module(self.transport.as_ref()),
+                "agent.list",
+                params,
+            )?;
             for entry in reply["agents"]
                 .as_array()
                 .ok_or_else(|| WireError::Unreadable("agent.list agents missing".into()))?

@@ -361,11 +361,8 @@ fn attest_worker(
                 "a worker run's scope names no agent it works on behalf of",
             )
         })?;
-    let core = Principal::Reserved {
-        module_id: basal_host::subc_catalog::CORE.into(),
-    };
     if !stamp.parent.as_ref().is_some_and(|parent| {
-        parent.owner == core
+        matches!(&parent.owner, Principal::Reserved { module_id } if basal_host::core_identity::is_core_module(module_id))
             && parent.scope_ref == invoking.reference
             && parent.scope_epoch == invoking.epoch
     }) {
@@ -863,7 +860,7 @@ pub fn admit_tool(
             .map_err(|e| json!({"code":"storage_unavailable","message":e.to_string()}))?;
         let selector = FlowScope {
             owner: Principal::Reserved {
-                module_id: basal_host::subc_catalog::CORE.into(),
+                module_id: basal_host::core_identity::core_module(transport).into(),
             },
             scope_ref: opened.scope.reference,
             epoch: opened.scope.epoch,

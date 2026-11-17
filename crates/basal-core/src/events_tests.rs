@@ -1578,6 +1578,30 @@ fn flow_targeted_notice_missing_header_is_refused_without_flows() {
 }
 
 #[test]
+fn prefrontal_rename_matches_both_event_names_without_losing_targeting_or_age() {
+    for declared in ["prefrontal-core", "prefrontal"] {
+        let manifest = Manifest::parse(&json!({"id":"flow","version":1,"explanation":"Checks renamed event identity.","purpose":"Receive events",
+            "trigger":{"events":[{"module":declared,"name":"digest_delivered","version":1,"max_age":"1m"}]}}).to_string()).unwrap();
+        for published in ["prefrontal-core", "prefrontal"] {
+            let mut n = notice(0);
+            n.subject = format!("ck.account.event.{published}.digest_delivered.v1");
+            assert!(n.target_flow().is_err());
+            n.headers.insert("flow_id".into(), "flow".into());
+            assert!(matches!(
+                matches(&manifest, &n, "flow").unwrap(),
+                HeaderMatch::Accepted
+            ));
+            assert!(matches!(
+                matches(&manifest, &n, "other").unwrap(),
+                HeaderMatch::Unrelated
+            ));
+            n.published_at_ms = 1000;
+            assert!(stale(&manifest, &n, 62_000).unwrap());
+        }
+    }
+}
+
+#[test]
 fn journaled_flow_targeted_body_is_checked_against_run() {
     let f = Fixture::new(60);
     f.catalog.set_flow_capable("prefrontal-core", true);

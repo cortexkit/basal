@@ -102,7 +102,9 @@ impl CoreStore {
         ))).optional().map_err(|e| e.to_string())?;
         row.map(|(agent,reference,epoch,catalog,lifecycle,settled)| {
             let catalog: Value = serde_json::from_str(&catalog).map_err(|e| e.to_string())?;
-            Ok(json!({"agent_id":agent,"selector":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":reference,"scope_epoch":epoch},"catalog":catalog,"lifecycle":lifecycle,"end_settled":settled}))
+        // The synthesized owner mirrors the rig core's module id. Change it
+        // when the rig's core is renamed; the stored scope row has no owner.
+        Ok(json!({"agent_id":agent,"selector":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":reference,"scope_epoch":epoch},"catalog":catalog,"lifecycle":lifecycle,"end_settled":settled}))
         }).transpose()
     }
 

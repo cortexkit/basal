@@ -17,7 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use cortexkit_role_tool_provider::catalog::{CatalogAnswer, check_modes, serves_call_mode};
 use cortexkit_role_tool_provider::{CALL_MODES_CAPABILITY, CallMode};
 
-use crate::subc_catalog::{CORE, read_tool_catalog_on_run};
+#[cfg(test)]
+use crate::subc_catalog::CORE;
+use crate::subc_catalog::read_tool_catalog_on_run;
 use crate::transport::{Transport, WireError};
 
 pub const WALL_MS: i64 = 30 * 60 * 1_000;
@@ -85,7 +87,8 @@ fn call<T: Serialize, R: for<'de> Deserialize<'de>>(
     request: &T,
 ) -> Result<R, WireError> {
     let params = serde_json::to_value(request).map_err(|e| WireError::NeverSent(e.to_string()))?;
-    let value: Value = transport.management(CORE, op, params)?;
+    let value: Value =
+        transport.management(crate::core_identity::core_module(transport), op, params)?;
     serde_json::from_value(value).map_err(|e| WireError::Unreadable(e.to_string()))
 }
 

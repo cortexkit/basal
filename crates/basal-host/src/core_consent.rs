@@ -1,7 +1,6 @@
 //! Install cards go to prefrontal-core through `flow.install_request`. Decision
 //! cards are held by `consent/v1` providers, which retain answers until basal
 //! has durably applied every decision in a page.
-use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
     Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext, DecisionKind,
@@ -1002,7 +1001,11 @@ impl Consent for CoreConsent {
         let reply = self
             .state
             .transport
-            .management(CORE, "flow.install_request", request)
+            .management(
+                crate::core_identity::core_module(self.state.transport.as_ref()),
+                "flow.install_request",
+                request,
+            )
             .map_err(|failure| {
                 let refused = matches!(
                     failure,

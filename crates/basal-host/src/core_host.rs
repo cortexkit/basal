@@ -25,7 +25,7 @@ pub const FLOW_NOTICE_V1: &str = "flow-notice/v1";
 pub const CORE_CARRIER_OPS: &[&str] = &["board.read", "work.unsettled"];
 
 pub fn is_core_carrier_op(module: &str, op: &str) -> bool {
-    module == CORE && CORE_CARRIER_OPS.contains(&op)
+    crate::core_identity::is_core_module(module) && CORE_CARRIER_OPS.contains(&op)
 }
 
 /// The call's identity and times, fixed when its intent is built.
@@ -129,24 +129,26 @@ impl CoreHost {
 /// The typed snapshot is the shared watch-fed copy in production, so the
 /// check usually costs no catalog read. A catalog that does not decode into
 /// typed entries (a test transport's partial JSON) is read as JSON instead.
-pub fn core_provides(transport: &dyn Transport, capability: &str) -> bool {
+pub fn core_provides<T: Transport + ?Sized>(transport: &T, capability: &str) -> bool {
     match transport.catalog_snapshot() {
-        Ok(catalog) => catalog
-            .module(CORE)
+        Ok(catalog) => crate::core_identity::catalog_module(&catalog, CORE)
             .is_some_and(|core| core.provides(capability)),
         Err(WireError::Unreadable(_)) => core_provides_in_json(transport, capability),
         Err(_) => false,
     }
 }
 
-fn core_provides_in_json(transport: &dyn Transport, capability: &str) -> bool {
+fn core_provides_in_json<T: Transport + ?Sized>(transport: &T, capability: &str) -> bool {
     transport
         .catalog()
         .ok()
         .and_then(|catalog| {
             catalog["modules"].as_array().map(|modules| {
+                let resolved = crate::core_identity::resolve(|id| {
+                    modules.iter().any(|m| m["module_id"] == id)
+                });
                 modules.iter().any(|module| {
-                    module["module_id"] == CORE
+                    module["module_id"].as_str() == resolved
                         && module["capabilities"]["provides"]
                             .as_array()
                             .is_some_and(|provided| provided.iter().any(|item| item == capability))
@@ -333,8 +335,11 @@ impl Host for CoreHost {
         self.transport.on_catalog_change(notify);
     }
     fn owner_notice(&self, request: Value) -> Result<Value, WireError> {
-        self.transport
-            .management(CORE, "flow.owner_notice", request)
+        self.transport.management(
+            crate::core_identity::core_module(self.transport.as_ref()),
+            "flow.owner_notice",
+            request,
+        )
     }
     fn supports_core_capability(&self, capability: &str) -> bool {
         self.supports_capability(capability)
@@ -437,7 +442,11 @@ impl Host for CoreHost {
             let withdrawal = p == Primitive::SinkDigest && v["withdraw"] == true;
             let operation = v["operation"]["op"].as_str().map(str::to_owned);
             self.transport
-                .management(CORE, op, v)
+                .management(
+                    crate::core_identity::core_module(self.transport.as_ref()),
+                    op,
+                    v,
+                )
                 .map_err(|e| crate::transport::contextual(e, CORE, op))
                 .map_err(|e| {
                     if p == Primitive::SinkBoard {
@@ -483,7 +492,7 @@ impl Host for CoreHost {
         let reply = self
             .transport
             .management(
-                CORE,
+                crate::core_identity::core_module(self.transport.as_ref()),
                 "flow.install_status",
                 json!({"flow_id": flow_id, "version": version}),
             )

@@ -582,7 +582,7 @@ fn describe_op(manifest: &Manifest, call: &Value) -> String {
         .and_then(|o| o.get("for"))
         .and_then(Value::as_str)
         .map(str::to_owned);
-    if module == basal_host::subc_catalog::CORE && op == "board.read" {
+    if basal_host::core_identity::is_core_module(&module) && op == "board.read" {
         let agent = target.or_else(|| text_field(args, &["agent_id"]));
         return match agent {
             Some(agent) => format!("Read {}'s board", quote(&agent)),

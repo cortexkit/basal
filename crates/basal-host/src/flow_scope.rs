@@ -340,7 +340,11 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         let Some((scope, _)) = self.flows.get(flow) else {
             return Err(FlowRefusal::new(RefusalReason::NoFlowScope, module, action));
         };
-        if !scope.targets.contains(module) {
+        if !scope
+            .targets
+            .iter()
+            .any(|target| crate::core_identity::same_module(target, module))
+        {
             return Err(FlowRefusal::new(
                 RefusalReason::TargetFlowUnsupported,
                 module,

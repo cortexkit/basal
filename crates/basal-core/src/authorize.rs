@@ -382,7 +382,7 @@ pub fn check(
             if matches!(kind, CallKind::OpFor { .. })
                 && declaration.kind != Some(basal_host::catalog::OpKind::Query)
                 && !manifest.ops.iter().any(|grant| {
-                    grant.module == *module
+                    basal_host::core_identity::same_module(&grant.module, module)
                         && grant.op == *op
                         && grant.for_target == Some(crate::manifest::TargetAuthority::Delegate)
                 })

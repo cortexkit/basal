@@ -54,7 +54,10 @@ impl Runtime {
                 let (name, reader, message_id) = if kind == LATE_RESULT_READY {
                     let reader = reader.ok_or_else(|| CoreError::Corrupt("wake lacks recipient".into()))?;
                     let feed_seq = value["seq"].as_i64().filter(|s| *s > 0).ok_or_else(|| CoreError::Corrupt("wake lacks sequence".into()))?;
-                    ("late_result_ready", Some(reader.clone()), format!("{reader}:{feed_seq}"))
+                    let target = if basal_host::core_identity::is_core_module(&reader) {
+                        self.catalog().core_module().to_owned()
+                    } else { reader.clone() };
+                    ("late_result_ready", Some(target), format!("{reader}:{feed_seq}"))
                 } else if kind == "attribution.fact" {
                     ("attribution_fact", None, value["fact_id"].as_str().ok_or_else(|| CoreError::Corrupt("attribution fact lacks id".into()))?.to_owned())
                 } else {
