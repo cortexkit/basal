@@ -743,7 +743,13 @@ fn a_frozen_agent_defers_fires_and_events_until_the_move_is_aborted() {
         .unwrap();
     let due_before: i64 = f
         .store
-        .read(|c| Ok(c.query_row("SELECT next_due_ms FROM schedules WHERE flow_id='sched'", [], |r| r.get(0))?))
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT next_due_ms FROM schedules WHERE flow_id='sched'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
         .unwrap();
     let path = f.path(Arc::new(NoHooks));
     // While frozen nothing runs: due times pass unplanned and the event
@@ -759,7 +765,11 @@ fn a_frozen_agent_defers_fires_and_events_until_the_move_is_aborted() {
     assert_eq!(f.count("live_runs"), 0);
     assert_eq!(
         f.store
-            .read(|c| Ok(c.query_row("SELECT next_due_ms FROM schedules WHERE flow_id='sched'", [], |r| r.get::<_, i64>(0))?))
+            .read(|c| Ok(c.query_row(
+                "SELECT next_due_ms FROM schedules WHERE flow_id='sched'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
             .unwrap(),
         due_before,
         "the schedule did not advance"
@@ -774,11 +784,16 @@ fn a_frozen_agent_defers_fires_and_events_until_the_move_is_aborted() {
     let triggers: Vec<String> = f
         .store
         .read(|c| {
-            Ok(c.prepare("SELECT trigger FROM live_runs WHERE flow_id='sched'")?
-                .query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?)
+            Ok(
+                c.prepare("SELECT trigger FROM live_runs WHERE flow_id='sched'")?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?,
+            )
         })
         .unwrap();
-    assert!(triggers.iter().any(|t| t.contains("catch_up")), "{triggers:?}");
+    assert!(
+        triggers.iter().any(|t| t.contains("catch_up")),
+        "{triggers:?}"
+    );
     assert_eq!(path.drain_event_backlog(&ctx(100)).unwrap(), 1);
 }

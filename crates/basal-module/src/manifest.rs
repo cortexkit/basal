@@ -199,6 +199,17 @@ pub fn manifest() -> ModuleManifest {
                 // SQLite writes and conditional transitions, preventing races.
                 concurrency: Concurrency::ModuleManaged,
             },
+            // Entorhinal moves an agent's flows to another computer through
+            // these ops (`agent_data.rs`); only `reserved:entorhinal` is served.
+            ProviderRole::InternalService {
+                service_id: cortexkit_role_agent_data::SERVICE_ID.into(),
+                transport: subc_protocol::manifest::InternalTransport::Bulk,
+                agent_facing: false,
+                operations: cortexkit_role_agent_data::REQUIRED_OPS
+                    .iter()
+                    .map(|op| (*op).to_owned())
+                    .collect(),
+            },
         ])
         .capabilities(Some(subc_protocol::manifest::CapabilityDeclarations {
             provides: vec![
@@ -207,6 +218,7 @@ pub fn manifest() -> ModuleManifest {
                 subc_protocol::scope::BIND_NO_PROJECT_CAPABILITY.into(),
                 cortexkit_role_tool_provider::SYSTEM_TEXT_DEFAULT.into(),
                 "flow-install-policy/v1".into(),
+                cortexkit_role_agent_data::PROVIDES.into(),
                 // Lets the daemon admit flow-scoped routes to basal, so flows can
                 // read `diagnostics.findings`. The serving loop refuses a flow
                 // scope everything else.

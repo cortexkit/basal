@@ -179,7 +179,8 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-pub(crate) fn unhex(text: &str) -> Option<Vec<u8>> {
+/// Lowercase hex back to bytes; `None` for anything else.
+pub fn unhex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2)
         || !text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     {
@@ -455,15 +456,22 @@ pub fn header(bytes: &[u8]) -> std::result::Result<Value, DecodeError> {
 /// record's shape and every carried code hash.
 pub fn decode(bytes: &[u8]) -> std::result::Result<Staged, DecodeError> {
     if bytes.len() as u64 > STREAM_CAP {
-        return Err(DecodeError::Damaged("the stream is larger than its cap".into()));
+        return Err(DecodeError::Damaged(
+            "the stream is larger than its cap".into(),
+        ));
     }
     let header = header(bytes)?;
     let damaged = |m: String| DecodeError::Damaged(m);
-    let strict = header
-        .as_object()
-        .is_some_and(|h| h.len() == 4 && ["format", "agent", "cut_id", "counts"].iter().all(|k| h.contains_key(*k)));
+    let strict = header.as_object().is_some_and(|h| {
+        h.len() == 4
+            && ["format", "agent", "cut_id", "counts"]
+                .iter()
+                .all(|k| h.contains_key(*k))
+    });
     if !strict {
-        return Err(damaged("the header has other members than format, agent, cut_id and counts".into()));
+        return Err(damaged(
+            "the header has other members than format, agent, cut_id and counts".into(),
+        ));
     }
     let agent = header["agent"]
         .as_str()
@@ -503,12 +511,14 @@ pub fn decode(bytes: &[u8]) -> std::result::Result<Staged, DecodeError> {
             )));
         }
     }
-    if staged
-        .records
-        .iter()
-        .any(|r| !staged.counts.contains_key(r["kind"].as_str().unwrap_or_default()))
-    {
-        return Err(damaged("the stream holds records its header doesn't count".into()));
+    if staged.records.iter().any(|r| {
+        !staged
+            .counts
+            .contains_key(r["kind"].as_str().unwrap_or_default())
+    }) {
+        return Err(damaged(
+            "the stream holds records its header doesn't count".into(),
+        ));
     }
     Ok(staged)
 }
@@ -536,7 +546,13 @@ fn check(record: &Map<String, Value>) -> std::result::Result<(), String> {
             values(
                 record,
                 FLOW,
-                &["kind", "versions", "policies", "schedule", "package_code_hash"],
+                &[
+                    "kind",
+                    "versions",
+                    "policies",
+                    "schedule",
+                    "package_code_hash",
+                ],
                 "flow",
             )?;
             for key in ["versions", "policies", "schedule", "package_code_hash"] {

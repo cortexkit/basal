@@ -64,6 +64,10 @@ CREATE TABLE agent_move_replies (
 -- Moved flows that arrived approved on the other computer and wait until
 -- this computer's prefrontal reports the same code active. `restore` is the
 -- source's own enable state, put back when the flow is approved here.
+-- `retry_at` is when the engine next asks prefrontal: set when the flow
+-- arrives, at startup and on an approval event, pushed back with doubling
+-- `retries` while prefrontal can't be reached, and cleared by a definite
+-- "not approved" answer, which waits for the next event.
 CREATE TABLE agent_move_pending (
     flow_id    TEXT PRIMARY KEY NOT NULL REFERENCES flows (flow_id),
     agent_id   TEXT NOT NULL,
@@ -73,5 +77,8 @@ CREATE TABLE agent_move_pending (
     restore    TEXT NOT NULL CHECK (json_valid(restore)),
     since      INTEGER NOT NULL,
     checked_at INTEGER,
-    last_check TEXT
+    last_check TEXT,
+    retry_at   INTEGER,
+    retries    INTEGER NOT NULL DEFAULT 0 CHECK (retries >= 0)
 );
+CREATE INDEX agent_move_pending_due ON agent_move_pending (retry_at) WHERE retry_at IS NOT NULL;

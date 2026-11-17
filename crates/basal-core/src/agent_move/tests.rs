@@ -108,7 +108,14 @@ fn migration_53_keeps_a_populated_v52_store() {
     let conn = migrated_to(52);
     populate(&conn);
     let tables = [
-        "flows", "installs", "schedules", "kv", "template_instances", "run_history", "run_calls", "event_receipts",
+        "flows",
+        "installs",
+        "schedules",
+        "kv",
+        "template_instances",
+        "run_history",
+        "run_calls",
+        "event_receipts",
     ];
     let dump = |conn: &Connection| -> Vec<Vec<String>> {
         tables
@@ -132,11 +139,20 @@ fn migration_53_keeps_a_populated_v52_store() {
             .collect()
     };
     let before = dump(&conn);
-    conn.execute_batch(MIGRATIONS.iter().find(|m| m.version == 53).unwrap().statements)
-        .unwrap();
+    conn.execute_batch(
+        MIGRATIONS
+            .iter()
+            .find(|m| m.version == 53)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
     assert_eq!(dump(&conn), before);
     assert_eq!(
-        rows(&conn, "SELECT flow_id||'='||agent_id FROM agent_move_flow_agents ORDER BY flow_id"),
+        rows(
+            &conn,
+            "SELECT flow_id||'='||agent_id FROM agent_move_flow_agents ORDER BY flow_id"
+        ),
         [
             format!("f-alpha={AGENT}"),
             format!("f-beta={AGENT}"),
@@ -160,7 +176,10 @@ fn an_unapproved_flow_belongs_to_its_single_author() {
                   ('shared',2,zeroblob(32),'m','s','agent_other','validated',1);"
     ))
     .unwrap();
-    assert_eq!(rows(&conn, "SELECT flow_id FROM agent_move_flow_agents"), ["draft"]);
+    assert_eq!(
+        rows(&conn, "SELECT flow_id FROM agent_move_flow_agents"),
+        ["draft"]
+    );
 }
 
 #[test]
@@ -175,7 +194,10 @@ fn busy_reports_live_runs_and_open_decisions() {
     assert_eq!(busy(&conn, AGENT).unwrap().unwrap().code, "reconcile_open");
     assert_eq!(busy(&conn, "agent_other").unwrap(), None);
     let t = tx(&mut conn);
-    assert_eq!(freeze(&t, AGENT, CUT, 1).unwrap().unwrap_err().code, "reconcile_open");
+    assert_eq!(
+        freeze(&t, AGENT, CUT, 1).unwrap().unwrap_err().code,
+        "reconcile_open"
+    );
     assert_eq!(hold(&t, AGENT).unwrap(), None);
 }
 
@@ -189,13 +211,24 @@ fn a_freeze_holds_every_flow_of_the_agent_and_abort_lifts_it() {
     assert!(flow_held(&t, "remind-at_0011223344556677").unwrap());
     assert!(!flow_held(&t, "f-other").unwrap());
     // A frozen schedule isn't due and doesn't wake the engine.
-    let due = crate::schedule::tick::due_flows(&t, jiff::Timestamp::from_millisecond(10_000_000).unwrap()).unwrap();
+    let due = crate::schedule::tick::due_flows(
+        &t,
+        jiff::Timestamp::from_millisecond(10_000_000).unwrap(),
+    )
+    .unwrap();
     assert!(due.is_empty(), "{due:?}");
     lift(&t, AGENT, "cccccccccccccccccccccccccccccccc").unwrap();
-    assert!(flow_held(&t, "f-alpha").unwrap(), "another cut's abort lifts nothing");
+    assert!(
+        flow_held(&t, "f-alpha").unwrap(),
+        "another cut's abort lifts nothing"
+    );
     lift(&t, AGENT, CUT).unwrap();
     assert!(!flow_held(&t, "f-alpha").unwrap());
-    let due = crate::schedule::tick::due_flows(&t, jiff::Timestamp::from_millisecond(10_000_000).unwrap()).unwrap();
+    let due = crate::schedule::tick::due_flows(
+        &t,
+        jiff::Timestamp::from_millisecond(10_000_000).unwrap(),
+    )
+    .unwrap();
     assert_eq!(due, ["f-alpha"]);
 }
 
@@ -223,17 +256,30 @@ fn a_two_flow_agent_round_trips_with_kv_an_instance_and_history() {
     let staged = staged_from(&source, CUT);
     assert_eq!(staged.agent, AGENT);
     assert_eq!(staged.cut_id, CUT);
-    assert_eq!(staged.flow_ids(), ["f-alpha", "f-beta", "remind-at_0011223344556677"]);
-    assert_eq!(staged.dropped(), Some(BTreeMap::from([("queued_event".to_owned(), 1)])));
+    assert_eq!(
+        staged.flow_ids(),
+        ["f-alpha", "f-beta", "remind-at_0011223344556677"]
+    );
+    assert_eq!(
+        staged.dropped(),
+        Some(BTreeMap::from([("queued_event".to_owned(), 1)]))
+    );
     assert!(staged.flow_ids().iter().all(|f| f != "f-other"));
 
     let mut receiver = receiver();
     let t = tx(&mut receiver);
     let written = activate(&t, AGENT, CUT, &staged, 1000).unwrap().unwrap();
     t.commit().unwrap();
-    assert_eq!(written, fingerprint(&source, AGENT).unwrap(), "the receiver holds what the cut held");
     assert_eq!(
-        rows(&receiver, "SELECT flow_id||':'||state||':'||COALESCE(disabled_by,'-')||':'||COALESCE(approved_version,'-') FROM flows ORDER BY flow_id"),
+        written,
+        fingerprint(&source, AGENT).unwrap(),
+        "the receiver holds what the cut held"
+    );
+    assert_eq!(
+        rows(
+            &receiver,
+            "SELECT flow_id||':'||state||':'||COALESCE(disabled_by,'-')||':'||COALESCE(approved_version,'-') FROM flows ORDER BY flow_id"
+        ),
         [
             "f-alpha:disabled:move:-",
             "f-beta:disabled:move:-",
@@ -242,19 +288,71 @@ fn a_two_flow_agent_round_trips_with_kv_an_instance_and_history() {
     );
     // Approval doesn't move: the approved version waits as validated.
     assert_eq!(
-        rows(&receiver, "SELECT flow_id||':'||version||':'||state||':'||COALESCE(approval_ref,'-') FROM installs ORDER BY flow_id,version"),
-        ["f-alpha:1:validated:-", "f-alpha:2:validated:-", "f-beta:1:validated:-"]
+        rows(
+            &receiver,
+            "SELECT flow_id||':'||version||':'||state||':'||COALESCE(approval_ref,'-') FROM installs ORDER BY flow_id,version"
+        ),
+        [
+            "f-alpha:1:validated:-",
+            "f-alpha:2:validated:-",
+            "f-beta:1:validated:-"
+        ]
     );
-    assert_eq!(rows(&receiver, "SELECT key||'='||value FROM kv"), ["count=4"]);
-    assert_eq!(rows(&receiver, "SELECT module||'.'||op||'='||policy FROM install_tool_policies"), ["plexus.search=ordinary"]);
-    assert_eq!(rows(&receiver, "SELECT state||':'||next_due_ms FROM schedules"), ["disabled:120000"]);
-    assert_eq!(rows(&receiver, "SELECT params||':'||seq FROM template_instances"), [r#"{"at":"x"}:2"#]);
-    assert_eq!(rows(&receiver, "SELECT package||':'||generation FROM instance_generations"), ["remind-at:3"]);
-    assert_eq!(rows(&receiver, "SELECT run_id||':'||ended_at||':'||error_kind FROM run_history"), ["run-src-1:61:script_error"]);
-    assert_eq!(rows(&receiver, "SELECT run_id||':'||module||'.'||op FROM run_calls"), ["run-src-1:plexus.search"]);
-    assert_eq!(rows(&receiver, "SELECT flow_id||':'||version FROM agent_move_pending ORDER BY flow_id"), ["f-alpha:1", "f-beta:1", "remind-at_0011223344556677:1"]);
-    assert!(rows(&receiver, "SELECT * FROM event_receipts").is_empty(), "queued events stay behind");
-    assert_eq!(rows(&receiver, "PRAGMA foreign_key_check"), Vec::<String>::new());
+    assert_eq!(
+        rows(&receiver, "SELECT key||'='||value FROM kv"),
+        ["count=4"]
+    );
+    assert_eq!(
+        rows(
+            &receiver,
+            "SELECT module||'.'||op||'='||policy FROM install_tool_policies"
+        ),
+        ["plexus.search=ordinary"]
+    );
+    assert_eq!(
+        rows(&receiver, "SELECT state||':'||next_due_ms FROM schedules"),
+        ["disabled:120000"]
+    );
+    assert_eq!(
+        rows(&receiver, "SELECT params||':'||seq FROM template_instances"),
+        [r#"{"at":"x"}:2"#]
+    );
+    assert_eq!(
+        rows(
+            &receiver,
+            "SELECT package||':'||generation FROM instance_generations"
+        ),
+        ["remind-at:3"]
+    );
+    assert_eq!(
+        rows(
+            &receiver,
+            "SELECT run_id||':'||ended_at||':'||error_kind FROM run_history"
+        ),
+        ["run-src-1:61:script_error"]
+    );
+    assert_eq!(
+        rows(
+            &receiver,
+            "SELECT run_id||':'||module||'.'||op FROM run_calls"
+        ),
+        ["run-src-1:plexus.search"]
+    );
+    assert_eq!(
+        rows(
+            &receiver,
+            "SELECT flow_id||':'||version FROM agent_move_pending ORDER BY flow_id"
+        ),
+        ["f-alpha:1", "f-beta:1", "remind-at_0011223344556677:1"]
+    );
+    assert!(
+        rows(&receiver, "SELECT * FROM event_receipts").is_empty(),
+        "queued events stay behind"
+    );
+    assert_eq!(
+        rows(&receiver, "PRAGMA foreign_key_check"),
+        Vec::<String>::new()
+    );
 
     // Approval here puts each flow back in its source's state; the schedule
     // keeps its moved due time, so `missed` covers the move.
@@ -264,10 +362,16 @@ fn a_two_flow_agent_round_trips_with_kv_an_instance_and_history() {
     assert!(!lift_move(&t, "f-beta", 2000).unwrap());
     t.commit().unwrap();
     assert_eq!(
-        rows(&receiver, "SELECT flow_id||':'||state||':'||COALESCE(disabled_by,'-') FROM flows WHERE package IS NULL ORDER BY flow_id"),
+        rows(
+            &receiver,
+            "SELECT flow_id||':'||state||':'||COALESCE(disabled_by,'-') FROM flows WHERE package IS NULL ORDER BY flow_id"
+        ),
         ["f-alpha:enabled:-", "f-beta:disabled:operator:operator"]
     );
-    assert_eq!(rows(&receiver, "SELECT state||':'||next_due_ms FROM schedules"), ["active:120000"]);
+    assert_eq!(
+        rows(&receiver, "SELECT state||':'||next_due_ms FROM schedules"),
+        ["active:120000"]
+    );
 }
 
 #[test]
@@ -283,44 +387,86 @@ fn release_tombstones_the_agent_and_a_move_back_replaces_it() {
     let staged = staged_from(&t, CUT);
     let released = release(&t, AGENT, CUT, "holder-b", 100).unwrap();
     t.commit().unwrap();
-    assert_eq!(released, ["f-alpha", "f-beta", "remind-at_0011223344556677"]);
     assert_eq!(
-        hold(&source, AGENT).unwrap(),
-        Some(Hold::Moved { cut_id: CUT.into(), holder: "holder-b".into() })
+        released,
+        ["f-alpha", "f-beta", "remind-at_0011223344556677"]
     );
     assert_eq!(
-        rows(&source, "SELECT flow_id||':'||removed_by||':'||state FROM flows WHERE owner=(SELECT agent_id FROM agent_move_holds) ORDER BY flow_id"),
+        hold(&source, AGENT).unwrap(),
+        Some(Hold::Moved {
+            cut_id: CUT.into(),
+            holder: "holder-b".into()
+        })
+    );
+    assert_eq!(
+        rows(
+            &source,
+            "SELECT flow_id||':'||removed_by||':'||state FROM flows WHERE owner=(SELECT agent_id FROM agent_move_holds) ORDER BY flow_id"
+        ),
         [
             "f-alpha:moved:holder-b:disabled",
             "f-beta:moved:holder-b:disabled",
             "remind-at_0011223344556677:moved:holder-b:disabled",
         ]
     );
-    assert_eq!(rows(&source, "SELECT state FROM event_receipts"), ["refused"]);
+    assert_eq!(
+        rows(&source, "SELECT state FROM event_receipts"),
+        ["refused"]
+    );
     assert_eq!(rows(&source, "SELECT state FROM install_cards"), ["stale"]);
     assert_eq!(rows(&source, "SELECT state FROM schedules"), ["disabled"]);
-    assert_eq!(local(&source, AGENT).unwrap(), Local::AtCut, "a tombstone holds nothing live");
+    assert_eq!(
+        local(&source, AGENT).unwrap(),
+        Local::AtCut,
+        "a tombstone holds nothing live"
+    );
 
     // The agent runs on the other computer, gains a kv write, and moves back.
     let mut other = receiver();
     let t = tx(&mut other);
     activate(&t, AGENT, CUT, &staged, 200).unwrap().unwrap();
-    t.execute("UPDATE kv SET value='5',revision=5 WHERE key='count'", []).unwrap();
+    t.execute("UPDATE kv SET value='5',revision=5 WHERE key='count'", [])
+        .unwrap();
     t.commit().unwrap();
     let back = staged_from(&other, BACK);
     let t = tx(&mut source);
     activate(&t, AGENT, BACK, &back, 300).unwrap().unwrap();
     t.commit().unwrap();
-    assert_eq!(hold(&source, AGENT).unwrap(), None, "the tombstone is replaced");
-    assert_eq!(rows(&source, "SELECT flow_id||':'||value FROM kv ORDER BY flow_id"), ["f-alpha:5", "f-other:9"]);
     assert_eq!(
-        rows(&source, "SELECT flow_id||':'||COALESCE(removed_by,'-')||':'||disabled_by FROM flows WHERE flow_id IN ('f-alpha','f-beta') ORDER BY flow_id"),
+        hold(&source, AGENT).unwrap(),
+        None,
+        "the tombstone is replaced"
+    );
+    assert_eq!(
+        rows(
+            &source,
+            "SELECT flow_id||':'||value FROM kv ORDER BY flow_id"
+        ),
+        ["f-alpha:5", "f-other:9"]
+    );
+    assert_eq!(
+        rows(
+            &source,
+            "SELECT flow_id||':'||COALESCE(removed_by,'-')||':'||disabled_by FROM flows WHERE flow_id IN ('f-alpha','f-beta') ORDER BY flow_id"
+        ),
         ["f-alpha:-:move", "f-beta:-:move"]
     );
-    assert_eq!(rows(&source, "SELECT CAST(COUNT(*) AS TEXT) FROM install_cards"), ["0"]);
-    assert_eq!(rows(&source, "SELECT run_id FROM run_history"), ["run-src-1"]);
-    assert_eq!(rows(&source, "SELECT CAST(COUNT(*) AS TEXT) FROM run_snapshots"), ["1"]);
-    assert_eq!(rows(&source, "PRAGMA foreign_key_check"), Vec::<String>::new());
+    assert_eq!(
+        rows(&source, "SELECT CAST(COUNT(*) AS TEXT) FROM install_cards"),
+        ["0"]
+    );
+    assert_eq!(
+        rows(&source, "SELECT run_id FROM run_history"),
+        ["run-src-1"]
+    );
+    assert_eq!(
+        rows(&source, "SELECT CAST(COUNT(*) AS TEXT) FROM run_snapshots"),
+        ["1"]
+    );
+    assert_eq!(
+        rows(&source, "PRAGMA foreign_key_check"),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
@@ -330,17 +476,26 @@ fn a_flow_owned_by_someone_else_here_is_a_collision() {
     let staged = staged_from(&source, CUT);
     let mut receiver = receiver();
     receiver
-        .execute_batch("INSERT INTO flows(flow_id,owner,created_at) VALUES ('f-beta','agent_other',1)")
+        .execute_batch(
+            "INSERT INTO flows(flow_id,owner,created_at) VALUES ('f-beta','agent_other',1)",
+        )
         .unwrap();
     assert_eq!(
         collision(&receiver, AGENT, &staged).unwrap(),
-        Some(Collision { flow_id: "f-beta".into(), owner: Some("agent_other".into()) })
+        Some(Collision {
+            flow_id: "f-beta".into(),
+            owner: Some("agent_other".into())
+        })
     );
     let t = tx(&mut receiver);
     let refused = activate(&t, AGENT, CUT, &staged, 1).unwrap().unwrap_err();
     t.commit().unwrap();
     assert!(matches!(refused, ActivateRefusal::Collision(_)));
-    assert_eq!(rows(&receiver, "SELECT flow_id FROM flows"), ["f-beta"], "nothing written");
+    assert_eq!(
+        rows(&receiver, "SELECT flow_id FROM flows"),
+        ["f-beta"],
+        "nothing written"
+    );
 }
 
 #[test]
@@ -370,14 +525,23 @@ fn a_live_local_copy_with_new_data_is_a_fork() {
     )
     .unwrap();
     t.commit().unwrap();
-    assert_eq!(local(&receiver, AGENT).unwrap(), Local::AtCut, "matching the last cut");
+    assert_eq!(
+        local(&receiver, AGENT).unwrap(),
+        Local::AtCut,
+        "matching the last cut"
+    );
     receiver
-        .execute_batch("INSERT INTO kv(flow_id,key,value,bytes,revision) VALUES ('f-alpha','new','1',1,1)")
+        .execute_batch(
+            "INSERT INTO kv(flow_id,key,value,bytes,revision) VALUES ('f-alpha','new','1',1,1)",
+        )
         .unwrap();
     assert_eq!(local(&receiver, AGENT).unwrap(), Local::Advanced);
     let before = rows(&receiver, "SELECT key FROM kv ORDER BY key");
     let t = tx(&mut receiver);
-    assert_eq!(activate(&t, AGENT, BACK, &staged, 2).unwrap(), Err(ActivateRefusal::Advanced));
+    assert_eq!(
+        activate(&t, AGENT, BACK, &staged, 2).unwrap(),
+        Err(ActivateRefusal::Advanced)
+    );
     t.commit().unwrap();
     assert_eq!(rows(&receiver, "SELECT key FROM kv ORDER BY key"), before);
 }
@@ -392,10 +556,22 @@ fn a_refused_write_rolls_back_everything_it_wrote() {
     staged.records.retain(|r| r["kind"] != "snapshot");
     let mut receiver = receiver();
     let t = tx(&mut receiver);
-    assert!(matches!(activate(&t, AGENT, CUT, &staged, 1).unwrap(), Err(ActivateRefusal::Rejected(_))));
+    assert!(matches!(
+        activate(&t, AGENT, CUT, &staged, 1).unwrap(),
+        Err(ActivateRefusal::Rejected(_))
+    ));
     t.commit().unwrap();
-    assert_eq!(rows(&receiver, "SELECT CAST(COUNT(*) AS TEXT) FROM flows"), ["0"]);
-    assert_eq!(rows(&receiver, "SELECT CAST(COUNT(*) AS TEXT) FROM agent_move_pending"), ["0"]);
+    assert_eq!(
+        rows(&receiver, "SELECT CAST(COUNT(*) AS TEXT) FROM flows"),
+        ["0"]
+    );
+    assert_eq!(
+        rows(
+            &receiver,
+            "SELECT CAST(COUNT(*) AS TEXT) FROM agent_move_pending"
+        ),
+        ["0"]
+    );
 }
 
 #[test]
@@ -424,5 +600,25 @@ fn cuts_and_replies_survive_as_rows() {
         Some((json!({"a":1}), json!({"items":[]}))),
         "the first reply stands"
     );
-    assert_eq!(recorded_reply(&conn, CUT, "export").unwrap(), None::<(Value, Value)>);
+    assert_eq!(
+        recorded_reply(&conn, CUT, "export").unwrap(),
+        None::<(Value, Value)>
+    );
+}
+
+#[test]
+fn a_second_cut_of_a_frozen_agent_is_busy() {
+    let mut conn = migrated();
+    populate(&conn);
+    let t = tx(&mut conn);
+    freeze(&t, AGENT, CUT, 1).unwrap().unwrap();
+    freeze(&t, AGENT, CUT, 2).unwrap().unwrap();
+    assert_eq!(
+        freeze(&t, AGENT, BACK, 3).unwrap().unwrap_err().code,
+        "move_in_progress"
+    );
+    assert_eq!(
+        hold(&t, AGENT).unwrap(),
+        Some(Hold::Frozen { cut_id: CUT.into() })
+    );
 }

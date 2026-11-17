@@ -68,10 +68,12 @@ pub fn hold(conn: &Connection, agent: &str) -> Result<Option<Hold>> {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    Ok(row.map(|(kind, cut_id, holder)| match (kind.as_str(), holder) {
-        ("moved", Some(holder)) => Hold::Moved { cut_id, holder },
-        _ => Hold::Frozen { cut_id },
-    }))
+    Ok(
+        row.map(|(kind, cut_id, holder)| match (kind.as_str(), holder) {
+            ("moved", Some(holder)) => Hold::Moved { cut_id, holder },
+            _ => Hold::Frozen { cut_id },
+        }),
+    )
 }
 
 /// Whether `flow_id` belongs to an agent that holds a freeze or tombstone.
@@ -94,7 +96,8 @@ pub fn flow_held(conn: &Connection, flow_id: &str) -> Result<bool> {
 /// Why an agent's flows can't be cut now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Busy {
-    /// `run_active` or `reconcile_open`.
+    /// `run_active`, `reconcile_open`, or `move_in_progress` when another
+    /// cut froze the agent and hasn't been released or aborted.
     pub code: &'static str,
     pub reason: String,
 }
@@ -173,25 +176,31 @@ pub fn cut(conn: &Connection, cut_id: &str) -> Result<Option<Cut>> {
         },
     )
     .optional()?
-    .map(|(cut_id, agent, side, step, refs, session_ref, end, digest, fingerprint, dropped)| {
-        let json = |text: &str| {
-            serde_json::from_str(text).map_err(|e| CoreError::Corrupt(format!("cut {cut_id}: {e}")))
-        };
-        Ok(Cut {
-            refs: json(&refs)?,
-            dropped: dropped.as_deref().map(json).transpose()?,
-            end_offset: end
-                .map(|n| u64::try_from(n).map_err(|_| CoreError::Corrupt(format!("cut {cut_id} offset"))))
-                .transpose()?,
-            cut_id: cut_id.clone(),
-            agent,
-            side,
-            step,
-            session_ref,
-            digest,
-            fingerprint,
-        })
-    })
+    .map(
+        |(cut_id, agent, side, step, refs, session_ref, end, digest, fingerprint, dropped)| {
+            let json = |text: &str| {
+                serde_json::from_str(text)
+                    .map_err(|e| CoreError::Corrupt(format!("cut {cut_id}: {e}")))
+            };
+            Ok(Cut {
+                refs: json(&refs)?,
+                dropped: dropped.as_deref().map(json).transpose()?,
+                end_offset: end
+                    .map(|n| {
+                        u64::try_from(n)
+                            .map_err(|_| CoreError::Corrupt(format!("cut {cut_id} offset")))
+                    })
+                    .transpose()?,
+                cut_id: cut_id.clone(),
+                agent,
+                side,
+                step,
+                session_ref,
+                digest,
+                fingerprint,
+            })
+        },
+    )
     .transpose()
 }
 
@@ -234,7 +243,13 @@ pub fn recorded_reply(conn: &Connection, cut_id: &str, op: &str) -> Result<Optio
     .transpose()
 }
 
-pub fn record_reply(tx: &Transaction, cut_id: &str, op: &str, request: &Value, reply: &Value) -> Result<()> {
+pub fn record_reply(
+    tx: &Transaction,
+    cut_id: &str,
+    op: &str,
+    request: &Value,
+    reply: &Value,
+) -> Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO agent_move_replies(cut_id,op,request,reply) VALUES (?1,?2,?3,?4)",
         params![cut_id, op, request.to_string(), reply.to_string()],
@@ -266,11 +281,11 @@ pub fn fingerprint(conn: &Connection, agent: &str) -> Result<String> {
 
 /// Whether the agent has live flows here at all.
 pub fn has_live_flows(conn: &Connection, agent: &str) -> Result<bool> {
-    Ok(conn.query_row(
-        &format!("SELECT EXISTS({LIVE_FLOWS})"),
-        [agent],
-        |r| r.get(0),
-    )?)
+    Ok(
+        conn.query_row(&format!("SELECT EXISTS({LIVE_FLOWS})"), [agent], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// What this computer holds for the agent, compared with what an incoming
@@ -339,12 +354,23 @@ pub fn collision(conn: &Connection, agent: &str, staged: &Staged) -> Result<Opti
 /// Freezes the agent for `cut_id`, rechecking in the same transaction that
 /// none of its flows is busy. An agent already tombstoned here keeps its
 /// tombstone (its flows are stopped already).
-pub fn freeze(tx: &Transaction, agent: &str, cut_id: &str, now_ms: i64) -> Result<std::result::Result<(), Busy>> {
+pub fn freeze(
+    tx: &Transaction,
+    agent: &str,
+    cut_id: &str,
+    now_ms: i64,
+) -> Result<std::result::Result<(), Busy>> {
     if let Some(busy) = busy(tx, agent)? {
         return Ok(Err(busy));
     }
     match hold(tx, agent)? {
         Some(Hold::Moved { .. }) => {}
+        Some(Hold::Frozen { cut_id: other }) if other != cut_id => {
+            return Ok(Err(Busy {
+                code: "move_in_progress",
+                reason: format!("another move of this agent (cut {other}) has not finished"),
+            }));
+        }
         _ => {
             tx.execute(
                 "INSERT INTO agent_move_holds(agent_id,kind,cut_id,holder,at) VALUES (?1,'frozen',?2,NULL,?3)
@@ -374,19 +400,53 @@ pub fn encode(
     agent: &str,
     cut_id: &str,
 ) -> Result<std::result::Result<Vec<u8>, String>> {
-    use stream::{CALL, FLOW, GENERATION, HISTORY, INSTANCE, KV, POLICY, SCHEDULE, SNAPSHOT, VERSION, rows};
+    use stream::{
+        CALL, FLOW, GENERATION, HISTORY, INSTANCE, KV, POLICY, SCHEDULE, SNAPSHOT, VERSION, rows,
+    };
     let mut writer = stream::Writer::new();
     let mut counts = BTreeMap::from(
-        ["flow", "instance", "generation", "kv", "snapshot", "history"].map(|k| (k.to_owned(), 0)),
+        [
+            "flow",
+            "instance",
+            "generation",
+            "kv",
+            "snapshot",
+            "history",
+        ]
+        .map(|k| (k.to_owned(), 0)),
     );
-    let flows = rows(conn, FLOW, "f.", &format!("FROM flows f WHERE f.flow_id IN ({LIVE_FLOWS}) ORDER BY f.flow_id"), &[&agent])?;
+    let flows = rows(
+        conn,
+        FLOW,
+        "f.",
+        &format!("FROM flows f WHERE f.flow_id IN ({LIVE_FLOWS}) ORDER BY f.flow_id"),
+        &[&agent],
+    )?;
     let mut snapshots = BTreeSet::new();
     let mut history = Vec::new();
     for mut flow in flows {
         let id = flow["flow_id"].as_str().unwrap_or_default().to_owned();
-        let versions = rows(conn, VERSION, "", "FROM installs WHERE flow_id=?1 ORDER BY version", &[&id])?;
-        let policies = rows(conn, POLICY, "", "FROM install_tool_policies WHERE flow_id=?1 ORDER BY version,module,op", &[&id])?;
-        let schedule = rows(conn, SCHEDULE, "", "FROM schedules WHERE flow_id=?1", &[&id])?;
+        let versions = rows(
+            conn,
+            VERSION,
+            "",
+            "FROM installs WHERE flow_id=?1 ORDER BY version",
+            &[&id],
+        )?;
+        let policies = rows(
+            conn,
+            POLICY,
+            "",
+            "FROM install_tool_policies WHERE flow_id=?1 ORDER BY version,module,op",
+            &[&id],
+        )?;
+        let schedule = rows(
+            conn,
+            SCHEDULE,
+            "",
+            "FROM schedules WHERE flow_id=?1",
+            &[&id],
+        )?;
         let package_hash: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT p.code_hash FROM flows f JOIN package_versions p ON p.package=f.package AND p.version=f.approved_version WHERE f.flow_id=?1",
@@ -415,7 +475,10 @@ pub fn encode(
                 flow.insert(key.into(), restore.get(key).cloned().unwrap_or(Value::Null));
             }
             flow.insert("approved_version".into(), json!(version));
-            for v in versions.iter_mut().filter(|v| v["version"].as_i64() == Some(version)) {
+            for v in versions
+                .iter_mut()
+                .filter(|v| v["version"].as_i64() == Some(version))
+            {
                 if v["state"] == "validated" {
                     v.insert("state".into(), json!("approved"));
                     v.insert("approval_ref".into(), json!("basal:moved"));
@@ -427,26 +490,53 @@ pub fn encode(
                 }
             }
         }
-        flow.insert("versions".into(), Value::Array(versions.into_iter().map(Value::Object).collect()));
-        flow.insert("policies".into(), Value::Array(policies.into_iter().map(Value::Object).collect()));
-        flow.insert("schedule".into(), schedule.into_iter().next().map_or(Value::Null, Value::Object));
+        flow.insert(
+            "versions".into(),
+            Value::Array(versions.into_iter().map(Value::Object).collect()),
+        );
+        flow.insert(
+            "policies".into(),
+            Value::Array(policies.into_iter().map(Value::Object).collect()),
+        );
+        flow.insert(
+            "schedule".into(),
+            schedule
+                .into_iter()
+                .next()
+                .map_or(Value::Null, Value::Object),
+        );
         let package_hash = match (&waiting, flow["package"].is_string()) {
             // The code the instance waits to see approved, whether or not
             // this computer has its template yet.
             (Some((_, _, waited)), true) => Some(waited.clone()),
             _ => package_hash,
         };
-        flow.insert("package_code_hash".into(), package_hash.map_or(Value::Null, |h| json!(stream::hex(&h))));
+        flow.insert(
+            "package_code_hash".into(),
+            package_hash.map_or(Value::Null, |h| json!(stream::hex(&h))),
+        );
         if let Err(message) = writer.frame(&Value::Object(flow)) {
             return Ok(Err(message));
         }
-        for mut instance in rows(conn, INSTANCE, "", "FROM template_instances WHERE flow_id=?1", &[&id])? {
+        for mut instance in rows(
+            conn,
+            INSTANCE,
+            "",
+            "FROM template_instances WHERE flow_id=?1",
+            &[&id],
+        )? {
             instance.insert("kind".into(), json!("instance"));
             if let Err(message) = writer.frame(&Value::Object(instance)) {
                 return Ok(Err(message));
             }
         }
-        for mut entry in rows(conn, KV, "", "FROM kv WHERE flow_id=?1 ORDER BY key", &[&id])? {
+        for mut entry in rows(
+            conn,
+            KV,
+            "",
+            "FROM kv WHERE flow_id=?1 ORDER BY key",
+            &[&id],
+        )? {
             entry.insert("kind".into(), json!("kv"));
             if let Err(message) = writer.frame(&Value::Object(entry)) {
                 return Ok(Err(message));
@@ -457,14 +547,26 @@ pub fn encode(
              WHERE h.flow_id=?1 ORDER BY h.admit_seq, h.run_id",
         )?;
         let runs = stmt
-            .query_map([&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?
+            .query_map([&id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (run_id, version, hash) in runs {
             snapshots.insert((id.clone(), version, hash.clone()));
             history.push((run_id, hash));
         }
     }
-    for mut generation in rows(conn, GENERATION, "", "FROM instance_generations WHERE agent_id=?1 ORDER BY package", &[&agent])? {
+    for mut generation in rows(
+        conn,
+        GENERATION,
+        "",
+        "FROM instance_generations WHERE agent_id=?1 ORDER BY package",
+        &[&agent],
+    )? {
         generation.insert("kind".into(), json!("generation"));
         if let Err(message) = writer.frame(&Value::Object(generation)) {
             return Ok(Err(message));
@@ -486,11 +588,26 @@ pub fn encode(
         }
     }
     for (run_id, hash) in history {
-        for mut run in rows(conn, HISTORY, "", "FROM run_history WHERE run_id=?1", &[&run_id])? {
-            let calls = rows(conn, CALL, "", "FROM run_calls WHERE run_id=?1 ORDER BY position", &[&run_id])?;
+        for mut run in rows(
+            conn,
+            HISTORY,
+            "",
+            "FROM run_history WHERE run_id=?1",
+            &[&run_id],
+        )? {
+            let calls = rows(
+                conn,
+                CALL,
+                "",
+                "FROM run_calls WHERE run_id=?1 ORDER BY position",
+                &[&run_id],
+            )?;
             run.insert("kind".into(), json!("history"));
             run.insert("code_hash".into(), json!(hash));
-            run.insert("calls".into(), Value::Array(calls.into_iter().map(Value::Object).collect()));
+            run.insert(
+                "calls".into(),
+                Value::Array(calls.into_iter().map(Value::Object).collect()),
+            );
             if let Err(message) = writer.frame(&Value::Object(run)) {
                 return Ok(Err(message));
             }
@@ -509,16 +626,25 @@ pub fn encode(
 /// marked moved and stopped, their planned fires and queued events are
 /// discarded, and pending install cards for them are settled as superseded.
 /// Returns the flows tombstoned, whose routes the caller releases.
-pub fn release(tx: &Transaction, agent: &str, cut_id: &str, holder: &str, now_ms: i64) -> Result<Vec<String>> {
+pub fn release(
+    tx: &Transaction,
+    agent: &str,
+    cut_id: &str,
+    holder: &str,
+    now_ms: i64,
+) -> Result<Vec<String>> {
     let flows: Vec<String> = {
         let mut stmt = tx.prepare(&format!("{LIVE_FLOWS} ORDER BY flow_id"))?;
         stmt.query_map([agent], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?
     };
-    let at = jiff::Timestamp::from_millisecond(now_ms).map_err(|e| CoreError::Invalid(e.to_string()))?;
+    let at =
+        jiff::Timestamp::from_millisecond(now_ms).map_err(|e| CoreError::Invalid(e.to_string()))?;
     for flow in &flows {
         let pending: Vec<u32> = {
-            let mut stmt = tx.prepare("SELECT version FROM install_cards WHERE flow_id=?1 AND state='pending'")?;
+            let mut stmt = tx.prepare(
+                "SELECT version FROM install_cards WHERE flow_id=?1 AND state='pending'",
+            )?;
             stmt.query_map([flow], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
@@ -576,9 +702,15 @@ fn clear_old_copy(tx: &Transaction, flow_id: &str) -> Result<()> {
     )?;
     tx.execute("DELETE FROM kv WHERE flow_id=?1", [flow_id])?;
     crate::schedule::table::remove(tx, flow_id)?;
-    tx.execute("DELETE FROM template_event_outbox WHERE flow_id=?1", [flow_id])?;
+    tx.execute(
+        "DELETE FROM template_event_outbox WHERE flow_id=?1",
+        [flow_id],
+    )?;
     tx.execute("DELETE FROM template_instances WHERE flow_id=?1", [flow_id])?;
-    tx.execute("DELETE FROM instance_revocations WHERE flow_id=?1", [flow_id])?;
+    tx.execute(
+        "DELETE FROM instance_revocations WHERE flow_id=?1",
+        [flow_id],
+    )?;
     tx.execute("DELETE FROM install_cards WHERE flow_id=?1", [flow_id])?;
     tx.execute("DELETE FROM installs WHERE flow_id=?1", [flow_id])?;
     tx.execute("DELETE FROM agent_move_pending WHERE flow_id=?1", [flow_id])?;
@@ -617,7 +749,10 @@ fn write_staged(
     staged: &Staged,
     now_ms: i64,
 ) -> Result<std::result::Result<String, ActivateRefusal>> {
-    use stream::{CALL, FLOW, GENERATION, HISTORY, INSTANCE, KV, POLICY, SCHEDULE, SNAPSHOT, VERSION, insert, values};
+    use stream::{
+        CALL, FLOW, GENERATION, HISTORY, INSTANCE, KV, POLICY, SCHEDULE, SNAPSHOT, VERSION, insert,
+        values,
+    };
     if local(tx, agent)? == Local::Advanced {
         return Ok(Err(ActivateRefusal::Advanced));
     }
@@ -633,7 +768,10 @@ fn write_staged(
     for flow in &old {
         clear_old_copy(tx, flow)?;
     }
-    tx.execute("DELETE FROM instance_generations WHERE agent_id=?1", [agent])?;
+    tx.execute(
+        "DELETE FROM instance_generations WHERE agent_id=?1",
+        [agent],
+    )?;
     for flow in staged.of_kind("flow") {
         let id = flow["flow_id"].as_str().unwrap_or_default();
         let source_state = json!({
@@ -647,37 +785,75 @@ fn write_staged(
         // The version the source approved, and the code hash this computer
         // must report active before the flow runs here.
         let waits: Option<(i64, String)> = match (approved, package) {
-            (Some(v), Some(_)) => flow["package_code_hash"].as_str().map(|h| (v, h.to_owned())),
-            (Some(v), None) => flow["versions"].as_array().into_iter().flatten().find(|x| x["version"].as_i64() == Some(v)).and_then(|x| x["code_hash"].as_str().map(|h| (v, h.to_owned()))),
+            (Some(v), Some(_)) => flow["package_code_hash"]
+                .as_str()
+                .map(|h| (v, h.to_owned())),
+            (Some(v), None) => flow["versions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|x| x["version"].as_i64() == Some(v))
+                .and_then(|x| x["code_hash"].as_str().map(|h| (v, h.to_owned()))),
             (None, _) => None,
         };
-        let mut row = match values(flow, FLOW, &["kind", "versions", "policies", "schedule", "package_code_hash"], "flow") {
+        let mut row = match values(
+            flow,
+            FLOW,
+            &[
+                "kind",
+                "versions",
+                "policies",
+                "schedule",
+                "package_code_hash",
+            ],
+            "flow",
+        ) {
             Ok(row) => row,
             Err(m) => return rejected(m),
         };
         let set = |row: &mut Vec<SqlValue>, column: &str, value: SqlValue| {
-            let at = FLOW.iter().position(|(n, _)| *n == column).expect("a listed flow column");
+            let at = FLOW
+                .iter()
+                .position(|(n, _)| *n == column)
+                .expect("a listed flow column");
             row[at] = value;
         };
         if waits.is_some() {
             set(&mut row, "state", SqlValue::Text("disabled".into()));
             set(&mut row, "disabled_by", SqlValue::Text(MOVE_ACTOR.into()));
-            set(&mut row, "disabled_reason", SqlValue::Text("moved_pending_approval".into()));
+            set(
+                &mut row,
+                "disabled_reason",
+                SqlValue::Text("moved_pending_approval".into()),
+            );
             set(&mut row, "disabled_at", SqlValue::Integer(now_ms));
             if package.is_none() {
                 set(&mut row, "approved_version", SqlValue::Null);
             }
         }
         let names: Vec<&str> = FLOW.iter().map(|(n, _)| *n).collect();
-        let updates = names.iter().skip(1).map(|n| format!("{n}=excluded.{n}")).collect::<Vec<_>>().join(",");
-        let marks = (1..=names.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+        let updates = names
+            .iter()
+            .skip(1)
+            .map(|n| format!("{n}=excluded.{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let marks = (1..=names.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
         if let Err(error) = tx.execute(
             &format!("INSERT INTO flows ({}) VALUES ({marks}) ON CONFLICT(flow_id) DO UPDATE SET {updates},scope_health=NULL", names.join(",")),
             rusqlite::params_from_iter(row),
         ) {
             return Ok(Err(sql_error(error)));
         }
-        for version in flow["versions"].as_array().into_iter().flatten().filter_map(Value::as_object) {
+        for version in flow["versions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object)
+        {
             let mut row = match values(version, VERSION, &[], "version") {
                 Ok(row) => row,
                 Err(m) => return rejected(m),
@@ -685,21 +861,49 @@ fn write_staged(
             if version["state"] == "approved" {
                 // Approval doesn't move with the bytes: this computer's
                 // prefrontal must stand behind them first.
-                for (column, value) in [("state", SqlValue::Text("validated".into())), ("approval_ref", SqlValue::Null), ("approved_at", SqlValue::Null), ("approval_kind", SqlValue::Null), ("approval_rule", SqlValue::Null)] {
-                    let at = VERSION.iter().position(|(n, _)| *n == column).expect("a listed version column");
+                for (column, value) in [
+                    ("state", SqlValue::Text("validated".into())),
+                    ("approval_ref", SqlValue::Null),
+                    ("approved_at", SqlValue::Null),
+                    ("approval_kind", SqlValue::Null),
+                    ("approval_rule", SqlValue::Null),
+                ] {
+                    let at = VERSION
+                        .iter()
+                        .position(|(n, _)| *n == column)
+                        .expect("a listed version column");
                     row[at] = value;
                 }
             }
-            if let Err(error) = insert(tx, "INSERT", "installs", VERSION, row, &[("flow_id", SqlValue::Text(id.into()))]) {
+            if let Err(error) = insert(
+                tx,
+                "INSERT",
+                "installs",
+                VERSION,
+                row,
+                &[("flow_id", SqlValue::Text(id.into()))],
+            ) {
                 return Ok(Err(ActivateRefusal::Rejected(error.to_string())));
             }
         }
-        for policy in flow["policies"].as_array().into_iter().flatten().filter_map(Value::as_object) {
+        for policy in flow["policies"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object)
+        {
             let row = match values(policy, POLICY, &[], "policy") {
                 Ok(row) => row,
                 Err(m) => return rejected(m),
             };
-            if let Err(error) = insert(tx, "INSERT", "install_tool_policies", POLICY, row, &[("flow_id", SqlValue::Text(id.into()))]) {
+            if let Err(error) = insert(
+                tx,
+                "INSERT",
+                "install_tool_policies",
+                POLICY,
+                row,
+                &[("flow_id", SqlValue::Text(id.into()))],
+            ) {
                 return Ok(Err(ActivateRefusal::Rejected(error.to_string())));
             }
         }
@@ -711,10 +915,23 @@ fn write_staged(
             if waits.is_some() {
                 // Stopped with its next due time kept: when the flow is
                 // approved here, `missed` decides what the gap owes.
-                let at = SCHEDULE.iter().position(|(n, _)| *n == "state").expect("state column");
+                let at = SCHEDULE
+                    .iter()
+                    .position(|(n, _)| *n == "state")
+                    .expect("state column");
                 row[at] = SqlValue::Text("disabled".into());
             }
-            if let Err(error) = insert(tx, "INSERT", "schedules", SCHEDULE, row, &[("flow_id", SqlValue::Text(id.into())), ("updated_at", SqlValue::Integer(now_ms))]) {
+            if let Err(error) = insert(
+                tx,
+                "INSERT",
+                "schedules",
+                SCHEDULE,
+                row,
+                &[
+                    ("flow_id", SqlValue::Text(id.into())),
+                    ("updated_at", SqlValue::Integer(now_ms)),
+                ],
+            ) {
                 return Ok(Err(ActivateRefusal::Rejected(error.to_string())));
             }
         }
@@ -723,12 +940,16 @@ fn write_staged(
                 return rejected(format!("flow {id} carries an unreadable code hash"));
             };
             tx.execute(
-                "INSERT INTO agent_move_pending(flow_id,agent_id,cut_id,version,code_hash,restore,since) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO agent_move_pending(flow_id,agent_id,cut_id,version,code_hash,restore,since,retry_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?7)",
                 params![id, agent, cut_id, version, hash, source_state.to_string(), now_ms],
             )?;
         }
     }
-    for (kind, table, columns) in [("instance", "template_instances", INSTANCE), ("generation", "instance_generations", GENERATION), ("kv", "kv", KV)] {
+    for (kind, table, columns) in [
+        ("instance", "template_instances", INSTANCE),
+        ("generation", "instance_generations", GENERATION),
+        ("kv", "kv", KV),
+    ] {
         for record in staged.of_kind(kind) {
             let row = match values(record, columns, &["kind"], kind) {
                 Ok(row) => row,
@@ -751,7 +972,8 @@ fn write_staged(
             Ok(row) => row,
             Err(m) => return rejected(m),
         };
-        let hash = stream::unhex(record["code_hash"].as_str().unwrap_or_default()).unwrap_or_default();
+        let hash =
+            stream::unhex(record["code_hash"].as_str().unwrap_or_default()).unwrap_or_default();
         let snapshot: Option<i64> = tx
             .query_row(
                 "SELECT snapshot_id FROM run_snapshots WHERE flow_id=?1 AND flow_version=?2 AND code_hash=?3",
@@ -760,25 +982,51 @@ fn write_staged(
             )
             .optional()?;
         let Some(snapshot) = snapshot else {
-            return rejected(format!("run {} names a snapshot the cut doesn't carry", record["run_id"]));
+            return rejected(format!(
+                "run {} names a snapshot the cut doesn't carry",
+                record["run_id"]
+            ));
         };
         let run_id = record["run_id"].as_str().unwrap_or_default().to_owned();
         // A run id embeds the store that admitted it, so one already here
         // is the same run: keep the copy this computer has.
-        if insert(tx, "INSERT OR IGNORE", "run_history", HISTORY, row, &[("snapshot_id", SqlValue::Integer(snapshot))])? == 0 {
+        if insert(
+            tx,
+            "INSERT OR IGNORE",
+            "run_history",
+            HISTORY,
+            row,
+            &[("snapshot_id", SqlValue::Integer(snapshot))],
+        )? == 0
+        {
             continue;
         }
-        for call in record["calls"].as_array().into_iter().flatten().filter_map(Value::as_object) {
+        for call in record["calls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object)
+        {
             let row = match values(call, CALL, &[], "call") {
                 Ok(row) => row,
                 Err(m) => return rejected(m),
             };
-            if let Err(error) = insert(tx, "INSERT", "run_calls", CALL, row, &[("run_id", SqlValue::Text(run_id.clone()))]) {
+            if let Err(error) = insert(
+                tx,
+                "INSERT",
+                "run_calls",
+                CALL,
+                row,
+                &[("run_id", SqlValue::Text(run_id.clone()))],
+            ) {
                 return Ok(Err(ActivateRefusal::Rejected(error.to_string())));
             }
         }
     }
-    tx.execute("DELETE FROM agent_move_holds WHERE agent_id=?1 AND kind='moved'", [agent])?;
+    tx.execute(
+        "DELETE FROM agent_move_holds WHERE agent_id=?1 AND kind='moved'",
+        [agent],
+    )?;
     Ok(Ok(fingerprint(tx, agent)?))
 }
 
@@ -826,13 +1074,57 @@ pub fn pending(conn: &Connection, flow_id: Option<&str>) -> Result<Vec<Pending>>
         .collect()
 }
 
-/// Records the outcome of one approval check of a pending flow.
-pub fn note_check(tx: &Transaction, flow_id: &str, outcome: &str, now_ms: i64) -> Result<()> {
-    tx.execute(
-        "UPDATE agent_move_pending SET checked_at=?2,last_check=?3 WHERE flow_id=?1",
-        params![flow_id, now_ms, outcome],
-    )?;
+/// The longest wait between checks while prefrontal can't be reached.
+pub const RETRY_MAX_MS: i64 = 10 * 60 * 1000;
+const RETRY_FIRST_MS: i64 = 2_000;
+
+/// Records the outcome of one approval check of a pending flow. A check
+/// that reached prefrontal waits for the next approval event; one that
+/// couldn't reach it is tried again after a doubling wait.
+pub fn note_check(
+    tx: &Transaction,
+    flow_id: &str,
+    outcome: &str,
+    reached: bool,
+    now_ms: i64,
+) -> Result<()> {
+    if reached {
+        tx.execute(
+            "UPDATE agent_move_pending SET checked_at=?2,last_check=?3,retry_at=NULL,retries=0 WHERE flow_id=?1",
+            params![flow_id, now_ms, outcome],
+        )?;
+    } else {
+        tx.execute(
+            "UPDATE agent_move_pending SET checked_at=?2,last_check=?3,retries=retries+1,
+                retry_at=?2+MIN(?4,?5*(1<<MIN(retries,20))) WHERE flow_id=?1",
+            params![flow_id, now_ms, outcome, RETRY_MAX_MS, RETRY_FIRST_MS],
+        )?;
+    }
     Ok(())
+}
+
+/// Makes pending moved flows due for a check now: all of them (`None`), one
+/// flow, or every instance of one template or package.
+pub fn recheck(
+    tx: &Transaction,
+    flow_id: Option<&str>,
+    package: Option<&str>,
+    now_ms: i64,
+) -> Result<usize> {
+    Ok(tx.execute(
+        "UPDATE agent_move_pending SET retry_at=?3,retries=0 WHERE (?1 IS NULL OR flow_id=?1)
+           AND (?2 IS NULL OR flow_id IN (SELECT flow_id FROM flows WHERE package=?2))",
+        params![flow_id, package, now_ms],
+    )?)
+}
+
+/// When the next pending check falls due, if any is scheduled.
+pub fn next_check_at(conn: &Connection) -> Result<Option<i64>> {
+    Ok(
+        conn.query_row("SELECT MIN(retry_at) FROM agent_move_pending", [], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// A moved flow is approved here: put it back in the source's own enable
@@ -859,8 +1151,8 @@ pub fn lift_move(tx: &Transaction, flow_id: &str, now_ms: i64) -> Result<bool> {
     if !still_moved {
         return Ok(true);
     }
-    let restore: Map<String, Value> =
-        serde_json::from_str(&restore).map_err(|e| CoreError::Corrupt(format!("move restore of {flow_id}: {e}")))?;
+    let restore: Map<String, Value> = serde_json::from_str(&restore)
+        .map_err(|e| CoreError::Corrupt(format!("move restore of {flow_id}: {e}")))?;
     if restore.get("state").and_then(Value::as_str) == Some("enabled") {
         tx.execute(
             "UPDATE flows SET state='enabled',disabled_by=NULL,disabled_reason=NULL,disabled_at=NULL WHERE flow_id=?1",
@@ -877,7 +1169,10 @@ pub fn lift_move(tx: &Transaction, flow_id: &str, now_ms: i64) -> Result<bool> {
                 flow_id,
                 restore.get("disabled_by").and_then(Value::as_str),
                 restore.get("disabled_reason").and_then(Value::as_str),
-                restore.get("disabled_at").and_then(Value::as_i64).unwrap_or(now_ms)
+                restore
+                    .get("disabled_at")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(now_ms)
             ],
         )?;
     }
@@ -903,13 +1198,52 @@ impl crate::Runtime {
     /// with no store lock held; each approval then commits on its own.
     pub fn check_moved_flows(&self, flow_id: Option<&str>) -> Result<CheckReport> {
         let waiting = self.store().read(|c| pending(c, flow_id))?;
+        self.check_pending(waiting)
+    }
+
+    /// Checks the pending moved flows whose check is due.
+    pub fn check_due_moved_flows(&self) -> Result<CheckReport> {
+        let now = self.config().clock.now_ms();
+        let due = self.store().read(|c| {
+            let ids: Vec<String> = c
+                .prepare("SELECT flow_id FROM agent_move_pending WHERE retry_at<=?1 ORDER BY retry_at,flow_id")?
+                .query_map([now], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut out = Vec::new();
+            for id in ids {
+                out.extend(pending(c, Some(&id))?);
+            }
+            Ok(out)
+        })?;
+        self.check_pending(due)
+    }
+
+    /// Makes pending moved flows due now (see [`recheck`]) and wakes the
+    /// engine to check them.
+    pub fn recheck_moved_flows(&self, flow_id: Option<&str>, package: Option<&str>) -> Result<()> {
+        let now = self.config().clock.now_ms();
+        let changed = self
+            .store()
+            .write(|tx| recheck(tx, flow_id, package, now))?;
+        if changed > 0 {
+            self.shared.signal.bump();
+        }
+        Ok(())
+    }
+
+    fn check_pending(&self, waiting: Vec<Pending>) -> Result<CheckReport> {
         let mut report = CheckReport::default();
         for p in waiting {
             let now = self.config().clock.now_ms();
             let expected = stream::hex(&p.code_hash);
             let outcome = match self.core_install_status_with_approval(&p.flow_id, p.version) {
                 Err(error) => {
-                    self.note_moved_check(&p.flow_id, &format!("prefrontal unreachable: {error:?}"), now)?;
+                    self.note_moved_check(
+                        &p.flow_id,
+                        &format!("prefrontal unreachable: {error:?}"),
+                        false,
+                        now,
+                    )?;
                     report.unreachable.push(p.flow_id);
                     continue;
                 }
@@ -918,15 +1252,23 @@ impl crate::Runtime {
                 {
                     match &p.package {
                         None => {
-                            if self.approve_confirmed_install(&p.flow_id, p.version, &p.code_hash, approval)? {
+                            if self.approve_confirmed_install(
+                                &p.flow_id,
+                                p.version,
+                                &p.code_hash,
+                                approval,
+                            )? {
                                 // Approval lifts the move's disable in the same commit.
-                                let lifted = self.store().read(|c| Ok(pending(c, Some(&p.flow_id))?.is_empty()))?;
+                                let lifted = self
+                                    .store()
+                                    .read(|c| Ok(pending(c, Some(&p.flow_id))?.is_empty()))?;
                                 if lifted {
                                     report.approved.push(p.flow_id);
                                     continue;
                                 }
                             }
-                            "active here, but the version could not be approved (see flow.health)".to_owned()
+                            "active here, but the version could not be approved (see flow.health)"
+                                .to_owned()
                         }
                         Some(package) => {
                             let lifted = self.store().write(|tx| {
@@ -947,13 +1289,16 @@ impl crate::Runtime {
                                 report.approved.push(p.flow_id);
                                 continue;
                             }
-                            format!("template {package} version {} with this code is not registered here", p.version)
+                            format!(
+                                "template {package} version {} with this code is not registered here",
+                                p.version
+                            )
                         }
                     }
                 }
                 Ok((status, _)) => format!("not approved here: {status:?}"),
             };
-            self.note_moved_check(&p.flow_id, &outcome, now)?;
+            self.note_moved_check(&p.flow_id, &outcome, true, now)?;
             report.waiting.push(p.flow_id);
         }
         Ok(report)
@@ -989,23 +1334,16 @@ impl crate::Runtime {
         self.shared.signal.bump();
     }
 
-    fn note_moved_check(&self, flow_id: &str, outcome: &str, now_ms: i64) -> Result<()> {
+    fn note_moved_check(
+        &self,
+        flow_id: &str,
+        outcome: &str,
+        reached: bool,
+        now_ms: i64,
+    ) -> Result<()> {
         let outcome: String = outcome.chars().take(512).collect();
-        self.store().write(|tx| note_check(tx, flow_id, &outcome, now_ms))
-    }
-
-    /// Moved flows still waiting for approval since before `older_than_ms`,
-    /// with the last check's outcome, for self-diagnosis.
-    pub fn stale_moved_flows(&self, older_than_ms: i64) -> Result<Vec<(String, String, i64, Option<String>)>> {
-        self.store().read(|c| {
-            let mut stmt = c.prepare(
-                "SELECT flow_id,agent_id,since,last_check FROM agent_move_pending WHERE since<=?1 ORDER BY since,flow_id",
-            )?;
-            let rows = stmt
-                .query_map([older_than_ms], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        })
+        self.store()
+            .write(|tx| note_check(tx, flow_id, &outcome, reached, now_ms))
     }
 }
 

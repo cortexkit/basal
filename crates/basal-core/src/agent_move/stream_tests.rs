@@ -40,7 +40,10 @@ fn the_header_comes_first_and_is_canonical() {
         json!({"flow":3,"generation":1,"history":1,"instance":1,"kv":1,"queued_event":1,"snapshot":1})
     );
     let first = frames(&bytes).unwrap()[0];
-    assert_eq!(first, canonical(&serde_json::from_slice(first).unwrap()).as_slice());
+    assert_eq!(
+        first,
+        canonical(&serde_json::from_slice(first).unwrap()).as_slice()
+    );
     // Encoding the same rows again gives the same bytes.
     assert_eq!(bytes, sample());
 }
@@ -57,7 +60,10 @@ fn an_unknown_format_is_incompatible_before_anything_else_is_read() {
     // Even a stream that is damaged past its header is judged by its header.
     let mut cut_short = bytes.clone();
     cut_short.truncate(cut_short.len() - 3);
-    assert!(matches!(decode(&cut_short), Err(DecodeError::Incompatible { .. })));
+    assert!(matches!(
+        decode(&cut_short),
+        Err(DecodeError::Incompatible { .. })
+    ));
 }
 
 #[test]
@@ -81,7 +87,10 @@ fn a_member_this_build_does_not_know_is_refused() {
 #[test]
 fn a_truncated_stream_or_wrong_counts_are_damaged() {
     let bytes = sample();
-    assert!(matches!(decode(&bytes[..bytes.len() - 1]), Err(DecodeError::Damaged(_))));
+    assert!(matches!(
+        decode(&bytes[..bytes.len() - 1]),
+        Err(DecodeError::Damaged(_))
+    ));
     let bytes = edited(&sample(), 0, |h| h["counts"]["kv"] = json!(2));
     assert!(matches!(decode(&bytes), Err(DecodeError::Damaged(m)) if m.contains("kv")));
 }
