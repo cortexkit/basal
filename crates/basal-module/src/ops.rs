@@ -392,6 +392,31 @@ impl Module {
             .map_err(|e| self.core_error(e))
     }
 
+    /// Refuses a change to `agent`'s flows while the agent is moving to
+    /// another computer (`agent_moving`, retryable) or after it moved
+    /// (`agent_moved`): a flow created or enabled here then would be left
+    /// out of the move, or run beside the copy that now runs elsewhere.
+    fn refuse_moving(&self, agent: &str) -> Result<(), OpError> {
+        let hold = self
+            .rt
+            .store()
+            .read(|c| basal_core::agent_move::hold(c, agent))
+            .map_err(|e| self.core_error(e))?;
+        match hold {
+            None => Ok(()),
+            Some(basal_core::agent_move::Hold::Frozen { .. }) => Err(OpError::new(
+                "agent_moving",
+                format!("agent {agent} is moving to another computer; retry after the move finishes"),
+            )
+            .with_detail(Some(json!({"agent_id": agent, "retryable": true})))),
+            Some(basal_core::agent_move::Hold::Moved { holder, .. }) => Err(OpError::new(
+                "agent_moved",
+                format!("agent {agent} has moved to another computer ({holder}); its flows run there now"),
+            )
+            .with_detail(Some(json!({"agent_id": agent, "holder": holder})))),
+        }
+    }
+
     fn owns(&self, agent: &str, flow_id: &str) -> Result<bool, OpError> {
         let owners = self.owners(flow_id)?;
         Ok(!owners.is_empty() && owners.iter().all(|o| o == agent))
@@ -500,6 +525,7 @@ impl Module {
             Caller::Agent { agent_id, .. } if p.agent_id.is_none() => agent_id,
             _ => return Err(OpError::not_permitted("flow.instantiate", caller)),
         };
+        self.refuse_moving(agent)?;
         self.rt
             .instantiate(&p.template, p.version, agent, &p.params, &p.expires_in)
             .map_err(|e| self.template_error(e))
@@ -571,7 +597,16 @@ impl Module {
         let result = match method {
             "package.register" => {
                 let p: Register = serde_json::from_value(params).map_err(invalid_params)?;
-                self.rt.register_package(&p.script, &p.manifest)
+                let registered = self.rt.register_package(&p.script, &p.manifest);
+                if let Ok(reply) = &registered
+                    && let Some(package) = reply["package"].as_str()
+                {
+                    // A moved instance may have waited for this template version.
+                    self.rt
+                        .recheck_moved_flows(None, Some(package))
+                        .map_err(|e| self.core_error(e))?;
+                }
+                registered
             }
             "package.get" => {
                 let p: Get = serde_json::from_value(params).map_err(invalid_params)?;
@@ -579,8 +614,17 @@ impl Module {
             }
             "flow.instance.ensure" => {
                 let p: Ensure = serde_json::from_value(params).map_err(invalid_params)?;
-                self.rt
-                    .ensure_instance(&p.package, p.version, &p.agent_id, p.generation)
+                self.refuse_moving(&p.agent_id)?;
+                let ensured =
+                    self.rt
+                        .ensure_instance(&p.package, p.version, &p.agent_id, p.generation);
+                if ensured.is_ok() {
+                    // A moved instance of this package may be approvable now.
+                    self.rt
+                        .recheck_moved_flows(None, Some(&p.package))
+                        .map_err(|e| self.core_error(e))?;
+                }
+                ensured
             }
             "flow.instance.remove" => {
                 let p: Remove = serde_json::from_value(params).map_err(invalid_params)?;
@@ -728,6 +772,7 @@ impl Module {
             }
         };
 
+        self.refuse_moving(&author)?;
         let request = InstallRequest {
             script: p.script,
             manifest: p.manifest,
@@ -1798,6 +1843,9 @@ impl Module {
             } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),
             _ => return Err(OpError::not_permitted("flow.enable", caller)),
         };
+        for owner in self.owners(&p.flow_id)? {
+            self.refuse_moving(&owner)?;
+        }
         let changed = self
             .rt
             .enable_flow_as(&p.flow_id, &actor)
