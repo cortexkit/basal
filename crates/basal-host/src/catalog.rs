@@ -82,6 +82,7 @@ pub const AGENT_REGISTRY_UNAVAILABLE: &str = "agent_registry_unavailable";
 /// The declarations basal validates manifests against. Implementations
 /// must be safe to call from several threads.
 pub trait Catalog: Send + Sync {
+    /// Core's routing identity from already observed declarations, without I/O.
     fn core_module(&self) -> &'static str {
         crate::core_identity::LEGACY_CORE_MODULE
     }

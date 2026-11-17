@@ -11,6 +11,8 @@ pub struct Fake {
     pub records: Mutex<Vec<(String, Value)>>,
     pub replies: Mutex<BTreeMap<String, VecDeque<Result<Value, WireError>>>>,
     pub catalog: Mutex<Value>,
+    /// Core routing identity observed by the fake catalog watch, if any.
+    pub cached_core_module: Mutex<Option<&'static str>>,
     /// Core's own records of agent session scopes, by scope ref.
     pub scopes: Mutex<BTreeMap<String, CoreScope>>,
     /// Core's `flow_install` rows by (flow, version): the approved code
@@ -841,6 +843,12 @@ impl Fake {
     }
 }
 impl Transport for Fake {
+    fn core_module(&self) -> &'static str {
+        self.cached_core_module
+            .lock()
+            .unwrap()
+            .unwrap_or(basal_host::core_identity::LEGACY_CORE_MODULE)
+    }
     fn catalog(&self) -> Result<Value, WireError> {
         Ok(self.catalog.lock().unwrap().clone())
     }

@@ -187,18 +187,20 @@ impl SubcCatalog {
         self
     }
     pub fn resolve(&self, module: &str, op: &str) -> Result<Option<CatalogOp>, WireError> {
-        self.resolve_for_dispatch(module, op).map(|(decl, _)| decl)
+        self.resolve_for_dispatch(module, op)
+            .map(|(decl, _, _)| decl)
     }
-    /// Scope capability and operation kind come from the same fresh snapshot.
+    /// Routing identity, scope capability and operation kind come from the same fresh snapshot.
     /// A missing provider is not evidence that an operation was removed: the
     /// provider may simply be disconnected while the daemon rebuilds its catalog.
     pub fn resolve_for_dispatch(
         &self,
         module: &str,
         op: &str,
-    ) -> Result<(Option<CatalogOp>, bool), WireError> {
+    ) -> Result<(Option<CatalogOp>, bool, String), WireError> {
         let catalog = self.snapshot_for(module)?;
-        let Some(entry) = crate::core_identity::catalog_module(&catalog, module) else {
+        let module = crate::core_identity::routed_module(&catalog, module);
+        let Some(entry) = catalog.module(module) else {
             return Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
                 crate::flow_refusal::RefusalReason::ProviderNotCatalogued,
                 module,
@@ -260,7 +262,7 @@ impl SubcCatalog {
             }
         }
         let flow_capable = entry.provides("flow-scopes/v1");
-        Ok((found, flow_capable))
+        Ok((found, flow_capable, module.to_owned()))
     }
     fn snapshot(&self) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
         self.snapshot
@@ -352,6 +354,7 @@ impl SubcCatalog {
 
     /// Resolves either public agent identifier through core's agent registry.
     pub fn resolve_agent(&self, agent: &str) -> Result<Option<String>, WireError> {
+        let module = crate::core_identity::core_module(self.transport.as_ref());
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::BTreeSet::new();
         let mut named = std::collections::BTreeSet::new();
@@ -360,11 +363,7 @@ impl SubcCatalog {
             if let Some(c) = &cursor {
                 params["cursor"] = Value::String(c.clone());
             }
-            let reply = self.transport.management(
-                crate::core_identity::core_module(self.transport.as_ref()),
-                "agent.list",
-                params,
-            )?;
+            let reply = self.transport.management(module, "agent.list", params)?;
             let agents = reply
                 .get("agents")
                 .and_then(Value::as_array)
@@ -402,10 +401,11 @@ impl SubcCatalog {
 }
 impl Catalog for SubcCatalog {
     fn core_module(&self) -> &'static str {
-        self.snapshot()
-            .ok()
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.as_ref().ok())
             .and_then(|catalog| crate::core_identity::resolve(|id| catalog.module(id).is_some()))
-            .unwrap_or(CORE)
+            .unwrap_or_else(|| self.transport.core_module())
     }
     fn request_snapshot(&self) -> Option<Arc<dyn Catalog>> {
         Some(Arc::new(Self {
@@ -540,6 +540,7 @@ impl Catalog for SubcCatalog {
         self.resolve_agent(agent)
     }
     fn resolve_agents(&self, agents: &[&str]) -> Result<Vec<Option<String>>, WireError> {
+        let module = crate::core_identity::core_module(self.transport.as_ref());
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::BTreeSet::new();
         let mut entries = Vec::new();
@@ -548,11 +549,7 @@ impl Catalog for SubcCatalog {
             if let Some(cursor) = &cursor {
                 params["cursor"] = json!(cursor);
             }
-            let reply = self.transport.management(
-                crate::core_identity::core_module(self.transport.as_ref()),
-                "agent.list",
-                params,
-            )?;
+            let reply = self.transport.management(module, "agent.list", params)?;
             for entry in reply["agents"]
                 .as_array()
                 .ok_or_else(|| WireError::Unreadable("agent.list agents missing".into()))?

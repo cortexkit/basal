@@ -19,13 +19,20 @@ struct Daemon {
     watch: AtomicBool,
     /// Whether `provider` is in the catalog.
     provider: AtomicBool,
+    renamed_core: AtomicBool,
+    opens: Mutex<Vec<Value>>,
     lists: AtomicUsize,
     watches: AtomicUsize,
 }
 
 impl Daemon {
     fn list(&self) -> Value {
-        let mut modules = vec![json!({"module_id":"prefrontal-core","roles":[],"control_ops":[]})];
+        let core = if self.renamed_core.load(Ordering::SeqCst) {
+            "prefrontal"
+        } else {
+            "prefrontal-core"
+        };
+        let mut modules = vec![json!({"module_id":core,"roles":[],"control_ops":[]})];
         if self.provider.load(Ordering::SeqCst) {
             modules.push(json!({"module_id":"provider","control_ops":[],
                 "capabilities":{"provides":["flow-scopes/v1"]},"roles":[
@@ -131,35 +138,55 @@ fn wire(watch: bool) -> Wire {
             }
         });
         while let Ok(Some(request)) = read_frame(&mut reader).await {
-            if request.header.ty != FrameType::Request || request.header.channel != 0 {
+            if request.header.ty != FrameType::Request {
                 continue;
             }
             let body: Value = serde_json::from_slice(&request.body).unwrap();
             let corr = request.header.corr;
-            let reply = match body["op"].as_str() {
-                Some("catalog.list") => {
-                    state.lists.fetch_add(1, Ordering::SeqCst);
-                    frame(FrameType::Response, corr, &state.list())
+            let reply = if request.header.channel != 0 {
+                Frame::build(
+                    FrameType::Response,
+                    Flags::new(false, Priority::Interactive, false),
+                    request.header.channel,
+                    request.header.epoch,
+                    corr,
+                    serde_json::to_vec(&json!({"result":{"ok":true}})).unwrap(),
+                )
+                .unwrap()
+            } else {
+                match body["op"].as_str() {
+                    Some("route.open") => {
+                        state.opens.lock().unwrap().push(body.clone());
+                        frame(
+                            FrameType::Response,
+                            corr,
+                            &json!({"op":"route.open","route_channel":11,"route_epoch":1}),
+                        )
+                    }
+                    Some("catalog.list") => {
+                        state.lists.fetch_add(1, Ordering::SeqCst);
+                        frame(FrameType::Response, corr, &state.list())
+                    }
+                    Some("catalog.watch") if state.watch.load(Ordering::SeqCst) => {
+                        state.watches.fetch_add(1, Ordering::SeqCst);
+                        *watch_corr.lock().unwrap() = Some(corr);
+                        let generation = state.generation.load(Ordering::SeqCst);
+                        frame(
+                            FrameType::StreamData,
+                            corr,
+                            &json!({"op":"catalog.watch","generation":generation}),
+                        )
+                    }
+                    Some("catalog.watch") => {
+                        state.watches.fetch_add(1, Ordering::SeqCst);
+                        frame(
+                            FrameType::Error,
+                            corr,
+                            &json!({"code":"unknown_op","message":"no catalog.watch here"}),
+                        )
+                    }
+                    _ => frame(FrameType::Response, corr, &json!({"result":null})),
                 }
-                Some("catalog.watch") if state.watch.load(Ordering::SeqCst) => {
-                    state.watches.fetch_add(1, Ordering::SeqCst);
-                    *watch_corr.lock().unwrap() = Some(corr);
-                    let generation = state.generation.load(Ordering::SeqCst);
-                    frame(
-                        FrameType::StreamData,
-                        corr,
-                        &json!({"op":"catalog.watch","generation":generation}),
-                    )
-                }
-                Some("catalog.watch") => {
-                    state.watches.fetch_add(1, Ordering::SeqCst);
-                    frame(
-                        FrameType::Error,
-                        corr,
-                        &json!({"code":"unknown_op","message":"no catalog.watch here"}),
-                    )
-                }
-                _ => frame(FrameType::Response, corr, &json!({"result":null})),
             };
             let mut writer = writer.lock().await;
             write_frame(&mut *writer, &reply).await.unwrap();
@@ -245,6 +272,41 @@ fn requests_between_pushes_make_no_catalog_reads() {
         before,
         "requests share the watch-fed copy"
     );
+}
+
+#[test]
+fn cached_core_identity_routes_to_the_renamed_module_without_catalog_reads() {
+    use crate::Host;
+
+    let wire = wire(true);
+    watching(&wire);
+    assert_eq!(wire.transport.core_module(), "prefrontal-core");
+    wire.daemon.renamed_core.store(true, Ordering::SeqCst);
+    wire.push.send(2).unwrap();
+    eventually("the renamed core's catalog", || {
+        wire.transport
+            .shared_catalog
+            .current()
+            .is_some_and(|snapshot| {
+                snapshot.generation == 2 && snapshot.module("prefrontal").is_some()
+            })
+    });
+    let before = wire.daemon.lists.load(Ordering::SeqCst);
+    // Routing identity remains usable while declarations await a new watch.
+    wire.transport.shared_catalog.stop();
+    wire._runtime.handle().block_on(async {
+        assert_eq!(
+            crate::core_identity::core_module(wire.transport.as_ref()),
+            "prefrontal"
+        );
+    });
+    crate::core_host::CoreHost::new(wire.transport.clone())
+        .owner_notice(json!({"flow_id":"flow"}))
+        .unwrap();
+    let opens = wire.daemon.opens.lock().unwrap();
+    assert_eq!(opens.len(), 1);
+    assert_eq!(opens[0]["target"]["module_id"], "prefrontal");
+    assert_eq!(wire.daemon.lists.load(Ordering::SeqCst), before);
 }
 
 #[test]

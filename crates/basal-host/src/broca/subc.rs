@@ -200,7 +200,7 @@ impl Transport for SubcBrocaTransport {
         let value = self
             .connection
             .management(
-                crate::subc_catalog::CORE,
+                crate::core_identity::core_module(self.connection.as_ref()),
                 "flow.install_status",
                 serde_json::json!({"flow_id":identity.flow_id,"version":identity.version}),
             )

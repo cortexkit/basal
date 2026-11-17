@@ -856,6 +856,7 @@ fn prefrontal_rename_stored_approval_dispatches_without_changing_manifest_bytes(
             .as_array_mut()
             .unwrap()
             .push(entry(registered));
+        *fake.cached_core_module.lock().unwrap() = Some(registered);
         f.module
             .rt
             .store()

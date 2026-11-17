@@ -36,29 +36,19 @@ pub fn catalog_module<'a>(
     catalog.module(id)
 }
 
-/// Production reads the shared, watch-fed snapshot. An absent core keeps the
-/// old route-miss behavior rather than turning a registration gap into a refusal.
+/// Resolve routing identity without catalog I/O, including on async threads.
+/// Without a catalogued core, use its legacy id and let the daemon report a
+/// route miss rather than refusing the call locally.
 pub fn core_module<T: crate::transport::Transport + ?Sized>(transport: &T) -> &'static str {
-    match transport.catalog_snapshot() {
-        Ok(catalog) => resolve(|id| catalog.module(id).is_some()),
-        Err(crate::transport::WireError::Unreadable(_)) => transport.catalog().ok().and_then(|c| {
-            resolve(|id| {
-                c["modules"]
-                    .as_array()
-                    .is_some_and(|modules| modules.iter().any(|module| module["module_id"] == id))
-            })
-        }),
-        Err(_) => None,
-    }
-    .unwrap_or(LEGACY_CORE_MODULE)
+    transport.core_module()
 }
 
-pub fn routed_module<'a, T: crate::transport::Transport + ?Sized>(
-    transport: &T,
+pub fn routed_module<'a>(
+    catalog: &crate::catalog_snapshot::CatalogSnapshot,
     id: &'a str,
 ) -> &'a str {
     if is_core_module(id) {
-        core_module(transport)
+        resolve(|id| catalog.module(id).is_some()).unwrap_or(LEGACY_CORE_MODULE)
     } else {
         id
     }
@@ -93,6 +83,29 @@ mod tests {
         assert!(!is_core_module("prefrontal-routing"));
         assert!(!is_core_principal("agent:prefrontal"));
         assert!(!same_module(CORE_MODULE, "broca"));
+    }
+
+    #[tokio::test]
+    async fn routing_identity_never_reads_the_catalog_in_async_context() {
+        struct NoCatalog;
+        impl Transport for NoCatalog {
+            fn catalog(&self) -> Result<Value, WireError> {
+                panic!("routing identity must not read the catalog")
+            }
+            fn management(&self, _: &str, _: &str, _: Value) -> Result<Value, WireError> {
+                unreachable!()
+            }
+            fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+                unreachable!()
+            }
+        }
+        assert_eq!(core_module(&NoCatalog), LEGACY_CORE_MODULE);
+        assert_eq!(
+            crate::Catalog::core_module(&crate::subc_catalog::SubcCatalog::new(
+                std::sync::Arc::new(NoCatalog)
+            )),
+            LEGACY_CORE_MODULE
+        );
     }
 
     #[test]

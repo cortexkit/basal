@@ -19,6 +19,7 @@ struct Wire {
     pages: Mutex<VecDeque<Value>>,
     agents: Mutex<VecDeque<Value>>,
     calls: Mutex<Vec<String>>,
+    modules: Mutex<Vec<String>>,
 }
 impl Transport for Wire {
     fn catalog(&self) -> Result<Value, WireError> {
@@ -29,8 +30,9 @@ impl Transport for Wire {
             .pop_front()
             .expect("catalog response")
     }
-    fn management(&self, _: &str, op: &str, _: Value) -> Result<Value, WireError> {
+    fn management(&self, module: &str, op: &str, _: Value) -> Result<Value, WireError> {
         self.calls.lock().unwrap().push(op.into());
+        self.modules.lock().unwrap().push(module.into());
         Ok(match op {
             "consent.answers" => self.pages.lock().unwrap().pop_front().unwrap(),
             "agent.list" => self.agents.lock().unwrap().pop_front().unwrap(),
@@ -139,6 +141,28 @@ fn core_dispatch_reads_scope_capability_and_op_from_one_snapshot() {
         2,
         "one classification snapshot plus one fresh dispatch snapshot"
     );
+}
+
+#[test]
+fn core_dispatch_routes_using_the_same_snapshot_as_its_declaration() {
+    for requested in ["prefrontal", "prefrontal-core"] {
+        for listed in ["prefrontal", "prefrontal-core"] {
+            let wire = Arc::new(Wire::default());
+            wire.catalogs.lock().unwrap().extend([
+                Ok(catalog(listed, "board.read")),
+                Ok(catalog(listed, "board.read")),
+            ]);
+            let host = ModuleOpsHost::new(wire.clone(), Arc::new(SubcCatalog::new(wire.clone())));
+            let request = request(requested, "board.read");
+            let class = host.classify(&request.kind);
+            host.dispatch_classified(&request, class).unwrap();
+            assert_eq!(*wire.modules.lock().unwrap(), [listed]);
+            assert_eq!(
+                *wire.calls.lock().unwrap(),
+                ["catalog", "catalog", "board.read"]
+            );
+        }
+    }
 }
 #[derive(Default)]
 struct Sink(Mutex<Vec<DecisionAnswer>>);
