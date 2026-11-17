@@ -515,6 +515,10 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 52,
         statements: include_str!("../schema_attribution_v52.sql"),
     },
+    Migration {
+        version: 53,
+        statements: include_str!("../schema_agent_move_v53.sql"),
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,

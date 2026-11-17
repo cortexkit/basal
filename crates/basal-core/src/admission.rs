@@ -59,6 +59,10 @@ pub enum Admission {
     RateLimited,
     /// An epoch change waits for every previously admitted run to finish.
     StateBusy,
+    /// The flow's agent is moving to another computer, or has moved: the
+    /// trigger waits (a schedule fire stays planned, an event waits in the
+    /// backlog) until the move is aborted.
+    Frozen,
 }
 
 impl Admission {
@@ -71,7 +75,8 @@ impl Admission {
             | Self::NotApproved
             | Self::Disabled
             | Self::RateLimited
-            | Self::StateBusy => None,
+            | Self::StateBusy
+            | Self::Frozen => None,
         }
     }
 }
@@ -135,6 +140,9 @@ pub(crate) fn gate_with_slots(
 ) -> Result<std::result::Result<Grant, Admission>> {
     if draining(tx)? {
         return Ok(Err(Admission::Draining));
+    }
+    if crate::agent_move::flow_held(tx, &spec.flow_id)? {
+        return Ok(Err(Admission::Frozen));
     }
     if crate::packages::removed(tx, &spec.flow_id)?
         || crate::templates::expired(tx, &spec.flow_id, ctx.now_ms)?

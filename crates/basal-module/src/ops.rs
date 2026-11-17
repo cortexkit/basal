@@ -1689,6 +1689,7 @@ impl Module {
                     Admission::Disabled => json!({"state":"disabled"}),
                     Admission::RateLimited => json!({"state":"rate_limited"}),
                     Admission::StateBusy => json!({"state":"state_busy"}),
+                    Admission::Frozen => json!({"state":"frozen"}),
                 }
             });
             return Ok(json!({"run_id": p.run_id, "state": "cancelled", "admission": admission}));

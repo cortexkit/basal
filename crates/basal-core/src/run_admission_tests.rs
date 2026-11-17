@@ -726,3 +726,59 @@ fn history_lost_holds_the_slot_and_blocks_a_new_state_epoch() {
     assert_eq!(f.count("live_runs"), 1);
     assert!(f.store.read(|c| sql::history_lost(c, &run_id)).unwrap());
 }
+
+#[test]
+fn a_frozen_agent_defers_fires_and_events_until_the_move_is_aborted() {
+    let f = Fixture::new("agent-move-freeze");
+    f.scheduled("sched");
+    f.event("ev");
+    f.schema();
+    let cut = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    f.rt.store()
+        .write(|tx| {
+            tx.execute("UPDATE flows SET owner='agent_a'", [])?;
+            crate::agent_move::freeze(tx, "agent_a", cut, 1000)?
+                .map_err(|b| CoreError::Invalid(b.reason))
+        })
+        .unwrap();
+    let due_before: i64 = f
+        .store
+        .read(|c| Ok(c.query_row("SELECT next_due_ms FROM schedules WHERE flow_id='sched'", [], |r| r.get(0))?))
+        .unwrap();
+    let path = f.path(Arc::new(NoHooks));
+    // While frozen nothing runs: due times pass unplanned and the event
+    // waits in the backlog as it would for a rate limit.
+    let report = tick(&path, 181_000).unwrap();
+    assert!(report.new_runs().is_empty());
+    assert!(report.planned.is_empty());
+    let events = path
+        .admit_events(&[notice(1)], &ctx(100), &NoWakes, || Ok(()))
+        .unwrap();
+    assert_eq!((events.admitted, events.queued), (0, 1));
+    assert_eq!(path.drain_event_backlog(&ctx(100)).unwrap(), 0);
+    assert_eq!(f.count("live_runs"), 0);
+    assert_eq!(
+        f.store
+            .read(|c| Ok(c.query_row("SELECT next_due_ms FROM schedules WHERE flow_id='sched'", [], |r| r.get::<_, i64>(0))?))
+            .unwrap(),
+        due_before,
+        "the schedule did not advance"
+    );
+    // Abort lifts the freeze: the missed due times are settled by the
+    // schedule's `missed` policy and the queued event runs.
+    f.rt.store()
+        .write(|tx| crate::agent_move::lift(tx, "agent_a", cut))
+        .unwrap();
+    let report = tick(&path, 181_000).unwrap();
+    assert!(!report.new_runs().is_empty());
+    let triggers: Vec<String> = f
+        .store
+        .read(|c| {
+            Ok(c.prepare("SELECT trigger FROM live_runs WHERE flow_id='sched'")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .unwrap();
+    assert!(triggers.iter().any(|t| t.contains("catch_up")), "{triggers:?}");
+    assert_eq!(path.drain_event_backlog(&ctx(100)).unwrap(), 1);
+}

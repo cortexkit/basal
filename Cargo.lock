@@ -173,6 +173,7 @@ dependencies = [
  "cortexkit-bus-nats",
  "cortexkit-bus-trait",
  "cortexkit-log",
+ "cortexkit-role-agent-data",
  "cortexkit-role-harness",
  "cortexkit-role-routing",
  "cortexkit-role-tool-provider",
@@ -522,6 +523,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98509395f8f7afce4127b6c6e1f1eaf11ee20fba57a86c27a21da67e10a3bc45"
 dependencies = [
  "pulldown-cmark",
+]
+
+[[package]]
+name = "cortexkit-role-agent-data"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14375c604e88e22f31c67bc4dc6fd3f055ecd9bb84d8f976d2e221a8dab7f82d"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -239,12 +239,15 @@ fn plan_flow_in(
     }))
 }
 
-/// Active schedules whose next due time is not after `now`.
+/// Active schedules whose next due time is not after `now`. A flow frozen
+/// by a move is left unplanned, so its due times pass into missed time that
+/// its `missed` policy settles once the freeze lifts.
 pub fn due_flows(c: &rusqlite::Connection, now: Timestamp) -> Result<Vec<String>> {
-    let mut stmt = c.prepare(
+    let mut stmt = c.prepare(&format!(
         "SELECT flow_id FROM schedules WHERE state = 'active' AND next_due_ms IS NOT NULL \
-         AND next_due_ms <= ?1 ORDER BY next_due_ms, flow_id",
-    )?;
+         AND next_due_ms <= ?1 AND {} ORDER BY next_due_ms, flow_id",
+        crate::agent_move::NOT_HELD
+    ))?;
     let ids = stmt
         .query_map([to_ms(now)], |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -341,7 +344,10 @@ fn admit_oldest(
     let trigger = JsonText::new(payload.clone())
         .map_err(|e| CoreError::Corrupt(format!("planned fire {trigger_id}: {e:?}")))?;
     let admission = admit(&flow_id, &trigger_id, trigger)?;
-    if !matches!(admission, Admission::Draining | Admission::StateBusy) {
+    if !matches!(
+        admission,
+        Admission::Draining | Admission::StateBusy | Admission::Frozen
+    ) {
         if let Some(reason) = dropped_reason(&admission) {
             tx.execute(
                 "INSERT INTO schedule_dropped (flow_id, trigger_id, due_ms, payload, reason, at) \
