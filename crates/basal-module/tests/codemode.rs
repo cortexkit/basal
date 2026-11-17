@@ -513,6 +513,74 @@ fn held_context() -> Context {
 }
 
 #[test]
+fn prefrontal_rename_late_results_share_the_existing_cursor_without_rewriting_entries() {
+    for first in ["prefrontal-core", "prefrontal"] {
+        let rig = rig("late-core-rename", true);
+        let store = rig.fixture.module.rt.store();
+        store.write(|tx| {
+            tx.execute("INSERT INTO codemode_late_acks VALUES ('reserved:prefrontal-core',1)", [])?;
+            for (seq, custodian) in [(2,"reserved:prefrontal-core"),(3,"reserved:broca"),(4,"reserved:prefrontal")] {
+                let entry = cortexkit_role_tool_provider::late_results::LateEntry::new("result", "reserved:prefrontal-core", "session", 7, custodian, format!("call-{seq}"), format!("event-{seq}"), common::T0 as u64).with_result(json!(seq));
+                tx.execute("INSERT INTO codemode_late_results(seq,custodian,entry,event_id,settled_at) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![seq,custodian,serde_json::to_string(&entry).unwrap(),format!("event-{seq}"),common::T0])?;
+            }
+            Ok(())
+        }).unwrap();
+        let request = |module: &str, op: &str, args: Value| {
+            let ctx = Context {
+                principal: Principal::Reserved {
+                    module_id: module.into(),
+                },
+                scope: None,
+                ..context()
+            };
+            rig.fixture
+                .module
+                .handle_tool(&ctx, ToolCallRequest::new(op, args), Duration::ZERO)
+                .unwrap()
+        };
+        let other = if first == "prefrontal" {
+            "prefrontal-core"
+        } else {
+            "prefrontal"
+        };
+        let page = request(first, "late_results", json!({"since":null,"limit":1}));
+        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(page["entries"][0]["custodian"], "reserved:prefrontal-core");
+        assert_eq!(page["entries"][0]["owner"], "reserved:prefrontal-core");
+        assert_eq!(page["cursor"]["seq"], 2);
+        assert_eq!(page["more"], true);
+        request(other, "late_results.ack", json!({"through":page["cursor"]}));
+        let next = request(other, "late_results", json!({"since":page["cursor"]}));
+        assert_eq!(next["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(next["entries"][0]["custodian"], "reserved:prefrontal");
+        assert_eq!(next["cursor"]["seq"], 4);
+        request(first, "late_results.ack", json!({"through":next["cursor"]}));
+        request(other, "late_results.ack", json!({"through":page["cursor"]}));
+        for module in [first, other] {
+            let empty = request(module, "late_results", json!({"since":next["cursor"]}));
+            assert_eq!(empty["entries"], json!([]));
+            assert_eq!(empty["cursor"], next["cursor"]);
+        }
+        store
+            .read(|conn| {
+                let acks: (i64, i64) = conn.query_row(
+                    "SELECT COUNT(*),MAX(through_seq) FROM codemode_late_acks",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                assert_eq!(acks, (1, 4));
+                let custodian: String =
+                    conn.query_row("SELECT custodian FROM codemode_late_results", [], |r| {
+                        r.get(0)
+                    })?;
+                assert_eq!(custodian, "reserved:broca");
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
 fn running_reply_is_held_only_when_the_route_declared_both_capabilities() {
     let rig = rig("running-held-gating", false);
     let request = ToolCallRequest::new(

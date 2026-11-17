@@ -6,7 +6,10 @@ use serde_json::{Value, json};
 /// Broca records `scope_epoch`, while core publishes the selector's `epoch`.
 pub fn scope_matches(ownership: &Value, registered: &Value) -> bool {
     let scope = &ownership["scope"];
-    scope["owner"] == json!({"kind":"reserved","module_id":"prefrontal-core"})
+    scope["owner"]["kind"] == "reserved"
+        && scope["owner"]["module_id"]
+            .as_str()
+            .is_some_and(basal_host::core_identity::is_core_module)
         && scope["owner"] == registered["owner"]
         && registered["ref"].as_str().is_some_and(|s| !s.is_empty())
         && registered["epoch"].as_u64().is_some_and(|n| n > 0)
@@ -96,6 +99,11 @@ mod tests {
         let registered = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"core-ref","epoch":7});
         let owner = json!({"scope":{"owner":registered["owner"],"ref":"core-ref","scope_epoch":7}});
         assert!(scope_matches(&owner, &registered));
+        let mut renamed = registered.clone();
+        renamed["owner"]["module_id"] = json!("prefrontal");
+        let mut renamed_owner = owner.clone();
+        renamed_owner["scope"]["owner"] = renamed["owner"].clone();
+        assert!(scope_matches(&renamed_owner, &renamed));
         for (key, wrong) in [
             ("ref", json!("other-ref")),
             ("scope_epoch", json!(8)),

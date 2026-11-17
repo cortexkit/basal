@@ -106,7 +106,7 @@ pub(crate) fn wire(error: basal_host::transport::WireError) -> ErrorBody {
 
 fn read_scope(context: &Context) -> Result<ScopeSelector, ErrorBody> {
     let scope = context.scope.as_ref().filter(|scope| {
-        matches!(&scope.owner, Principal::Reserved { module_id } if module_id == "prefrontal-core")
+        matches!(&scope.owner, Principal::Reserved { module_id } if basal_host::core_identity::is_core_module(module_id))
             && scope.owner_authorized
             && scope.scope_ref.starts_with("flow-read/")
             && scope.scope_ref.len() > "flow-read/".len()

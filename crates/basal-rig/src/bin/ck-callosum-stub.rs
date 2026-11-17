@@ -158,6 +158,18 @@ impl Stub {
             Ok(consumer) => consumer,
             Err(e) => return error("stub_unconnected", e.to_string()),
         };
+        let module = if basal_host::core_identity::is_core_module(module) {
+            let catalog = match consumer.catalog_list().await {
+                Ok(catalog) => catalog,
+                Err(e) => return error("stub_unconnected", e.to_string()),
+            };
+            basal_host::core_identity::resolve(|id| {
+                catalog.modules.iter().any(|module| module.module_id == id)
+            })
+            .unwrap_or(CORE)
+        } else {
+            module
+        };
         let body = json!({ "method": method, "params": params });
         let reply = consumer
             .call(

@@ -828,6 +828,101 @@ fn routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end() {
 }
 
 #[test]
+fn prefrontal_rename_stored_approval_dispatches_without_changing_manifest_bytes() {
+    for registered in ["prefrontal-core", "prefrontal"] {
+        let fake = Fake::new();
+        let entry = |module: &str| {
+            json!({"module_id":module,"roles":[
+            {"role":"management_surface","operations":[{"name":"board.read","kind":"query"},{"name":"work.unsettled","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}
+        ],"control_ops":[]})
+        };
+        fake.catalog.lock().unwrap()["modules"]
+            .as_array_mut()
+            .unwrap()
+            .push(entry("prefrontal-core"));
+        let consent = Arc::new(CoreConsent::new(fake.clone()));
+        let f = worker_fixture(fake.clone(), consent, "core-rename");
+        let m = json!({"id":"rename","version":1,"explanation":"Reads approved boards for a rename regression.","purpose":"Read boards",
+            "trigger":{"schedule":{"interval":"1h"}},"board_read":["SYNAPSE"],
+            "ops":[{"module":"prefrontal-core","op":"board.read"}]});
+        let script = "return await ops.call('prefrontal-core','board.read',{});";
+        common::install(&f, &Caller::Operator, script, &m);
+        approve(&fake, &f.module);
+        fake.catalog.lock().unwrap()["modules"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|module| module["module_id"] != "prefrontal-core");
+        fake.catalog.lock().unwrap()["modules"]
+            .as_array_mut()
+            .unwrap()
+            .push(entry(registered));
+        f.module
+            .rt
+            .store()
+            .write(|tx| {
+                for (seq, custodian) in
+                    [(1, "reserved:prefrontal-core"), (2, "reserved:prefrontal")]
+                {
+                    basal_core::bus_outbox::enqueue_late_result_wake(
+                        tx,
+                        custodian,
+                        seq,
+                        common::T0,
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let wakes = f
+            .module
+            .rt
+            .pending_bus_events(10)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.name == "late_result_ready")
+            .collect::<Vec<_>>();
+        assert_eq!(wakes.len(), 2);
+        assert!(
+            wakes
+                .iter()
+                .all(|wake| wake.reader.as_deref() == Some(registered))
+        );
+        fake.enqueue("board.read", vec![Ok(json!({"read":true}))]);
+        let run = common::admit(&f, "rename", "after-cut");
+        f.module.engine.run_until_idle(50).unwrap();
+        let done = f.module.rt.run(&run).unwrap();
+        assert_eq!(done.state, RunState::Succeeded, "{registered}: {done:?}");
+        assert_eq!(done.manifest, m.to_string());
+        assert_eq!(
+            done.code_hash,
+            basal_core::ids::code_hash(script, &m.to_string())
+        );
+        assert_eq!(fake.calls_to(registered, "board.read").len(), 1);
+        assert_eq!(fake.calls("flow.install_request").len(), 1);
+        for name in ["prefrontal-core", "prefrontal"] {
+            let mut next = m.clone();
+            next["id"] = json!(format!("new-{}", name));
+            next["ops"][0]["module"] = json!(name);
+            common::install(&f, &Caller::Operator, "return 1;", &next);
+            let parsed = basal_core::Manifest::parse(&next.to_string()).unwrap();
+            for called in ["prefrontal-core", "prefrontal"] {
+                basal_core::authorize::check(
+                    &parsed,
+                    &Default::default(),
+                    f.module.rt.catalog(),
+                    &CallKind::Op {
+                        module: called.into(),
+                        op: "board.read".into(),
+                    },
+                    &json!({}),
+                )
+                .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
 fn digest_replace_key_validation_refuses_invalid_values_unsent() {
     let fake = Fake::new();
     let consent = Arc::new(CoreConsent::new(fake.clone()));

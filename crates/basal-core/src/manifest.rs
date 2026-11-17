@@ -1579,7 +1579,9 @@ impl Manifest {
     }
 
     pub fn lists_op(&self, module: &str, op: &str) -> bool {
-        self.ops.iter().any(|o| o.module == module && o.op == op)
+        self.ops
+            .iter()
+            .any(|o| basal_host::core_identity::same_module(&o.module, module) && o.op == op)
     }
 
     /// The most intrusive digest action allowed for `agent`, if any.

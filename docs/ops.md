@@ -4,6 +4,8 @@ Basal serves the `flow` tool alongside `codemode`. Core selects it with the tool
 
 The daemon delivers agent-facing `codemode` calls directly to basal; prefrontal-core does not forward them. See [codemode](#codemode).
 
+During the rename from `prefrontal-core` to `prefrontal`, basal accepts both module names and both reserved principals as the same core identity. Outbound calls use `prefrontal` when present in the daemon catalog, otherwise `prefrontal-core`, so the same basal build works before and after the daemon restart. Approved manifest bytes, audit rows, run history and stored card principals are not rewritten; late program results share one acknowledgement cursor across the two custodian names.
+
 Package management is not agent-relayed: `package.register` is available to the attested operator and core; `package.get`, `flow.instance.ensure`, and `flow.instance.remove` are core-only. The attested operator is a caller on a route the daemon stamps as the reserved `callosum` module, the operator's own module. A plain local caller is a process holding the daemon's direct connection key, on a route with no scope, which the daemon cannot vouch for. A plain local caller refused any of these receives `operator_attestation_required`, consistently with the other management operations; other unauthorized callers receive `not_permitted`. See [package manifests](packages.md).
 
 Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present unless a key is marked optional with `?`. `object` and `any` describe open JSON values.

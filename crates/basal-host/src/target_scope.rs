@@ -27,10 +27,10 @@ pub struct TargetScope {
 }
 
 impl TargetScope {
-    pub fn selector(&self) -> FlowScope {
+    pub fn selector(&self, core_module: &str) -> FlowScope {
         FlowScope {
             owner: Principal::Reserved {
-                module_id: crate::subc_catalog::CORE.into(),
+                module_id: core_module.into(),
             },
             scope_ref: self.scope_ref.clone(),
             epoch: self.epoch,

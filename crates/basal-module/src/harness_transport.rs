@@ -70,7 +70,7 @@ impl Transport for HarnessTransport {
         }))
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
-        if module == "prefrontal-core" && op == "sink.digest" {
+        if basal_host::core_identity::is_core_module(module) && op == "sink.digest" {
             let flow = params["flow_id"]
                 .as_str()
                 .ok_or_else(|| WireError::NeverSent("missing flow id".into()))?;

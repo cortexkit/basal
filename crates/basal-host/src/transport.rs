@@ -87,18 +87,9 @@ pub trait Transport: Send + Sync {
     }
 
     fn newest_approved_template_version(&self, package: &str) -> Result<Option<u32>, WireError> {
-        let catalog = self.catalog()?;
-        let supported = catalog["modules"].as_array().is_some_and(|modules| {
-            modules.iter().any(|module| {
-                module["module_id"] == "prefrontal-core"
-                    && module["capabilities"]["provides"]
-                        .as_array()
-                        .is_some_and(|tags| {
-                            tags.iter()
-                                .any(|tag| tag == PACKAGE_APPROVED_VERSIONS_CAPABILITY)
-                        })
-            })
-        });
+        let catalog = self.catalog_snapshot()?;
+        let supported = crate::core_identity::catalog_module(&catalog, crate::subc_catalog::CORE)
+            .is_some_and(|core| core.provides(PACKAGE_APPROVED_VERSIONS_CAPABILITY));
         if !supported {
             return Err(WireError::Refused {
                 code: "version_required".into(),
@@ -107,7 +98,7 @@ pub trait Transport: Send + Sync {
             });
         }
         let reply = self.management(
-            "prefrontal-core",
+            crate::core_identity::core_module(self),
             "package.approved_versions",
             json!({"package":package}),
         )?;
@@ -1143,7 +1134,7 @@ impl Transport for SubcTransport {
         self.configure_flow(
             &key,
             Some(crate::flow_scope::RegisteredScope {
-                selector: scope.selector(),
+                selector: scope.selector(crate::core_identity::core_module(self)),
                 targets,
             }),
         );
@@ -1232,6 +1223,7 @@ impl Transport for SubcTransport {
         op: &str,
         params: Value,
     ) -> Result<Value, WireError> {
+        let module = crate::core_identity::routed_module(self, module);
         self.call_for_flow(
             flow,
             RouteTarget::ManagementSurface {
@@ -1252,6 +1244,7 @@ impl Transport for SubcTransport {
         arguments: Value,
         call_key: &str,
     ) -> Result<Value, WireError> {
+        let module = crate::core_identity::routed_module(self, module);
         self.call_for_flow(
             flow,
             RouteTarget::ToolProvider {
@@ -1402,6 +1395,7 @@ impl Transport for SubcTransport {
         self.catalog_changes.subscribe(notify);
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
+        let module = crate::core_identity::routed_module(self, module);
         self.call(
             RouteTarget::ManagementSurface {
                 module_id: module.into(),
@@ -1416,6 +1410,7 @@ impl Transport for SubcTransport {
         op: &str,
         params: Value,
     ) -> Result<Value, WireError> {
+        let module = crate::core_identity::routed_module(self, module);
         self.call_as_with_route_refusals(
             RouteTarget::ManagementSurface {
                 module_id: module.into(),
@@ -1434,6 +1429,7 @@ impl Transport for SubcTransport {
         arguments: Value,
         call_key: &str,
     ) -> Result<Value, WireError> {
+        let module = crate::core_identity::routed_module(self, module);
         let body = tool_body(name, arguments, call_key)?;
         self.call(
             RouteTarget::ToolProvider {

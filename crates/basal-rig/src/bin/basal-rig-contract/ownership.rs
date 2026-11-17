@@ -43,17 +43,28 @@ pub(super) async fn cross_agent(rig: &Rig, agent: &Agent, tag: &str, machine_id:
     ) {
         return case;
     }
-    let stopped = super::seeded::ck(&["module", "stop", "prefrontal-core"]);
+    let core = match rig.client.core_module().await {
+        Ok(core) => core,
+        Err(error) => {
+            case.check(
+                "resolve core before stopping it",
+                false,
+                json!(error.to_string()),
+            );
+            return case;
+        }
+    };
+    let stopped = super::seeded::ck(&["module", "stop", core]);
     if !case.check(
-        "stop only ckdev-prefrontal-core before the isolated fixture write",
+        "stop only core before the isolated fixture write",
         stopped.is_ok(),
         json!(stopped),
     ) {
         return case;
     }
-    let seeded = seed_authorship(rig, &flow.id, &agent.id);
+    let seeded = seed_authorship(rig, &flow.id, &agent.id, core);
     case.record("authorship_fixture", json!(&seeded));
-    let started = super::seeded::ck(&["module", "start", "prefrontal-core"]);
+    let started = super::seeded::ck(&["module", "start", core]);
     case.check(
         "restart core after closing the fixture connection",
         started.is_ok(),
@@ -214,10 +225,10 @@ pub(super) fn other_values_fingerprint(
     Ok(hash.finalize().to_hex().to_string())
 }
 
-fn seed_authorship(rig: &Rig, flow_id: &str, author: &str) -> Result<Value, String> {
+fn seed_authorship(rig: &Rig, flow_id: &str, author: &str, core: &str) -> Result<Value, String> {
     let home = PathBuf::from(std::env::var_os("HOME").ok_or("missing isolated HOME")?);
     let path = super::seeded::fixture_path_for(&home, &rig.core.path, "prefrontal-core")?;
-    let status = super::seeded::ck(&["module", "status", "prefrontal-core"])?;
+    let status = super::seeded::ck(&["module", "status", core])?;
     if !super::seeded::fully_stopped(&status, None) {
         return Err(format!("core is not terminally stopped: {status}"));
     }

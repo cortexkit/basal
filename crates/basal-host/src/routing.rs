@@ -97,7 +97,7 @@ impl ModuleOpsHost {
                 })?;
             let carrier =
                 is_core_carrier_op(module, op) && matches!(request.kind, CallKind::Op { .. });
-            if module == crate::subc_catalog::CORE && !carrier && !flow_capable {
+            if crate::core_identity::is_core_module(module) && !carrier && !flow_capable {
                 return Err(WireError::Refused {
                     code: "basal_scope_bug".into(),
                     message: format!("core flow op {op} cannot use the carrier route"),
@@ -140,6 +140,11 @@ impl ModuleOpsHost {
                 (self.transport.target_flow(request, &call)?, call.args)
             } else {
                 (request.route_key(), args)
+            };
+            let module = if crate::core_identity::is_core_module(module) {
+                crate::core_identity::core_module(self.transport.as_ref())
+            } else {
+                module
             };
             match decl.surface {
                 Surface::Management if carrier => self.transport.management(module, op, args),

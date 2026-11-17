@@ -47,10 +47,7 @@ fn identity(scope: Option<&ScopeStamp>) -> Result<(&str, &str), &'static str> {
         .run_id
         .as_deref()
         .ok_or("run_scope_required")?;
-    let core_owner = scope.owner
-        == (Principal::Reserved {
-            module_id: "prefrontal-core".into(),
-        });
+    let core_owner = matches!(&scope.owner, Principal::Reserved { module_id } if basal_host::core_identity::is_core_module(module_id));
     if !core_owner {
         return Err("scope_mismatch");
     }
@@ -153,8 +150,13 @@ mod tests {
 
     #[test]
     fn accepts_core_owned_run_identity() {
-        let stamp = stamp();
-        assert_eq!(identity(Some(&stamp)), Ok(("agent-rig", "run-rig")));
+        for module in ["prefrontal-core", "prefrontal"] {
+            let mut stamp = stamp();
+            stamp.owner = Principal::Reserved {
+                module_id: module.into(),
+            };
+            assert_eq!(identity(Some(&stamp)), Ok(("agent-rig", "run-rig")));
+        }
     }
 
     #[test]

@@ -219,6 +219,30 @@ fn runtime_with_catalog(path: &std::path::Path, catalog: MockCatalog) -> Runtime
 
 const DELIVERED_SUBJECT: &str = "ck.account.event.prefrontal-core.digest_delivered.v1";
 
+#[tokio::test]
+async fn prefrontal_rename_events_target_the_stored_flow_under_either_subject() {
+    let server = Server::start().await;
+    let consumer = bind(&server.bus, STREAM).await.unwrap();
+    for (n, module) in ["prefrontal-core", "prefrontal"].into_iter().enumerate() {
+        let rt = delivered_runtime(&server.dir.join(format!("rename-{n}.db")));
+        let subject = format!("ck.account.event.{module}.digest_delivered.v1");
+        server
+            .publish_with_headers(
+                n as u64,
+                &subject,
+                std::collections::BTreeMap::from([
+                    ("flow_id".into(), "b".into()),
+                    ("agent".into(), "SYNAPSE".into()),
+                ]),
+            )
+            .await;
+        let messages = pull(&consumer).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        let report = commit_batch(rt.clone(), &messages, true).await.unwrap();
+        assert_eq!((report.matched, report.admitted), (1, 1), "{module}");
+    }
+}
+
 fn delivered_runtime(path: &std::path::Path) -> Runtime {
     let catalog = MockCatalog::standard();
     catalog.set_flow_capable("prefrontal-core", true);

@@ -620,7 +620,7 @@ async fn commit_batch_report(
                 {
                     continue;
                 }
-                if subject.module == "prefrontal-core"
+                if basal_host::core_identity::is_core_module(&subject.module)
                     && subject.event == "flow_install_changed"
                     && subject.version == 1
                 {

@@ -526,6 +526,10 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
 mod attribution_tests;
 
 #[cfg(test)]
+#[path = "core_identity_tests.rs"]
+mod core_identity_tests;
+
+#[cfg(test)]
 mod agentless_audience_warning_tests {
     use super::*;
 
@@ -902,7 +906,13 @@ pub(crate) fn validate_inner(
                         // instantiation, even when its alternatives are identical.
                         let granted = manifest.ops.iter().any(|grant| {
                             grant.op == *resolve_op
-                                && (grant.module == event.module || grant.module == e.module)
+                                && (basal_host::core_identity::same_module(
+                                    &grant.module,
+                                    &event.module,
+                                ) || basal_host::core_identity::same_module(
+                                    &grant.module,
+                                    &e.module,
+                                ))
                         });
                         if !granted {
                             return Err(InstallError::EventBodyOpNotGranted {
@@ -967,7 +977,11 @@ pub(crate) fn validate_inner(
                     return Err(InstallError::UnmarkedOp { module, op });
                 };
                 if kind == OpKind::Mutate {
-                    if trigger_modules.contains(module) && !decl.cause_echo {
+                    if trigger_modules
+                        .iter()
+                        .any(|trigger| basal_host::core_identity::same_module(trigger, module))
+                        && !decl.cause_echo
+                    {
                         // Only an explicit `false` exempts: the module's promise that
                         // no call to this tool makes it emit an event, so the call
                         // cannot loop back into a trigger. Absent or `true` may emit.

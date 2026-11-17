@@ -82,6 +82,9 @@ pub const AGENT_REGISTRY_UNAVAILABLE: &str = "agent_registry_unavailable";
 /// The declarations basal validates manifests against. Implementations
 /// must be safe to call from several threads.
 pub trait Catalog: Send + Sync {
+    fn core_module(&self) -> &'static str {
+        crate::core_identity::LEGACY_CORE_MODULE
+    }
     /// Freeze daemon declarations for this request. Static catalogs need no
     /// replacement. Callers must acquire this outside the store write lock.
     fn request_snapshot(&self) -> Option<Arc<dyn Catalog>> {
@@ -441,7 +444,7 @@ impl Catalog for MockCatalog {
             .flow_call_support
             .get(module)
             .copied()
-            .unwrap_or(module != crate::subc_catalog::CORE)
+            .unwrap_or(!crate::core_identity::is_core_module(module))
     }
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {
         self.read()
