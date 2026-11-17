@@ -212,7 +212,7 @@ function workEntry(rule, agent, work, since, now) {
     data.delivery = work.delivery;
     const status = work.delivery === 'unmerged' ? 'unmerged' : `not known merged (${work.delivery})`;
     const dependents = blocks.length ?
-      `; settling unblocks ${blocks.length} slices: ${shown.map(block => JSON.stringify(shortText(block.title))).join(', ')}` +
+      `; settling unblocks ${blocks.length} ${blocks.length === 1 ? 'slice' : 'slices'}: ${shown.map(block => JSON.stringify(shortText(block.title))).join(', ')}` +
         (blocks.length > shown.length ? ` and ${blocks.length - shown.length} more` : '') : '';
     const body = `- ${JSON.stringify(shortText(work.title))} (${work.item_id}): delivered ${age(now, since)}, ${status}${dependents}`;
     return bounded({title: `Delivery waiting for review: ${text}`, body, data}, 3600, 7000);
