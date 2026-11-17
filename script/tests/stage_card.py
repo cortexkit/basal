@@ -21,6 +21,17 @@ HELPERS = (SOURCE.split("# -----------------------------------------------------
            + SOURCE.split("# ---------------------------------------------------------------- card\n")[1]
            .split("# ---------------------------------------------------------------- output\n")[0])
 SHA = "a" * 40
+
+
+def locked_version(name):
+    """The crate's version in Cargo.lock, which the card reports as the subc stack."""
+    lines = (SCRIPT.parents[1] / "Cargo.lock").read_text().splitlines()
+    return lines[lines.index(f'name = "{name}"') + 1].split('"')[1]
+
+
+def fill_stack(text):
+    return (text.replace("@SUBC_PROTOCOL@", locked_version("subc-protocol"))
+            .replace("@SUBC_CLIENT@", locked_version("subc-client-rs")))
 OPTIONS = ["--basal-marker", "new basal", "--basal-control", "basal control",
            "--worker-marker", "new worker", "--worker-control", "worker control"]
 
@@ -252,7 +263,7 @@ write_card --prepared
         for path in self.live.iterdir():
             path.unlink()
         card = self.success([])
-        expected = (Path(__file__).parent / "fixtures/first_install_card.md").read_text()
+        expected = fill_stack((Path(__file__).parent / "fixtures/first_install_card.md").read_text())
         self.assertEqual(card, expected.replace("@STAGE@", str(self.stage)).replace("@SHA@", SHA))
 
     def test_prepared_card_does_not_repeat_live_validation(self):
@@ -355,7 +366,7 @@ write_card --prepared
         self.write_worker(self.stage, 12, staged=True)
         self.write_worker(self.live, 11)
         card = self.success()
-        expected = (Path(__file__).parent / "fixtures/stop_the_world_card.md").read_text()
+        expected = fill_stack((Path(__file__).parent / "fixtures/stop_the_world_card.md").read_text())
         expected = (expected.replace("@STAGE@", str(self.stage)).replace("@SHA@", SHA)
                     .replace("@HOME@", str(self.home)))
         self.assertEqual(card, expected)

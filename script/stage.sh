@@ -560,6 +560,12 @@ write_current() {
 
 # ---------------------------------------------------------------- card
 
+# The version of a crate in Cargo.lock, so the card names the subc stack
+# this build actually links instead of a floor that goes stale.
+locked_version() {
+    awk -v name="$1" '$0 == "name = \"" name "\"" { getline; gsub(/version = |"/, ""); print; exit }' "$ROOT/Cargo.lock"
+}
+
 sum_of() { awk '{ print $1 }' "$STAGE_DIR/$1.sha256"; }
 # The CI result for the staged commit, as GitHub reports it, so the card
 # never claims a run it did not look up.
@@ -582,7 +588,7 @@ macOS developer placement.
 - ck-basal-worker: $STAGE_DIR/ck-basal-worker, sha256 $(sum_of ck-basal-worker); basal-worker.current revision $SHA
 - build: release, clean tree, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY, commit $PUSHED.
 - CI for that commit: $(ci_of)
-- daemon floor: ck 0.21.3 / daemon 0.44.5, the oldest stack supported by this subc-protocol 0.36 module.
+- daemon stack: built on subc-protocol $(locked_version subc-protocol) and subc-client-rs $(locked_version subc-client-rs); confirm the live daemon serves that stack before placing.
 
 **macOS signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=$(codesign_flags "$STAGE_DIR/ck-basal")
@@ -630,7 +636,7 @@ macOS developer placement.
 - ck-basal-worker: $STAGE_DIR/ck-basal-worker, sha256 $(sum_of ck-basal-worker); basal-worker.current revision $SHA
 - build: release, clean tree, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY, commit $PUSHED.
 - CI for that commit (push event): $(ci_of)
-- daemon floor: ck 0.21.3 / daemon 0.44.5, the oldest stack supported by this subc-protocol 0.36 module.
+- daemon stack: built on subc-protocol $(locked_version subc-protocol) and subc-client-rs $(locked_version subc-client-rs); confirm the live daemon serves that stack before placing.
 
 **macOS signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=$(codesign_flags "$STAGE_DIR/ck-basal")
