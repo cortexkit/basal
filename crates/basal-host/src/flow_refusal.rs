@@ -232,11 +232,13 @@ impl FlowRefusal {
                 "the provider is not currently catalogued; waiting for it to register"
             }
             RefusalReason::CatalogUnavailable => "the daemon catalog is temporarily unavailable",
-            // The daemon refuses this both for a module that never declared
-            // flow-scopes/v1 and for one that has not finished registering
-            // after a restart, so the text must not assert which.
+            // Three causes share this reason: the daemon refuses a module that
+            // never declared flow-scopes/v1 or hasn't finished registering, and
+            // basal refuses one missing from the flow scope prefrontal
+            // registered. The text must not assert which; a refusal from
+            // basal's own check names the scope's targets in its detail.
             RefusalReason::TargetFlowUnsupported => {
-                "the daemon does not accept flow calls to this module yet: it is still registering, or it does not declare flow-scopes/v1; retry later"
+                "flow calls to this module are not accepted yet: it is still registering, it does not declare flow-scopes/v1, or prefrontal's flow scope for this version does not list it; retry later"
             }
             RefusalReason::ResourceBusy => "the provider's exclusive resource is busy",
             RefusalReason::Transient => "the model provider is temporarily unavailable",

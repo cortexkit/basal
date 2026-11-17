@@ -345,11 +345,15 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
             .iter()
             .any(|target| crate::core_identity::same_module(target, module))
         {
-            return Err(FlowRefusal::new(
-                RefusalReason::TargetFlowUnsupported,
-                module,
-                action,
-            ));
+            // Name the registered targets, so a scope built without this
+            // module reads differently from a daemon-side refusal.
+            let mut refusal =
+                FlowRefusal::new(RefusalReason::TargetFlowUnsupported, module, action);
+            refusal.detail = Some(serde_json::json!({
+                "cause": "not_in_flow_scope",
+                "scope_targets": scope.targets,
+            }));
+            return Err(refusal);
         }
         Ok(())
     }
@@ -448,6 +452,20 @@ mod tests {
             bad["scope"].as_object_mut().unwrap().remove(field);
             assert!(decode(&bad).is_err(), "{bad}");
         }
+    }
+    #[test]
+    fn a_target_missing_from_the_scope_is_refused_naming_the_scope_targets() {
+        let mut routes = ScopedRoutes::<u64>::default();
+        routes.configure("a", Some(registered(decode(&fixture()).unwrap().unwrap().selector)));
+        assert!(routes.ready("a", "broca", "diagnostics.findings").is_ok());
+        let refusal = routes
+            .ready("a", "synapse", "diagnostics.findings")
+            .unwrap_err();
+        assert_eq!(refusal.reason, RefusalReason::TargetFlowUnsupported);
+        assert_eq!(
+            refusal.detail,
+            Some(json!({"cause":"not_in_flow_scope","scope_targets":["broca"]}))
+        );
     }
     #[test]
     fn a_scope_closed_route_is_not_reopened_under_the_same_selector() {
