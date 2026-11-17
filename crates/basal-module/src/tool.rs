@@ -5,8 +5,8 @@ use cortexkit_role_tool_provider::{
     CATALOG_CAPABILITY_FILTER, CallMode,
     catalog::{
         CatalogAnswer, CatalogRequest, CatalogTool, SystemTextAnswer, check_modes,
-        composition_digest, schema_digest, select_by_capabilities, serves_call_mode,
-        system_text_digest,
+        check_notice_templates_request, composition_digest, schema_digest, select_by_capabilities,
+        serves_call_mode, system_text_digest,
     },
     describe::{Major, RoleDescribe},
 };
@@ -109,6 +109,16 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     let request: CatalogRequest =
         serde_json::from_value(arguments).map_err(|e| invalid("arguments", e.to_string()))?;
     check_preset("preset", request.preset.as_deref())?;
+    // Basal serves no session notices, so the contract requires it to refuse
+    // even `notice_templates: false` rather than ignore the member. Building
+    // the manifest is only worth it when the member is present.
+    if request.notice_templates.is_some() {
+        let provides = crate::manifest::manifest()
+            .capabilities
+            .map(|c| c.provides)
+            .unwrap_or_default();
+        check_notice_templates_request(&request, &provides)?;
+    }
     if let Some(item) = &request.system_text {
         check_preset("system_text.preset", item.preset.as_deref())?;
         if let Some(field) = item.params.keys().next() {
