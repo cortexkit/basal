@@ -95,13 +95,25 @@ fn board_hygiene_manifest_installs_without_core_flow_scopes() {
             },
         );
     }
+    let manifest = include_str!("../../../flows/board-hygiene/manifest.json");
+    // The shipped manifest describes an upgrade rather than a first install.
+    let mut previous: serde_json::Value = serde_json::from_str(manifest).unwrap();
+    previous["version"] = json!(19);
+    previous.as_object_mut().unwrap().remove("changes");
+    basal_core::test_support::seed_stored_version(
+        &f.module.rt,
+        "return 7;",
+        &previous.to_string(),
+        false,
+    )
+    .unwrap();
     f.module
         .handle(
             &Caller::Operator,
             "flow.install",
             json!({
                 "script": include_str!("../../../flows/board-hygiene/flow.js"),
-                "manifest": common::authored_manifest(include_str!("../../../flows/board-hygiene/manifest.json")),
+                "manifest": manifest,
             }),
         )
         .unwrap();
@@ -136,6 +148,7 @@ fn work_unsettled_installs_without_core_flow_scopes() {
     manifest["explanation"] =
         json!("Reads unsettled deliveries for a test, without other effects.");
     manifest["ops"] = json!([{"module":"prefrontal-core","op":"work.unsettled"}]);
+    manifest.as_object_mut().unwrap().remove("changes");
     manifest.as_object_mut().unwrap().remove("board_read");
     f.module
         .handle(
@@ -162,6 +175,7 @@ fn board_read_op_and_target_grants_are_required_at_install_dry_run_and_package_r
                 .unwrap();
         manifest["id"] = json!(format!("missing-{missing}"));
         manifest["explanation"] = json!("Reads boards for a test, without other effects.");
+        manifest.as_object_mut().unwrap().remove("changes");
         manifest.as_object_mut().unwrap().remove(missing);
         for method in ["flow.install", "package.register"] {
             let error = f

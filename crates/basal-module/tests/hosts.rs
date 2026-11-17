@@ -528,8 +528,18 @@ fn board_read_install_request_preserves_manifest_bytes_and_hash() {
     let consent = Arc::new(CoreConsent::new(fake.clone()));
     let f = fixture(fake.clone(), consent, "board-read-bytes");
     let script = "return 1;\n";
-    let manifest =
-        common::authored_manifest(include_str!("../../../flows/board-hygiene/manifest.json"));
+    let manifest = include_str!("../../../flows/board-hygiene/manifest.json");
+    // The shipped manifest's change summary requires an earlier stored version.
+    let mut previous: Value = serde_json::from_str(manifest).unwrap();
+    previous["version"] = json!(19);
+    previous.as_object_mut().unwrap().remove("changes");
+    basal_core::test_support::seed_stored_version(
+        &f.module.rt,
+        script,
+        &previous.to_string(),
+        false,
+    )
+    .unwrap();
     let reply = f
         .module
         .handle(
@@ -547,7 +557,7 @@ fn board_read_install_request_preserves_manifest_bytes_and_hash() {
     assert_eq!(install["manifest_json"], manifest);
     let parsed: Value = serde_json::from_str(install["manifest_json"].as_str().unwrap()).unwrap();
     assert_eq!(parsed["board_read"], json!(["$audience"]));
-    let expected = basal_core::ids::hex(&basal_core::ids::code_hash(script, &manifest));
+    let expected = basal_core::ids::hex(&basal_core::ids::code_hash(script, manifest));
     assert_eq!(install["code_hash"], expected);
     assert_eq!(reply["code_hash"], expected);
     let without = manifest.replace("  \"board_read\": [\"$audience\"],\n", "");

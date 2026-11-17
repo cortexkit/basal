@@ -260,11 +260,22 @@ impl Test {
             basal_core::test_support::seed_stored_version(&f.module.rt, SCRIPT, MANIFEST, false)
                 .unwrap();
         } else {
+            // The shipped manifest describes an upgrade, so intake needs an earlier version.
+            let mut previous: Value = serde_json::from_str(MANIFEST).unwrap();
+            previous["version"] = json!(19);
+            previous.as_object_mut().unwrap().remove("changes");
+            basal_core::test_support::seed_stored_version(
+                &f.module.rt,
+                SCRIPT,
+                &previous.to_string(),
+                false,
+            )
+            .unwrap();
             let reply = common::install(
                 &f,
                 &Caller::Operator,
                 SCRIPT,
-                &serde_json::from_str(&common::authored_manifest(MANIFEST)).unwrap(),
+                &serde_json::from_str(MANIFEST).unwrap(),
             );
             assert!(consent.decide(
                 reply["card_id"].as_str().unwrap(),
@@ -330,7 +341,9 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse_stored(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 19);
+    assert_eq!(value["version"], 20);
+    assert!(!value["explanation"].as_str().unwrap().is_empty());
+    assert!(!value["changes"].as_str().unwrap().is_empty());
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -1754,6 +1767,230 @@ fn work_unsettled_vectors_are_pinned() {
 }
 
 #[test]
+fn an_unmerged_delivery_is_named_at_thirty_minutes_and_unchanged_lists_are_not_rewritten() {
+    let mut page = vector("reply-unmerged.json");
+    page["items"][0]["delivered_at_ms"] = json!(BASE);
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![page]);
+    assert!(t.run(BASE + 29 * MIN).is_empty());
+    assert!(t.run(BASE + 30 * MIN - 1).is_empty());
+    let writes = t.run(BASE + 30 * MIN);
+    assert_eq!(writes.len(), 1);
+    let write = &writes[0];
+    assert_eq!(write["agent"], "ag_owner");
+    assert_eq!(write["action"], "wake");
+    assert_eq!(
+        write["replace_key"],
+        "board_nudge:ag_owner:unreviewed_delivery"
+    );
+    assert_eq!(write["item"]["data"]["rule"], "unreviewed_delivery");
+    assert_eq!(write["item"]["data"]["total_count"], 1);
+    assert_eq!(
+        write["item"]["body"],
+        "Review the delivery, then merge and settle it, or reject it.\n- \"Open follow-up\" (wi_open_follow_up): delivered 30 min ago, unmerged"
+    );
+    assert!(t.run(BASE + HOUR).is_empty());
+    assert!(t.run(BASE + 3 * HOUR).is_empty());
+    assert_eq!(t.seen(), None);
+    assert!(
+        t.keys()
+            .iter()
+            .all(|key| key.starts_with("index:") || key == "nudge:ag_owner:unreviewed_delivery")
+    );
+}
+
+#[test]
+fn unreviewed_delivery_names_blocked_slice_titles_with_a_cap() {
+    let mut page = vector("reply-unmerged.json");
+    let work = &mut page["items"][0];
+    work["delivered_at_ms"] = json!(BASE);
+    work["title"] = json!("Long title ".repeat(20));
+    work["campaign_id"] = json!("ct_hygiene");
+    work["blocks"] = json!([
+        vector("reply-merged-blocked.json")["items"][0]["blocks"][0],
+        {"item_id":"wi_second", "title":"Second slice"},
+        {"item_id":"wi_third", "title":"Third slice"},
+        {"item_id":"wi_fourth", "title":"Fourth slice"},
+        {"item_id":"wi_fifth", "title":"Fifth slice"}
+    ]);
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![page]);
+    let writes = t.run(BASE + HOUR);
+    assert_eq!(writes.len(), 1);
+    let body = writes[0]["item"]["body"].as_str().unwrap();
+    assert_eq!(body.lines().count(), 2, "{body}");
+    assert!(body.contains('…'), "{body}");
+    assert!(body.contains("delivered 1 h ago, unmerged"), "{body}");
+    assert!(
+        body.contains(
+            "settling unblocks 5 slices: \"Blocked slice\", \"Second slice\", \"Third slice\" and 2 more"
+        ),
+        "{body}"
+    );
+    assert!(!body.contains("Fourth slice"), "{body}");
+    assert!(!body.contains("Fifth slice"), "{body}");
+    let entry = &writes[0]["item"]["data"]["entries"][0];
+    assert_eq!(entry["blocks"].as_array().unwrap().len(), 3);
+    assert_eq!(entry["more_blocks"], 2);
+    assert_eq!(entry["delivery"], "unmerged");
+    assert_eq!(entry["delivered_at_ms"], BASE);
+}
+
+#[test]
+fn all_nonmerged_delivery_states_are_reviewed_but_merged_deliveries_only_need_settlement() {
+    let mut merged = vector("reply-merged-blocked.json")["items"][0].clone();
+    // The merged rule needs only its first-seen clock, not a delivery timestamp.
+    merged.as_object_mut().unwrap().remove("delivered_at_ms");
+    let mut items = vec![merged];
+    for (n, state) in ["unmerged", "none", "unknown", "error"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut item = vector("reply-unmerged.json")["items"][0].clone();
+        item["item_id"] = json!(format!("wi_review_{n}"));
+        item["delivery"] = json!(state);
+        item["delivered_at_ms"] = json!(BASE);
+        items.push(item);
+    }
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![json!({"items":items})]);
+    assert!(t.run(BASE).is_empty());
+    let merged = t.run(BASE + 20 * MIN);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0]["item"]["data"]["rule"], "unsettled_merged");
+    assert_eq!(merged[0]["item"]["data"]["total_count"], 1);
+    assert_eq!(
+        merged[0]["item"]["data"]["entries"][0]["item_id"],
+        "wi_merged_slice"
+    );
+    let review = t.run(BASE + 30 * MIN);
+    assert_eq!(review.len(), 1);
+    assert_eq!(review[0]["item"]["data"]["rule"], "unreviewed_delivery");
+    assert_eq!(review[0]["item"]["data"]["total_count"], 4);
+    let entries = review[0]["item"]["data"]["entries"].as_array().unwrap();
+    for (entry, state) in entries.iter().zip(["unmerged", "none", "unknown", "error"]) {
+        assert_eq!(entry["delivery"], state);
+        assert_ne!(entry["item_id"], "wi_merged_slice");
+    }
+    let body = review[0]["item"]["body"].as_str().unwrap();
+    for status in [
+        "unmerged",
+        "not known merged (none)",
+        "not known merged (unknown)",
+        "not known merged (error)",
+    ] {
+        assert!(body.contains(status), "{body}");
+    }
+    assert!(t.run(BASE + HOUR).is_empty());
+}
+
+#[test]
+fn unowned_deliveries_and_nonmerged_deliveries_without_finite_timestamps_are_skipped() {
+    let template = vector("reply-unmerged.json")["items"][0].clone();
+    let mut items = Vec::new();
+    for state in ["unmerged", "none", "unknown", "error"] {
+        let mut unowned = template.clone();
+        unowned["item_id"] = json!(format!("wi_unowned_{state}"));
+        unowned["delivery"] = json!(state);
+        unowned["agent_id"] = Value::Null;
+        items.push(unowned);
+    }
+    for (n, timestamp) in [
+        None,
+        Some(Value::Null),
+        Some(json!("yesterday")),
+        Some(json!({})),
+        Some(json!(true)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut malformed = template.clone();
+        malformed["item_id"] = json!(format!("wi_malformed_{n}"));
+        if let Some(timestamp) = timestamp {
+            malformed["delivered_at_ms"] = timestamp;
+        } else {
+            malformed.as_object_mut().unwrap().remove("delivered_at_ms");
+        }
+        items.push(malformed);
+    }
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![json!({"items":items})]);
+    assert!(t.run(BASE + HOUR).is_empty());
+    assert_eq!(t.result["unsettled_scanned"], 9);
+    assert_eq!(t.result["skipped_unsettled_unowned"], 4);
+    assert_eq!(t.result["skipped_unsettled_items"], 5);
+    assert_eq!(t.seen(), None);
+}
+
+#[test]
+fn unreviewed_lists_group_by_owner_and_only_new_members_wake() {
+    let mut page = vector("reply-unmerged.json");
+    let mut peer = page["items"][0].clone();
+    peer["item_id"] = json!("wi_peer");
+    peer["agent_id"] = json!("ag_peer");
+    page["items"].as_array_mut().unwrap().push(peer);
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![page.clone()]);
+    let first = t.run(BASE);
+    assert_eq!(first.len(), 2);
+    for (write, owner) in first.iter().zip(["ag_owner", "ag_peer"]) {
+        assert_eq!(write["agent"], owner);
+        assert_eq!(write["action"], "wake");
+        assert_eq!(write["item"]["data"]["total_count"], 1);
+    }
+    assert!(t.run(BASE + HOUR).is_empty());
+    page["items"][0]["title"] = json!("Edited delivery");
+    t.unsettled(vec![page.clone()]);
+    let edited = t.run(BASE + 2 * HOUR);
+    assert_eq!(edited.len(), 1);
+    assert_eq!(edited[0]["agent"], "ag_owner");
+    assert_eq!(edited[0]["action"], "silent");
+    assert!(
+        edited[0]["item"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("Edited delivery")
+    );
+    page["items"][0]["delivery"] = json!("unknown");
+    t.unsettled(vec![page.clone()]);
+    let status = t.run(BASE + 3 * HOUR);
+    assert_eq!(status.len(), 1);
+    assert_eq!(status[0]["action"], "silent");
+    assert!(
+        status[0]["item"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("not known merged (unknown)")
+    );
+    let mut joined = page["items"][0].clone();
+    joined["item_id"] = json!("wi_joined");
+    page["items"].as_array_mut().unwrap().push(joined);
+    t.unsettled(vec![page]);
+    let joined = t.run(BASE + 4 * HOUR);
+    assert_eq!(joined.len(), 1);
+    assert_eq!(joined[0]["agent"], "ag_owner");
+    assert_eq!(joined[0]["action"], "wake");
+    assert_eq!(joined[0]["item"]["data"]["total_count"], 2);
+    *t.host.unsettled_refusal.lock().unwrap() = Some((0, vector("refusal-unknown-stamp.json")));
+    assert!(t.run(BASE + 5 * HOUR).is_empty());
+    assert!(
+        t.keys()
+            .contains(&"nudge:ag_owner:unreviewed_delivery".into())
+    );
+    assert!(
+        t.keys()
+            .contains(&"nudge:ag_peer:unreviewed_delivery".into())
+    );
+    *t.host.unsettled_refusal.lock().unwrap() = None;
+    assert!(t.run(BASE + 6 * HOUR).is_empty());
+    t.unsettled(vec![vector("reply-empty.json")]);
+    let cleared = t.run(BASE + 7 * HOUR);
+    assert_eq!(cleared.len(), 2);
+    assert!(cleared.iter().all(|write| write["withdraw"] == true));
+}
+
+#[test]
 fn a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen() {
     let mut t = Test::new(Vec::new());
     t.unsettled(vec![vector("reply-merged-blocked.json")]);
@@ -1819,24 +2056,17 @@ fn a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen() {
 }
 
 #[test]
-fn unowned_unmerged_unknown_and_malformed_deliveries_are_not_nudged() {
+fn unowned_and_malformed_merged_deliveries_are_not_nudged() {
     let owned = vector("reply-merged-blocked.json")["items"][0].clone();
     // No single live head owns this one, so nobody can be nudged about it.
     let mut unowned = owned.clone();
     unowned["item_id"] = json!("wi_unowned");
     unowned["agent_id"] = Value::Null;
-    let unmerged = vector("reply-unmerged.json")["items"][0].clone();
-    let unknown = vector("reply-page-2.json")["items"][0].clone();
-    let mut errored = unknown.clone();
-    errored["item_id"] = json!("wi_errored");
-    errored["delivery"] = json!("error");
     let mut no_ref = owned.clone();
     no_ref["item_id"] = json!("wi_no_ref");
     no_ref.as_object_mut().unwrap().remove("merged_ref");
     let mut t = Test::new(Vec::new());
-    t.unsettled(vec![
-        json!({"items":[owned, unowned, unmerged, unknown, errored, no_ref]}),
-    ]);
+    t.unsettled(vec![json!({"items":[owned, unowned, no_ref]})]);
     assert!(t.run(BASE).is_empty());
     let writes = t.run(BASE + 20 * MIN);
     assert_eq!(writes.len(), 1);
@@ -1844,7 +2074,7 @@ fn unowned_unmerged_unknown_and_malformed_deliveries_are_not_nudged() {
     let entries = writes[0]["item"]["data"]["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["item_id"], "wi_merged_slice");
-    assert_eq!(t.result["unsettled_scanned"], 6);
+    assert_eq!(t.result["unsettled_scanned"], 3);
     assert_eq!(t.result["skipped_unsettled_unowned"], 1);
     assert_eq!(t.result["skipped_unsettled_items"], 1);
     assert_eq!(t.result["unsettled_read_error"], Value::Null);
@@ -1858,7 +2088,10 @@ fn every_unsettled_page_is_read_each_run() {
     last["items"][0]["merged_ref"] = json!("main");
     let mut t = Test::new(Vec::new());
     t.unsettled(vec![vector("reply-page-1.json"), last]);
-    assert!(t.run(BASE).is_empty());
+    let first = t.run(BASE);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["item"]["data"]["rule"], "unreviewed_delivery");
+    assert_eq!(first[0]["item"]["data"]["total_count"], 200);
     {
         let reads = t.host.unsettled_reads.lock().unwrap();
         assert_eq!(reads.len(), 2);
