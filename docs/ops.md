@@ -1160,7 +1160,9 @@ before its request is read. `describe` declares ref kind `agent` and one store,
   unplanned (the schedule's `missed` policy settles them if the move is
   aborted), and matching events wait in the flow's backlog. The flows are
   encoded as a `basal-flows/1` stream (capped at 64 MiB; a larger agent is
-  refused `not_exportable`) and admitted through Engram's session door.
+  refused `not_exportable`) and admitted through Engram's session door (the
+  `session-door` internal service of the `engram` module, the only path an
+  agent's data takes between computers).
   `release` leaves a tombstone naming the new holder; `abort` lifts the freeze.
 - **Receiver.** `import` reads the sealed cut through the door, checks its
   digest and every carried code hash, and stages it without writing a live

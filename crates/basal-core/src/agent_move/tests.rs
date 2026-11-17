@@ -506,7 +506,8 @@ fn a_live_local_copy_with_new_data_is_a_fork() {
     let mut receiver = receiver();
     let t = tx(&mut receiver);
     activate(&t, AGENT, CUT, &staged, 1).unwrap().unwrap();
-    // The receiver records the imported cut's fingerprint, as the module does.
+    // Record the imported cut's fingerprint, as the agent-data service does
+    // after `activate`.
     save_cut(
         &t,
         &Cut {

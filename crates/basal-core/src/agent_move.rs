@@ -146,7 +146,9 @@ pub struct Cut {
     /// `source`, `receiver`, or `unknown` for an abort of a cut never seen.
     pub side: String,
     pub step: String,
-    /// The refs the cut's first op named, in that order.
+    /// The refs (`{ref_kind, ref}` pairs naming the agent being moved)
+    /// that the cut's first op named, in that order; later ops on the cut
+    /// must name the same set.
     pub refs: Value,
     pub session_ref: Option<String>,
     pub end_offset: Option<u64>,

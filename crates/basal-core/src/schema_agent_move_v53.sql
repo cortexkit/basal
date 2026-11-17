@@ -32,8 +32,8 @@ CREATE VIEW agent_move_held_flows AS
 SELECT a.flow_id, h.agent_id, h.kind
 FROM agent_move_flow_agents a JOIN agent_move_holds h USING (agent_id);
 
--- The checkpoint of one cut on this computer: the step it reached, the ref
--- set its first op named, the stream item it produced or read, and the
+-- The checkpoint of one cut on this computer: the step it reached, the refs
+-- (the `{ref_kind, ref}` pairs naming the moved agent) its first op named, the stream item it produced or read, and the
 -- content fingerprint of the agent's flows at the cut (what `diverged`
 -- compares a later local copy with).
 CREATE TABLE agent_move_cuts (
