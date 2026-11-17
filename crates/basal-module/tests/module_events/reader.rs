@@ -326,7 +326,9 @@ async fn idle_reader_parks_and_outbox_commit_wakes_publisher() {
             basal_core::bus_outbox::enqueue_late_result_wake(
                 tx,
                 "reserved:prefrontal-core",
-                123,
+                "call:123",
+                "ok",
+                "settlement:123",
                 1000,
             )
         })
@@ -362,7 +364,9 @@ async fn disconnected_idle_reader_reconnects_and_publishes_committed_rows() {
             basal_core::bus_outbox::enqueue_late_result_wake(
                 tx,
                 "reserved:prefrontal-core",
-                124,
+                "call:124",
+                "ok",
+                "settlement:124",
                 1000,
             )
         })
@@ -395,8 +399,8 @@ async fn disconnected_idle_reader_reconnects_and_publishes_committed_rows() {
 async fn malformed_bus_row_advances_retry_and_publisher_parks() {
     let server = Server::start().await;
     let (rt, transport) = fixture(&server).await;
-    // Valid JSON with a missing feed sequence exercises the stored-body refusal
-    // without bypassing SQLite's JSON constraint.
+    // An empty JSON object satisfies SQLite's JSON constraint but lacks the
+    // call key, outcome and event id needed to publish a late-result wake.
     rt.store().write(|tx| {
         tx.execute("INSERT INTO outbox(at,kind,flow_id,recipient,body,bus_retry_at) VALUES (1000,'codemode.late_result_ready','','prefrontal-core','{}',1000)", [])?;
         Ok(())

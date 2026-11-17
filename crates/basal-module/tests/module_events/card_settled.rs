@@ -283,7 +283,7 @@ async fn card_settled_control_digest_and_flow_body_boundaries_stay_strict() {
     js.publish_with_headers(
         "ck.box_example.event.aft.late_result_ready.v1.basal",
         headers,
-        b"{\"seq\":3}".to_vec().into(),
+        br#"{"call_key":"call:3","outcome":"ok"}"#.to_vec().into(),
     )
     .await
     .unwrap()

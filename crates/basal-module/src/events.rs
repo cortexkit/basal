@@ -448,14 +448,10 @@ struct InstallChange {
 }
 
 // A late-result wake only says "read the feed": the result itself comes from
-// `late_results`. Providers may describe the entry in extra fields (Cerebellum
-// sends `outcome`), so they are ignored rather than refusing the wake, which
-// would leave basal on its slow fallback poll.
-#[derive(Deserialize)]
-struct LateResultReady {
-    #[serde(rename = "seq")]
-    _seq: std::num::NonZeroU64,
-}
+// `late_results`. The tool-provider crate's LateResultReady decoder ignores
+// unknown members; neither the call key nor the outcome settles a call without
+// fetching its feed entry.
+use cortexkit_role_tool_provider::LateResultReady;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
