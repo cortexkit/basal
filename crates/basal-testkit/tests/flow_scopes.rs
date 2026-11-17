@@ -101,7 +101,8 @@ impl Transport for Wire {
         self.configure_flow(
             &key,
             Some(RegisteredScope {
-                selector: scope.selector(),
+                // This fake core registers target scopes under its old name.
+                selector: scope.selector("prefrontal-core"),
                 targets,
             }),
         );
