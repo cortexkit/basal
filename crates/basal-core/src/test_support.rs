@@ -1,6 +1,6 @@
 //! Fixtures shared by core and module integration tests.
 
-pub mod logs;
+pub use basal_host::test_support::logs;
 
 /// Seeds exact historical bytes that were approved before current intake rules.
 /// Production intake must never call this helper: it exists only to keep tests
