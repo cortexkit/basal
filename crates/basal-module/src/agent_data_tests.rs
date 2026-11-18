@@ -723,3 +723,230 @@ fn every_contract_request_vector_gets_a_reply_or_a_refusal_from_its_row() {
         RefusalCode::InvalidRequest
     );
 }
+
+/// Every change to a flow that a move carries, as the op and caller that
+/// make it.
+fn changes(a: &Computer) -> Vec<(&'static str, Caller, Value)> {
+    vec![
+        ("flow.disable", a.agent(), json!({"flow_id":"f-alpha"})),
+        (
+            "flow.uninstall",
+            Caller::Operator,
+            json!({"flow_id":"f-alpha"}),
+        ),
+        (
+            "flow.instance.end",
+            Caller::Operator,
+            json!({"flow_id":"f-alpha"}),
+        ),
+        (
+            "flow.instance.remove",
+            Caller::Core,
+            json!({"package":"p","agent_id":AGENT,"generation":1}),
+        ),
+    ]
+}
+
+fn hints(alpha: [u8; 32]) -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "flow.install_decided",
+            json!({"flow_id":"f-alpha","version":1,"attempt":1}),
+        ),
+        (
+            "flow.install_revoked",
+            json!({"flow_id":"f-alpha","version":1,"code_hash":hex(&alpha)}),
+        ),
+    ]
+}
+
+#[test]
+fn a_frozen_agents_flows_refuse_every_change_and_a_moved_agents_ignore_core_hints() {
+    let door = FakeDoor::new();
+    let a = Computer::new("frozen-writes", &door);
+    let (alpha, _) = a.seed();
+    a.sample("source", "agent_data.prepare", CUT).unwrap();
+    for (method, caller, params) in changes(&a) {
+        let refused = a.module.handle(&caller, method, params).unwrap_err();
+        assert_eq!(refused.code, "agent_moving", "{method}");
+        assert_eq!(
+            refused.detail,
+            Some(json!({"agent_id": AGENT, "retryable": true})),
+            "{method}"
+        );
+    }
+    for (method, params) in hints(alpha) {
+        let refused = a.module.handle(&Caller::Core, method, params).unwrap_err();
+        assert_eq!(refused.code, "agent_moving", "{method}");
+    }
+    // Nothing changed the frozen rows: the cut still describes them.
+    assert_eq!(
+        a.sql("SELECT flow_id||':'||state||':'||removed FROM flows ORDER BY flow_id"),
+        ["f-alpha:enabled:0", "f-beta:disabled:0"]
+    );
+    a.sample("source", "agent_data.export", CUT).unwrap();
+    a.sample("source", "agent_data.release", CUT).unwrap();
+    for (method, caller, params) in changes(&a) {
+        let refused = a.module.handle(&caller, method, params).unwrap_err();
+        assert_eq!(refused.code, "agent_moved", "{method}");
+    }
+    let before = a.sql("SELECT flow_id||':'||COALESCE(approved_version,'-')||':'||removed_by FROM flows ORDER BY flow_id");
+    for (method, params) in hints(alpha) {
+        assert_eq!(
+            a.module.handle(&Caller::Core, method, params).unwrap(),
+            json!({}),
+            "{method}"
+        );
+    }
+    assert_eq!(
+        a.sql("SELECT flow_id||':'||COALESCE(approved_version,'-')||':'||removed_by FROM flows ORDER BY flow_id"),
+        before,
+        "a hint for a flow that lives elsewhere changes nothing"
+    );
+}
+
+#[test]
+fn an_unapproved_flow_belongs_to_its_author_for_the_freeze() {
+    let door = FakeDoor::new();
+    let a = Computer::new("draft-owner", &door);
+    a.seed();
+    // Installed by the agent but never approved: no owner yet.
+    let manifest = json!({"id":"f-draft","version":1,"state_epoch":1,
+        "explanation":"Exercises a moved flow's schedule for a test, without other effects.",
+        "purpose":"Agent move test","trigger":{"schedule":{"interval":"1m"}}});
+    a.module
+        .rt
+        .install(&InstallRequest {
+            script: "return 'draft';".into(),
+            author: AGENT.into(),
+            loop_override: false,
+            manifest: manifest.to_string(),
+        })
+        .unwrap();
+    assert_eq!(
+        a.sql("SELECT COALESCE(owner,'-') FROM flows WHERE flow_id='f-draft'"),
+        ["-"]
+    );
+    // The draft's card is still open, which a move can't carry: settle it.
+    a.exec(
+        "UPDATE install_cards SET state='declined',decided_by='core:card' WHERE flow_id='f-draft'",
+    );
+    a.sample("source", "agent_data.prepare", CUT).unwrap();
+    let refused = a
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.disable",
+            json!({"flow_id":"f-draft"}),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, "agent_moving");
+}
+
+#[test]
+fn a_freeze_committed_without_its_checkpoint_resumes_or_aborts_cleanly() {
+    let door = FakeDoor::new();
+    let a = Computer::new("half-prepared", &door);
+    a.seed();
+    // A crash after the freeze committed and before the checkpoint did.
+    a.module
+        .rt
+        .store()
+        .write(|tx| {
+            basal_core::agent_move::freeze(tx, AGENT, CUT, 1)?
+                .map_err(|b| basal_core::CoreError::Invalid(b.reason))
+        })
+        .unwrap();
+    assert_eq!(
+        a.sample("source", "agent_data.status", CUT).unwrap(),
+        json!({"step":"none"})
+    );
+    let prepared = a.sample("source", "agent_data.prepare", CUT).unwrap();
+    assert_eq!(prepared["items"][0]["sessionRef"], session_ref(AGENT, CUT));
+    assert_eq!(
+        a.sample("source", "agent_data.status", CUT).unwrap(),
+        json!({"step":"prepared"})
+    );
+
+    // The same crash, then the driver gives up: abort lifts the freeze.
+    a.module
+        .rt
+        .store()
+        .write(|tx| {
+            basal_core::agent_move::freeze(tx, "agent_other", ABORTED, 1)?
+                .map_err(|b| basal_core::CoreError::Invalid(b.reason))
+        })
+        .unwrap();
+    let (method, mut params) = sample("source-abort", "agent_data.abort", ABORTED);
+    params["refs"] = json!([{"ref":"agent_other","ref_kind":"agent"}]);
+    a.call(&method, params).unwrap();
+    assert_eq!(a.sql("SELECT agent_id FROM agent_move_holds"), [AGENT]);
+}
+
+#[test]
+fn startup_sweeps_staging_only_for_finished_or_unknown_cuts() {
+    let door = FakeDoor::new();
+    let a = Computer::new("sweep", &door);
+    a.seed();
+    a.sample("source", "agent_data.prepare", CUT).unwrap();
+    let staging = a.dir.join("agent-move");
+    let finished = "dddddddddddddddddddddddddddddddd";
+    let unknown = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    let freezing = "ffffffffffffffffffffffffffffffff";
+    for cut in [finished, unknown, freezing] {
+        std::fs::create_dir_all(staging.join(cut)).unwrap();
+    }
+    std::fs::create_dir_all(staging.join("not-a-cut")).unwrap();
+    a.sample("source-abort", "agent_data.abort", finished)
+        .unwrap();
+    std::fs::create_dir_all(staging.join(finished)).unwrap();
+    a.exec(&format!(
+        "INSERT INTO agent_move_holds(agent_id,kind,cut_id,at) VALUES ('agent_other','frozen','{freezing}',1)"
+    ));
+    let mut swept = a.module.agent_data.sweep(&a.module.rt);
+    swept.sort();
+    assert_eq!(swept, [finished, unknown]);
+    assert!(
+        staging.join(CUT).exists(),
+        "a prepared cut keeps its staging"
+    );
+    assert!(
+        staging.join(freezing).exists(),
+        "a freeze without a checkpoint is in progress"
+    );
+    assert!(staging.join("not-a-cut").exists());
+}
+
+#[test]
+fn approval_events_open_no_write_on_a_computer_without_moved_flows() {
+    let door = FakeDoor::new();
+    let a = Computer::new("quiet-recheck", &door);
+    let before = a.module.rt.store().write_transactions_for_test();
+    a.module
+        .rt
+        .recheck_moved_flows(None, Some("remind-at"))
+        .unwrap();
+    a.module
+        .rt
+        .recheck_moved_flows(Some("f-alpha"), None)
+        .unwrap();
+    assert_eq!(a.module.rt.store().write_transactions_for_test(), before);
+}
+
+#[test]
+fn release_records_every_backlogged_event_it_discards() {
+    let door = FakeDoor::new();
+    let a = Computer::new("discarded", &door);
+    a.seed();
+    a.sample("source", "agent_data.prepare", CUT).unwrap();
+    // An event queued during the freeze, after the cut counted one.
+    a.exec("INSERT INTO event_receipts(flow_id,subject,event_key,notice,state,received_at) VALUES ('f-alpha','s','k2','{}','backlog',6)");
+    a.sample("source", "agent_data.export", CUT).unwrap();
+    a.sample("source", "agent_data.release", CUT).unwrap();
+    assert_eq!(
+        a.sql(&format!(
+            "SELECT dropped FROM agent_move_cuts WHERE cut_id='{CUT}'"
+        )),
+        [r#"{"discarded_at_release":2,"queued_event":1}"#]
+    );
+}

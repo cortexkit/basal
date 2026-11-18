@@ -122,6 +122,54 @@ impl AgentData {
         self.door.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
+    /// Removes staging left behind for cuts that no longer need it: one
+    /// finished (`activated`, `aborted`, `released`) before its directory
+    /// was deleted, or one with no checkpoint and no freeze (a prepare or
+    /// import that never committed). A cut still in progress keeps its
+    /// staging. Runs at startup, before any request; returns the cuts swept.
+    pub fn sweep(&self, rt: &Runtime) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        let mut swept = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if cortexkit_role_agent_data::refs::check_cut_id(&name).is_err() {
+                continue;
+            }
+            let state = rt.store().read(|c| {
+                let frozen: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_move_holds WHERE kind='frozen' AND cut_id=?1)",
+                    [&name],
+                    |r| r.get(0),
+                )?;
+                Ok((agent_move::cut(c, &name)?, frozen))
+            });
+            let finished = match state {
+                Ok((Some(cut), _)) => {
+                    matches!(cut.step.as_str(), "activated" | "aborted" | "released")
+                }
+                Ok((None, frozen)) => !frozen,
+                Err(error) => {
+                    tracing::warn!(target: "agent_data", cut_id = %name, "can't read a staged cut's state: {error}");
+                    false
+                }
+            };
+            if finished {
+                match std::fs::remove_dir_all(entry.path()) {
+                    Ok(()) => swept.push(name),
+                    Err(error) => {
+                        tracing::warn!(target: "agent_data", cut_id = %name, "removing leftover staging: {error}")
+                    }
+                }
+            }
+        }
+        if !swept.is_empty() {
+            tracing::info!(target: "agent_data", cuts = ?swept, "removed leftover move staging");
+        }
+        swept
+    }
+
     fn staging(&self, cut_id: &str) -> PathBuf {
         self.dir.join(cut_id)
     }
@@ -329,55 +377,7 @@ impl AgentData {
         let dir = self.staging(cut_id);
         let cut = match cut {
             Some(cut) => cut,
-            None => {
-                let now = rt.config().clock.now_ms();
-                let payload = dir.join("payload");
-                let too_large = std::cell::RefCell::new(None);
-                let outcome = rt.store().write(|tx| {
-                    if let Err(busy) = agent_move::freeze(tx, &agent, cut_id, now)? {
-                        return Ok(Err(busy_refusal(&agent, busy)));
-                    }
-                    let bytes = match agent_move::encode(tx, &agent, cut_id)? {
-                        Ok(bytes) => bytes,
-                        // Nothing is kept: the freeze rolls back with the refusal.
-                        Err(message) => {
-                            *too_large.borrow_mut() = Some(message.clone());
-                            return Err(CoreError::Invalid(message));
-                        }
-                    };
-                    // The file is written under the same lock as the freeze, so the
-                    // staged bytes are exactly the frozen rows.
-                    write_private(&payload, &bytes)
-                        .map_err(|e| CoreError::Unavailable(format!("staging the cut: {e}")))?;
-                    let cut = Cut {
-                        cut_id: cut_id.into(),
-                        agent: Some(agent.clone()),
-                        side: "source".into(),
-                        step: "prepared".into(),
-                        refs: to_value(refs),
-                        session_ref: Some(session.clone()),
-                        end_offset: Some(bytes.len() as u64),
-                        digest: Some(hex(&Sha256::digest(&bytes))),
-                        fingerprint: Some(agent_move::fingerprint(tx, &agent)?),
-                        dropped: None,
-                    };
-                    agent_move::save_cut(tx, &cut, now)?;
-                    Ok(Ok(cut))
-                });
-                match outcome {
-                    Ok(Ok(cut)) => cut,
-                    Ok(Err(refusal)) => return Err(refusal),
-                    Err(error) => {
-                        return Err(match too_large.into_inner() {
-                            Some(message) => refuse(
-                                RefusalCode::NotExportable,
-                                format!("agent {agent}: {message}"),
-                            ),
-                            None => store_error(error),
-                        });
-                    }
-                }
-            }
+            None => self.cut_source(rt, cut_id, refs, &agent, &session)?,
         };
         let end = cut.end_offset.unwrap_or(0);
         let digest = cut.digest.clone().unwrap_or_default();
@@ -402,6 +402,86 @@ impl AgentData {
         ));
         self.record(rt, cut_id, Op::Prepare, params, &reply, None)?;
         Ok(reply)
+    }
+
+    /// Takes a new cut of the agent's flows in three steps, each safe to
+    /// repeat after a crash:
+    ///
+    /// 1. Commit the freeze, rechecking in the same transaction that nothing
+    ///    is busy. From then on the flows admit nothing and changes to them
+    ///    are refused, so their rows stay as they are.
+    /// 2. Encode the frozen rows from a read, with no write lock held, and
+    ///    write and sync the staging file.
+    /// 3. Commit the `prepared` checkpoint naming those bytes.
+    ///
+    /// A repeat after step 1 or 2 finds the freeze its own and encodes the
+    /// same rows again.
+    fn cut_source(
+        &self,
+        rt: &Runtime,
+        cut_id: &str,
+        refs: &Refs,
+        agent: &str,
+        session: &str,
+    ) -> Result<Cut, Refusal> {
+        let now = rt.config().clock.now_ms();
+        rt.store()
+            .write(|tx| agent_move::freeze(tx, agent, cut_id, now))
+            .map_err(store_error)?
+            .map_err(|busy| busy_refusal(agent, busy))?;
+        let (encoded, fingerprint, queued) = rt
+            .store()
+            .read(|c| {
+                Ok((
+                    agent_move::encode(c, agent, cut_id)?,
+                    agent_move::fingerprint(c, agent)?,
+                    agent_move::queued_events(c, agent)?,
+                ))
+            })
+            .map_err(store_error)?;
+        let bytes = match encoded {
+            Ok(bytes) => bytes,
+            Err(message) => {
+                // The agent can't move: give its flows back before refusing.
+                rt.store()
+                    .write(|tx| agent_move::lift(tx, agent, cut_id))
+                    .map_err(store_error)?;
+                rt.agent_move_changed();
+                return Err(refuse(
+                    RefusalCode::NotExportable,
+                    format!("agent {agent}: {message}"),
+                ));
+            }
+        };
+        write_private(&self.staging(cut_id).join("payload"), &bytes)
+            .map_err(|e| unavailable(format!("staging the cut: {e}")))?;
+        let cut = Cut {
+            cut_id: cut_id.into(),
+            agent: Some(agent.to_owned()),
+            side: "source".into(),
+            step: "prepared".into(),
+            refs: to_value(refs),
+            session_ref: Some(session.to_owned()),
+            end_offset: Some(bytes.len() as u64),
+            digest: Some(hex(&Sha256::digest(&bytes))),
+            fingerprint: Some(fingerprint),
+            // The backlogged events the cut leaves behind; `release` adds
+            // how many it discarded in the end.
+            dropped: Some(json!({"queued_event": queued})),
+        };
+        rt.store()
+            .write(|tx| {
+                // Only this cut's own freeze may carry the checkpoint; ops are
+                // serialized, so anything else means the store changed under it.
+                match agent_move::hold(tx, agent)? {
+                    Some(agent_move::Hold::Frozen { cut_id: held }) if held == cut_id => {}
+                    Some(agent_move::Hold::Moved { .. }) => {}
+                    _ => return Err(CoreError::Unavailable("the cut's freeze is gone".into())),
+                }
+                agent_move::save_cut(tx, &cut, now)
+            })
+            .map_err(store_error)?;
+        Ok(cut)
     }
 
     /// Admits `bytes` as the stream `session` through the door, resuming
@@ -740,7 +820,10 @@ impl AgentData {
         });
         rt.store()
             .write(|tx| {
-                if cut.side == "source"
+                // A prepare whose freeze committed before its checkpoint left
+                // no source row, so lift whatever freeze this cut holds; `lift`
+                // touches only a freeze taken under this cut's id.
+                if cut.side != "receiver"
                     && let Some(agent) = &cut.agent
                 {
                     agent_move::lift(tx, agent, cut_id)?;
@@ -773,11 +856,17 @@ impl AgentData {
         let reply = to_value(ReleaseReply::new(true));
         let now = rt.config().clock.now_ms();
         let name = op_name(Op::Release);
-        rt.release_agent(&agent, cut_id, holder, |tx| {
+        rt.release_agent(&agent, cut_id, holder, |tx, released| {
+            // Events queued during the freeze reached no cut, so the
+            // receiver's `dropped` count can't include them: the source's
+            // checkpoint records how many it discarded in the end.
+            let mut dropped = cut.dropped.clone().unwrap_or_else(|| json!({}));
+            dropped["discarded_at_release"] = json!(released.queued_events);
             agent_move::save_cut(
                 tx,
                 &Cut {
                     step: "released".into(),
+                    dropped: Some(dropped),
                     ..cut.clone()
                 },
                 now,

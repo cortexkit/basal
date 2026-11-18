@@ -281,6 +281,7 @@ impl Module {
                 .parent()
                 .map_or_else(|| PathBuf::from("agent-move"), |dir| dir.join("agent-move")),
         );
+        agent_data.sweep(&rt);
         pool.replenish();
         Ok(Self {
             rt,
