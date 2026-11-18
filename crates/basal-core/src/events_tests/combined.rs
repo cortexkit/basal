@@ -201,6 +201,103 @@ fn enum_module_instance_binds_event_and_authorizes_only_chosen_module() {
     assert_eq!(f.rt.admit_events(&[event]).unwrap().admitted, 1);
 }
 
+#[test]
+fn enum_module_event_runs_fetch_body_from_frozen_chosen_module() {
+    use basal_proto::{ActivationResult, ParentMessage, WorkerMessage};
+
+    for chosen in ["synapse", "other"] {
+        let f = Fixture::new(60);
+        let owner = "agent_47120287c700722b";
+        f.catalog.add_named_agent(owner, "Owner");
+        for module in ["synapse", "other"] {
+            findings(&f.catalog, module);
+        }
+        let request = template(&f);
+        f.rt.register_package(&request.script, &request.manifest)
+            .unwrap();
+        let instance =
+            f.rt.instantiate("diagnosis", 1, owner, &json!({"source":chosen}), "1d")
+                .unwrap();
+        let flow_id = instance["flow_id"].as_str().unwrap();
+        let mut event = notice(0);
+        event.subject = format!("ck.account.event.{chosen}.findings_changed.v1");
+        assert_eq!(
+            f.rt.admit_events(std::slice::from_ref(&event))
+                .unwrap()
+                .admitted,
+            1
+        );
+        let (run_id, admitted_flow) = f.rt.startable().unwrap().remove(0);
+        assert_eq!(admitted_flow, flow_id);
+
+        // A changed instance record must not change an admitted run's grants.
+        let changed = if chosen == "synapse" {
+            "other"
+        } else {
+            "synapse"
+        };
+        f.rt.store()
+            .write(|tx| {
+                assert_eq!(
+                    tx.execute(
+                        "UPDATE template_instances SET params=?1 WHERE flow_id=?2",
+                        rusqlite::params![json!({"source":changed}).to_string(), flow_id],
+                    )?,
+                    1
+                );
+                Ok(())
+            })
+            .unwrap();
+
+        f.reply(
+            json!({"result":{
+                "body":BODY,
+                "digest":event.digest,
+                "event_key":event.event_key,
+                "event_name":"findings_changed"
+            }}),
+            Settlement::Fulfilled,
+        );
+        let mut worker = crate::test_support::ScriptedWorker::new(vec![WorkerMessage::Finished {
+            activation_id: 0,
+            result: ActivationResult::Completed {
+                value: JsonText::new("{\"changed\":true}").unwrap(),
+            },
+        }]);
+        let end = f.rt.activate(&run_id, &mut worker).unwrap();
+        assert!(
+            matches!(end, crate::ActivationEnd::Succeeded { .. }),
+            "{chosen}: {end:?}"
+        );
+        assert_eq!(f.rt.run(&run_id).unwrap().state, crate::RunState::Succeeded);
+        let activation = worker
+            .sent
+            .iter()
+            .find_map(|message| match message {
+                ParentMessage::Activate(activation) => Some(activation),
+                _ => None,
+            })
+            .unwrap();
+        let trigger: serde_json::Value = serde_json::from_str(activation.trigger.as_str()).unwrap();
+        assert_eq!(trigger["event"]["module"], chosen);
+        assert_eq!(trigger["event"]["body"], json!({"changed":true}));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(activation.params_input.as_str()).unwrap(),
+            json!({"source":chosen})
+        );
+        let calls = f.source.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].flow_id, flow_id);
+        assert_eq!(
+            calls[0].kind,
+            CallKind::Op {
+                module: chosen.into(),
+                op: "events_get".into()
+            }
+        );
+    }
+}
+
 struct UnusedWorker;
 impl crate::WorkerChannel for UnusedWorker {
     fn welcome(&self) -> &basal_proto::Welcome {
