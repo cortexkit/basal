@@ -1082,6 +1082,18 @@ fn op_name(op: Op) -> &'static str {
     op.method().trim_start_matches("agent_data.")
 }
 
+/// A release records its request in the same transaction that blocks local
+/// writes, so the destination box id does not need separate storage.
+pub(crate) fn released_holder_box(
+    conn: &rusqlite::Connection,
+    cut_id: &str,
+) -> basal_core::Result<Option<String>> {
+    Ok(
+        agent_move::recorded_reply(conn, cut_id, op_name(Op::Release))?
+            .and_then(|(request, _)| request["holderBox"].as_str().map(str::to_owned)),
+    )
+}
+
 fn parse_step(text: &str) -> Step {
     serde_json::from_value(json!(text)).unwrap_or(Step::None)
 }
