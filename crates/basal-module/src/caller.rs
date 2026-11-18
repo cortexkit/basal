@@ -471,6 +471,69 @@ mod tests {
     }
 
     #[test]
+    fn federated_bind_metadata_decodes_without_granting_caller_authority() {
+        use serde_json::json;
+        use subc_protocol::{RouteTarget, session::ModuleControlRequest};
+
+        let owner = Principal::Reserved {
+            module_id: OPERATOR_MODULE.into(),
+        };
+        let mut legacy = json!({
+            "op": "route.bind",
+            "route_channel": 1,
+            "epoch": 1,
+            "target": RouteTarget::ManagementSurface { module_id: "basal".into() },
+            "identity": identity("fed-computer", "peer-session"),
+            "principal": Principal::Direct,
+            "scope": ScopeStamp::new(owner.clone(), "fed-scope", 1, ScopeKind::Federated),
+        });
+        legacy["scope"]["attributes"] = json!({
+            "federated": {
+                "peer_class": "computer",
+                "peer_fingerprint": "a".repeat(64),
+                "pairing_id": "pairing-1",
+                "peer_name": "Paired computer",
+            },
+        });
+        let mut enriched = legacy.clone();
+        let attrs = &mut enriched["scope"]["attributes"];
+        attrs["run_id"] = json!("remote-run");
+        attrs["federated"]["origin_principal"] = json!(owner);
+        attrs["federated"]["project"] = json!({
+            "project_id": "remote-project",
+            "root_key": { "kind": "remote", "key": "owner/repo" },
+        });
+        attrs["federated"]["peer_box_id"] = json!("b".repeat(32));
+
+        for wire in [legacy, enriched] {
+            let decoded: ModuleControlRequest = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(&decoded).unwrap()["scope"]["attributes"],
+                wire["scope"]["attributes"],
+                "the decoder must retain all scope attributes"
+            );
+            let ModuleControlRequest::RouteBind {
+                principal,
+                scope,
+                identity,
+                ..
+            } = decoded
+            else {
+                panic!("expected a route bind");
+            };
+            assert!(matches!(
+                caller_for_route(principal.as_ref(), scope.as_ref(), &identity),
+                Caller::Other(_)
+            ));
+            assert!(!dev_operator_app_admission(
+                principal.as_ref(),
+                scope.as_ref(),
+                &identity
+            ));
+        }
+    }
+
+    #[test]
     fn dev_operator_app_admits_only_a_direct_unscoped_non_fed_route() {
         let direct = Some(Principal::Direct);
         let admitted = || identity("ckdesk", "desktop-session");
