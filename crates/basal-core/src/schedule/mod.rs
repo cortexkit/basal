@@ -37,7 +37,7 @@ pub use spec::{
     MissedPolicy, ScheduleSpec, SpecError, When, validate,
 };
 pub use table::{Approval, ScheduleRow, ScheduleState, ScheduledFlow};
-pub use tick::{AdmittedFire, DroppedFire, Planned, PlannedFire, fire_trigger_id};
+pub use tick::{AdmittedFire, CoalescedFire, DroppedFire, Planned, PlannedFire, fire_trigger_id};
 
 use crate::admission::Admission;
 use crate::error::Result;
@@ -78,6 +78,8 @@ pub struct TickReport {
     /// Fires that went through admission in this tick, in order. Includes
     /// fires planned by an earlier tick that a crash or a drain left behind.
     pub admitted: Vec<AdmittedFire>,
+    /// Recurring fires consumed after their flows reached the live-run cap.
+    pub coalesced: Vec<CoalescedFire>,
     /// Fires still planned and not admitted (admission is draining).
     pub waiting: u64,
 }

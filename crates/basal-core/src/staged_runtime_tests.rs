@@ -1373,6 +1373,89 @@ fn scheduler_admissions_publish_registry_entries_before_they_are_startable() {
 }
 
 #[test]
+fn recurring_schedule_caps_live_runs_while_core_is_unreachable() {
+    let mut f = Fixture::new(false);
+    for flow in ["first", "second"] {
+        f.install(flow, 1, json!({"trigger":{"schedule":{"interval":"1m"}}}));
+    }
+    Arc::make_mut(&mut f.rt.config).install_gate = crate::InstallGate::Core;
+    let scheduler = f.rt.scheduler().unwrap();
+    f.clock.advance(60_000);
+    let first = scheduler.tick().unwrap();
+    assert_eq!(first.new_runs().len(), 2);
+    for id in first.new_runs() {
+        assert!(matches!(
+            f.rt.activate(id, &mut ScriptedWorker::new(vec![finished()]))
+                .unwrap(),
+            ActivationEnd::Deferred { .. }
+        ));
+        assert!(!f.rt.staged_snapshot(id).unwrap().script_started);
+    }
+    let mut coalesced = 0;
+    for _ in 0..6 {
+        f.clock.advance(60_000);
+        let report = scheduler.tick().unwrap();
+        assert_eq!(report.waiting, 0);
+        coalesced += report.coalesced.len();
+        for fire in report.coalesced {
+            assert_eq!(fire.due.as_millisecond(), f.clock.now_ms());
+        }
+    }
+    let live =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.prepare(
+                    "SELECT flow_id, count(*) FROM live_runs GROUP BY flow_id ORDER BY flow_id",
+                )?
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+    assert_eq!(live, vec![("first".into(), 2), ("second".into(), 2)]);
+    assert_eq!(coalesced, 10);
+    for flow in ["first", "second"] {
+        let row = scheduler.schedule(flow).unwrap().unwrap();
+        assert_eq!(
+            row.next_due.unwrap().as_millisecond(),
+            f.clock.now_ms() + 60_000
+        );
+    }
+    assert_eq!(
+        scheduler.tick().unwrap(),
+        crate::schedule::TickReport::default()
+    );
+}
+
+#[test]
+fn recurring_schedule_queues_one_run_behind_a_started_run() {
+    let f = Fixture::new(false);
+    let mut manifest = llm("1h");
+    manifest["trigger"] = json!({"schedule":{"interval":"1m"}});
+    f.install("scheduled", 1, manifest);
+    f.host.accept.store(true, Ordering::SeqCst);
+    let scheduler = f.rt.scheduler().unwrap();
+    f.clock.advance(60_000);
+    let first = scheduler.tick().unwrap();
+    let id = first.new_runs()[0];
+    let mut worker = ScriptedWorker::new(vec![
+        call(0, Primitive::Llm, json!({"prompt":"hello"})),
+        WorkerMessage::Blocked { awaiting: vec![0] },
+        suspended(vec![0]),
+    ]);
+    assert!(matches!(
+        f.rt.activate(id, &mut worker).unwrap(),
+        ActivationEnd::Suspended { .. }
+    ));
+    assert!(f.rt.staged_snapshot(id).unwrap().script_started);
+    f.clock.advance(60_000);
+    assert_eq!(scheduler.tick().unwrap().new_runs().len(), 1);
+    f.clock.advance(60_000);
+    let report = scheduler.tick().unwrap();
+    assert!(report.new_runs().is_empty());
+    assert_eq!(report.coalesced.len(), 1);
+}
+
+#[test]
 fn event_body_retry_deadline_and_engine_timers_read_registry_records() {
     use sha2::{Digest, Sha256};
     let f = Fixture::new(false);

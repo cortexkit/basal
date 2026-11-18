@@ -23,6 +23,8 @@
 //! limit) is dropped and recorded in `schedule_dropped`. While admission is
 //! draining, planned fires stay in `schedule_fires` and are admitted by the
 //! first tick after the drain ends.
+//! A recurring fire is consumed without admission when two recurring runs
+//! of that flow are already live; the tick reports it as coalesced.
 //!
 //! **Which fires.** The due times in `[next due, now]` are examined. The
 //! newest is on time if it is at most the grace period old; every other
@@ -263,6 +265,32 @@ pub struct AdmittedFire {
     pub admission: Admission,
 }
 
+/// A recurring fire consumed without admitting another run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoalescedFire {
+    pub flow_id: String,
+    pub due: Timestamp,
+}
+
+pub(crate) enum FireOutcome {
+    Admission(AdmittedFire),
+    Coalesced(CoalescedFire),
+}
+
+// Stop at the second recurring run: the cap allows one running and one
+// waiting, but also applies if neither has started.
+// A version change can leave behind a fire from a one-shot template.
+pub(crate) const RECURRING_SCHEDULE_AT_CAP: &str = "SELECT EXISTS(SELECT 1 FROM live_runs
+                   WHERE flow_id=?1 AND trigger_kind='schedule' AND end_instance=0
+                   LIMIT 1 OFFSET 1)
+     AND EXISTS(SELECT 1 FROM schedules s WHERE s.flow_id=?1
+                AND CASE WHEN json_valid(s.spec) THEN json_type(s.spec, '$.at') IS NULL END
+                AND (s.version=?2 OR NOT EXISTS(
+                    SELECT 1 FROM flows f JOIN package_versions p ON p.package=f.package
+                    WHERE f.flow_id=?1 AND p.version=?2
+                      AND CASE WHEN json_valid(p.manifest)
+                               THEN json_type(p.manifest, '$.trigger.schedule.at')='text' END)))";
+
 /// Why a planned fire was dropped instead of admitted, if it was.
 fn dropped_reason(admission: &Admission) -> Option<&'static str> {
     match admission {
@@ -279,7 +307,7 @@ pub(crate) fn admit_next_with(
     blocked: &std::collections::BTreeSet<String>,
     fire_error: impl Fn(&CoreError) -> bool,
     admit: impl Fn(&str, &str, JsonText) -> Result<Admission>,
-) -> Result<Option<AdmittedFire>> {
+) -> Result<Option<FireOutcome>> {
     let blocked = serde_json::json!(blocked).to_string();
     loop {
         // Admitting a fire can fail on stored data this build cannot use (a
@@ -321,10 +349,10 @@ fn admit_oldest(
     ctx: &AdmitContext,
     blocked: &str,
     admit: &impl Fn(&str, &str, JsonText) -> Result<Admission>,
-) -> Result<Option<AdmittedFire>> {
+) -> Result<Option<FireOutcome>> {
     let row = tx
         .query_row(
-            "SELECT seq, flow_id, trigger_id, due_ms, payload \
+            "SELECT seq, flow_id, trigger_id, due_ms, payload, version \
              FROM schedule_fires WHERE flow_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY seq LIMIT 1",
             [blocked],
             |r| {
@@ -334,15 +362,24 @@ fn admit_oldest(
                     r.get::<_, String>(2)?,
                     r.get::<_, i64>(3)?,
                     r.get::<_, String>(4)?,
+                    r.get::<_, i64>(5)?,
                 ))
             },
         )
         .optional()?;
-    let Some((seq, flow_id, trigger_id, due, payload)) = row else {
+    let Some((seq, flow_id, trigger_id, due_ms, payload, version)) = row else {
         return Ok(None);
     };
     let trigger = JsonText::new(payload.clone())
         .map_err(|e| CoreError::Corrupt(format!("planned fire {trigger_id}: {e:?}")))?;
+    let due = from_ms(due_ms, "planned fire due time")?;
+    let at_cap = tx.query_row(RECURRING_SCHEDULE_AT_CAP, params![flow_id, version], |r| {
+        r.get::<_, bool>(0)
+    })?;
+    if at_cap && !crate::admission::draining(tx)? {
+        tx.execute("DELETE FROM schedule_fires WHERE seq = ?1", [seq])?;
+        return Ok(Some(FireOutcome::Coalesced(CoalescedFire { flow_id, due })));
+    }
     let admission = admit(&flow_id, &trigger_id, trigger)?;
     if !matches!(
         admission,
@@ -352,17 +389,17 @@ fn admit_oldest(
             tx.execute(
                 "INSERT INTO schedule_dropped (flow_id, trigger_id, due_ms, payload, reason, at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![flow_id, trigger_id, due, payload, reason, ctx.now_ms],
+                params![flow_id, trigger_id, due_ms, payload, reason, ctx.now_ms],
             )?;
         }
         tx.execute("DELETE FROM schedule_fires WHERE seq = ?1", [seq])?;
     }
-    Ok(Some(AdmittedFire {
+    Ok(Some(FireOutcome::Admission(AdmittedFire {
         flow_id,
         trigger_id,
-        due: from_ms(due, "planned fire due time")?,
+        due,
         admission,
-    }))
+    })))
 }
 
 /// How many fires are planned and not yet admitted.
