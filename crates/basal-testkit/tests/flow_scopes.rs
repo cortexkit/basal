@@ -2,7 +2,9 @@
 //! confined JavaScript worker. An injectable clock advances retries and expiry
 //! without sleeping.
 use basal_core::channel::WorkerChannel;
-use basal_core::{Clock, Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
+use basal_core::{
+    ActivationEnd, Clock, Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store,
+};
 use basal_host::core_host::CoreHost;
 use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
 use basal_host::flow_scope::{FlowScope, RegisteredScope, ScopedRoutes, flow_route_key};
@@ -2163,7 +2165,25 @@ fn midcall_target_scope_cut_retries_a_query_on_a_new_ref() {
         .unwrap()
         .push_back(WireError::ScopeCut("scope changed during call".into()));
     let run = f.admit("one");
-    f.activate(&run);
+    f.rt.startable().unwrap();
+    let end = f.rt.resume(&run).unwrap();
+    f.rt.quiesce();
+    let end = if end == ActivationEnd::Requeued {
+        // The worker can yield after seeing the deferral but before the driver
+        // starts the retry. The engine would pick up the requeued run; this
+        // fixture drives activations manually.
+        assert_eq!(f.rt.run(&run).unwrap().broken, 0);
+        assert!(
+            f.rt.startable().unwrap().iter().any(|(id, _)| id == &run),
+            "the query retry should already be runnable"
+        );
+        let end = f.rt.resume(&run).unwrap();
+        f.rt.quiesce();
+        end
+    } else {
+        end
+    };
+    assert!(matches!(end, ActivationEnd::Succeeded { .. }), "{end:?}");
     assert_eq!(run_result(&f, &run), json!({"n":7}));
     assert_eq!(f.wire.target_asks.lock().unwrap().len(), 2);
     assert_eq!(
