@@ -1368,8 +1368,19 @@ impl Runtime {
                 .staged_driver(&lease.run_id)?
                 .owned(live.clone(), lease.generation)?;
             let run = self.staged_run(&lease.run_id)?;
-            let manifest = Manifest::parse_stored(&run.manifest)
+            let mut manifest = Manifest::parse_stored(&run.manifest)
                 .map_err(|e| CoreError::Invalid(e.to_string()))?;
+            // The stored template still has placeholders. Check the event body's grant
+            // with the run's frozen bindings, just as call authorization does.
+            if let Some(agent) = live.self_input["agent_id"].as_str() {
+                crate::authorize::resolve_self(&mut manifest, agent);
+            }
+            if manifest.params.is_some() {
+                let guards: Vec<basal_host::builtins::TemplateRoot> =
+                    serde_json::from_value(live.grant_guards.clone())
+                        .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                crate::templates::effective_instance(&mut manifest, &live.params_input, &guards);
+            }
             let trigger = match self.event_preamble(&run, &manifest)? {
                 crate::events::Preamble::Ready(trigger) => trigger,
                 crate::events::Preamble::Retry => {
