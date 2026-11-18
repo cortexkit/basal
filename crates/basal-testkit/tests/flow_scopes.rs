@@ -715,6 +715,10 @@ fn only_the_uncaught_readiness_rejection_object_is_exempt_from_failures() {
     ] {
         let uncaught = Fixture::new("uncaught-readiness", script, false, true);
         let run = uncaught.admit("one");
+        // The unregistered scope first waits out its 60 s readiness grace;
+        // only then does the refusal reach the script.
+        uncaught.activate(&run);
+        uncaught.clock.set(61_000);
         uncaught.activate(&run);
         assert_eq!(
             uncaught.rt.run(&run).unwrap().error_kind.as_deref(),
@@ -734,6 +738,8 @@ fn only_the_uncaught_readiness_rejection_object_is_exempt_from_failures() {
     ] {
         let caught = Fixture::new("caught-then-throw", script, false, true);
         let run = caught.admit("one");
+        caught.activate(&run);
+        caught.clock.set(61_000);
         caught.activate(&run);
         assert_eq!(
             caught.rt.run(&run).unwrap().error_kind.as_deref(),
@@ -759,6 +765,8 @@ fn only_the_uncaught_readiness_rejection_object_is_exempt_from_failures() {
             subc_protocol::ErrorBody::new("denied", "denied"),
         ));
     let run = other_host.admit("one");
+    other_host.activate(&run);
+    other_host.clock.set(61_000);
     other_host.activate(&run);
     assert_eq!(
         other_host.rt.run(&run).unwrap().error_kind.as_deref(),
