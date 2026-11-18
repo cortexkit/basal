@@ -22,6 +22,9 @@ use crate::pool::{PoolConfig, Spawn};
 use crate::process::WorkerLaunch;
 use crate::process::{SpawnError, WorkerProcess};
 
+#[path = "agent_data_vectors.rs"]
+mod vectors;
+
 const AGENT: &str = "agent_0123456789abcdef";
 const SAMPLES: &str =
     include_str!("../../../test-vectors/entorhinal-agent-data-requests-v1/new-format.json");
@@ -34,7 +37,7 @@ impl Spawn for NoWorkers {
 }
 
 struct Computer {
-    module: Module,
+    module: Arc<Module>,
     host: Arc<MockHost>,
     dir: std::path::PathBuf,
 }
@@ -76,7 +79,11 @@ impl Computer {
         )
         .unwrap();
         module.agent_data.set_door(door.clone());
-        Self { module, host, dir }
+        Self {
+            module: Arc::new(module),
+            host,
+            dir,
+        }
     }
 
     fn call(&self, method: &str, params: Value) -> Result<Value, ErrorBody> {
@@ -117,6 +124,15 @@ impl Computer {
 
     /// Installs and approves a scheduled flow owned by the agent.
     fn flow(&self, id: &str) -> [u8; 32] {
+        let code_hash = self.install_draft(id);
+        self.module
+            .rt
+            .approve(id, 1, &code_hash, "core:card")
+            .unwrap();
+        code_hash
+    }
+
+    fn install_draft(&self, id: &str) -> [u8; 32] {
         let manifest = json!({"id":id,"version":1,"state_epoch":1,
             "explanation":"Exercises a moved flow's schedule for a test, without other effects.",
             "purpose":"Agent move test","trigger":{"schedule":{"interval":"1m"}}});
@@ -129,10 +145,6 @@ impl Computer {
                 loop_override: false,
                 manifest: manifest.to_string(),
             })
-            .unwrap();
-        self.module
-            .rt
-            .approve(id, 1, &installed.code_hash, "core:card")
             .unwrap();
         installed.code_hash
     }

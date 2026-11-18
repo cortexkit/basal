@@ -204,12 +204,18 @@ impl BasalHandler {
         module: Arc<Module>,
         registry: Arc<crate::overview_watch::Registry>,
     ) -> Self {
-        let mut handler = Self::new(Box::new(|_| unreachable!()), Box::new(|| unreachable!()));
+        let mut handler = Self::ready_test(module);
+        handler.overview_watches = registry;
+        handler
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ready_test(module: Arc<Module>) -> Self {
+        let handler = Self::new(Box::new(|_| unreachable!()), Box::new(|| unreachable!()));
         *lock(&handler.phase) = Phase::Ready(module);
         handler
             .initialized
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        handler.overview_watches = registry;
         handler
     }
 
