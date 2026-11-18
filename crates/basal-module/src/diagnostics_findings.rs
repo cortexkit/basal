@@ -21,6 +21,8 @@ const OVERDUE_GRACE_MS: i64 = 60_000;
 const STUCK_MS: i64 = 3_600_000;
 /// How long a moved flow may wait for approval here before it is reported.
 const MOVED_PENDING_MS: i64 = 24 * 3_600_000;
+/// How long an agent may stay frozen for a move before it is reported.
+const MOVE_FROZEN_MS: i64 = 6 * 3_600_000;
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -321,6 +323,14 @@ fn store_findings_with(
             finding("moved_flows_pending", "approval", "warn", "Flows moved in from another computer have waited over a day for approval here.",
                 "Check the flows' install status with prefrontal; an install of the flow from its agent raises a fresh card."),
             |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"flow_id":r.get::<_,String>(1)?,"agent_id":r.get::<_,String>(2)?}))) }, Some(now))?);
+        // A freeze stops the agent's flows until its move is released or
+        // aborted; one held for hours means the move stalled.
+        findings.extend(aggregate(conn,
+            "SELECT at,agent_id,cut_id FROM agent_move_holds WHERE kind='frozen' AND at<=?1 ORDER BY at,agent_id",
+            [now.saturating_sub(MOVE_FROZEN_MS)],
+            finding("agent_move_frozen", "freeze", "warn", "An agent's flows have been frozen for a move for over six hours; they run nothing until the move is released or aborted.",
+                "Check the move's state in Entorhinal; abort it there to give the agent's flows back."),
+            |r| { let at: i64 = r.get(0)?; Ok((at, json!({"at_ms":at,"agent_id":r.get::<_,String>(1)?,"cut_id":r.get::<_,String>(2)?}))) }, Some(now))?);
         let outbox_sample = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(i64, Value)> {
             let at: i64 = r.get(0)?;
             Ok((at, json!({"at_ms":at, "flow_id":r.get::<_,String>(1)?, "seq":r.get::<_,i64>(2)?})))
@@ -869,6 +879,30 @@ mod tests {
             assert_eq!(
                 finding["samples"],
                 json!([{"at_ms": since - 1, "flow_id": "f", "agent_id": "agent_a"}])
+            );
+        });
+    }
+
+    #[test]
+    fn a_freeze_held_six_hours_is_reported_naming_the_agent_and_cut() {
+        with_store("frozen", |store| {
+            let at = NOW - MOVE_FROZEN_MS + 1;
+            seed(
+                store,
+                &format!(
+                    "INSERT INTO agent_move_holds(agent_id,kind,cut_id,holder,at) VALUES ('agent_a','frozen','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',NULL,{at}),('agent_b','moved','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','h',0)"
+                ),
+            );
+            quiet(store);
+            seed(
+                store,
+                "UPDATE agent_move_holds SET at=at-1 WHERE kind='frozen'",
+            );
+            let finding = only(store, "agent_move_frozen", "freeze");
+            assert_eq!(finding["count"], 1);
+            assert_eq!(
+                finding["samples"],
+                json!([{"at_ms": at - 1, "agent_id": "agent_a", "cut_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}])
             );
         });
     }

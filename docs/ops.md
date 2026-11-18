@@ -80,6 +80,7 @@ or enable operation is performed. A failed store read is an error frame.
 | `runs_overdue` | `deadline`, `deferred` | warn | Unfinished run at least 1 minute past its recorded deadline, or active deferred call at least 1 minute past `retry_not_before`; allows the normal engine sweep. |
 | `reconcile_pending` | `runs`, `decisions` | warn | Reconcile run admitted at least 1 hour ago, or open decision card created at least 1 hour ago; avoids nagging during normal human response time. |
 | `grant_lost` | `disabled` | warn | Immediately for flows disabled with reason `grant_lost`. Count is disabled flows. |
+| `agent_move_frozen` | `freeze` | warn | An agent frozen for a move for at least 6 hours: its flows run nothing until the move is released or aborted. Samples name the agent and the cut. |
 | `moved_flows_pending` | `approval` | warn | Flows that moved in from another computer approved there and have waited at least 24 hours for this computer's prefrontal to report the same code active. Count is waiting flows; samples name the flow and its agent. |
 | `owner_notices_stuck` | `undelivered` | warn | Owner notices whose fallback call is undelivered for at least 1 hour, independently of bus publication. |
 | `outbox_stuck` | `undelivered` | warn | Owner-notice, late-result wake or attribution-fact bus publications pending for at least 1 hour, plus other undelivered outbox rows, excluding permanent secret-revocation failures. A bus-only event is never a pending call. |
@@ -1153,17 +1154,22 @@ before its request is read. `describe` declares ref kind `agent` and one store,
 `basal-flows`, with `sync_class: "agent"`; one ref `{ref_kind: "agent", ref:
 <agent_id>}` covers all of the agent's flows.
 
-- **Source.** `busy` reports `run_active` for a live run and `reconcile_open`
-  for an unsettled call outcome or open decision card, which the operator
-  settles on this computer first. `prepare` rechecks that and freezes the agent
-  in one store transaction: its flows admit nothing, due schedule times pass
+- **Source.** `busy` reports `run_active` for a live run, `reconcile_open`
+  for an unsettled call outcome or open decision card, and `approval_open` for
+  an install card still waiting for an answer (a version's approval can't
+  follow the move). The operator settles these on this computer first.
+  `prepare` rechecks that and freezes the agent in one store transaction: its flows admit nothing, due schedule times pass
   unplanned (the schedule's `missed` policy settles them if the move is
   aborted), and matching events wait in the flow's backlog. The flows are
   encoded as a `basal-flows/1` stream (capped at 64 MiB; a larger agent is
   refused `not_exportable`) and admitted through Engram's session door (the
   `session-door` internal service of the `engram` module, the only path an
   agent's data takes between computers).
-  `release` leaves a tombstone naming the new holder; `abort` lifts the freeze.
+  `release` leaves a tombstone naming the new holder and discards the flows'
+  backlogged events, including any queued during the freeze, which the
+  receiver's `dropped` count can't include: basal logs the number at INFO and
+  records it in the cut's checkpoint (`discarded_at_release`, beside the
+  `queued_event` count the cut carried). `abort` lifts the freeze.
 - **Receiver.** `import` reads the sealed cut through the door, checks its
   digest and every carried code hash, and stages it without writing a live
   row. A flow id that belongs to another owner here is refused
@@ -1178,13 +1184,23 @@ before its request is read. `describe` declares ref kind `agent` and one store,
   can't reach prefrontal is retried with a doubling wait (at most 10 minutes).
   Installing the flow again from its agent raises a fresh card as usual. A
   moved flow still waiting after a day shows in `diagnostics.findings` as
-  `moved_flows_pending`.
+  `moved_flows_pending`. Moved runs keep their admission order, and runs
+  admitted here afterwards come after them. A flow of the agent here that the
+  incoming copy doesn't carry ends removed (`removed_by: "moved:replaced"`).
 
-While an agent is frozen, `flow.install`, `flow.instantiate`, `flow.enable`
-and `flow.instance.ensure` for it are refused `agent_moving` (detail
-`{agent_id, retryable: true}`): retry after the move finishes. Once it has
-moved away they are refused `agent_moved` (detail `{agent_id, holder}`) until a
-move back replaces the tombstone.
+While an agent is frozen, changes to its flows are refused `agent_moving`
+(detail `{agent_id, retryable: true}`): `flow.install`, `flow.instantiate`,
+`flow.enable`, `flow.disable`, `flow.uninstall`, `flow.instance.end`,
+`flow.instance.ensure`, `flow.instance.remove`, and core's
+`flow.install_decided` and `flow.install_revoked`. Retry after the move is
+released or aborted; a frozen flow admits nothing meanwhile. A flow belongs to
+an agent by the rule a move uses: its owner, or before any approval the single
+author of its versions. Once the agent has moved away the same ops are refused
+`agent_moved` (detail `{agent_id, holder}`) until a move back replaces the
+tombstone, except core's two install hints, which are accepted and change
+nothing: the flow lives on the other computer, whose basal reads its own
+prefrontal. A freeze held for 6 hours shows in `diagnostics.findings` as
+`agent_move_frozen`.
 
 ## Run-log recovery and cutover
 
