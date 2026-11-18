@@ -217,7 +217,7 @@ impl AgentData {
                     cut.map_or(Step::None, |c| parse_step(&c.step)),
                 )))
             }
-            Request::Diverged(r) => self.diverged(rt, &r.refs),
+            Request::Diverged(r) => self.diverged(rt, r.cut_id.as_str(), &r.refs),
             _ => {
                 let _serial = self.serial.lock().unwrap_or_else(|p| p.into_inner());
                 self.change(rt, op, &request)
@@ -249,24 +249,64 @@ impl AgentData {
         Ok(to_value(BusyReply::new(entries)))
     }
 
-    fn diverged(&self, rt: &Runtime, refs: &Refs) -> Result<Value, Refusal> {
-        let entries = rt
+    fn diverged(&self, rt: &Runtime, cut_id: &str, refs: &Refs) -> Result<Value, Refusal> {
+        let locals = rt
             .store()
             .read(|c| {
                 refs.iter()
                     .map(|r| {
                         if r.ref_kind != REF_KIND {
-                            return Ok(DivergedEntry::new(DivergedState::Unknown));
+                            return Ok(None);
                         }
-                        Ok(DivergedEntry::new(match agent_move::local(c, &r.r#ref)? {
-                            Local::AtCut => DivergedState::AtCut,
-                            Local::Advanced => DivergedState::Advanced,
-                        }))
+                        Ok(Some((
+                            agent_move::local(c, &r.r#ref)?,
+                            agent_move::has_live_flows(c, &r.r#ref)?,
+                        )))
                     })
                     .collect::<basal_core::Result<Vec<_>>>()
             })
             .map_err(store_error)?;
+        // Live flows that match the last cut are at the cut only if the
+        // incoming cut carries a basal item to replace them with. A cut
+        // without one (the source had nothing for the agent) would leave
+        // them here beside the agent's copy elsewhere, so they are a fork.
+        // The cut is read only in that case, the rare one.
+        let mut items = None;
+        let mut entries = Vec::with_capacity(refs.len());
+        for (r, local) in refs.iter().zip(locals) {
+            let state = match local {
+                None => DivergedState::Unknown,
+                Some((Local::Advanced, _)) => DivergedState::Advanced,
+                Some((Local::AtCut, false)) => DivergedState::AtCut,
+                Some((Local::AtCut, true)) => {
+                    if items.is_none() {
+                        items = Some(self.cut_items(cut_id)?);
+                    }
+                    let items = items.as_deref().unwrap_or_default();
+                    if basal_item(items, &r.r#ref, cut_id).is_some() {
+                        DivergedState::AtCut
+                    } else {
+                        DivergedState::Advanced
+                    }
+                }
+            };
+            entries.push(DivergedEntry::new(state));
+        }
         Ok(to_value(DivergedReply::new(entries)))
+    }
+
+    /// The items of a sealed cut, as the door lists them.
+    fn cut_items(&self, cut_id: &str) -> Result<Vec<Value>, Refusal> {
+        let read = self
+            .door()
+            .call("cut.read", json!({"cutId": cut_id}))
+            .map_err(|e| {
+                refuse(
+                    RefusalCode::CutNotReady,
+                    format!("the cut is not readable through the door yet: {e:?}"),
+                )
+            })?;
+        Ok(read["items"].as_array().cloned().unwrap_or_default())
     }
 
     /// A state-changing op: a repeat first, then the step machine and the
@@ -379,6 +419,14 @@ impl AgentData {
             Some(cut) => cut,
             None => self.cut_source(rt, cut_id, refs, &agent, &session)?,
         };
+        if cut.session_ref.is_none() {
+            // Nothing to carry: the cut gets no item from basal, so a
+            // receiver without basal can still take the agent. The freeze
+            // stands all the same, and `release` still leaves a tombstone.
+            let reply = to_value(PrepareReply::new(vec![], vec![]));
+            self.record(rt, cut_id, Op::Prepare, params, &reply, None)?;
+            return Ok(reply);
+        }
         let end = cut.end_offset.unwrap_or(0);
         let digest = cut.digest.clone().unwrap_or_default();
         let bytes = std::fs::read(dir.join("payload")).map_err(|e| {
@@ -440,6 +488,22 @@ impl AgentData {
             })
             .map_err(store_error)?;
         let bytes = match encoded {
+            Ok(bytes) if carries_nothing(&bytes) => {
+                let cut = Cut {
+                    cut_id: cut_id.into(),
+                    agent: Some(agent.to_owned()),
+                    side: "source".into(),
+                    step: "prepared".into(),
+                    refs: to_value(refs),
+                    session_ref: None,
+                    end_offset: None,
+                    digest: None,
+                    fingerprint: Some(fingerprint),
+                    dropped: Some(json!({"queued_event": queued})),
+                };
+                self.save_source_cut(rt, agent, &cut, now)?;
+                return Ok(cut);
+            }
             Ok(bytes) => bytes,
             Err(message) => {
                 // The agent can't move: give its flows back before refusing.
@@ -469,19 +533,30 @@ impl AgentData {
             // how many it discarded in the end.
             dropped: Some(json!({"queued_event": queued})),
         };
+        self.save_source_cut(rt, agent, &cut, now)?;
+        Ok(cut)
+    }
+
+    /// Commits a source cut's `prepared` checkpoint, under its own freeze.
+    fn save_source_cut(
+        &self,
+        rt: &Runtime,
+        agent: &str,
+        cut: &Cut,
+        now: i64,
+    ) -> Result<(), Refusal> {
         rt.store()
             .write(|tx| {
                 // Only this cut's own freeze may carry the checkpoint; ops are
                 // serialized, so anything else means the store changed under it.
                 match agent_move::hold(tx, agent)? {
-                    Some(agent_move::Hold::Frozen { cut_id: held }) if held == cut_id => {}
+                    Some(agent_move::Hold::Frozen { cut_id: held }) if held == cut.cut_id => {}
                     Some(agent_move::Hold::Moved { .. }) => {}
                     _ => return Err(CoreError::Unavailable("the cut's freeze is gone".into())),
                 }
-                agent_move::save_cut(tx, &cut, now)
+                agent_move::save_cut(tx, cut, now)
             })
-            .map_err(store_error)?;
-        Ok(cut)
+            .map_err(store_error)
     }
 
     /// Admits `bytes` as the stream `session` through the door, resuming
@@ -550,10 +625,17 @@ impl AgentData {
         cut: Cut,
         params: &Value,
     ) -> Result<Value, Refusal> {
-        let session = cut.session_ref.clone().unwrap_or_default();
-        let end = cut.end_offset.unwrap_or(0);
-        self.cover(&session, end)?;
-        let reply = to_value(ExportReply::new(vec![ExportedItem::new(session, end)]));
+        // A cut with nothing to carry admitted no stream, so there is
+        // nothing for the door to cover.
+        let items = match cut.session_ref.clone() {
+            None => vec![],
+            Some(session) => {
+                let end = cut.end_offset.unwrap_or(0);
+                self.cover(&session, end)?;
+                vec![ExportedItem::new(session, end)]
+            }
+        };
+        let reply = to_value(ExportReply::new(items));
         self.record(
             rt,
             cut_id,
@@ -577,27 +659,16 @@ impl AgentData {
     ) -> Result<Value, Refusal> {
         let agent = receiver_agent(refs)?;
         let session = session_ref(&agent, cut_id);
-        let door = self.door();
-        let read = door
-            .call("cut.read", json!({"cutId": cut_id}))
-            .map_err(|e| {
-                refuse(
-                    RefusalCode::CutNotReady,
-                    format!("the cut is not readable through the door yet: {e:?}"),
-                )
-            })?;
-        let item = read["items"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|i| i["sessionRef"] == session.as_str() && i["stream"] == STREAM)
-            .cloned()
-            .ok_or_else(|| {
-                refuse(
+        let items = self.cut_items(cut_id)?;
+        let Some(item) = basal_item(&items, &agent, cut_id).cloned() else {
+            if items.iter().any(|i| i["stream"] == STREAM) {
+                return Err(refuse(
                     RefusalCode::DigestMismatch,
-                    "the cut holds no basal stream for this agent",
-                )
-            })?;
+                    "the cut's basal stream names another agent or cut",
+                ));
+            }
+            return self.import_nothing(rt, cut_id, refs, &agent, params);
+        };
         let end = item["endOffset"]
             .as_u64()
             .ok_or_else(|| refuse(RefusalCode::DigestMismatch, "the cut's item has no length"))?;
@@ -677,6 +748,42 @@ impl AgentData {
         Ok(reply)
     }
 
+    /// Imports a cut that carries no basal item: the source had nothing for
+    /// the agent. Nothing is staged; `activate` only replaces a tombstone of
+    /// the agent here. Live flows of the agent here would stay beside its
+    /// copy elsewhere, so they are refused as a fork.
+    fn import_nothing(
+        &self,
+        rt: &Runtime,
+        cut_id: &str,
+        refs: &Refs,
+        agent: &str,
+        params: &Value,
+    ) -> Result<Value, Refusal> {
+        let live = rt
+            .store()
+            .read(|c| agent_move::has_live_flows(c, agent))
+            .map_err(store_error)?;
+        if live {
+            return Err(advanced(agent));
+        }
+        let reply = to_value(ImportReply::new(vec![]));
+        let cut = Cut {
+            cut_id: cut_id.into(),
+            agent: Some(agent.to_owned()),
+            side: "receiver".into(),
+            step: "imported".into(),
+            refs: to_value(refs),
+            session_ref: None,
+            end_offset: None,
+            digest: None,
+            fingerprint: None,
+            dropped: None,
+        };
+        self.record(rt, cut_id, Op::Import, params, &reply, Some(cut))?;
+        Ok(reply)
+    }
+
     /// Reads one item of a sealed cut through the door and checks it hashes
     /// to the digest the cut was sealed with.
     fn download(
@@ -734,6 +841,9 @@ impl AgentData {
     ) -> Result<Value, Refusal> {
         let agent = cut.agent.clone().unwrap_or_default();
         let dir = self.staging(cut_id);
+        if cut.session_ref.is_none() {
+            return self.activate_nothing(rt, cut_id, cut, params);
+        }
         let bytes = std::fs::read(dir.join("incoming")).map_err(|e| {
             ErrorBody::with_digest_mismatch_detail(
                 DigestMismatchDetail::new("staging_digest_mismatch"),
@@ -788,6 +898,60 @@ impl AgentData {
         let _ = std::fs::remove_dir_all(&dir);
         // Moved flows are due for an approval check now; the engine runs it
         // without the store's write lock.
+        rt.agent_move_changed();
+        Ok(reply)
+    }
+
+    /// Activates a cut that carried no basal item. No flow arrives; a
+    /// tombstone of the agent here is replaced as on any move back, since
+    /// the agent now lives on this computer and may install flows here.
+    fn activate_nothing(
+        &self,
+        rt: &Runtime,
+        cut_id: &str,
+        cut: Cut,
+        params: &Value,
+    ) -> Result<Value, Refusal> {
+        let agent = cut.agent.clone().unwrap_or_default();
+        let empty = agent_move::stream::Staged {
+            agent: agent.clone(),
+            cut_id: cut_id.into(),
+            counts: Default::default(),
+            records: vec![],
+        };
+        let reply = to_value(EmptyReply::new());
+        let now = rt.config().clock.now_ms();
+        let name = op_name(Op::Activate);
+        rt.store()
+            .write(|tx| {
+                // A live flow that appeared since `import` would be lost
+                // beside the agent's copy elsewhere.
+                if agent_move::has_live_flows(tx, &agent)? {
+                    return Ok(Err(advanced(&agent)));
+                }
+                let fingerprint = match agent_move::activate(tx, &agent, cut_id, &empty, now)? {
+                    Ok(fingerprint) => fingerprint,
+                    Err(ActivateRefusal::Advanced) => return Ok(Err(advanced(&agent))),
+                    Err(ActivateRefusal::Collision(collision)) => {
+                        return Ok(Err(collided(&collision)));
+                    }
+                    Err(ActivateRefusal::Rejected(message)) => {
+                        return Ok(Err(ErrorBody::with_participant_failed_detail(
+                            ParticipantFailedDetail::new("moved_rows_rejected"),
+                            format!("this store refused the move: {message}"),
+                        )));
+                    }
+                };
+                let cut = Cut {
+                    step: "activated".into(),
+                    fingerprint: Some(fingerprint),
+                    ..cut.clone()
+                };
+                agent_move::save_cut(tx, &cut, now)?;
+                agent_move::record_reply(tx, cut_id, name, params, &reply)?;
+                Ok(Ok(()))
+            })
+            .map_err(store_error)??;
         rt.agent_move_changed();
         Ok(reply)
     }
@@ -899,6 +1063,20 @@ impl AgentData {
             })
             .map_err(store_error)
     }
+}
+
+/// The cut's item for the agent's basal stream, if the source shipped one.
+fn basal_item<'a>(items: &'a [Value], agent: &str, cut_id: &str) -> Option<&'a Value> {
+    let session = session_ref(agent, cut_id);
+    items
+        .iter()
+        .find(|i| i["sessionRef"] == session.as_str() && i["stream"] == STREAM)
+}
+
+/// Whether an encoded stream holds no record at all: no flow, instance,
+/// `kv` entry, run history or instance generation. Such a cut ships no item.
+fn carries_nothing(bytes: &[u8]) -> bool {
+    agent_move::stream::decode(bytes).is_ok_and(|staged| staged.records.is_empty())
 }
 
 fn op_name(op: Op) -> &'static str {

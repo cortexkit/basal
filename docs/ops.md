@@ -1165,6 +1165,11 @@ before its request is read. `describe` declares ref kind `agent` and one store,
   refused `not_exportable`) and admitted through Engram's session door (the
   `session-door` internal service of the `engram` module, the only path an
   agent's data takes between computers).
+  An agent with nothing here to carry (no flow, instance, `kv` entry, run
+  history or instance generation) gets no item: `prepare` replies
+  `items: []` and admits no stream, and `export` replies `{"items":[]}`, so
+  the move can go to a computer that doesn't run basal. The freeze and the
+  tombstone apply all the same.
   `release` leaves a tombstone naming the new holder and discards the flows'
   backlogged events, including any queued during the freeze, which the
   receiver's `dropped` count can't include: basal logs the number at INFO and
@@ -1174,7 +1179,12 @@ before its request is read. `describe` declares ref kind `agent` and one store,
   digest and every carried code hash, and stages it without writing a live
   row. A flow id that belongs to another owner here is refused
   `local_advanced`, naming the flow and its owner: rename or remove one and
-  move again. `activate` writes the flows in one transaction. A flow that was
+  move again. A cut with no basal item is an empty set: `import` replies
+  `items: []` and stages nothing, and `activate` writes no flow, only
+  replacing a tombstone of the agent here. Against live flows of the agent
+  here, such a cut is a fork: `diverged` answers `advanced` (it reads the
+  cut only in that case, and answers `cut_not_ready` while it can't), and
+  `import` refuses `local_advanced`. `activate` writes the flows in one transaction. A flow that was
   approved on the source arrives disabled with `disabled_by: "move"` and waits
   until this computer's prefrontal reports the same code active; it is then
   put back in the source's own enable state, and its schedule's `missed`

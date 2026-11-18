@@ -185,16 +185,23 @@ fn sample(side: &str, method: &str, cut: &str) -> (String, Value) {
     (method.to_owned(), params)
 }
 
-/// Seals a prepared cut on the door, as Entorhinal does after `export`.
+/// Seals a prepared cut on the door, as Entorhinal does after `export`,
+/// beside another participant's item.
 fn seal(door: &FakeDoor, cut: &str, prepared: &Value) {
-    let item = &prepared["items"][0];
-    door.seal(
-        cut,
-        vec![
+    let mut items: Vec<Value> = prepared["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
             json!({"sessionRef": item["sessionRef"], "stream": item["stream"],
-            "endOffset": item["endOffset"], "digest": item["digest"]}),
-        ],
+            "endOffset": item["endOffset"], "digest": item["digest"]})
+        })
+        .collect();
+    items.push(
+        json!({"sessionRef": "9".repeat(32), "stream": "reserved:other",
+        "endOffset": 3, "digest": hex(&Sha256::digest(b"abc"))}),
     );
+    door.seal(cut, items);
 }
 
 const CUT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -949,4 +956,158 @@ fn release_records_every_backlogged_event_it_discards() {
         )),
         [r#"{"discarded_at_release":2,"queued_event":1}"#]
     );
+}
+
+/// Installs a flow as the agent, from the agent's own route.
+fn install_as_agent(a: &Computer, id: &str) -> Result<Value, crate::ops::OpError> {
+    let manifest = json!({"id":id,"version":1,"state_epoch":1,
+        "explanation":"Exercises a moved flow's schedule for a test, without other effects.",
+        "purpose":"Agent move test","trigger":{"schedule":{"interval":"1m"}}});
+    a.module.handle(
+        &a.agent(),
+        "flow.install",
+        json!({"script": format!("return '{id}';"), "manifest": manifest.to_string()}),
+    )
+}
+
+#[test]
+fn an_agent_with_nothing_here_ships_no_item_and_still_freezes_and_tombstones() {
+    let door = FakeDoor::new();
+    let a = Computer::new("nothing-a", &door);
+    let b = Computer::new("nothing-b", &door);
+    let prepared = a.sample("source", "agent_data.prepare", CUT).unwrap();
+    assert_eq!(prepared, json!({"items": [], "external": []}));
+    assert_eq!(
+        a.sample("source", "agent_data.prepare", CUT).unwrap(),
+        prepared,
+        "a repeat replays the empty reply"
+    );
+    assert!(door.stream(&session_ref(AGENT, CUT)).is_empty());
+    assert!(
+        !door.calls().iter().any(|c| c.starts_with("session.")),
+        "no stream is admitted or covered: {:?}",
+        door.calls()
+    );
+    // The freeze holds all the same.
+    assert_eq!(code_of(install_as_agent(&a, "f-new")), "agent_moving");
+    assert_eq!(
+        a.sample("source", "agent_data.export", CUT).unwrap(),
+        json!({"items": []})
+    );
+    seal(&door, CUT, &prepared);
+    assert_eq!(
+        b.sample("receiver", "agent_data.diverged", CUT).unwrap(),
+        json!({"refs":[{"state":"at_cut"}]})
+    );
+    assert_eq!(
+        b.sample("receiver", "agent_data.import", CUT).unwrap(),
+        json!({"items": []})
+    );
+    assert_eq!(
+        b.sample("receiver", "agent_data.activate", CUT).unwrap(),
+        json!({})
+    );
+    assert_eq!(
+        b.sample("receiver", "agent_data.status", CUT).unwrap(),
+        json!({"step":"activated"})
+    );
+    assert!(b.sql("SELECT flow_id FROM flows").is_empty());
+    assert!(b.sql("SELECT agent_id FROM agent_move_holds").is_empty());
+    assert!(!b.dir.join("agent-move").join(CUT).exists());
+    // The tombstone still refuses a later local install on the source.
+    assert_eq!(
+        a.sample("source", "agent_data.release", CUT).unwrap(),
+        json!({"enforced": true})
+    );
+    assert_eq!(code_of(install_as_agent(&a, "f-new")), "agent_moved");
+    // ...and not where the agent now lives.
+    assert_not_moved(install_as_agent(&b, "f-new"));
+}
+
+#[test]
+fn an_agent_with_one_flow_still_ships_its_item() {
+    let door = FakeDoor::new();
+    let a = Computer::new("one-flow", &door);
+    a.flow("f-alpha");
+    let prepared = a.sample("source", "agent_data.prepare", CUT).unwrap();
+    let items = prepared["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["stream"], STREAM);
+    assert!(items[0]["endOffset"].as_u64().unwrap() > 0);
+    let exported = a.sample("source", "agent_data.export", CUT).unwrap();
+    assert_eq!(exported["items"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_cut_without_a_basal_item_is_a_fork_against_live_local_flows() {
+    let door = FakeDoor::new();
+    let a = Computer::new("empty-fork-a", &door);
+    let b = Computer::new("empty-fork-b", &door);
+    a.seed();
+    move_agent(&door, &a, &b, CUT);
+    a.sample("source", "agent_data.release", CUT).unwrap();
+    // B's live flows match the cut it activated, but the next cut (from the
+    // tombstoned A, which holds nothing live) carries no basal item.
+    let other = a.sample("source", "agent_data.prepare", BACK).unwrap();
+    assert_eq!(other["items"], json!([]));
+    a.sample("source", "agent_data.export", BACK).unwrap();
+    seal(&door, BACK, &other);
+    assert_eq!(
+        b.sample("receiver", "agent_data.diverged", BACK).unwrap(),
+        json!({"refs":[{"state":"advanced"}]})
+    );
+    assert_eq!(
+        code(b.sample("receiver", "agent_data.import", BACK)),
+        RefusalCode::LocalAdvanced
+    );
+    assert_eq!(
+        b.sample("receiver", "agent_data.status", BACK).unwrap(),
+        json!({"step":"none"})
+    );
+    // Not readable yet: retry within the step rather than guessing.
+    let unsealed = "dddddddddddddddddddddddddddddddd";
+    assert_eq!(
+        code(b.sample("receiver", "agent_data.diverged", unsealed)),
+        RefusalCode::CutNotReady
+    );
+}
+
+#[test]
+fn an_empty_cut_moving_back_replaces_the_tombstone() {
+    let door = FakeDoor::new();
+    let a = Computer::new("empty-back-a", &door);
+    let c = Computer::new("empty-back-c", &door);
+    // The agent left A earlier and has no flows anywhere now.
+    a.exec(&format!(
+        "INSERT INTO agent_move_holds(agent_id,kind,cut_id,holder,at) VALUES ('{AGENT}','moved','{ABORTED}','holder-c',1)"
+    ));
+    assert_eq!(code_of(install_as_agent(&a, "f-new")), "agent_moved");
+    let prepared = c.sample("source", "agent_data.prepare", BACK).unwrap();
+    c.sample("source", "agent_data.export", BACK).unwrap();
+    seal(&door, BACK, &prepared);
+    assert_eq!(
+        a.sample("receiver", "agent_data.diverged", BACK).unwrap(),
+        json!({"refs":[{"state":"at_cut"}]})
+    );
+    a.sample("receiver", "agent_data.import", BACK).unwrap();
+    assert_eq!(
+        a.sql("SELECT kind FROM agent_move_holds"),
+        ["moved"],
+        "import writes nothing"
+    );
+    a.sample("receiver", "agent_data.activate", BACK).unwrap();
+    assert!(a.sql("SELECT kind FROM agent_move_holds").is_empty());
+    assert_not_moved(install_as_agent(&a, "f-new"));
+}
+
+/// The install may still fail here for reasons of its own (this harness has
+/// no workers for its dry run), but never because the agent moved.
+fn assert_not_moved(result: Result<Value, crate::ops::OpError>) {
+    if let Err(error) = result {
+        assert!(!error.code.starts_with("agent_mov"), "{error:?}");
+    }
+}
+
+fn code_of(result: Result<Value, crate::ops::OpError>) -> String {
+    result.unwrap_err().code
 }
