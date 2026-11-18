@@ -51,6 +51,8 @@ pub mod secrets;
 pub mod selector;
 pub mod subc_catalog;
 pub mod target_scope;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod transport;
 
 #[cfg(any(test, feature = "test-support"))]

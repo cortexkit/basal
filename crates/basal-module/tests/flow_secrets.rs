@@ -6,6 +6,7 @@ use basal_host::core_consent::{CoreConsent, FLOW_INSTALL_SECRETS_V1};
 use basal_host::core_host::CoreHost;
 use basal_host::routing::{ModuleOpsHost, RoutingHost};
 use basal_host::subc_catalog::SubcCatalog;
+use basal_host::test_support::logs::CapturedLogs;
 use basal_host::transport::{Transport, WireError};
 use basal_module::caller::Caller;
 use basal_module::module::Hosts;
@@ -494,28 +495,14 @@ fn review_core_refusal_after_secret_preparation_cleans_up_durably() {
     );
 }
 
-struct Warnings(Arc<std::sync::Mutex<Vec<String>>>);
-impl tracing::field::Visit for Warnings {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.0.lock().unwrap().push(format!("{value:?}"));
-        }
-    }
-}
-impl tracing::Subscriber for Warnings {
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        *metadata.level() == tracing::Level::WARN
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        event.record(&mut Warnings(self.0.clone()));
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
+fn captured_warnings(logs: &CapturedLogs) -> Vec<String> {
+    logs.0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(level, _)| *level == tracing::Level::WARN)
+        .map(|(_, fields)| fields.clone())
+        .collect()
 }
 
 #[test]
@@ -537,8 +524,8 @@ fn review_permanent_revoke_refusals_are_recorded_once_and_never_retried() {
                 detail: json!({"unsafe":"must-not-log"}),
             })],
         );
-        let warnings = Arc::new(std::sync::Mutex::new(Vec::new()));
-        tracing::subscriber::with_default(Warnings(warnings.clone()), || {
+        let warnings = {
+            let logs = CapturedLogs::new();
             f.module.rt.drain_secret_revocations().unwrap();
             f.clock.advance(10000);
             if code == "store_error" {
@@ -548,18 +535,19 @@ fn review_permanent_revoke_refusals_are_recorded_once_and_never_retried() {
                 );
             }
             f.module.rt.drain_secret_revocations().unwrap();
-        });
+            captured_warnings(&logs)
+        };
         let (failed, failure, delivered): (Option<i64>,Option<String>,Option<i64>) = f.module.rt.store().read(|c| Ok(c.query_row("SELECT failed_at,failure_code,delivered_at FROM outbox WHERE kind='secret.revoke_flow_grants'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)).unwrap();
         if code == "store_error" {
             assert!(failed.is_none() && failure.is_none() && delivered.is_some());
             assert_eq!(fake.calls("secret.revoke_flow_grants").len(), 2);
-            assert!(warnings.lock().unwrap().is_empty());
+            assert!(warnings.is_empty());
         } else {
             assert!(failed.is_some() && delivered.is_none());
             assert_eq!(failure.as_deref(), Some(code));
             assert_eq!(fake.calls("secret.revoke_flow_grants").len(), 1);
-            assert_eq!(warnings.lock().unwrap().len(), 1);
-            assert!(!warnings.lock().unwrap()[0].contains("must-not-log"));
+            assert_eq!(warnings.len(), 1);
+            assert!(!warnings[0].contains("must-not-log"));
         }
     }
 }
@@ -584,8 +572,8 @@ fn review_unreadable_historical_manifests_do_not_block_cleanup_or_card_settlemen
                 Ok(())
             })
             .unwrap();
-        let warnings = Arc::new(std::sync::Mutex::new(Vec::new()));
-        tracing::subscriber::with_default(Warnings(warnings.clone()), || {
+        let warnings = {
+            let logs = CapturedLogs::new();
             if decline {
                 fake.enqueue(
                     "flow.install_status",
@@ -604,8 +592,9 @@ fn review_unreadable_historical_manifests_do_not_block_cleanup_or_card_settlemen
                     .unwrap();
             }
             f.module.rt.enqueue_secret_install_cleanup(FLOW, 1).unwrap();
-        });
-        assert_eq!(warnings.lock().unwrap().len(), 1);
+            captured_warnings(&logs)
+        };
+        assert_eq!(warnings.len(), 1);
     }
     let fake = Fake::new();
     capability(&fake);

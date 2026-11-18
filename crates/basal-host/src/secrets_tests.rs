@@ -1,5 +1,6 @@
 use super::*;
 use crate::builtins::{BuiltinHost, Grant};
+use crate::test_support::logs::CapturedLogs;
 use crate::transport::{Transport, WireError};
 use crate::{CallClass, CallRequest, Dispatched, Host, TransportError};
 use basal_proto::{CallKind, JsonText, Primitive};
@@ -118,28 +119,6 @@ fn flow_secrets_scope_missing_or_mismatched_identity_never_calls_vault() {
 }
 
 struct CountingHost(Mutex<usize>);
-struct Logs(Arc<Mutex<String>>);
-impl tracing::field::Visit for Logs {
-    fn record_debug(&mut self, _: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        use std::fmt::Write;
-        write!(self.0.lock().unwrap(), "{value:?}").unwrap();
-    }
-}
-impl tracing::Subscriber for Logs {
-    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        event.record(&mut Logs(self.0.clone()));
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
 impl Host for CountingHost {
     fn secret_use(&self, _: &CallRequest, _: &str, _: Value) -> Result<Value, WireError> {
         *self.0.lock().unwrap() += 1;
@@ -211,21 +190,30 @@ fn flow_secrets_scope_and_declaration_refuse_before_release_and_errors_drop_vaul
         &json!({"url":"https://x.test/repos/a","options":{"secret":"key"}}),
         &grant(),
     );
-    let logs = Arc::new(Mutex::new(String::new()));
-    let result =
-        tracing::subscriber::with_default(Logs(logs.clone()), || host.dispatch(&request(envelope)));
+    let (result, logs) = {
+        let capture = CapturedLogs::new();
+        let result = host.dispatch(&request(envelope));
+        let logs = capture
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, fields)| fields.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (result, logs)
+    };
     let Dispatched::Completed(outcome) = result.unwrap() else {
         panic!("synchronous refusal")
     };
     assert_eq!(*carrier.0.lock().unwrap(), 1);
     assert!(!outcome.value.as_str().contains(KEY));
-    assert!(!logs.lock().unwrap().contains(KEY));
+    assert!(!logs.contains(KEY));
     assert_eq!(
         serde_json::from_str::<Value>(outcome.value.as_str()).unwrap()["code"],
         "not_found"
     );
     // The failure is logged with its host and code, but never the path.
-    let logs = logs.lock().unwrap();
     for part in ["net.fetch failed", "x.test", "vault_refused", "not_found"] {
         assert!(logs.contains(part), "{part} missing from {logs}");
     }
