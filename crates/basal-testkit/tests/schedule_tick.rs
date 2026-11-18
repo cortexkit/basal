@@ -9,10 +9,12 @@ use std::sync::Arc;
 
 use basal_core::hooks::NoHooks;
 use basal_core::schedule::spec::from_value;
-use basal_core::schedule::{Approval, ScheduleState, Scheduler, SchedulerConfig, validate};
+use basal_core::schedule::{
+    Approval, CoalescedFire, ScheduleState, Scheduler, SchedulerConfig, validate,
+};
 use basal_core::{
     Actor, Admission, Clock, Config, Durability, InstallError, InstallRequest, ManifestError,
-    Runtime, Store,
+    RunState, Runtime, Store,
 };
 use basal_host::MockCatalog;
 use basal_host::mock::MockHost;
@@ -156,7 +158,7 @@ impl Fixture {
         new_runs(&self.s().tick().expect("tick"))
     }
 
-    /// Every run admitted for `flow_id`, in admission order: its trigger
+    /// The live runs for `flow_id`, in admission order: each one's trigger
     /// id, the trigger payload the script sees, and the script it runs.
     fn fires(&self, flow_id: &str) -> Vec<(String, Value, String)> {
         self.s()
@@ -189,6 +191,27 @@ impl Fixture {
 
     fn fire_ids(&self, flow_id: &str) -> Vec<String> {
         self.fires(flow_id).into_iter().map(|f| f.0).collect()
+    }
+
+    fn finish_live_runs(&self, flow_id: &str) {
+        let runs = self
+            .s()
+            .store()
+            .read(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT run_id FROM live_runs WHERE flow_id = ?1 ORDER BY admit_seq",
+                )?;
+                let rows = stmt
+                    .query_map([flow_id], |r| r.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("live runs");
+        for run_id in runs {
+            self.rt()
+                .fixture_finish(&run_id, RunState::Succeeded, None, None)
+                .expect("finish run");
+        }
     }
 
     fn next_due(&self, flow_id: &str) -> Option<Timestamp> {
@@ -228,15 +251,21 @@ fn schedule_fire_ids_keep_the_literal_timestamp_contract() {
 }
 
 /// Ticks once a minute from `from` to `to` inclusive and returns, for
-/// every new run, the tick time and its trigger id.
-fn walk_minutes(fx: &Fixture, from: &str, to: &str) -> Vec<(Timestamp, String)> {
+/// every new run, the tick time and its trigger id. Finishes each batch so
+/// the live-run limit does not interfere with checking when the cron fires.
+fn walk_minutes(fx: &Fixture, flow_id: &str, from: &str, to: &str) -> Vec<(Timestamp, String)> {
     let mut now = ts(from);
     let end = ts(to);
     let mut out = Vec::new();
     while now <= end {
         fx.clock.set(now.as_millisecond());
-        for trigger_id in new_runs(&fx.s().tick().expect("tick")) {
-            out.push((now, trigger_id));
+        let fires = new_runs(&fx.s().tick().expect("tick"));
+        if !fires.is_empty() {
+            for (_, trigger, _) in fx.fires(flow_id) {
+                assert!(trigger.get("catch_up").is_none(), "{trigger}");
+            }
+            fx.finish_live_runs(flow_id);
+            out.extend(fires.into_iter().map(|trigger_id| (now, trigger_id)));
         }
         now = now
             .checked_add(SignedDuration::from_secs(60))
@@ -261,7 +290,12 @@ fn spring_forward_gap_fires_once_at_the_first_valid_instant() {
         1,
         json!({ "cron": "30 2 * * *", "tz": "Europe/Madrid" }),
     ));
-    let fired = walk_minutes(&fx, "2026-03-28T00:00:00Z", "2026-03-30T03:00:00Z");
+    let fired = walk_minutes(
+        &fx,
+        "madrid",
+        "2026-03-28T00:00:00Z",
+        "2026-03-30T03:00:00Z",
+    );
     assert_eq!(
         fired,
         vec![
@@ -274,9 +308,6 @@ fn spring_forward_gap_fires_once_at_the_first_valid_instant() {
             (ts("2026-03-30T00:30:00Z"), id("2026-03-30T00:30:00Z")),
         ]
     );
-    for (_, trigger, _) in fx.fires("madrid") {
-        assert!(trigger.get("catch_up").is_none(), "{trigger}");
-    }
 }
 
 /// Europe/Madrid falls back on 2026-10-25 at 03:00 CEST (01:00 UTC): the
@@ -289,7 +320,12 @@ fn fall_back_overlap_fires_once_at_the_first_occurrence() {
         1,
         json!({ "cron": "30 2 * * *", "tz": "Europe/Madrid" }),
     ));
-    let fired = walk_minutes(&fx, "2026-10-24T00:00:00Z", "2026-10-26T03:00:00Z");
+    let fired = walk_minutes(
+        &fx,
+        "madrid",
+        "2026-10-24T00:00:00Z",
+        "2026-10-26T03:00:00Z",
+    );
     assert_eq!(
         fired,
         vec![
@@ -406,10 +442,51 @@ fn a_sleep_gap_under_once_makes_one_catch_up_fire_with_count_and_window() {
     );
     assert_eq!(fx.next_due("hourly"), Some(ts("2026-05-01T07:00:00Z")));
     // Back on schedule.
+    fx.finish_live_runs("hourly");
     assert_eq!(
         fx.tick("2026-05-01T07:00:10Z"),
         [id("2026-05-01T07:00:00Z")]
     );
+}
+
+#[test]
+fn once_coalesces_recurring_fires_during_a_long_run_stall() {
+    let fx = Fixture::new("sched-once-stall", "2026-05-01T00:00:00Z");
+    fx.approve(&flow(
+        "quarter-hourly",
+        1,
+        json!({ "interval": "15m", "missed": "once" }),
+    ));
+    let first = "2026-05-01T00:15:00Z";
+    let second = "2026-05-01T00:30:00Z";
+    assert_eq!(fx.tick(first), [id(first)]);
+    assert_eq!(fx.tick(second), [id(second)]);
+
+    // Keep ticking through 06:00 while neither scheduled run can finish.
+    let mut due = ts("2026-05-01T00:45:00Z");
+    let resumes_at = ts("2026-05-01T06:15:00Z");
+    while due < resumes_at {
+        fx.clock.set(due.as_millisecond());
+        let report = fx.s().tick().expect("tick during stall");
+        assert!(report.admitted.is_empty(), "{report:?}");
+        assert_eq!(
+            report.coalesced,
+            [CoalescedFire {
+                flow_id: "quarter-hourly".into(),
+                due,
+            }]
+        );
+        assert_eq!(report.waiting, 0);
+        due = due.checked_add(SignedDuration::from_secs(15 * 60)).unwrap();
+    }
+    assert_eq!(fx.fire_ids("quarter-hourly"), [id(first), id(second)]);
+    assert_eq!(fx.next_due("quarter-hourly"), Some(resumes_at));
+
+    // After recovery, only the next regular fire is admitted, not a backlog.
+    fx.finish_live_runs("quarter-hourly");
+    let next = "2026-05-01T06:15:00Z";
+    assert_eq!(fx.tick(next), [id(next)]);
+    assert_eq!(fx.fire_ids("quarter-hourly"), [id(next)]);
 }
 
 #[test]
