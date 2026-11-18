@@ -750,6 +750,8 @@ pub fn release(
 /// Why `activate` wrote nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivateRefusal {
+    /// The receiver's flows are in use and cannot be replaced yet.
+    Busy(Busy),
     /// This computer's live copy of the agent's flows gained data the cut
     /// lacks since `diverged`.
     Advanced,
@@ -829,6 +831,10 @@ fn write_staged(
         CALL, FLOW, GENERATION, HISTORY, INSTANCE, KV, POLICY, SCHEDULE, SNAPSHOT, VERSION, insert,
         values,
     };
+    // A live run can still commit its kv overlay into the receiver's copy.
+    if let Some(busy) = busy(tx, agent)? {
+        return Ok(Err(ActivateRefusal::Busy(busy)));
+    }
     if local(tx, agent)? == Local::Advanced {
         return Ok(Err(ActivateRefusal::Advanced));
     }

@@ -588,6 +588,67 @@ fn a_live_local_copy_with_new_data_is_a_fork() {
 }
 
 #[test]
+fn activate_refuses_a_live_run_on_an_at_cut_receiver() {
+    let source = migrated();
+    populate(&source);
+    source
+        .execute(
+            "UPDATE kv SET value='5',revision=5 WHERE flow_id='f-alpha'",
+            [],
+        )
+        .unwrap();
+    let staged = staged_from(&source, BACK);
+    let mut receiver = migrated();
+    populate(&receiver);
+    let t = tx(&mut receiver);
+    save_cut(
+        &t,
+        &Cut {
+            cut_id: CUT.into(),
+            agent: Some(AGENT.into()),
+            side: "receiver".into(),
+            step: "activated".into(),
+            refs: json!([]),
+            session_ref: None,
+            end_offset: None,
+            digest: None,
+            fingerprint: Some(fingerprint(&t, AGENT).unwrap()),
+            dropped: None,
+        },
+        1,
+    )
+    .unwrap();
+    t.execute_batch(
+        "INSERT INTO live_runs(run_id,flow_id,flow_version,trigger_id,trigger_kind,trigger,attempt,admitted_at,admit_seq,admit_epoch,admit_segment,admit_offset,deadline_ms,self_input,params_input,grant_guards,end_instance,snapshot_id)
+         VALUES('run-live','f-alpha',1,'live','manual','{}',1,70,2,1,0,0,100,'{}','{}','[]',0,41)",
+    )
+    .unwrap();
+    t.commit().unwrap();
+    assert_eq!(local(&receiver, AGENT).unwrap(), Local::AtCut);
+
+    let t = tx(&mut receiver);
+    let before = t.total_changes();
+    assert_eq!(
+        activate(&t, AGENT, BACK, &staged, 2).unwrap(),
+        Err(ActivateRefusal::Busy(Busy {
+            code: "run_active",
+            reason: "flow f-alpha has a run in progress".into(),
+        }))
+    );
+    assert_eq!(t.total_changes(), before, "busy activate must not write");
+    t.commit().unwrap();
+    let kv = "SELECT value FROM kv WHERE flow_id='f-alpha' AND key='count'";
+    assert_eq!(rows(&receiver, kv), ["4"]);
+
+    let t = tx(&mut receiver);
+    t.execute("DELETE FROM live_runs WHERE run_id='run-live'", [])
+        .unwrap();
+    activate(&t, AGENT, BACK, &staged, 3).unwrap().unwrap();
+    t.commit().unwrap();
+    assert_eq!(rows(&receiver, kv), ["5"]);
+}
+
+#[test]
 fn a_refused_write_rolls_back_everything_it_wrote() {
     let source = migrated();
     populate(&source);

@@ -1,7 +1,7 @@
 //! Preflight for keeping live kv state in a run's overlay: no other production
 //! reader may depend on seeing a run's eager SQLite writes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -201,6 +201,7 @@ struct Scan {
     run_calls: usize,
     run_local_reads: usize,
     terminal_overlay_writes: usize,
+    agent_move_sites: BTreeMap<&'static str, usize>,
 }
 
 impl Scan {
@@ -493,6 +494,10 @@ impl Scan {
             self.terminal_overlay_writes += 1;
             return;
         }
+        if let Some(site) = agent_move_site(path, function, &token.text) {
+            *self.agent_move_sites.entry(site).or_default() += 1;
+            return;
+        }
         // These exact write-only statements are not readers. Do not exempt their
         // files: a SELECT added to an epoch reset or migration still needs review.
         if (path.ends_with("basal-core/src/state_epoch.rs")
@@ -508,9 +513,35 @@ impl Scan {
             path,
             source,
             token,
-            "kv SQL outside the audited run-local or terminal-overlay functions",
+            "kv SQL outside the audited run-driver or agent-move functions",
         );
     }
+}
+
+fn agent_move_site(path: &Path, function: &str, literal: &str) -> Option<&'static str> {
+    if path.ends_with("crates/basal-core/src/agent_move.rs") {
+        return match function {
+            // The fingerprint can read committed revisions while a run is live;
+            // activate checks busy and compares the fingerprint again before replacing rows.
+            "fingerprint" => Some("fingerprint"),
+            // Export reads a frozen copy: freeze checks busy in its write
+            // transaction and the hold prevents new runs from being admitted.
+            "encode" => Some("encode"),
+            // Activate checks busy in the same transaction as the replacement.
+            "clear_old_copy" => Some("clear_old_copy"),
+            "write_staged" => Some("write_staged"),
+            _ => None,
+        };
+    }
+    // These literals identify a stream record kind, not a SQL table.
+    if literal == "kv" && path.ends_with("crates/basal-core/src/agent_move/stream.rs") {
+        return match function {
+            "belongs_to_agent" => Some("belongs_to_agent"),
+            "check" => Some("check"),
+            _ => None,
+        };
+    }
+    None
 }
 
 fn import_contains_kv(tokens: &[Token]) -> bool {
@@ -946,6 +977,18 @@ fn production_kv_reads_are_run_local() {
         "the audited terminal-overlay kv writes changed"
     );
     assert_eq!(scan.run_calls, 0, "retired eager kv calls returned");
+    assert_eq!(
+        scan.agent_move_sites,
+        BTreeMap::from([
+            ("fingerprint", 2),
+            ("encode", 3),
+            ("clear_old_copy", 1),
+            ("write_staged", 2),
+            ("belongs_to_agent", 1),
+            ("check", 1),
+        ]),
+        "the audited agent-move kv sites changed"
+    );
     assert!(
         scan.violations.is_empty(),
         "production kv reader found outside a run; stop and ask before continuing:\n{}",
@@ -1064,6 +1107,42 @@ fn scan_catches_planted_kv_reads_elsewhere_in_run_driver() {
         assert_eq!(scan.run_local_reads, 0);
         assert_eq!(scan.terminal_overlay_writes, 0);
     }
+}
+
+#[test]
+fn scan_catches_planted_kv_reads_outside_the_named_agent_move_sql_sites() {
+    for (path, function) in [
+        ("basal-core/src/agent_move.rs", "local"),
+        ("basal-core/src/agent_move/stream.rs", "decode"),
+        ("basal-core/src/agent_move/stream.rs", "belongs_to_agent"),
+        ("basal-core/src/agent_move/stream.rs", "check"),
+        ("basal-core/src/other.rs", "fingerprint"),
+        ("basal-module/src/agent_move.rs", "encode"),
+    ] {
+        let source = format!(r#"fn {function}() {{ query("SELECT value FROM kv"); }}"#);
+        let fixture = Fixture::new(&[(path, &source)]);
+        let scan = scan(&fixture.0);
+        assert_eq!(scan.violations.len(), 1, "missed {path}:{function}");
+        assert!(scan.violations[0].replace('\\', "/").contains(path));
+        assert!(scan.agent_move_sites.is_empty(), "{scan:?}");
+    }
+}
+
+#[test]
+fn scan_counts_an_extra_kv_site_in_an_audited_agent_move_function() {
+    let fixture = Fixture::new(&[(
+        "basal-core/src/agent_move.rs",
+        r#"fn clear_old_copy() {
+            execute("DELETE FROM kv WHERE flow_id=?1");
+            query("SELECT value FROM kv");
+        }"#,
+    )]);
+    let scan = scan(&fixture.0);
+    assert!(scan.violations.is_empty(), "{scan:?}");
+    assert_eq!(
+        scan.agent_move_sites,
+        BTreeMap::from([("clear_old_copy", 2)])
+    );
 }
 
 #[test]
