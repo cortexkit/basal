@@ -46,7 +46,7 @@ cortexkit-role-routing = "=0.7.23"
 cortexkit-role-llm-runner = "=0.8.41"
 # The agent-data/v1 participant contract Entorhinal drives when it moves an
 # agent between computers. Pinned exactly so its refusal table can't drift.
-cortexkit-role-agent-data = "=0.3.1"
+cortexkit-role-agent-data = "=0.3.3"
 cortexkit-llm-tools = "=0.2.1"
 cortexkit-role-tool-provider-conformance = "=0.15.11"
 # The provider-owned resource-busy refusal is shared across the fleet.

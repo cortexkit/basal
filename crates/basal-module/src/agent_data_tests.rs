@@ -219,6 +219,7 @@ fn seal(door: &FakeDoor, cut: &str, prepared: &Value) {
 const CUT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ABORTED: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const BACK: &str = "cccccccccccccccccccccccccccccccc";
+const HOLDER_BOX: &str = "0123456789abcdef0123456789abcdef";
 
 /// Moves the agent from `a` to `b` through the sample requests, up to and
 /// including activation, and returns `prepare`'s reply.
@@ -383,10 +384,15 @@ fn a_two_flow_agent_moves_with_kv_history_and_its_queued_events_counted() {
     assert!(b.sql("SELECT flow_id FROM agent_move_pending").is_empty());
 
     // The source releases: a tombstone, and local changes are refused.
-    assert_eq!(
-        a.sample("source", "agent_data.release", CUT).unwrap(),
-        json!({"enforced": true})
-    );
+    let (method, mut release) = sample("source", "agent_data.release", CUT);
+    let without_box = release.clone();
+    release["holderBox"] = json!(HOLDER_BOX);
+    let released = a.call(&method, release.clone()).unwrap();
+    assert_eq!(released, json!({"enforced": true}));
+    assert_eq!(a.call(&method, release.clone()).unwrap(), released);
+    assert_eq!(code(a.call(&method, without_box)), RefusalCode::IdReused);
+    release["holderBox"] = json!("fedcba9876543210fedcba9876543210");
+    assert_eq!(code(a.call(&method, release)), RefusalCode::IdReused);
     for (method, caller, params) in [
         (
             "flow.install",
@@ -412,7 +418,15 @@ fn a_two_flow_agent_moves_with_kv_history_and_its_queued_events_counted() {
         assert_eq!(refused.code, "agent_moved", "{method}");
         assert_eq!(
             refused.detail,
-            Some(json!({"agent_id": AGENT, "holder": "02020202020202020202020202020202"}))
+            Some(json!({"agent_id": AGENT, "holder_box": HOLDER_BOX})),
+            "{method}"
+        );
+        assert_eq!(
+            refused.message,
+            format!(
+                "agent {AGENT} has moved to another computer ({HOLDER_BOX}); its flows run there now"
+            ),
+            "{method}"
         );
     }
     assert_eq!(
@@ -754,14 +768,23 @@ fn ops_out_of_order_and_repeats_follow_the_contract() {
     let early = a.sample("source", "agent_data.release", CUT).unwrap_err();
     assert_eq!(early.code, RefusalCode::InvalidState);
     a.sample("source", "agent_data.export", CUT).unwrap();
+    let (method, params) = sample("source", "agent_data.release", CUT);
+    let mut unknown_field = params.clone();
+    unknown_field["extra"] = json!(1);
+    let refused = a.call(&method, unknown_field).unwrap_err();
+    assert_eq!(refused.code, RefusalCode::InvalidRequest);
+    assert!(refused.message.contains("unknown field `extra`"));
     let released = a.sample("source", "agent_data.release", CUT).unwrap();
     assert_eq!(
         a.sample("source", "agent_data.release", CUT).unwrap(),
         released
     );
-    let (method, mut params) = sample("source", "agent_data.release", CUT);
-    params["holder"] = json!("another-holder");
-    assert_eq!(code(a.call(&method, params)), RefusalCode::IdReused);
+    let mut another_holder = params.clone();
+    another_holder["holder"] = json!("another-holder");
+    assert_eq!(code(a.call(&method, another_holder)), RefusalCode::IdReused);
+    let mut added_box = params;
+    added_box["holderBox"] = json!(HOLDER_BOX);
+    assert_eq!(code(a.call(&method, added_box)), RefusalCode::IdReused);
     let late = a.sample("source", "agent_data.abort", CUT).unwrap_err();
     assert_eq!(late.code, RefusalCode::InvalidState);
     // A ref kind basal doesn't hold.
@@ -802,6 +825,38 @@ fn every_contract_request_vector_gets_a_reply_or_a_refusal_from_its_row() {
         code(a.call("agent_data.resume", json!({}))),
         RefusalCode::InvalidRequest
     );
+}
+
+#[test]
+fn published_release_vectors_accept_a_box_id_and_refuse_a_malformed_one() {
+    let door = FakeDoor::new();
+    let a = Computer::new("release-vectors", &door);
+    let requests: Value =
+        serde_json::from_str(cortexkit_role_agent_data::vectors::file("requests.json").unwrap())
+            .unwrap();
+    let method = Op::Release.method();
+    a.sample("source", "agent_data.prepare", CUT).unwrap();
+    a.sample("source", "agent_data.export", CUT).unwrap();
+    for section in ["refused", "requests"] {
+        let vector = requests[section]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["method"] == method && v["params"].get("holderBox").is_some())
+            .unwrap_or_else(|| panic!("missing the holderBox release vector in {section}"));
+        // The shared samples use another participant's ref kind and cut.
+        let mut params = vector["params"].clone();
+        params["refs"] = json!([{"ref_kind": REF_KIND, "ref": AGENT}]);
+        params["cutId"] = json!(CUT);
+        if section == "refused" {
+            let refused = a.call(method, params).unwrap_err();
+            assert_eq!(refused.code, RefusalCode::InvalidRequest);
+            assert_eq!(refused.code.as_str(), vector["code"]);
+            assert!(refused.message.contains("holderBox"));
+        } else {
+            assert_eq!(a.call(method, params).unwrap(), json!({"enforced": true}));
+        }
+    }
 }
 
 /// Every change to a flow that a move carries, as the op and caller that
@@ -865,10 +920,19 @@ fn a_frozen_agents_flows_refuse_every_change_and_a_moved_agents_ignore_core_hint
         ["f-alpha:enabled:0", "f-beta:disabled:0"]
     );
     a.sample("source", "agent_data.export", CUT).unwrap();
-    a.sample("source", "agent_data.release", CUT).unwrap();
+    assert_eq!(
+        a.sample("source", "agent_data.release", CUT).unwrap(),
+        json!({"enforced": true})
+    );
     for (method, caller, params) in changes(&a) {
         let refused = a.module.handle(&caller, method, params).unwrap_err();
         assert_eq!(refused.code, "agent_moved", "{method}");
+        assert_eq!(refused.detail, Some(json!({"agent_id": AGENT})), "{method}");
+        assert_eq!(
+            refused.message,
+            format!("agent {AGENT} has moved to another computer; its flows run there now"),
+            "{method}"
+        );
     }
     let before = a.sql("SELECT flow_id||':'||COALESCE(approved_version,'-')||':'||removed_by FROM flows ORDER BY flow_id");
     for (method, params) in hints(alpha) {

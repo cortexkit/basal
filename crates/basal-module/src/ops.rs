@@ -397,23 +397,46 @@ impl Module {
     /// (`agent_moved`): a flow created or enabled here then would be left
     /// out of the move, or run beside the copy that now runs elsewhere.
     fn refuse_moving(&self, agent: &str) -> Result<(), OpError> {
-        let hold = self
+        use basal_core::agent_move::{self, Hold};
+
+        let (hold, holder_box) = self
             .rt
             .store()
-            .read(|c| basal_core::agent_move::hold(c, agent))
+            .read(|c| {
+                let hold = agent_move::hold(c, agent)?;
+                let holder_box = match &hold {
+                    Some(Hold::Moved { cut_id, .. }) => {
+                        crate::agent_data::released_holder_box(c, cut_id)?
+                    }
+                    _ => None,
+                };
+                Ok((hold, holder_box))
+            })
             .map_err(|e| self.core_error(e))?;
         match hold {
             None => Ok(()),
-            Some(basal_core::agent_move::Hold::Frozen { .. }) => Err(OpError::new(
+            Some(Hold::Frozen { .. }) => Err(OpError::new(
                 "agent_moving",
-                format!("agent {agent} is moving to another computer; retry after the move finishes"),
+                format!(
+                    "agent {agent} is moving to another computer; retry after the move finishes"
+                ),
             )
             .with_detail(Some(json!({"agent_id": agent, "retryable": true})))),
-            Some(basal_core::agent_move::Hold::Moved { holder, .. }) => Err(OpError::new(
-                "agent_moved",
-                format!("agent {agent} has moved to another computer ({holder}); its flows run there now"),
-            )
-            .with_detail(Some(json!({"agent_id": agent, "holder": holder})))),
+            Some(Hold::Moved { .. }) => {
+                let mut detail = json!({"agent_id": agent});
+                let destination = if let Some(holder_box) = holder_box {
+                    let destination = format!(" ({holder_box})");
+                    detail["holder_box"] = json!(holder_box);
+                    destination
+                } else {
+                    String::new()
+                };
+                Err(OpError::new(
+                    "agent_moved",
+                    format!("agent {agent} has moved to another computer{destination}; its flows run there now"),
+                )
+                .with_detail(Some(detail)))
+            }
         }
     }
 
