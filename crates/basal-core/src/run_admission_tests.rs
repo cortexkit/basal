@@ -1,6 +1,7 @@
 use super::*;
 use crate::run_log::Lsn;
 use crate::run_store_sql::{GcFloor, Meta};
+use crate::schedule::spec::{DEFAULT_EACH_CAP, MAX_EACH_CAP};
 use crate::{Clock, Config, Durability, InstallGate, NoHooks, Runtime};
 use basal_host::{MockCatalog, mock::MockHost};
 use serde_json::json;
@@ -252,7 +253,9 @@ fn recurring_schedule_cap_uses_indexed_live_run_lookup() {
                 schedule::tick::RECURRING_SCHEDULE_AT_CAP
             );
             Ok(c.prepare(&sql)?
-                .query_map(params!["flow", 1], |r| r.get::<_, String>(3))?
+                .query_map(params!["flow", 1, DEFAULT_EACH_CAP, MAX_EACH_CAP], |r| {
+                    r.get::<_, String>(3)
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .unwrap();
@@ -313,17 +316,23 @@ fn recurring_schedule_cap_applies_within_one_catch_up_tick() {
         "flow",
         1,
         1,
-        json!({"schedule":{"interval":"1m","missed":"each","each_cap":3}}),
+        json!({"schedule":{"interval":"1m","missed":"each","each_cap":4}}),
     );
     f.schema();
     let path = f.path(Arc::new(NoHooks));
-    let report = tick(&path, 361_000).unwrap();
-    assert_eq!(report.planned[0].fires.len(), 4);
-    assert_eq!(report.new_runs().len(), 2);
+    for at in [61_000, 121_000] {
+        assert_eq!(tick(&path, at).unwrap().new_runs().len(), 1);
+    }
+    // Four catch-ups plus one on-time fire are planned. Two runs are still
+    // live from earlier ticks, leaving three slots under the live-run cap.
+    let report = tick(&path, 481_000).unwrap();
+    assert_eq!(report.planned[0].fires.len(), 5);
+    assert_eq!(report.new_runs().len(), 3);
+    assert_eq!(f.count("live_runs"), 5);
     assert_eq!(report.waiting, 0);
-    assert_eq!(report.coalesced[0].due.as_millisecond(), 301_000);
-    assert_eq!(report.coalesced[1].due.as_millisecond(), 361_000);
     assert_eq!(report.coalesced.len(), 2);
+    assert_eq!(report.coalesced[0].due.as_millisecond(), 421_000);
+    assert_eq!(report.coalesced[1].due.as_millisecond(), 481_000);
 }
 
 #[test]

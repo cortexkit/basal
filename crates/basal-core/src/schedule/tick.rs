@@ -23,8 +23,9 @@
 //! limit) is dropped and recorded in `schedule_dropped`. While admission is
 //! draining, planned fires stay in `schedule_fires` and are admitted by the
 //! first tick after the drain ends.
-//! A recurring fire is consumed without admission when two recurring runs
-//! of that flow are already live; the tick reports it as coalesced.
+//! A recurring fire is consumed without admission when the flow reaches its
+//! live recurring run cap: two for `once` or `skip`, or `each_cap + 1` for
+//! `each`. The tick reports the consumed fire as coalesced.
 //!
 //! **Which fires.** The due times in `[next due, now]` are examined. The
 //! newest is on time if it is at most the grace period old; every other
@@ -43,7 +44,7 @@ use serde_json::{Value, json};
 
 use super::config::SchedulerConfig;
 use super::due::DueScan;
-use super::spec::MissedPolicy;
+use super::spec::{DEFAULT_EACH_CAP, MAX_EACH_CAP, MissedPolicy};
 use super::table::{self, ScheduleState, from_ms, to_ms};
 use crate::admission::{Admission, AdmitContext};
 use crate::error::{CoreError, Result};
@@ -277,19 +278,29 @@ pub(crate) enum FireOutcome {
     Coalesced(CoalescedFire),
 }
 
-// Stop at the second recurring run: the cap allows one running and one
-// waiting, but also applies if neither has started.
+// Look only for the run that fills the cap, using its zero-based offset.
+// With `each`, leave room for all requested catch-ups and one on-time fire.
+// Fall back to the two-run cap if a stored `each_cap` is invalid.
 // A version change can leave behind a fire from a one-shot template.
-pub(crate) const RECURRING_SCHEDULE_AT_CAP: &str = "SELECT EXISTS(SELECT 1 FROM live_runs
-                   WHERE flow_id=?1 AND trigger_kind='schedule' AND end_instance=0
-                   LIMIT 1 OFFSET 1)
-     AND EXISTS(SELECT 1 FROM schedules s WHERE s.flow_id=?1
-                AND CASE WHEN json_valid(s.spec) THEN json_type(s.spec, '$.at') IS NULL END
-                AND (s.version=?2 OR NOT EXISTS(
-                    SELECT 1 FROM flows f JOIN package_versions p ON p.package=f.package
-                    WHERE f.flow_id=?1 AND p.version=?2
-                      AND CASE WHEN json_valid(p.manifest)
-                               THEN json_type(p.manifest, '$.trigger.schedule.at')='text' END)))";
+pub(crate) const RECURRING_SCHEDULE_AT_CAP: &str = "WITH recurring AS MATERIALIZED (
+    SELECT CASE WHEN json_extract(s.spec, '$.missed')='each'
+                THEN COALESCE(json_extract(s.spec, '$.each_cap'), ?3)
+                ELSE 1 END AS cap_offset
+    FROM schedules s WHERE s.flow_id=?1
+      AND CASE WHEN json_valid(s.spec) THEN json_type(s.spec, '$.at') IS NULL END
+      AND (s.version=?2 OR NOT EXISTS(
+          SELECT 1 FROM flows f JOIN package_versions p ON p.package=f.package
+          WHERE f.flow_id=?1 AND p.version=?2
+            AND CASE WHEN json_valid(p.manifest)
+                     THEN json_type(p.manifest, '$.trigger.schedule.at')='text' END))
+)
+SELECT CASE WHEN EXISTS(SELECT 1 FROM recurring) THEN EXISTS(
+    SELECT 1 FROM live_runs WHERE flow_id=?1 AND trigger_kind='schedule' AND end_instance=0
+    LIMIT 1 OFFSET (
+        SELECT CASE WHEN typeof(cap_offset)='integer' AND cap_offset BETWEEN 1 AND ?4
+                    THEN cap_offset ELSE 1 END FROM recurring
+    )
+) ELSE 0 END";
 
 /// Why a planned fire was dropped instead of admitted, if it was.
 fn dropped_reason(admission: &Admission) -> Option<&'static str> {
@@ -373,9 +384,11 @@ fn admit_oldest(
     let trigger = JsonText::new(payload.clone())
         .map_err(|e| CoreError::Corrupt(format!("planned fire {trigger_id}: {e:?}")))?;
     let due = from_ms(due_ms, "planned fire due time")?;
-    let at_cap = tx.query_row(RECURRING_SCHEDULE_AT_CAP, params![flow_id, version], |r| {
-        r.get::<_, bool>(0)
-    })?;
+    let at_cap = tx.query_row(
+        RECURRING_SCHEDULE_AT_CAP,
+        params![flow_id, version, DEFAULT_EACH_CAP, MAX_EACH_CAP],
+        |r| r.get::<_, bool>(0),
+    )?;
     if at_cap && !crate::admission::draining(tx)? {
         tx.execute("DELETE FROM schedule_fires WHERE seq = ?1", [seq])?;
         return Ok(Some(FireOutcome::Coalesced(CoalescedFire { flow_id, due })));
