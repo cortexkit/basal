@@ -373,6 +373,11 @@ impl run_driver::Services for Services {
         self.runtime()?.spawn(job);
         Ok(())
     }
+    fn wake_after_dispatch(&self) {
+        if let Ok(rt) = self.runtime() {
+            rt.shared.signal.bump();
+        }
+    }
     fn removed(&self, live: &LiveRun) -> Result<bool> {
         let rt = self.runtime()?;
         rt.store().read(|c| crate::run_removal::removed(c, live))

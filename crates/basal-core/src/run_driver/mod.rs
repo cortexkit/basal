@@ -56,6 +56,8 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     /// Register dispatch work with the runtime's thread owner, including sends
     /// whose sibling has already ended the activation with a crash or error.
     fn spawn_dispatch(&self, job: Box<dyn FnOnce() + Send>) -> Result<()>;
+    /// Signal the engine when a dispatch records a reply after its activation exits.
+    fn wake_after_dispatch(&self) {}
     fn dispatch_committed(&self, run: &LiveRun, position: u64, handle: Option<&str>);
     fn refusal_committed(&self, run: &LiveRun, position: u64);
     /// The final zero-write probe runs in a lease-fenced Store::write immediately

@@ -277,12 +277,17 @@ impl Activation {
         let spawn = |dispatch: Dispatch| {
             let (tx, rx) = mpsc::sync_channel(1);
             let wake = wake.clone();
+            let services = self.driver.services.clone();
             self.driver.services.spawn_dispatch(Box::new(move || {
-                let _ = tx.send(dispatch.send());
+                let reply = dispatch.send();
+                let recorded = reply.is_ok();
+                let _ = tx.send(reply);
                 // Dispatch::send returns only after the reply is appended, and
-                // after an outcome that needs it is synced. Waking afterwards
-                // lets the loop release it without weakening that ordering.
-                let _ = wake.send(Wake::Settled);
+                // after an outcome that needs it is synced. If the activation
+                // has exited, wake the engine to scan the new state instead.
+                if wake.send(Wake::Settled).is_err() && recorded {
+                    services.wake_after_dispatch();
+                }
             }))?;
             Ok::<_, CoreError>(rx)
         };

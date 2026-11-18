@@ -21,6 +21,27 @@ fn engine_with_spawner(
     spawner: Arc<dyn Spawn>,
     engine_config: EngineConfig,
 ) -> (Engine, std::path::PathBuf) {
+    engine_with_host(
+        PoolConfig::new("missing", WorkerLaunch::Plain),
+        spawner,
+        engine_config,
+        Arc::new(MockHost::new()),
+        Arc::new(NoHooks),
+        Config {
+            clock: basal_core::Clock::manual(0),
+            ..Config::default()
+        },
+    )
+}
+
+fn engine_with_host(
+    mut pool_config: PoolConfig,
+    spawner: Arc<dyn Spawn>,
+    engine_config: EngineConfig,
+    host: Arc<MockHost>,
+    hooks: Arc<dyn basal_core::Hooks>,
+    config: Config,
+) -> (Engine, std::path::PathBuf) {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "basal-engine-{}-{}",
@@ -29,23 +50,19 @@ fn engine_with_spawner(
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("store.db");
-    let clock = basal_core::Clock::manual(0);
+    let clock = config.clock.clone();
     let rt = Runtime::new(
         Arc::new(Store::open(&path, Durability::throwaway()).unwrap()),
-        Arc::new(MockHost::new()),
+        host,
         Arc::new(MockCatalog::standard()),
-        Arc::new(NoHooks),
+        hooks,
         None,
-        Config {
-            clock: clock.clone(),
-            ..Config::default()
-        },
+        config,
     )
     .expect("runtime startup");
     let metrics = Arc::new(Metrics::default());
-    let mut config = PoolConfig::new("missing", WorkerLaunch::Plain);
-    config.warm_spares = 0;
-    let pool = Pool::new(config, spawner, clock, metrics.clone());
+    pool_config.warm_spares = 0;
+    let pool = Pool::new(pool_config, spawner, clock, metrics.clone());
     (
         Engine::new(
             rt,
@@ -294,6 +311,125 @@ fn admission_wakes_the_sleeping_engine() {
         },
         false,
     );
+}
+
+#[test]
+fn a_late_unknown_dispatch_wakes_the_sleeping_engine() {
+    use basal_core::{Boundary, Step};
+    use basal_host::mock::Fault;
+    use basal_testkit::harness::FnHooks;
+    use std::sync::mpsc;
+
+    let (sibling_returned, first_may_return) = mpsc::channel();
+    let (release_sibling, sibling_may_return) = mpsc::channel();
+    let first_may_return = Mutex::new(first_may_return);
+    let sibling_may_return = Mutex::new(sibling_may_return);
+    let hooks = Arc::new(FnHooks(move |_: &str, boundary: &Boundary| {
+        let bound = Duration::from_secs(10);
+        match boundary {
+            Boundary::DriverDispatched { position: 0 } => {
+                first_may_return
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(bound)
+                    .unwrap();
+            }
+            Boundary::DriverDispatched { position: 1 } => {
+                sibling_returned.send(()).unwrap();
+                sibling_may_return
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(bound)
+                    .unwrap();
+            }
+            _ => {}
+        }
+        Step::Continue
+    }));
+    let host = Arc::new(MockHost::new());
+    host.inject(
+        "mock",
+        "post",
+        &[Fault {
+            proven_unsent: false,
+            effect_applied: false,
+        }; 2],
+    );
+    let pool = PoolConfig::new(basal_testkit::channel::worker_binary(), WorkerLaunch::Plain);
+    let spawner = Arc::new(crate::pool::ProcessSpawner::new(&pool));
+    let (engine, path) = engine_with_host(
+        pool,
+        spawner,
+        EngineConfig::default(),
+        host,
+        hooks,
+        Config {
+            clock: basal_core::Clock::manual(0),
+            install_gate: basal_core::InstallGate::Off,
+            ..Config::default()
+        },
+    );
+    let rt = &engine.inner.rt;
+    let mut install = request("late-unknown");
+    install.script = "return await Promise.allSettled([ops.call('mock','post',{}), \
+                      ops.call('mock','post',{})]);"
+        .into();
+    let mut manifest: serde_json::Value = serde_json::from_str(&install.manifest).unwrap();
+    manifest["ops"] = serde_json::json!([{"module":"mock","op":"post"}]);
+    install.manifest = manifest.to_string();
+    let installed = rt.install(&install).unwrap();
+    rt.approve("late-unknown", 1, &installed.code_hash, "operator")
+        .unwrap();
+    let run = rt
+        .admit_trigger("late-unknown", "event", basal_proto::JsonText::null())
+        .unwrap()
+        .run_id()
+        .unwrap()
+        .to_owned();
+    engine.pass().unwrap();
+    engine.wait_quiet();
+    assert_eq!(
+        rt.run(&run).unwrap().state,
+        basal_core::RunState::NeedsReconcile
+    );
+
+    let raised = || {
+        rt.decision_cards()
+            .unwrap()
+            .into_iter()
+            .filter_map(|card| card.raised_revision.and(card.position))
+            .collect::<Vec<_>>()
+    };
+    let mut release_sibling = Some(release_sibling);
+    let mut raised_on_next_pass = false;
+    engine.run_loop(|seen, timeout| {
+        assert!(timeout > Duration::ZERO, "the engine should be idle");
+        assert_eq!(
+            engine.inner.wake.snapshot(),
+            (seen, false),
+            "idle pass self-woke"
+        );
+        if let Some(release) = release_sibling.take() {
+            assert_eq!(raised(), [0]);
+            release.send(()).unwrap();
+            rt.quiesce();
+            assert!(rt.unknown_reason(&run, 1).unwrap().is_some());
+            // The manual clock never advances. An epoch change makes the
+            // production wait return immediately, without a timer firing.
+            assert_ne!(
+                engine.inner.wake.snapshot(),
+                (seen, false),
+                "late unknown did not wake the engine"
+            );
+            engine.inner.wake.wait(seen, timeout);
+        } else {
+            assert_eq!(raised(), [0, 1]);
+            raised_on_next_pass = true;
+            engine.stop();
+        }
+    });
+    assert!(raised_on_next_pass);
+    cleanup(engine, path);
 }
 
 fn template(rt: &Runtime) -> String {
