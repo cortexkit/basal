@@ -520,7 +520,51 @@ pub fn decode(bytes: &[u8]) -> std::result::Result<Staged, DecodeError> {
             "the stream holds records its header doesn't count".into(),
         ));
     }
+    belongs_to_agent(&staged).map_err(damaged)?;
     Ok(staged)
+}
+
+/// Checks that every record is the header's agent's: each flow is owned by
+/// the agent (or by no one yet), and every other record names one of the
+/// stream's flows or, for an instance generation, the agent itself. A
+/// stream that carried someone else's rows would otherwise write them here
+/// under this agent's move.
+fn belongs_to_agent(staged: &Staged) -> std::result::Result<(), String> {
+    let flows: std::collections::BTreeSet<&str> = staged
+        .of_kind("flow")
+        .filter_map(|r| r["flow_id"].as_str())
+        .collect();
+    for flow in staged.of_kind("flow") {
+        match &flow["owner"] {
+            Value::Null => {}
+            Value::String(owner) if *owner == staged.agent => {}
+            other => {
+                return Err(format!(
+                    "flow {} is owned by {other}, not the moved agent",
+                    flow["flow_id"]
+                ));
+            }
+        }
+    }
+    for kind in ["instance", "kv", "snapshot", "history"] {
+        for record in staged.of_kind(kind) {
+            let flow = record["flow_id"].as_str().unwrap_or_default();
+            if !flows.contains(flow) {
+                return Err(format!(
+                    "a {kind} record names flow {flow:?}, which the stream doesn't carry"
+                ));
+            }
+        }
+    }
+    for generation in staged.of_kind("generation") {
+        if generation["agent_id"].as_str() != Some(staged.agent.as_str()) {
+            return Err(format!(
+                "an instance generation names agent {}, not the moved agent",
+                generation["agent_id"]
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn code_hash_matches(record: &Map<String, Value>, what: &str) -> std::result::Result<(), String> {

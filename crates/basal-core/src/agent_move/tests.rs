@@ -183,6 +183,41 @@ fn an_unapproved_flow_belongs_to_its_single_author() {
 }
 
 #[test]
+fn a_waiting_install_card_makes_the_agent_busy() {
+    let mut conn = migrated();
+    populate(&conn);
+    // A newer version waits for its card beside the approved one: its
+    // approval can't follow the move, so the cut waits for the answer.
+    conn.execute_batch(
+        "INSERT INTO install_cards(card_id,flow_id,version,code_hash,author,card,state,created_at) SELECT 'c2','f-alpha',2,code_hash,author,'{}','pending',1 FROM installs WHERE flow_id='f-alpha' AND version=2",
+    )
+    .unwrap();
+    let waiting = busy(&conn, AGENT).unwrap().unwrap();
+    assert_eq!(waiting.code, "approval_open");
+    assert!(
+        waiting.reason.contains("f-alpha version 2"),
+        "{}",
+        waiting.reason
+    );
+    let t = tx(&mut conn);
+    assert_eq!(
+        freeze(&t, AGENT, CUT, 1).unwrap().unwrap_err().code,
+        "approval_open"
+    );
+    assert_eq!(hold(&t, AGENT).unwrap(), None);
+    t.execute(
+        "UPDATE install_cards SET state='declined',decided_by='core:card'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        busy(&t, AGENT).unwrap(),
+        None,
+        "an answered card no longer holds the move"
+    );
+}
+
+#[test]
 fn busy_reports_live_runs_and_open_decisions() {
     let mut conn = migrated();
     populate(&conn);
@@ -378,19 +413,24 @@ fn a_two_flow_agent_round_trips_with_kv_an_instance_and_history() {
 fn release_tombstones_the_agent_and_a_move_back_replaces_it() {
     let mut source = migrated();
     populate(&source);
-    source.execute_batch(
-        "INSERT INTO install_cards(card_id,flow_id,version,code_hash,author,card,state,created_at) SELECT 'c1','f-alpha',2,code_hash,author,'{}','pending',1 FROM installs WHERE flow_id='f-alpha' AND version=2",
-    )
-    .unwrap();
     let t = tx(&mut source);
     freeze(&t, AGENT, CUT, 1).unwrap().unwrap();
     let staged = staged_from(&t, CUT);
+    // A card raised after the freeze (installs are refused while frozen, so
+    // only a defensive case) is settled rather than left open.
+    t.execute_batch(
+        "INSERT INTO install_cards(card_id,flow_id,version,code_hash,author,card,state,created_at) SELECT 'c1','f-alpha',2,code_hash,author,'{}','pending',1 FROM installs WHERE flow_id='f-alpha' AND version=2;
+         INSERT INTO event_receipts(flow_id,subject,event_key,notice,state,received_at) VALUES ('f-alpha','m.ev','k2','{}','backlog',60);",
+    )
+    .unwrap();
     let released = release(&t, AGENT, CUT, "holder-b", 100).unwrap();
     t.commit().unwrap();
     assert_eq!(
-        released,
+        released.flows,
         ["f-alpha", "f-beta", "remind-at_0011223344556677"]
     );
+    // The event queued before the cut and the one queued during the freeze.
+    assert_eq!(released.queued_events, 2);
     assert_eq!(
         hold(&source, AGENT).unwrap(),
         Some(Hold::Moved {
@@ -411,7 +451,7 @@ fn release_tombstones_the_agent_and_a_move_back_replaces_it() {
     );
     assert_eq!(
         rows(&source, "SELECT state FROM event_receipts"),
-        ["refused"]
+        ["refused", "refused"]
     );
     assert_eq!(rows(&source, "SELECT state FROM install_cards"), ["stale"]);
     assert_eq!(rows(&source, "SELECT state FROM schedules"), ["disabled"]);
@@ -621,5 +661,83 @@ fn a_second_cut_of_a_frozen_agent_is_busy() {
     assert_eq!(
         hold(&t, AGENT).unwrap(),
         Some(Hold::Frozen { cut_id: CUT.into() })
+    );
+}
+
+#[test]
+fn a_local_flow_the_incoming_copy_lacks_ends_removed() {
+    let source = migrated();
+    populate(&source);
+    let staged = staged_from(&source, CUT);
+    let mut receiver = receiver();
+    // A tombstone of the agent here holds a flow the incoming copy lacks.
+    receiver
+        .execute_batch(&format!(
+            "INSERT INTO flows(flow_id,owner,state,approved_version,disabled_by,disabled_reason,created_at,removed,removed_by)
+               VALUES ('f-old','{AGENT}','disabled',1,'move','moved',1,1,'moved:holder-x');
+             INSERT INTO installs(flow_id,version,code_hash,manifest,script,author,state,approval_ref,installed_at)
+               VALUES ('f-old',1,zeroblob(32),'m','s','{AGENT}','approved','core:card',1);
+             INSERT INTO agent_move_holds(agent_id,kind,cut_id,holder,at) VALUES ('{AGENT}','moved','{BACK}','holder-x',1);"
+        ))
+        .unwrap();
+    let t = tx(&mut receiver);
+    activate(&t, AGENT, CUT, &staged, 500).unwrap().unwrap();
+    t.commit().unwrap();
+    assert_eq!(
+        rows(
+            &receiver,
+            "SELECT state||':'||removed||':'||removed_by||':'||COALESCE(approved_version,'-') FROM flows WHERE flow_id='f-old'"
+        ),
+        ["disabled:1:moved:replaced:-"]
+    );
+    assert!(
+        rows(
+            &receiver,
+            "SELECT version FROM installs WHERE flow_id='f-old'"
+        )
+        .is_empty()
+    );
+    // It is no longer one of the agent's live flows.
+    assert_eq!(
+        fingerprint(&receiver, AGENT).unwrap(),
+        fingerprint(&source, AGENT).unwrap()
+    );
+}
+
+#[test]
+fn moved_runs_are_admitted_before_any_run_admitted_here() {
+    let source = migrated();
+    populate(&source);
+    source
+        .execute_batch("UPDATE run_history SET admit_seq=41")
+        .unwrap();
+    let staged = staged_from(&source, CUT);
+    let mut receiver = receiver();
+    receiver
+        .execute_batch("INSERT INTO meta(key,value) VALUES('next_run','7') ON CONFLICT(key) DO UPDATE SET value='7'")
+        .unwrap();
+    let t = tx(&mut receiver);
+    activate(&t, AGENT, CUT, &staged, 500).unwrap().unwrap();
+    assert_eq!(crate::run_admission::next_sequence(&t).unwrap(), 42);
+}
+
+#[test]
+fn a_history_row_the_store_refuses_is_a_refusal_not_a_silent_skip() {
+    let source = migrated();
+    populate(&source);
+    let mut staged = staged_from(&source, CUT);
+    for record in staged.records.iter_mut().filter(|r| r["kind"] == "history") {
+        record.insert("state".into(), json!("not-a-run-state"));
+    }
+    let mut receiver = receiver();
+    let t = tx(&mut receiver);
+    assert!(matches!(
+        activate(&t, AGENT, CUT, &staged, 1).unwrap(),
+        Err(ActivateRefusal::Rejected(m)) if m.contains("run-src-1")
+    ));
+    t.commit().unwrap();
+    assert_eq!(
+        rows(&receiver, "SELECT CAST(COUNT(*) AS TEXT) FROM flows"),
+        ["0"]
     );
 }

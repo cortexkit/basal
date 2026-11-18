@@ -39,6 +39,10 @@ pub use stream::{DecodeError, FORMAT, STREAM_CAP, Staged};
 /// computer's approval, and how `removed_by` begins on a tombstoned flow.
 pub const MOVE_ACTOR: &str = "move";
 const MOVED_PREFIX: &str = "moved:";
+/// `removed_by` of a local flow of the agent that an incoming copy replaced
+/// without carrying it: the flow is gone, but not because the agent moved
+/// away.
+pub const REPLACED: &str = "moved:replaced";
 
 /// A SQL condition on `flow_id`: the flow's agent holds no freeze or
 /// tombstone.
@@ -96,14 +100,16 @@ pub fn flow_held(conn: &Connection, flow_id: &str) -> Result<bool> {
 /// Why an agent's flows can't be cut now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Busy {
-    /// `run_active`, `reconcile_open`, or `move_in_progress` when another
+    /// `run_active`, `reconcile_open`, `approval_open` for an install card
+    /// still waiting for an answer, or `move_in_progress` when another
     /// cut froze the agent and hasn't been released or aborted.
     pub code: &'static str,
     pub reason: String,
 }
 
-/// Whether the agent's flows are in use: a live run, or an unsettled
-/// obligation or open decision card the operator must settle here first.
+/// Whether the agent's flows are in use: a live run, an unsettled
+/// obligation or open decision card the operator must settle here first, or
+/// an install card still waiting for an answer.
 pub fn busy(conn: &Connection, agent: &str) -> Result<Option<Busy>> {
     let live: Option<String> = conn
         .query_row(
@@ -134,6 +140,29 @@ pub fn busy(conn: &Connection, agent: &str) -> Result<Option<Busy>> {
         code: "reconcile_open",
         reason: format!(
             "flow {flow} has a call outcome or decision the operator must settle on this computer first"
+        ),
+    })
+    .or(waiting_card(conn, agent)?))
+}
+
+/// An install card still waiting for an answer: its version's approval
+/// belongs to this computer's prefrontal and can't follow the move, so the
+/// version would be stranded on the receiver.
+fn waiting_card(conn: &Connection, agent: &str) -> Result<Option<Busy>> {
+    let card: Option<(String, u32)> = conn
+        .query_row(
+            &format!(
+                "SELECT flow_id,version FROM install_cards WHERE state='pending' \
+                 AND flow_id IN ({LIVE_FLOWS}) ORDER BY flow_id,version LIMIT 1"
+            ),
+            [agent],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(card.map(|(flow, version)| Busy {
+        code: "approval_open",
+        reason: format!(
+            "flow {flow} version {version} waits for an install card's answer on this computer"
         ),
     }))
 }
@@ -615,26 +644,68 @@ pub fn encode(
             }
         }
     }
-    let queued: u64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM event_receipts WHERE state='backlog' AND flow_id IN ({LIVE_FLOWS})"),
+    counts.insert("queued_event".into(), queued_events(conn, agent)?);
+    Ok(writer.finish(agent, cut_id, counts))
+}
+
+/// Events waiting in the backlog of the agent's live flows.
+pub fn queued_events(conn: &Connection, agent: &str) -> Result<u64> {
+    Ok(conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM event_receipts WHERE state='backlog' AND flow_id IN ({LIVE_FLOWS})"
+        ),
         [agent],
         |r| r.get(0),
-    )?;
-    counts.insert("queued_event".into(), queued);
-    Ok(writer.finish(agent, cut_id, counts))
+    )?)
+}
+
+/// The agent a flow belongs to: its owner, or before any approval the single
+/// author of its versions. The same rule decides which flows a move carries.
+pub fn flow_agent(conn: &Connection, flow_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT agent_id FROM agent_move_flow_agents WHERE flow_id=?1",
+            [flow_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Whether `flow_id` is a tombstone: its agent moved to another computer.
+pub fn tombstoned(conn: &Connection, flow_id: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT COALESCE(removed_by,'') LIKE 'moved:%' AND removed_by<>?2 FROM flows WHERE flow_id=?1",
+            params![flow_id, REPLACED],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// What `release` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Released {
+    /// The flows tombstoned, whose routes the caller releases.
+    pub flows: Vec<String>,
+    /// Backlogged events discarded: they wait on this computer's event
+    /// providers, so they can't follow the move. This counts every one,
+    /// including those queued after the cut, which the receiver's
+    /// `dropped` count could not include.
+    pub queued_events: u64,
 }
 
 /// Turns the agent's freeze into a tombstone naming `holder`: its flows are
 /// marked moved and stopped, their planned fires and queued events are
 /// discarded, and pending install cards for them are settled as superseded.
-/// Returns the flows tombstoned, whose routes the caller releases.
 pub fn release(
     tx: &Transaction,
     agent: &str,
     cut_id: &str,
     holder: &str,
     now_ms: i64,
-) -> Result<Vec<String>> {
+) -> Result<Released> {
+    let queued_events = queued_events(tx, agent)?;
     let flows: Vec<String> = {
         let mut stmt = tx.prepare(&format!("{LIVE_FLOWS} ORDER BY flow_id"))?;
         stmt.query_map([agent], |r| r.get(0))?
@@ -670,7 +741,10 @@ pub fn release(
          ON CONFLICT(agent_id) DO UPDATE SET kind='moved',cut_id=excluded.cut_id,holder=excluded.holder,at=excluded.at",
         params![agent, cut_id, holder, now_ms],
     )?;
-    Ok(flows)
+    Ok(Released {
+        flows,
+        queued_events,
+    })
 }
 
 /// Why `activate` wrote nothing.
@@ -767,8 +841,19 @@ fn write_staged(
         stmt.query_map([agent], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?
     };
+    let incoming: BTreeSet<String> = staged.flow_ids().into_iter().collect();
     for flow in &old {
         clear_old_copy(tx, flow)?;
+        if !incoming.contains(flow) {
+            // A flow of the agent here that the incoming copy doesn't carry:
+            // its versions are gone with the old copy, so it ends removed
+            // rather than enabled with nothing to run.
+            tx.execute(
+                "UPDATE flows SET owner=?2, state='disabled', disabled_by=?3, disabled_reason='replaced_by_move', \
+                 disabled_at=?4, approved_version=NULL, removed=1, removed_by=?5, removed_at=?4 WHERE flow_id=?1",
+                params![flow, agent, MOVE_ACTOR, now_ms, REPLACED],
+            )?;
+        }
     }
     tx.execute(
         "DELETE FROM instance_generations WHERE agent_id=?1",
@@ -967,8 +1052,18 @@ fn write_staged(
             Ok(row) => row,
             Err(m) => return rejected(m),
         };
-        insert(tx, "INSERT OR IGNORE", "run_snapshots", SNAPSHOT, row, &[])?;
+        // The code hash names the exact bytes, so a snapshot already here
+        // under the same flow, version and hash is the same snapshot.
+        let present: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM run_snapshots WHERE flow_id=?1 AND flow_version=?2 AND lower(hex(code_hash))=?3)",
+            params![record["flow_id"].as_str(), record["flow_version"].as_i64(), record["code_hash"].as_str()],
+            |r| r.get(0),
+        )?;
+        if !present && let Err(error) = insert(tx, "INSERT", "run_snapshots", SNAPSHOT, row, &[]) {
+            return rejected(format!("a run snapshot: {error}"));
+        }
     }
+    let mut highest_admit_seq = 0i64;
     for record in staged.of_kind("history") {
         let row = match values(record, HISTORY, &["kind", "code_hash", "calls"], "history") {
             Ok(row) => row,
@@ -990,18 +1085,27 @@ fn write_staged(
             ));
         };
         let run_id = record["run_id"].as_str().unwrap_or_default().to_owned();
+        highest_admit_seq = highest_admit_seq.max(record["admit_seq"].as_i64().unwrap_or(0));
         // A run id embeds the store that admitted it, so one already here
-        // is the same run: keep the copy this computer has.
-        if insert(
+        // is the same run: keep the copy this computer has. Any other row
+        // the store refuses is a fault in the moved data, never skipped.
+        let present: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM run_history WHERE run_id=?1)",
+            [&run_id],
+            |r| r.get(0),
+        )?;
+        if present {
+            continue;
+        }
+        if let Err(error) = insert(
             tx,
-            "INSERT OR IGNORE",
+            "INSERT",
             "run_history",
             HISTORY,
             row,
             &[("snapshot_id", SqlValue::Integer(snapshot))],
-        )? == 0
-        {
-            continue;
+        ) {
+            return rejected(format!("run {run_id}: {error}"));
         }
         for call in record["calls"]
             .as_array()
@@ -1024,6 +1128,18 @@ fn write_staged(
                 return Ok(Err(ActivateRefusal::Rejected(error.to_string())));
             }
         }
+    }
+    // Moved runs keep the admission order they had on the source. Runs this
+    // computer admits from now on must come after them, or "latest run" and
+    // failure streaks would read moved runs as newer than local ones. The
+    // counter is shared with planned schedule fires, which only need it to
+    // grow.
+    if highest_admit_seq > 0 {
+        tx.execute(
+            "INSERT INTO meta(key,value) VALUES('next_run',?1) ON CONFLICT(key) DO UPDATE \
+             SET value=CAST(MAX(CAST(meta.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",
+            [(highest_admit_seq + 1).to_string()],
+        )?;
     }
     tx.execute(
         "DELETE FROM agent_move_holds WHERE agent_id=?1 AND kind='moved'",
@@ -1223,6 +1339,18 @@ impl crate::Runtime {
     /// Makes pending moved flows due now (see [`recheck`]) and wakes the
     /// engine to check them.
     pub fn recheck_moved_flows(&self, flow_id: Option<&str>, package: Option<&str>) -> Result<()> {
+        // Most computers never receive a move: they answer from a read and
+        // open no write transaction for every approval or instance event.
+        let any: bool = self.store().read(|c| {
+            Ok(
+                c.query_row("SELECT EXISTS(SELECT 1 FROM agent_move_pending)", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })?;
+        if !any {
+            return Ok(());
+        }
         let now = self.config().clock.now_ms();
         let changed = self
             .store()
@@ -1231,6 +1359,15 @@ impl crate::Runtime {
             self.shared.signal.bump();
         }
         Ok(())
+    }
+
+    /// [`Self::recheck_moved_flows`] after an op that has already committed:
+    /// a failure only delays the check (startup checks every waiting flow
+    /// again), so it is logged rather than turned into the op's error.
+    pub fn recheck_moved_flows_after(&self, flow_id: Option<&str>, package: Option<&str>) {
+        if let Err(error) = self.recheck_moved_flows(flow_id, package) {
+            tracing::warn!(target: "agent_move", ?flow_id, ?package, "scheduling a moved-flow approval check: {error}");
+        }
     }
 
     fn check_pending(&self, waiting: Vec<Pending>) -> Result<CheckReport> {
@@ -1315,19 +1452,28 @@ impl crate::Runtime {
         agent: &str,
         cut_id: &str,
         holder: &str,
-        on_commit: impl FnOnce(&Transaction) -> Result<()>,
-    ) -> Result<Vec<String>> {
+        on_commit: impl FnOnce(&Transaction, &Released) -> Result<()>,
+    ) -> Result<Released> {
         let now = self.config().clock.now_ms();
-        let flows = self.store().write(|tx| {
-            let flows = release(tx, agent, cut_id, holder, now)?;
-            on_commit(tx)?;
-            Ok(flows)
+        let released = self.store().write(|tx| {
+            let released = release(tx, agent, cut_id, holder, now)?;
+            on_commit(tx, &released)?;
+            Ok(released)
         })?;
-        for flow in &flows {
+        tracing::info!(
+            target: "agent_move",
+            agent,
+            cut_id,
+            holder,
+            flows = released.flows.len(),
+            queued_events = released.queued_events,
+            "released the agent's flows; its backlogged events stay behind"
+        );
+        for flow in &released.flows {
             self.release_unused_flow_routes_for(flow)?;
         }
         self.shared.signal.bump();
-        Ok(flows)
+        Ok(released)
     }
 
     /// Wakes the engine after a freeze lifts or moved flows arrive, so

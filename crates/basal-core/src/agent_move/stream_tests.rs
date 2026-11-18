@@ -109,3 +109,30 @@ fn a_stream_past_its_cap_is_refused() {
     assert!(refused.unwrap().contains("64 MiB"));
     assert!(writer.bytes.len() as u64 <= STREAM_CAP);
 }
+
+#[test]
+fn records_of_another_agent_or_flow_are_refused() {
+    // A flow owned by someone else.
+    let bytes = edited(&sample(), 1, |flow| flow["owner"] = json!("agent_other"));
+    assert!(matches!(decode(&bytes), Err(DecodeError::Damaged(m)) if m.contains("agent_other")));
+    // A kv entry, instance or history row for a flow the stream doesn't carry.
+    let records: Vec<Value> = frames(&sample())
+        .unwrap()
+        .into_iter()
+        .map(|b| serde_json::from_slice(b).unwrap())
+        .collect();
+    for kind in ["kv", "instance", "history", "snapshot"] {
+        let at = records.iter().position(|r| r["kind"] == kind).unwrap();
+        let bytes = edited(&sample(), at, |r| r["flow_id"] = json!("f-elsewhere"));
+        assert!(
+            matches!(decode(&bytes), Err(DecodeError::Damaged(m)) if m.contains("f-elsewhere")),
+            "{kind}"
+        );
+    }
+    let at = records
+        .iter()
+        .position(|r| r["kind"] == "generation")
+        .unwrap();
+    let bytes = edited(&sample(), at, |r| r["agent_id"] = json!("agent_other"));
+    assert!(matches!(decode(&bytes), Err(DecodeError::Damaged(m)) if m.contains("agent_other")));
+}
