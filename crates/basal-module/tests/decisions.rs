@@ -730,6 +730,9 @@ fn a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own() {
         "const r = await Promise.allSettled([ops.call('mock','post',{n:1}), \
          ops.call('mock','post',{n:2})]); return r.map(x => x.status);",
     );
+    // Both requests must reach the host before the first unknown reply can
+    // end the activation. Promise.allSettled alone does not ensure that.
+    *rig.fake.post_barrier.lock().unwrap() = Some(Arc::new(std::sync::Barrier::new(2)));
     rig.fake.enqueue(
         "post",
         vec![
@@ -742,7 +745,12 @@ fn a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own() {
     rig.m().rt.quiesce();
     rig.pass();
     assert_eq!(rig.state(&run), RunState::NeedsReconcile);
+    assert_eq!(rig.posts(), 2);
     for position in [0, 1] {
+        assert_eq!(
+            rig.m().rt.unknown_reason(&run, position).unwrap(),
+            Some(UnknownReason::ConnectionLost)
+        );
         assert_eq!(
             rig.fake
                 .decision_cards(&decisions::reconcile_key(FLOW, &run, position))
