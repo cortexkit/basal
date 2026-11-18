@@ -20,6 +20,7 @@
 //! - `rig_kill` (unit tests or the `rig-kill-hook` feature): the one-shot kill
 //!   switch the ckdev-flows rig's contract suite uses for its crash case.
 
+pub mod agent_data;
 pub mod caller;
 pub mod card;
 pub mod codemode;

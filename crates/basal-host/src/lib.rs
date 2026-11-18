@@ -38,6 +38,7 @@ pub mod consent;
 pub mod core_consent;
 pub mod core_host;
 pub mod core_identity;
+pub mod door;
 pub mod flow_refusal;
 pub mod flow_scope;
 #[cfg(any(test, feature = "test-support"))]

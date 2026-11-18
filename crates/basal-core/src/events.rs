@@ -320,7 +320,7 @@ pub(crate) fn offer_with(
             report.admitted += 1;
         }
         Admission::Duplicate { .. } | Admission::Tombstoned { .. } => report.duplicate += 1,
-        Admission::RateLimited | Admission::Draining | Admission::StateBusy => {
+        Admission::RateLimited | Admission::Draining | Admission::StateBusy | Admission::Frozen => {
             if queued < BACKLOG_BOUND {
                 receipt(tx, flow, notice, "backlog", ctx.now_ms)?;
                 report.queued += 1;

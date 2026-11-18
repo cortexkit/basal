@@ -392,6 +392,63 @@ impl Module {
             .map_err(|e| self.core_error(e))
     }
 
+    /// Refuses a change to `agent`'s flows while the agent is moving to
+    /// another computer (`agent_moving`, retryable) or after it moved
+    /// (`agent_moved`): a flow created or enabled here then would be left
+    /// out of the move, or run beside the copy that now runs elsewhere.
+    fn refuse_moving(&self, agent: &str) -> Result<(), OpError> {
+        let hold = self
+            .rt
+            .store()
+            .read(|c| basal_core::agent_move::hold(c, agent))
+            .map_err(|e| self.core_error(e))?;
+        match hold {
+            None => Ok(()),
+            Some(basal_core::agent_move::Hold::Frozen { .. }) => Err(OpError::new(
+                "agent_moving",
+                format!("agent {agent} is moving to another computer; retry after the move finishes"),
+            )
+            .with_detail(Some(json!({"agent_id": agent, "retryable": true})))),
+            Some(basal_core::agent_move::Hold::Moved { holder, .. }) => Err(OpError::new(
+                "agent_moved",
+                format!("agent {agent} has moved to another computer ({holder}); its flows run there now"),
+            )
+            .with_detail(Some(json!({"agent_id": agent, "holder": holder})))),
+        }
+    }
+
+    /// [`Self::refuse_moving`] for the agent `flow_id` belongs to, decided by
+    /// the same rule that picks the flows a move carries: its owner, or
+    /// before any approval the single author of its versions.
+    pub(crate) fn refuse_moving_flow(&self, flow_id: &str) -> Result<(), OpError> {
+        let agent = self
+            .rt
+            .store()
+            .read(|c| basal_core::agent_move::flow_agent(c, flow_id))
+            .map_err(|e| self.core_error(e))?;
+        match agent {
+            Some(agent) => self.refuse_moving(&agent),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether core's install hint names a flow whose agent moved away: the
+    /// flow lives on another computer now, whose basal reads its own
+    /// prefrontal, so the hint changes nothing here. While the agent is
+    /// moving the hint is refused `agent_moving`, and core sends it again.
+    fn hint_for_moved_flow(&self, flow_id: &str) -> Result<bool, OpError> {
+        let tombstoned = self
+            .rt
+            .store()
+            .read(|c| basal_core::agent_move::tombstoned(c, flow_id))
+            .map_err(|e| self.core_error(e))?;
+        if tombstoned {
+            return Ok(true);
+        }
+        self.refuse_moving_flow(flow_id)?;
+        Ok(false)
+    }
+
     fn owns(&self, agent: &str, flow_id: &str) -> Result<bool, OpError> {
         let owners = self.owners(flow_id)?;
         Ok(!owners.is_empty() && owners.iter().all(|o| o == agent))
@@ -500,6 +557,7 @@ impl Module {
             Caller::Agent { agent_id, .. } if p.agent_id.is_none() => agent_id,
             _ => return Err(OpError::not_permitted("flow.instantiate", caller)),
         };
+        self.refuse_moving(agent)?;
         self.rt
             .instantiate(&p.template, p.version, agent, &p.params, &p.expires_in)
             .map_err(|e| self.template_error(e))
@@ -530,6 +588,7 @@ impl Module {
         {
             return Err(OpError::new("not_found", format!("no flow {}", p.flow_id)));
         }
+        self.refuse_moving_flow(&p.flow_id)?;
         self.rt
             .end_instance(&p.flow_id)
             .map_err(|e| self.template_error(e))
@@ -571,7 +630,14 @@ impl Module {
         let result = match method {
             "package.register" => {
                 let p: Register = serde_json::from_value(params).map_err(invalid_params)?;
-                self.rt.register_package(&p.script, &p.manifest)
+                let registered = self.rt.register_package(&p.script, &p.manifest);
+                if let Ok(reply) = &registered
+                    && let Some(package) = reply["package"].as_str()
+                {
+                    // A moved instance may have waited for this template version.
+                    self.rt.recheck_moved_flows_after(None, Some(package));
+                }
+                registered
             }
             "package.get" => {
                 let p: Get = serde_json::from_value(params).map_err(invalid_params)?;
@@ -579,11 +645,19 @@ impl Module {
             }
             "flow.instance.ensure" => {
                 let p: Ensure = serde_json::from_value(params).map_err(invalid_params)?;
-                self.rt
-                    .ensure_instance(&p.package, p.version, &p.agent_id, p.generation)
+                self.refuse_moving(&p.agent_id)?;
+                let ensured =
+                    self.rt
+                        .ensure_instance(&p.package, p.version, &p.agent_id, p.generation);
+                if ensured.is_ok() {
+                    // A moved instance of this package may be approvable now.
+                    self.rt.recheck_moved_flows_after(None, Some(&p.package));
+                }
+                ensured
             }
             "flow.instance.remove" => {
                 let p: Remove = serde_json::from_value(params).map_err(invalid_params)?;
+                self.refuse_moving(&p.agent_id)?;
                 self.rt
                     .remove_instance(&p.package, &p.agent_id, p.generation)
             }
@@ -728,6 +802,7 @@ impl Module {
             }
         };
 
+        self.refuse_moving(&author)?;
         let request = InstallRequest {
             script: p.script,
             manifest: p.manifest,
@@ -1013,6 +1088,9 @@ impl Module {
                 "flow_id, positive version and positive attempt are required",
             ));
         }
+        if self.hint_for_moved_flow(&p.flow_id)? {
+            return Ok(json!({}));
+        }
         self.rt
             .install_decided(&p.flow_id, p.version, p.attempt)
             .map_err(|e| self.core_error(e))?;
@@ -1049,6 +1127,9 @@ impl Module {
                 "invalid_params",
                 "flow_id, positive version and lowercase SHA-256 code_hash are required",
             ));
+        }
+        if self.hint_for_moved_flow(&p.flow_id)? {
+            return Ok(json!({}));
         }
         self.rt
             .install_revoked(&p.flow_id, p.version, &p.code_hash)
@@ -1689,6 +1770,7 @@ impl Module {
                     Admission::Disabled => json!({"state":"disabled"}),
                     Admission::RateLimited => json!({"state":"rate_limited"}),
                     Admission::StateBusy => json!({"state":"state_busy"}),
+                    Admission::Frozen => json!({"state":"frozen"}),
                 }
             });
             return Ok(json!({"run_id": p.run_id, "state": "cancelled", "admission": admission}));
@@ -1772,6 +1854,7 @@ impl Module {
             } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.clone()),
             _ => return Err(OpError::not_permitted("flow.disable", caller)),
         };
+        self.refuse_moving_flow(&p.flow_id)?;
         let reason = p.reason.unwrap_or_else(|| "disabled by request".into());
         let changed = self
             .rt
@@ -1797,6 +1880,7 @@ impl Module {
             } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),
             _ => return Err(OpError::not_permitted("flow.enable", caller)),
         };
+        self.refuse_moving_flow(&p.flow_id)?;
         let changed = self
             .rt
             .enable_flow_as(&p.flow_id, &actor)

@@ -41,6 +41,7 @@ cortexkit-bus-nats.workspace = true
 cortexkit-log.workspace = true
 cortexkit-role-tool-provider.workspace = true
 cortexkit-role-routing.workspace = true
+cortexkit-role-agent-data.workspace = true
 blake3.workspace = true
 getrandom.workspace = true
 cortexkit-store-types.workspace = true
@@ -78,6 +79,7 @@ cortexkit-test-support.workspace = true
 basal-module-test-support = { package = "basal-module", path = ".", features = ["test-support"] }
 basal-testkit = { workspace = true, features = ["test-support"] }
 cortexkit-role-tool-provider = { workspace = true, features = ["test-vectors"] }
+cortexkit-role-agent-data = { workspace = true, features = ["test-vectors"] }
 cortexkit-role-tool-provider-conformance.workspace = true
 cortexkit-role-harness = "=0.1.0"
 subc-client-rs = { workspace = true, features = ["test-support"] }

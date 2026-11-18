@@ -239,6 +239,21 @@ pub trait Transport: Send + Sync {
         arguments: Value,
         call_key: &str,
     ) -> Result<Value, WireError>;
+    /// Sends one request to `module`'s internal service `service`, as basal
+    /// on its own unscoped route. Agent moves use it to reach Engram's
+    /// session door. The default refuses without sending.
+    fn internal_service(
+        &self,
+        module: &str,
+        service: &str,
+        op: &str,
+        params: Value,
+    ) -> Result<Value, WireError> {
+        let _ = (module, service, op, params);
+        Err(WireError::NeverSent(
+            "this transport reaches no internal services".into(),
+        ))
+    }
     /// Sends one tool-provider role request (`role.describe`, `tool.catalog`)
     /// to `module` on a route opened under a codemode run's own scope
     /// `scope` and bound with `identity`, then closes that route.
@@ -1408,6 +1423,27 @@ impl Transport for SubcTransport {
                 module_id: module.into(),
             },
             management_body(op, params),
+            true,
+        )
+    }
+
+    fn internal_service(
+        &self,
+        module: &str,
+        service: &str,
+        op: &str,
+        params: Value,
+    ) -> Result<Value, WireError> {
+        let bytes = serde_json::to_vec(&management_body(op, params))
+            .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        // A label of its own keeps move traffic on its own cached route.
+        self.call_as(
+            RouteTarget::InternalService {
+                module_id: module.into(),
+                service_id: service.into(),
+            },
+            BindIdentity::new("basal", "basal:agent-move"),
+            bytes,
             true,
         )
     }

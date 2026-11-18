@@ -62,6 +62,8 @@ struct RouteStamp {
     principal: Option<Principal>,
     scope: Option<ScopeStamp>,
     tool_surface: bool,
+    /// The route reaches the `agent-data` internal service.
+    agent_data: bool,
     bind_identity: subc_protocol::BindIdentity,
     call_mode: subc_client_rs::CallMode,
     consumer_capabilities: Option<Vec<String>>,
@@ -93,6 +95,11 @@ impl Routes {
                     request.target,
                     subc_protocol::RouteTarget::ToolProvider { .. }
                 ),
+                agent_data: matches!(
+                    &request.target,
+                    subc_protocol::RouteTarget::InternalService { service_id, .. }
+                        if service_id == cortexkit_role_agent_data::SERVICE_ID
+                ),
             },
         );
     }
@@ -114,6 +121,15 @@ impl Routes {
             }
             None => caller::from_route(None, None),
         }
+    }
+
+    /// `Some(admitted)` for a route to the `agent-data` service: admitted
+    /// only when the daemon stamped Entorhinal's own principal and no scope.
+    fn agent_data(&self, handle: &RouteHandle) -> Option<bool> {
+        lock(&self.stamps)
+            .get(&(handle.channel, handle.epoch))
+            .filter(|stamp| stamp.agent_data)
+            .map(|stamp| agent_data_admitted(stamp.principal.as_ref(), stamp.scope.as_ref()))
     }
 
     fn diagnostics_admitted(&self, handle: &RouteHandle) -> bool {
@@ -327,6 +343,54 @@ impl BasalHandler {
     pub fn with_tool_foreground(mut self, wait: Duration) -> Self {
         self.tool_foreground = wait.min(self.tool_foreground);
         self
+    }
+
+    /// One `agent-data/v1` request. Admission is decided first, from the
+    /// route's stamp alone: a caller other than Entorhinal learns nothing
+    /// about the request or about basal's state.
+    async fn agent_data_request(&self, admitted: bool, body: Vec<u8>) -> HandlerOutcome {
+        use cortexkit_role_agent_data::errors::{ErrorBody, RefusalCode};
+        if !admitted {
+            return agent_data_error(ErrorBody::new(
+                RefusalCode::CallerForbidden,
+                "agent-data serves reserved:entorhinal only",
+            ));
+        }
+        let request = match serde_json::from_slice::<WireRequest>(&body) {
+            Ok(request) => request,
+            Err(e) => {
+                return agent_data_error(ErrorBody::new(
+                    RefusalCode::InvalidRequest,
+                    format!("a request is JSON with method and params: {e}"),
+                ));
+            }
+        };
+        let module = match &*lock(&self.phase) {
+            Phase::Ready(m) => m.clone(),
+            _ => {
+                return agent_data_error(ErrorBody::new(
+                    RefusalCode::Unavailable,
+                    "basal is not serving its store yet",
+                ));
+            }
+        };
+        let outcome = tokio::task::spawn_blocking(move || {
+            module
+                .agent_data
+                .handle(&module.rt, &request.method, &request.params)
+        })
+        .await;
+        match outcome {
+            Ok(Ok(result)) => match serde_json::to_vec(&json!({ "result": result })) {
+                Ok(bytes) => HandlerOutcome::Response(bytes),
+                Err(e) => agent_data_error(ErrorBody::new(RefusalCode::Unavailable, e.to_string())),
+            },
+            Ok(Err(error)) => agent_data_error(error),
+            Err(e) => agent_data_error(ErrorBody::new(
+                RefusalCode::Unavailable,
+                format!("the op's thread ended: {e}"),
+            )),
+        }
     }
 
     async fn tool_request(
@@ -570,6 +634,30 @@ struct WireRequest {
     params: Value,
 }
 
+/// Whether a route's stamp admits it to `agent-data`: Entorhinal's own
+/// attested principal on an unscoped route, and nothing else (`direct`,
+/// other modules, or any scope, a flow's or an agent's included).
+fn agent_data_admitted(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> bool {
+    scope.is_none()
+        && matches!(principal, Some(Principal::Reserved { module_id })
+            if cortexkit_role_agent_data::caller_admitted(&format!("reserved:{module_id}")))
+}
+
+/// An `agent-data/v1` refusal as the ERROR frame the contract names.
+fn agent_data_error(error: cortexkit_role_agent_data::errors::ErrorBody) -> HandlerOutcome {
+    match error.detail {
+        Some(detail) => HandlerOutcome::ErrorWithDetail {
+            code: error.code.as_str().to_owned(),
+            message: error.message,
+            detail,
+        },
+        None => HandlerOutcome::Error {
+            code: error.code.as_str().to_owned(),
+            message: error.message,
+        },
+    }
+}
+
 pub(crate) fn op_error_outcome(e: crate::ops::OpError) -> HandlerOutcome {
     match e.detail {
         Some(detail) => HandlerOutcome::ErrorWithDetail {
@@ -607,6 +695,9 @@ fn flow_scope_gate(flow_scoped: bool, method: &str) -> Option<HandlerOutcome> {
 #[async_trait]
 impl ModuleHandler for BasalHandler {
     async fn handle(&self, ctx: RequestCtx, body: Vec<u8>) -> HandlerOutcome {
+        if let Some(admitted) = self.routes.agent_data(&ctx.route_handle()) {
+            return self.agent_data_request(admitted, body).await;
+        }
         if let Some(context) = self.routes.tool_context(&ctx.route_handle()) {
             return self.tool_request(ctx, context, body).await;
         }
@@ -934,6 +1025,58 @@ fn tool_outcome(
 #[cfg(test)]
 mod error_tests {
     use super::*;
+
+    #[test]
+    fn only_entorhinal_on_an_unscoped_route_reaches_agent_data() {
+        let reserved = |id: &str| Principal::Reserved {
+            module_id: id.into(),
+        };
+        let scope = ScopeStamp::new(
+            reserved("prefrontal-core"),
+            "s-1",
+            1,
+            subc_protocol::scope::ScopeKind::Head,
+        );
+        assert!(agent_data_admitted(Some(&reserved("entorhinal")), None));
+        for (principal, scope) in [
+            (Some(reserved("entorhinal")), Some(&scope)),
+            (Some(reserved("broca")), None),
+            (Some(reserved("callosum")), None),
+            (Some(Principal::Direct), None),
+            (Some(Principal::Unverified), None),
+            (None, None),
+        ] {
+            assert!(
+                !agent_data_admitted(principal.as_ref(), scope),
+                "{principal:?} {scope:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_caller_learns_nothing_about_the_request() {
+        let handler = BasalHandler::new(Box::new(|_| unreachable!()), Box::new(|| unreachable!()));
+        // Not even whether the body parses, or whether basal is ready.
+        for body in [
+            b"not json".to_vec(),
+            br#"{"method":"agent_data.describe","params":{}}"#.to_vec(),
+        ] {
+            match handler.agent_data_request(false, body).await {
+                HandlerOutcome::Error { code, .. } => assert_eq!(code, "caller_forbidden"),
+                _ => panic!("an unattested caller was answered"),
+            }
+        }
+        match handler
+            .agent_data_request(
+                true,
+                br#"{"method":"agent_data.describe","params":{}}"#.to_vec(),
+            )
+            .await
+        {
+            HandlerOutcome::Error { code, .. } => assert_eq!(code, "unavailable"),
+            _ => panic!("a module still starting answered"),
+        }
+    }
     #[test]
     fn refusal_without_detail_keeps_the_plain_error_frame() {
         let outcome = op_error_outcome(crate::ops::OpError {

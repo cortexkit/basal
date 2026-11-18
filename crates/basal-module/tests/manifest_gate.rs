@@ -95,13 +95,34 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
     let [
         ProviderRole::ToolProvider { tools, .. },
         ProviderRole::ManagementSurface { operations, .. },
+        ProviderRole::InternalService {
+            service_id,
+            transport,
+            agent_facing,
+            operations: agent_data_ops,
+        },
     ] = manifest.provides.as_slice()
     else {
         panic!(
-            "one tool provider and one management surface, got {:?}",
+            "one tool provider, one management surface and the agent-data service, got {:?}",
             manifest.provides
         );
     };
+    // Entorhinal opens its move routes to this service; the daemon refuses
+    // a route to a service the module didn't declare.
+    assert_eq!(service_id, cortexkit_role_agent_data::SERVICE_ID);
+    assert_eq!(*transport, subc_protocol::manifest::InternalTransport::Bulk);
+    assert!(!agent_facing);
+    assert_eq!(agent_data_ops, cortexkit_role_agent_data::REQUIRED_OPS);
+    assert!(
+        manifest
+            .capabilities
+            .as_ref()
+            .unwrap()
+            .provides
+            .iter()
+            .any(|cap| cap == cortexkit_role_agent_data::PROVIDES)
+    );
     assert_eq!(tools.len(), 2);
     assert_eq!(tools[1].name, "flow");
     assert_eq!(tools[0].name, "codemode");

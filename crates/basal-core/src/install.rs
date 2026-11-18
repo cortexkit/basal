@@ -1476,6 +1476,9 @@ fn approve_with_resolved_agents(
     {
         enable(tx, flow_id, now_ms)?;
     }
+    // A flow that moved in from another computer waits disabled until code
+    // is approved here; approval puts it back in its source's enable state.
+    crate::agent_move::lift_move(tx, flow_id, now_ms)?;
     Ok(approval)
 }
 

@@ -76,6 +76,8 @@ pub struct Module {
     pub metrics: Arc<Metrics>,
     pub fatal: Fatal,
     pub(crate) event_reader: Mutex<Option<crate::events::Reader>>,
+    /// The `agent-data/v1` participant Entorhinal moves agents through.
+    pub agent_data: crate::agent_data::AgentData,
     decisions: Arc<DecisionApplier>,
     /// How long drop waits for shutdown to release the module's threads.
     /// Tests shorten it to exercise a stalled shutdown quickly.
@@ -268,6 +270,18 @@ impl Module {
         hosts.consent.attach(decisions.clone());
         rt.recover_cardless_installs()
             .map_err(|e| format!("recovering pending installs: {e}"))?;
+        // Moved flows still waiting for approval are checked again once the
+        // engine runs, in case an approval arrived while basal was down.
+        rt.recheck_moved_flows(None, None)
+            .map_err(|e| format!("scheduling moved-flow approval checks: {e}"))?;
+        let agent_data = crate::agent_data::AgentData::new(
+            Arc::new(basal_host::door::TransportDoor(hosts.transport.clone())),
+            config
+                .store_path
+                .parent()
+                .map_or_else(|| PathBuf::from("agent-move"), |dir| dir.join("agent-move")),
+        );
+        agent_data.sweep(&rt);
         pool.replenish();
         Ok(Self {
             rt,
@@ -283,6 +297,7 @@ impl Module {
             metrics,
             fatal,
             event_reader: Mutex::new(None),
+            agent_data,
             decisions,
             shutdown_grace: SHUTDOWN_GRACE,
             shutdown_started: Mutex::new(false),

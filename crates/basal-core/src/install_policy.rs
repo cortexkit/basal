@@ -107,7 +107,7 @@ impl Runtime {
         self.approve_confirmed_install(flow_id, version, hash, approval)
     }
 
-    fn approve_confirmed_install(
+    pub(crate) fn approve_confirmed_install(
         &self,
         flow_id: &str,
         version: u32,

@@ -350,8 +350,8 @@ impl RunAdmission {
         // admission checks still share the fenced commit below when work exists.
         let due = self.store.read(|c| {
             Ok(c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM schedules WHERE state='active' AND next_due_ms<=?1)
-                 OR EXISTS(SELECT 1 FROM schedule_fires)
+                "SELECT EXISTS(SELECT 1 FROM schedules WHERE state='active' AND next_due_ms<=?1 AND flow_id NOT IN (SELECT flow_id FROM agent_move_held_flows))
+                 OR EXISTS(SELECT 1 FROM schedule_fires WHERE flow_id NOT IN (SELECT flow_id FROM agent_move_held_flows))
                  OR EXISTS(SELECT 1 FROM template_instances t JOIN flows f USING(flow_id) WHERE t.expires_at<=?1 AND t.expiry_notified=0 AND f.removed=0)
                  OR EXISTS(SELECT 1 FROM schedules s JOIN template_instances t USING(flow_id) WHERE t.expires_at<=?1 AND s.state<>'disabled')
                  OR EXISTS(SELECT 1 FROM template_event_outbox WHERE published_at IS NOT NULL AND published_at<?2)",
@@ -406,7 +406,8 @@ impl RunAdmission {
         )? {
             match fire.admission {
                 Admission::Draining => break,
-                Admission::StateBusy => {
+                // A frozen flow's fire waits planned, like an epoch change's.
+                Admission::StateBusy | Admission::Frozen => {
                     blocked.insert(fire.flow_id);
                 }
                 _ => report.admitted.push(fire),
@@ -420,7 +421,7 @@ impl RunAdmission {
     pub fn drain_event_backlog(&self, ctx: &AdmitContext) -> Result<usize> {
         let pending = self.store.read(|c| {
             Ok(c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled')",
+                "SELECT EXISTS(SELECT 1 FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled' AND f.flow_id NOT IN (SELECT flow_id FROM agent_move_held_flows))",
                 [],
                 |r| r.get::<_, bool>(0),
             )?)
@@ -430,7 +431,7 @@ impl RunAdmission {
         }
         self.batch(|tx| {
             let pending: Vec<(i64, String, String, Option<i64>)> = tx.prepare(
-                "SELECT e.rowid,e.flow_id,e.notice,f.first_approved_at FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled' ORDER BY e.received_at,e.rowid LIMIT 128"
+                "SELECT e.rowid,e.flow_id,e.notice,f.first_approved_at FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled' AND f.flow_id NOT IN (SELECT flow_id FROM agent_move_held_flows) ORDER BY e.received_at,e.rowid LIMIT 128"
             )?.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
             let mut blocked = BTreeSet::new();
             let mut admitted = 0;
