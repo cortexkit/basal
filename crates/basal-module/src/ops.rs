@@ -417,6 +417,38 @@ impl Module {
         }
     }
 
+    /// [`Self::refuse_moving`] for the agent `flow_id` belongs to, decided by
+    /// the same rule that picks the flows a move carries: its owner, or
+    /// before any approval the single author of its versions.
+    pub(crate) fn refuse_moving_flow(&self, flow_id: &str) -> Result<(), OpError> {
+        let agent = self
+            .rt
+            .store()
+            .read(|c| basal_core::agent_move::flow_agent(c, flow_id))
+            .map_err(|e| self.core_error(e))?;
+        match agent {
+            Some(agent) => self.refuse_moving(&agent),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether core's install hint names a flow whose agent moved away: the
+    /// flow lives on another computer now, whose basal reads its own
+    /// prefrontal, so the hint changes nothing here. While the agent is
+    /// moving the hint is refused `agent_moving`, and core sends it again.
+    fn hint_for_moved_flow(&self, flow_id: &str) -> Result<bool, OpError> {
+        let tombstoned = self
+            .rt
+            .store()
+            .read(|c| basal_core::agent_move::tombstoned(c, flow_id))
+            .map_err(|e| self.core_error(e))?;
+        if tombstoned {
+            return Ok(true);
+        }
+        self.refuse_moving_flow(flow_id)?;
+        Ok(false)
+    }
+
     fn owns(&self, agent: &str, flow_id: &str) -> Result<bool, OpError> {
         let owners = self.owners(flow_id)?;
         Ok(!owners.is_empty() && owners.iter().all(|o| o == agent))
@@ -556,6 +588,7 @@ impl Module {
         {
             return Err(OpError::new("not_found", format!("no flow {}", p.flow_id)));
         }
+        self.refuse_moving_flow(&p.flow_id)?;
         self.rt
             .end_instance(&p.flow_id)
             .map_err(|e| self.template_error(e))
@@ -602,9 +635,7 @@ impl Module {
                     && let Some(package) = reply["package"].as_str()
                 {
                     // A moved instance may have waited for this template version.
-                    self.rt
-                        .recheck_moved_flows(None, Some(package))
-                        .map_err(|e| self.core_error(e))?;
+                    self.rt.recheck_moved_flows_after(None, Some(package));
                 }
                 registered
             }
@@ -620,14 +651,13 @@ impl Module {
                         .ensure_instance(&p.package, p.version, &p.agent_id, p.generation);
                 if ensured.is_ok() {
                     // A moved instance of this package may be approvable now.
-                    self.rt
-                        .recheck_moved_flows(None, Some(&p.package))
-                        .map_err(|e| self.core_error(e))?;
+                    self.rt.recheck_moved_flows_after(None, Some(&p.package));
                 }
                 ensured
             }
             "flow.instance.remove" => {
                 let p: Remove = serde_json::from_value(params).map_err(invalid_params)?;
+                self.refuse_moving(&p.agent_id)?;
                 self.rt
                     .remove_instance(&p.package, &p.agent_id, p.generation)
             }
@@ -1058,6 +1088,9 @@ impl Module {
                 "flow_id, positive version and positive attempt are required",
             ));
         }
+        if self.hint_for_moved_flow(&p.flow_id)? {
+            return Ok(json!({}));
+        }
         self.rt
             .install_decided(&p.flow_id, p.version, p.attempt)
             .map_err(|e| self.core_error(e))?;
@@ -1094,6 +1127,9 @@ impl Module {
                 "invalid_params",
                 "flow_id, positive version and lowercase SHA-256 code_hash are required",
             ));
+        }
+        if self.hint_for_moved_flow(&p.flow_id)? {
+            return Ok(json!({}));
         }
         self.rt
             .install_revoked(&p.flow_id, p.version, &p.code_hash)
@@ -1818,6 +1854,7 @@ impl Module {
             } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.clone()),
             _ => return Err(OpError::not_permitted("flow.disable", caller)),
         };
+        self.refuse_moving_flow(&p.flow_id)?;
         let reason = p.reason.unwrap_or_else(|| "disabled by request".into());
         let changed = self
             .rt
@@ -1843,9 +1880,7 @@ impl Module {
             } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),
             _ => return Err(OpError::not_permitted("flow.enable", caller)),
         };
-        for owner in self.owners(&p.flow_id)? {
-            self.refuse_moving(&owner)?;
-        }
+        self.refuse_moving_flow(&p.flow_id)?;
         let changed = self
             .rt
             .enable_flow_as(&p.flow_id, &actor)

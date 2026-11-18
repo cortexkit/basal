@@ -165,6 +165,7 @@ impl Module {
             Caller::DevOperatorApp => basal_core::Actor::Operator("local-direct".into()),
             _ => unreachable!("admitted by operator() above"),
         };
+        self.refuse_moving_flow(&p.flow_id)?;
         let changed = self
             .rt
             .uninstall_flow_as(&p.flow_id, &actor)

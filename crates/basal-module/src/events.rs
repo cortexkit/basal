@@ -647,8 +647,7 @@ async fn commit_batch_report(
                                 .map_err(|e| e.to_string())?;
                             // A moved flow waiting for approval here has no
                             // card of its own: prefrontal's notice is its cue.
-                            rt.recheck_moved_flows(Some(&change.flow_id), None)
-                                .map_err(|e| e.to_string())?;
+                            rt.recheck_moved_flows_after(Some(&change.flow_id), None);
                         }
                         Err(reason) => {
                             malformed += 1;
