@@ -832,7 +832,9 @@ fn write_staged(
         values,
     };
     // A live run can still commit its kv overlay into the receiver's copy.
-    if let Some(busy) = busy(tx, agent)? {
+    // Only a live run blocks here: a stray open card on flows about to be
+    // replaced would otherwise hold the move at `imported` indefinitely.
+    if let Some(busy) = busy(tx, agent)?.filter(|b| b.code == "run_active") {
         return Ok(Err(ActivateRefusal::Busy(busy)));
     }
     if local(tx, agent)? == Local::Advanced {
