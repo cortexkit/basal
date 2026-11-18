@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::admission::{self, Admission, AdmitContext, TriggerSpec};
 use crate::events::{self, HeaderMatch, Notice};
 use crate::run_store_sql::{self as sql, EpochLsn, LiveRun, RunIdentity};
+use crate::schedule::tick::FireOutcome;
 use crate::schedule::{self, SchedulerConfig, TickReport};
 use crate::{Boundary, CoreError, Hooks, Result, Step, Store, install};
 
@@ -362,7 +363,7 @@ impl RunAdmission {
         if !due {
             return Ok(TickReport::default());
         }
-        self.batch(|tx| {
+        let report = self.batch(|tx| {
             crate::templates::expire_schedules(tx, ctx.now_ms)?;
             let mut report = TickReport::default();
             self.admit_planned(tx, &ctx, &mut report)?;
@@ -385,7 +386,11 @@ impl RunAdmission {
             self.admit_planned(tx, &ctx, &mut report)?;
             report.waiting = schedule::tick::planned_count(tx)?;
             Ok(report)
-        })
+        })?;
+        for fire in &report.coalesced {
+            tracing::info!(flow_id = %fire.flow_id, due = %fire.due, "schedule fire coalesced");
+        }
+        Ok(report)
     }
 
     fn admit_planned(
@@ -395,7 +400,7 @@ impl RunAdmission {
         report: &mut TickReport,
     ) -> Result<()> {
         let mut blocked = BTreeSet::new();
-        while let Some(fire) = schedule::tick::admit_next_with(
+        while let Some(outcome) = schedule::tick::admit_next_with(
             tx,
             ctx,
             &blocked,
@@ -404,6 +409,13 @@ impl RunAdmission {
                 self.current(tx, flow, trigger_id, trigger, "schedule", ctx)
             },
         )? {
+            let fire = match outcome {
+                FireOutcome::Admission(fire) => fire,
+                FireOutcome::Coalesced(fire) => {
+                    report.coalesced.push(fire);
+                    continue;
+                }
+            };
             match fire.admission {
                 Admission::Draining => break,
                 Admission::StateBusy => {

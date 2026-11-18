@@ -209,6 +209,124 @@ fn tick(path: &RunAdmission, at: i64) -> Result<TickReport> {
 }
 
 #[test]
+fn recurring_schedule_cap_does_not_count_or_coalesce_events() {
+    let f = Fixture::new("schedule-with-events");
+    f.approve(
+        "flow",
+        1,
+        1,
+        json!({"schedule":{"interval":"1m"},"events":[{"module":"source","name":"changed","version":1}]}),
+    );
+    f.schema();
+    let path = f.path(Arc::new(NoHooks));
+    let report = path
+        .admit_events(
+            &[notice(1), notice(2), notice(3)],
+            &ctx(100),
+            &NoWakes,
+            || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(report.admitted, 3);
+    for at in [61_000, 121_000] {
+        assert_eq!(tick(&path, at).unwrap().new_runs().len(), 1);
+    }
+    let report = path
+        .admit_events(&[notice(4), notice(5)], &ctx(100), &NoWakes, || Ok(()))
+        .unwrap();
+    assert_eq!(report.admitted, 2);
+    assert_eq!(f.count("live_runs"), 7);
+    assert_eq!(tick(&path, 181_000).unwrap().coalesced.len(), 1);
+    assert_eq!(f.count("live_runs"), 7);
+}
+
+#[test]
+fn recurring_schedule_cap_uses_indexed_live_run_lookup() {
+    let f = Fixture::new("schedule-cap-plan");
+    f.schema();
+    let plan = f
+        .store
+        .read(|c| {
+            let sql = format!(
+                "EXPLAIN QUERY PLAN {}",
+                schedule::tick::RECURRING_SCHEDULE_AT_CAP
+            );
+            Ok(c.prepare(&sql)?
+                .query_map(params!["flow", 1], |r| r.get::<_, String>(3))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|step| step
+                .contains("SEARCH live_runs USING INDEX live_runs_flow_order (flow_id=?)")),
+        "{plan:?}"
+    );
+    assert!(
+        !plan.iter().any(|step| step.contains("SCAN live_runs")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn recurring_schedule_cap_exempts_one_shot_fires_and_runs() {
+    let f = Fixture::new("schedule-at-exemption");
+    f.scheduled("flow");
+    f.schema();
+    let path = f.path(Arc::new(NoHooks));
+    for at in [61_000, 121_000] {
+        assert_eq!(tick(&path, at).unwrap().new_runs().len(), 1);
+    }
+    // Write the schedule and live-run rows directly to test coalescing
+    // without template registration or instance lifecycle handling.
+    f.store
+        .write(|tx| {
+            tx.execute(
+                "UPDATE schedules SET spec=?1 WHERE flow_id='flow'",
+                [json!({"at":"1970-01-01T00:03:01Z"}).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(tick(&path, 181_000).unwrap().new_runs().len(), 1);
+    f.store
+        .write(|tx| {
+            tx.execute(
+                "UPDATE schedules SET spec=?1, next_due_ms=241000 WHERE flow_id='flow'",
+                [json!({"interval":"1m"}).to_string()],
+            )?;
+            tx.execute(
+                "UPDATE live_runs SET end_instance=1 WHERE admitted_at>=121000",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(tick(&path, 241_000).unwrap().new_runs().len(), 1);
+    assert_eq!(tick(&path, 301_000).unwrap().coalesced.len(), 1);
+}
+
+#[test]
+fn recurring_schedule_cap_applies_within_one_catch_up_tick() {
+    let f = Fixture::new("schedule-catch-up");
+    f.approve(
+        "flow",
+        1,
+        1,
+        json!({"schedule":{"interval":"1m","missed":"each","each_cap":3}}),
+    );
+    f.schema();
+    let path = f.path(Arc::new(NoHooks));
+    let report = tick(&path, 361_000).unwrap();
+    assert_eq!(report.planned[0].fires.len(), 4);
+    assert_eq!(report.new_runs().len(), 2);
+    assert_eq!(report.waiting, 0);
+    assert_eq!(report.coalesced[0].due.as_millisecond(), 301_000);
+    assert_eq!(report.coalesced[1].due.as_millisecond(), 361_000);
+    assert_eq!(report.coalesced.len(), 2);
+}
+
+#[test]
 fn identity_survives_restored_counter_and_uses_full_id() {
     let f = Fixture::new("identity");
     f.event("flow");
