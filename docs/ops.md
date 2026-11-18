@@ -1146,7 +1146,7 @@ behind, and so do events queued but not yet admitted: the receiver reports
 them as `dropped: {"queued_event": n}`, so the move reads as completed with
 losses. Operator flows with no owner agent never move.
 
-Basal serves the contract (`cortexkit-role-agent-data` 0.3.1, all ten ops) on
+Basal serves the contract (`cortexkit-role-agent-data` 0.3.3, all ten ops) on
 the internal service `agent-data`, declared in the manifest with
 `agent-data/v1` in `capabilities.provides`. Only `reserved:entorhinal` on an
 unscoped route is served; every other caller is refused `caller_forbidden`
@@ -1206,7 +1206,9 @@ While an agent is frozen, changes to its flows are refused `agent_moving`
 released or aborted; a frozen flow admits nothing meanwhile. A flow belongs to
 an agent by the rule a move uses: its owner, or before any approval the single
 author of its versions. Once the agent has moved away the same ops are refused
-`agent_moved` (detail `{agent_id, holder}`) until a move back replaces the
+`agent_moved` (detail `{agent_id, holder_box}`, where `holder_box` is the
+receiving computer's box id, present only when the release named one) until a
+move back replaces the
 tombstone, except core's two install hints, which are accepted and change
 nothing: the flow lives on the other computer, whose basal reads its own
 prefrontal. A freeze held for 6 hours shows in `diagnostics.findings` as
