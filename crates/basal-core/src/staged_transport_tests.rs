@@ -273,46 +273,6 @@ fn cancelling_a_deferred_provider_call_commits_and_delivers_its_refusal_receipt(
 
 #[test]
 fn owner_failure_streak_uses_history_and_its_deadline_exemption_flag() {
-    struct ExpiresAfterDelivery {
-        inner: ScriptedWorker,
-        clock: Clock,
-    }
-    impl WorkerChannel for ExpiresAfterDelivery {
-        fn welcome(&self) -> &basal_proto::Welcome {
-            self.inner.welcome()
-        }
-        fn send(
-            &mut self,
-            message: &ParentMessage,
-        ) -> std::result::Result<(), crate::ChannelError> {
-            self.inner.send(message)?;
-            if matches!(message,ParentMessage::Deliver(o) if o.position==0) {
-                self.clock.advance(600_001);
-            }
-            Ok(())
-        }
-        fn recv(
-            &mut self,
-            timeout: Duration,
-        ) -> std::result::Result<WorkerMessage, crate::ChannelError> {
-            match self.inner.recv(timeout) {
-                Err(crate::ChannelError::Closed) => {
-                    std::thread::sleep(timeout.min(Duration::from_millis(1)));
-                    Err(crate::ChannelError::Timeout)
-                }
-                other => other,
-            }
-        }
-        fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
-            self.inner.receiver()
-        }
-        fn fixture_inline_recv(&self) -> bool {
-            true
-        }
-        fn kill(&mut self) {
-            self.inner.kill();
-        }
-    }
     let f = Fixture::new(false);
     f.install("streak", 1, json!({}));
     for trigger in ["failure-1", "failure-2", "failure-3"] {
@@ -351,15 +311,20 @@ fn owner_failure_streak_uses_history_and_its_deadline_exemption_flag() {
             "test",
             "query",
         ))));
-    let mut worker = ExpiresAfterDelivery {
-        inner: ScriptedWorker::new(vec![
-            op(0, "query", json!({})),
-            WorkerMessage::Blocked { awaiting: vec![0] },
-        ]),
-        clock: f.clock.clone(),
-    };
-    assert!(
-        matches!(f.rt.activate(&id,&mut worker).unwrap(),ActivationEnd::Failed {kind,..} if kind=="deadline")
+    let mut waiting = ScriptedWorker::new(vec![
+        op(0, "query", json!({})),
+        WorkerMessage::Blocked { awaiting: vec![0] },
+        suspended(vec![0]),
+    ]);
+    assert_eq!(
+        f.rt.activate(&id, &mut waiting).unwrap(),
+        ActivationEnd::Suspended { awaited: vec![0] }
+    );
+    f.clock.advance(600_001);
+    assert_eq!(f.rt.enforce_deadlines().unwrap(), vec![id.clone()]);
+    assert_eq!(
+        f.rt.run(&id).unwrap().error_kind.as_deref(),
+        Some("deadline")
     );
     assert!(
         f.rt.store()

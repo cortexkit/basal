@@ -215,7 +215,7 @@ impl TerminalBuilder<Records> for Terminal {
             // readiness problems, not script failures. Expiry of a proven-unsent
             // wait must not trip the flow's consecutive-failure breaker.
             deadline_exempt: state.deadline_exempt || (self.error_kind.as_deref()==Some("deadline") && state.calls.values().any(|call| {
-                call.deferred.as_ref().filter(|d| d.proven_unsent).and_then(|d| crate::refusal_receipt::decode_refusal(&d.cause).ok()).is_some_and(|r| r.model_selection_wait() || matches!(r.reason,basal_host::flow_refusal::RefusalReason::SinkAudienceUnavailable | basal_host::flow_refusal::RefusalReason::SinkBoardTargetUnavailable))
+                call.deferred.as_ref().filter(|d| d.proven_unsent).and_then(|d| crate::refusal_receipt::decode_refusal(&d.cause).ok()).is_some_and(|r| r.model_selection_wait() || matches!(r.reason,basal_host::flow_refusal::RefusalReason::SinkAudienceUnavailable | basal_host::flow_refusal::RefusalReason::SinkBoardTargetUnavailable | basal_host::flow_refusal::RefusalReason::NoFlowScope | basal_host::flow_refusal::RefusalReason::TargetFlowUnsupported))
             })),
             history_lost: false,
             commit_seq: 0,

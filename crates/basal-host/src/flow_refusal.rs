@@ -306,6 +306,7 @@ impl FlowRefusal {
             "scope_changed" => RefusalReason::ScopeChanged,
             "scope_unsupported" => RefusalReason::ScopeUnsupported,
             "target_flow_unsupported" => RefusalReason::TargetFlowUnsupported,
+            "no_flow_scope" => RefusalReason::NoFlowScope,
             "resource_busy" => RefusalReason::ResourceBusy,
             "consent_unavailable" => RefusalReason::ConsentUnavailable,
             "module_grant_absent" => RefusalReason::ModuleGrantAbsent,
@@ -416,6 +417,18 @@ mod tests {
                     .reason,
                 RefusalReason::ResourceBusy
             );
+        }
+    }
+
+    #[test]
+    fn readiness_codes_decode_with_original_detail() {
+        for code in ["no_flow_scope", "target_flow_unsupported"] {
+            let body = ErrorBody::new(code, "scope is registering")
+                .with_detail(json!({"scope_targets":["broca"]}));
+            let refusal = FlowRefusal::decode(&body).unwrap().unwrap();
+            assert_eq!(refusal.reason.as_str(), code);
+            assert_eq!(refusal.detail, body.detail);
+            assert_eq!(refusal.message.as_deref(), Some("scope is registering"));
         }
     }
 

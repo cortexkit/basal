@@ -18,8 +18,9 @@ cannot set `Authorization`, cookies or other protected headers itself.
 
 Basal describes the flow's live scope and relays the daemon's complete stamp,
 unchanged, to `claustrum secret.use` on its own management route. A scope that
-is not ready gives `no_flow_scope`, just like ordinary operations: the call is
-provably unsent and reaches the script without waiting to act on stale inputs.
+is not ready gives `no_flow_scope`, just like ordinary operations: basal retries
+a not-ready scope for up to 60 s before refusing. The call remains provably
+unsent, and the run's deadline also bounds the wait.
 An epoch change gives `scope_changed` and follows ordinary scope-change retry
 handling. An otherwise ready stamp with missing identity attributes gives
 `secret_scope_missing`; a version/hash/flow or owner mismatch gives

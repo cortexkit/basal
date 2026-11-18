@@ -644,11 +644,19 @@ fn wait_failure_candidates_that_cannot_produce_the_fifteen_attempt_shape() {
         fake.enqueue("sink.wait_resolve", vec![reply; 5]);
         let run = common::admit(&f, "host-flow", name);
         drive_transport_retries(&f, &run);
+        if matches!(name, "readiness" | "unsupported") {
+            assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Suspended);
+            assert_eq!(fake.calls("sink.wait_resolve").len(), 1);
+            f.clock.advance(60_000);
+            drive_transport_retries(&f, &run);
+        }
         let stored = f.module.rt.run(&run).unwrap();
         let row = &f.module.rt.calls(&run).unwrap()[0];
+        let cutoff_check = usize::from(matches!(name, "readiness" | "unsupported"));
         assert_eq!(
-            row.attempts as usize, sends,
-            "{name}: every host send needs its own counted Intent"
+            row.attempts as usize,
+            sends + cutoff_check,
+            "{name}: each host send and unsent grace-cutoff check has its own Intent"
         );
         assert_eq!(fake.calls("sink.wait_resolve").len(), sends, "{name}");
         if let Some(result) = result {

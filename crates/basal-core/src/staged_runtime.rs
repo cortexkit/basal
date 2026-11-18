@@ -55,6 +55,95 @@ impl crate::run_admission::EventWakes for EventWakes<'_> {
     }
 }
 impl Services {
+    fn readiness_grace(
+        &self,
+        rt: &Runtime,
+        live: &LiveRun,
+        current: Option<&crate::run_records::CallState>,
+        refusal: Option<&basal_host::flow_refusal::FlowRefusal>,
+    ) -> Option<(i64, i64, basal_host::flow_refusal::FlowRefusal)> {
+        use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
+        let bounded = |r: &FlowRefusal| {
+            matches!(
+                r.reason,
+                RefusalReason::NoFlowScope | RefusalReason::TargetFlowUnsupported
+            )
+        };
+        if refusal.is_some_and(|r| !bounded(r)) {
+            return None;
+        }
+        let mut since = self.config.clock.now_ms();
+        let mut saved = None;
+        for deferred in current
+            .into_iter()
+            .flat_map(|c| c.prior_deferrals.iter().chain(c.deferred.iter()))
+        {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&deferred.cause) else {
+                continue;
+            };
+            let Ok(prior) = crate::refusal_receipt::decode_refusal(&deferred.cause) else {
+                continue;
+            };
+            if bounded(&prior) {
+                // Older causes have no timestamp. Their audit time is the
+                // durable evidence of when the readiness refusal happened.
+                since = since.min(
+                    value["readiness_since_ms"]
+                        .as_i64()
+                        .unwrap_or(deferred.audit_at),
+                );
+                saved = Some(prior);
+            }
+        }
+        let refusal = refusal.cloned().or(saved)?;
+        let deadline = rt
+            .staged_read(&live.run_id, |s| s.claim.as_ref().map(|c| c.deadline_at))
+            .flatten()
+            .unwrap_or(i64::MAX);
+        Some((since, since.saturating_add(60_000).min(deadline), refusal))
+    }
+
+    fn defer_refusal(
+        &self,
+        rt: &Runtime,
+        live: &LiveRun,
+        current: Option<&crate::run_records::CallState>,
+        attempt: Option<u64>,
+        refusal: &basal_host::flow_refusal::FlowRefusal,
+    ) -> Result<Option<(i64, String)>> {
+        use basal_host::flow_refusal::RefusalReason;
+        let grace = self.readiness_grace(rt, live, current, Some(refusal));
+        if grace.is_none()
+            && ((attempt.is_some() && refusal.readiness())
+                || refusal.terminal()
+                || refusal.grant_absent()
+                || matches!(
+                    refusal.reason,
+                    RefusalReason::FlowScopeRequired | RefusalReason::AgentRetired
+                ))
+        {
+            return Ok(None);
+        }
+        let mut cause =
+            serde_json::to_value(refusal).map_err(|e| CoreError::Invalid(e.to_string()))?;
+        let attempt = attempt.unwrap_or_else(|| {
+            current.map_or(1, |c| {
+                c.prior_deferrals.len() as u64 + u64::from(c.deferred.is_some()) + 1
+            })
+        });
+        let mut retry_at = self.retry_at(rt, live, attempt, refusal);
+        if let Some((since, until, _)) = grace {
+            if self.config.clock.now_ms() >= until {
+                return Ok(None);
+            }
+            // Keep this in the JSON cause: older builds ignore extra members,
+            // while the binary deferred-record layout stays unchanged.
+            cause["readiness_since_ms"] = since.into();
+            retry_at = retry_at.min(until);
+        }
+        Ok(Some((retry_at, cause.to_string())))
+    }
+
     fn retry_at(
         &self,
         rt: &Runtime,
@@ -371,6 +460,24 @@ impl run_driver::Services for Services {
                 reason,
             });
         }
+        // Calls with intents reach the cutoff in dispatch, where earlier
+        // ambiguous sends cannot be mistaken for provably unsent refusals.
+        if let Some((_, until, refusal)) =
+            self.readiness_grace(&rt, live, view.current.as_ref(), None)
+            && self.config.clock.now_ms() >= until
+            && view.current.as_ref().is_some_and(|c| c.intent.is_none())
+        {
+            return Ok(Prepared::Refused {
+                class: view
+                    .current
+                    .as_ref()
+                    .expect("saved refusal has a call")
+                    .identity
+                    .class,
+                value: refusal.outcome().value,
+                notify: false,
+            });
+        }
         let bytes = view.journal_bytes;
         if view.current.is_none()
             && (view.call_count >= rt.config.limits.max_calls
@@ -435,6 +542,15 @@ impl run_driver::Services for Services {
                         basal_host::flow_refusal::FlowRefusal::new(reason, &provider, &action);
                     rt.store()
                         .write(|tx| crate::flow_scope::health(tx, &live.flow_id, &refusal))?;
+                    if let Some((retry_not_before, cause)) =
+                        self.defer_refusal(&rt, live, view.current.as_ref(), None, &refusal)?
+                    {
+                        return Ok(Prepared::Deferred {
+                            class: rt.class_of(&call.kind, None),
+                            cause,
+                            retry_not_before,
+                        });
+                    }
                 }
                 return Ok(Prepared::Refused {
                     class: rt.class_of(&call.kind, None),
@@ -525,16 +641,20 @@ impl run_driver::Services for Services {
             prepared.request = Some(crate::run_readers::json(&input)?);
         }
         if let Some(deferred) = prepared.deferred {
-            let attempt = view.current.as_ref().map_or(1, |c| {
-                c.prior_deferrals.len() as u64 + u64::from(c.deferred.is_some()) + 1
-            });
-            let retry_not_before = self.retry_at(&rt, live, attempt, &deferred);
-            return Ok(Prepared::Deferred {
-                class,
-                cause: serde_json::to_string(&deferred)
-                    .map_err(|e| CoreError::Invalid(e.to_string()))?,
-                retry_not_before,
-            });
+            return Ok(
+                match self.defer_refusal(&rt, live, view.current.as_ref(), None, &deferred)? {
+                    Some((retry_not_before, cause)) => Prepared::Deferred {
+                        class,
+                        cause,
+                        retry_not_before,
+                    },
+                    None => Prepared::Refused {
+                        class,
+                        value: deferred.outcome().value,
+                        notify: false,
+                    },
+                },
+            );
         }
         match class {
             StoredClass::Sync => {
@@ -645,6 +765,14 @@ impl run_driver::Services for Services {
         } else {
             None
         };
+        if let Some((_, until, refusal)) = self.readiness_grace(&rt, live, Some(&call), None)
+            && self.config.clock.now_ms() >= until
+        {
+            return Ok(match maybe_sent {
+                Some(reason) => Reply::Unknown(reason.as_str().into()),
+                None => Reply::Refused(Box::new(refusal)),
+            });
+        }
         // One invocation owns exactly one host send. A retry must return to the
         // actor for another checked, counted and synced Intent with the same key.
         if matches!(
@@ -792,6 +920,20 @@ impl run_driver::Services for Services {
                 maybe_sent.expect("checked prior send").as_str().into(),
             ));
         }
+        if let Err(refusal) = &answer
+            && let Some((retry_not_before, cause)) =
+                self.defer_refusal(&rt, live, Some(&call), Some(intent.attempts), refusal)?
+        {
+            return Ok(Reply::Deferred(crate::run_records::Deferred {
+                position: intent.call.position,
+                retry_not_before,
+                cause,
+                audit_at: intent.audit_at,
+                proven_unsent: true,
+                refund_dispatch: true,
+                attempt: None,
+            }));
+        }
         match answer {
             Ok(Dispatched::Accepted { handle }) => Ok(Reply::Accepted(handle)),
             Ok(Dispatched::Completed(outcome)) => {
@@ -807,25 +949,6 @@ impl run_driver::Services for Services {
                 } else {
                     Reply::Completed(arrival)
                 })
-            }
-            Err(refusal)
-                if !refusal.terminal()
-                    && !refusal.readiness()
-                    && !refusal.grant_absent()
-                    && refusal.reason
-                        != basal_host::flow_refusal::RefusalReason::FlowScopeRequired
-                    && refusal.reason != basal_host::flow_refusal::RefusalReason::AgentRetired =>
-            {
-                Ok(Reply::Deferred(crate::run_records::Deferred {
-                    position: intent.call.position,
-                    retry_not_before: self.retry_at(&rt, live, intent.attempts, &refusal),
-                    cause: serde_json::to_string(&refusal)
-                        .map_err(|e| CoreError::Invalid(e.to_string()))?,
-                    audit_at: intent.audit_at,
-                    proven_unsent: true,
-                    refund_dispatch: true,
-                    attempt: None,
-                }))
             }
             Err(refusal) => {
                 if refusal.readiness() {

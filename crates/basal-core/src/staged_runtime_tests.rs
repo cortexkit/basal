@@ -21,6 +21,9 @@ mod transport;
 #[path = "staged_reclamation_tests.rs"]
 mod reclamation;
 
+#[path = "staged_readiness_tests.rs"]
+mod readiness;
+
 #[path = "staged_verification_tests.rs"]
 pub(crate) mod verification_matrix;
 
@@ -36,8 +39,19 @@ struct TestHost {
     class_override: Mutex<Option<CallClass>>,
     attribution_probe: Mutex<Option<PathBuf>>,
     facts_at_send: Mutex<Vec<Value>>,
+    readiness: Mutex<Option<basal_host::flow_refusal::FlowRefusal>>,
 }
 impl Host for TestHost {
+    fn provider_ready(
+        &self,
+        _: &str,
+        _: &CallKind,
+    ) -> std::result::Result<(), basal_host::flow_refusal::FlowRefusal> {
+        match self.readiness.lock().unwrap().clone() {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
+    }
     fn install_status(
         &self,
         _: &str,
