@@ -868,11 +868,9 @@ impl AgentData {
         let outcome = rt
             .store()
             .write(|tx| {
-                if let Some(busy) = agent_move::busy(tx, &agent)? {
-                    return Ok(Err(busy_refusal(&agent, busy)));
-                }
                 let fingerprint = match agent_move::activate(tx, &agent, cut_id, &staged, now)? {
                     Ok(fingerprint) => fingerprint,
+                    Err(ActivateRefusal::Busy(busy)) => return Ok(Err(busy_refusal(&agent, busy))),
                     Err(ActivateRefusal::Advanced) => return Ok(Err(advanced(&agent))),
                     Err(ActivateRefusal::Collision(collision)) => {
                         return Ok(Err(collided(&collision)));
@@ -931,6 +929,7 @@ impl AgentData {
                 }
                 let fingerprint = match agent_move::activate(tx, &agent, cut_id, &empty, now)? {
                     Ok(fingerprint) => fingerprint,
+                    Err(ActivateRefusal::Busy(busy)) => return Ok(Err(busy_refusal(&agent, busy))),
                     Err(ActivateRefusal::Advanced) => return Ok(Err(advanced(&agent))),
                     Err(ActivateRefusal::Collision(collision)) => {
                         return Ok(Err(collided(&collision)));

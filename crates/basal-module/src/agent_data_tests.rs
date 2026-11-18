@@ -495,6 +495,67 @@ fn a_live_run_makes_the_agent_busy_and_prepare_refuses() {
 }
 
 #[test]
+fn activate_reports_run_active_and_retries_the_same_imported_cut() {
+    let door = FakeDoor::new();
+    let first = Computer::new("activate-busy-first", &door);
+    let receiver = Computer::new("activate-busy-receiver", &door);
+    let incoming = Computer::new("activate-busy-incoming", &door);
+    first.seed();
+    move_agent(&door, &first, &receiver, CUT);
+
+    incoming.flow("f-alpha");
+    incoming.exec(
+        "INSERT INTO kv(flow_id,key,value,bytes,revision) VALUES ('f-alpha','count','5',1,5)",
+    );
+    let prepared = incoming
+        .sample("source", "agent_data.prepare", BACK)
+        .unwrap();
+    incoming
+        .sample("source", "agent_data.export", BACK)
+        .unwrap();
+    seal(&door, BACK, &prepared);
+    assert_eq!(
+        receiver
+            .sample("receiver", "agent_data.diverged", BACK)
+            .unwrap(),
+        json!({"refs":[{"state":"at_cut"}]})
+    );
+    receiver
+        .sample("receiver", "agent_data.import", BACK)
+        .unwrap();
+
+    receiver.exec(
+        "INSERT INTO live_runs(run_id,flow_id,flow_version,snapshot_id,trigger_id,trigger_kind,trigger,attempt,admitted_at,admit_seq,admit_epoch,admit_segment,admit_offset,deadline_ms,self_input,params_input,grant_guards,end_instance)
+           SELECT 'run-live','f-alpha',1,snapshot_id,'t2','schedule','{}',1,20,2,0,0,0,600000,'null','null','null',0 FROM run_snapshots",
+    );
+    let refused = receiver
+        .sample("receiver", "agent_data.activate", BACK)
+        .unwrap_err();
+    assert_eq!(refused.code, RefusalCode::Busy);
+    assert_eq!(
+        refused.detail,
+        Some(json!({"refs":[{"ref_kind": REF_KIND, "ref": AGENT,
+            "reason_code":"run_active", "reason":"flow f-alpha has a run in progress"}]}))
+    );
+    assert_eq!(
+        receiver
+            .sample("receiver", "agent_data.status", BACK)
+            .unwrap(),
+        json!({"step":"imported"})
+    );
+    assert_eq!(receiver.sql("SELECT value FROM kv"), ["4"]);
+
+    receiver.exec("DELETE FROM live_runs WHERE run_id='run-live'");
+    assert_eq!(
+        receiver
+            .sample("receiver", "agent_data.activate", BACK)
+            .unwrap(),
+        json!({})
+    );
+    assert_eq!(receiver.sql("SELECT value FROM kv"), ["5"]);
+}
+
+#[test]
 fn abort_lifts_the_freeze_and_refuses_a_late_prepare() {
     let door = FakeDoor::new();
     let a = Computer::new("abort", &door);
