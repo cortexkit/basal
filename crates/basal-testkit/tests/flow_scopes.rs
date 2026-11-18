@@ -821,10 +821,18 @@ fn new_epoch_or_ref_drops_the_old_route() {
 }
 
 #[test]
-fn all_flows_without_scope_reject_unsent_without_deferring() {
+fn all_flows_without_scope_defer_then_reject_unsent_after_grace() {
     for owned in [true, false] {
         let f = Fixture::new("no-scope", SCRIPT, false, owned);
         let run = f.admit("one");
+        f.activate(&run);
+        assert_eq!(f.rt.run(&run).unwrap().state, RunState::Suspended);
+        assert_eq!(
+            f.rt.calls(&run).unwrap()[0].dispatch,
+            basal_core::DispatchState::Deferred
+        );
+        assert_eq!(f.sends(), 0);
+        f.clock.set(61_000);
         f.activate(&run);
         assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
         assert_eq!(f.sends(), 0);
@@ -897,16 +905,21 @@ mapping!(scope_not_synced_is_deferred_unsent, ScopeNotSynced);
 mapping!(scope_changed_is_deferred_unsent, ScopeChanged);
 mapping!(scope_unsupported_is_deferred_unsent, ScopeUnsupported);
 #[test]
-fn daemon_target_flow_unsupported_rejects_without_dispatch_or_failure_count() {
+fn daemon_target_flow_unsupported_defers_without_dispatch_or_failure_count() {
     let f = Fixture::new("target-unsupported", SCRIPT, true, true);
     let run = f.defer(RefusalReason::TargetFlowUnsupported);
-    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Suspended);
     assert_eq!(f.sends(), 0);
     assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
-    assert_ne!(
+    assert_eq!(
         f.rt.calls(&run).unwrap()[0].dispatch,
         basal_core::DispatchState::Deferred
     );
+    f.clock.set(61_000);
+    f.activate(&run);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+    assert_eq!(f.sends(), 0);
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
     let dispatches: i64 = f
         .rt
         .store()
@@ -1093,7 +1106,7 @@ fn agent_retired_fails_and_core_disables_without_auto_disable_count() {
 }
 
 #[test]
-fn unsupported_target_preflight_rejects_without_sending_but_run_activates() {
+fn unsupported_target_preflight_waits_then_rejects_without_sending() {
     let f = Fixture::new(
         "activation-cap",
         "return await ops.call('mock','send',{}).catch(e=>e.data.code);",
@@ -1111,6 +1124,10 @@ fn unsupported_target_preflight_rejects_without_sending_but_run_activates() {
     let run = f.admit("one");
     f.activate(&run);
     assert_eq!(f.rt.activation_count(&run).unwrap(), 1);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Suspended);
+    f.clock.set(61_000);
+    f.activate(&run);
+    assert_eq!(f.rt.activation_count(&run).unwrap(), 2);
     assert_eq!(f.rt.run(&run).unwrap().state, RunState::Succeeded);
     assert_eq!(
         f.rt.run(&run).unwrap().result.as_deref(),

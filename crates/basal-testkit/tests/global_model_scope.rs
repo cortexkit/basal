@@ -1,4 +1,4 @@
-use basal_core::{Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
+use basal_core::{Clock, Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
 use basal_host::broca::wire::*;
 use basal_host::broca::{BrocaError, BrocaHost, Route, Transport};
 use basal_host::flow_refusal::FlowRefusal;
@@ -114,8 +114,9 @@ impl Transport for Models {
 }
 
 #[test]
-fn global_model_call_rejects_without_scope_then_uses_registered_scope() {
+fn global_model_call_defers_without_scope_then_uses_registered_scope_once() {
     let world = World::new("global-model-scope");
+    let clock = Clock::manual(1_000);
     let gate = Arc::new(Gate::default());
     let models = Arc::new(Models::default());
     let broca = Arc::new(BrocaHost::new(
@@ -138,6 +139,7 @@ fn global_model_call_rejects_without_scope_then_uses_registered_scope() {
             Arc::new(NoHooks),
             Some(world.source.clone()),
             Config {
+                clock: clock.clone(),
                 selector: world.selector.clone(),
                 install_gate: InstallGate::Core,
                 ..Config::default()
@@ -166,13 +168,11 @@ fn global_model_call_rejects_without_scope_then_uses_registered_scope() {
         .to_owned();
     rt.resume(&first).unwrap();
     rt.quiesce();
-    let result: serde_json::Value =
-        serde_json::from_str(rt.run(&first).unwrap().result.as_ref().unwrap()).unwrap();
-    assert_eq!(result["code"], "no_flow_scope");
-    assert_eq!(result["module"], "broca");
+    assert_eq!(rt.run(&first).unwrap().state, RunState::Suspended);
+    assert!(rt.run(&first).unwrap().result.is_none());
     assert!(models.sends.lock().unwrap().is_empty());
     assert!(world.selector.requests.lock().unwrap().is_empty());
-    assert_ne!(
+    assert_eq!(
         rt.calls(&first).unwrap()[0].dispatch,
         basal_core::DispatchState::Deferred
     );
@@ -186,17 +186,13 @@ fn global_model_call_rejects_without_scope_then_uses_registered_scope() {
         },
         targets: ["broca".into()].into_iter().collect(),
     });
-    let second = rt
-        .admit_trigger("flow-test", "second", JsonText::null())
-        .unwrap()
-        .run_id()
-        .unwrap()
-        .to_owned();
-    rt.resume(&second).unwrap();
+    clock.set(31_000);
+    rt.startable().unwrap();
+    rt.resume(&first).unwrap();
     rt.quiesce();
-    assert_eq!(rt.run(&second).unwrap().state, RunState::Succeeded);
+    assert_eq!(rt.run(&first).unwrap().state, RunState::Succeeded);
     assert_eq!(
-        rt.run(&second).unwrap().result.as_deref(),
+        rt.run(&first).unwrap().result.as_deref(),
         Some("{\"text\":\"answer\"}")
     );
     assert_eq!(*models.sends.lock().unwrap(), vec![17]);

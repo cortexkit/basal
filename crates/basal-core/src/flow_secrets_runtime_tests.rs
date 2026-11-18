@@ -15,7 +15,10 @@ use std::time::Duration;
 const KEY: &str = "secret-never-to-script";
 const ENCODED: &str = "c2VjcmV0LW5ldmVyLXRvLXNjcmlwdA";
 
-struct Carrier(AtomicUsize);
+struct Carrier(
+    AtomicUsize,
+    std::sync::Mutex<Option<basal_host::flow_refusal::FlowRefusal>>,
+);
 impl Host for Carrier {
     fn secret_use(
         &self,
@@ -26,6 +29,9 @@ impl Host for Carrier {
         assert_eq!(request.flow_version, Some(1));
         assert_eq!(code_hash.len(), 64);
         self.0.fetch_add(1, Ordering::SeqCst);
+        if let Some(refusal) = self.1.lock().unwrap().take() {
+            return Err(basal_host::transport::WireError::Typed(refusal));
+        }
         Ok(
             json!({"status":"released","kind":"agent_api_key","key_b64url":ENCODED,"location":"body:token"}),
         )
@@ -139,13 +145,121 @@ impl WorkerChannel for Script {
 }
 
 #[test]
+fn flow_secret_use_readiness_shares_the_flow_call_grace() {
+    use crate::test_support::ScriptedWorker;
+    use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
+    for expire in [false, true] {
+        let path = crate::test_support::timestamp_scratch("secret-readiness", "runtime");
+        let clock = crate::Clock::manual(1_000);
+        let carrier = Arc::new(Carrier(
+            AtomicUsize::new(0),
+            std::sync::Mutex::new(Some(FlowRefusal::new(
+                RefusalReason::NoFlowScope,
+                "claustrum",
+                "secret.use",
+            ))),
+        ));
+        let rt = Runtime::new(
+            Arc::new(Store::open(path.join("store.db"), Durability::throwaway()).unwrap()),
+            Arc::new(
+                basal_host::builtins::BuiltinHost::default().with_secret_host(carrier.clone()),
+            ),
+            Arc::new(basal_host::MockCatalog::standard()),
+            Arc::new(NoHooks),
+            None,
+            Config {
+                clock: clock.clone(),
+                install_gate: InstallGate::Off,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rt.retain_detail_for_test().unwrap();
+        let manifest = json!({"id":"secret-readiness","version":1,
+            "explanation":"Exercises secret readiness without sending HTTP.","purpose":"Check bounded secret readiness",
+            "trigger":{"schedule":{"interval":"1h"}},"net":{"fetch":[{"host":"x.test","methods":["GET"]}]},
+            "secrets":[{"name":"key","target":{"scheme":"https","host":"x.test","path":"/repos/a"},"methods":["GET"]}]}).to_string();
+        let installed = rt
+            .install(&InstallRequest {
+                script: "return 1;".into(),
+                manifest,
+                author: "operator".into(),
+                loop_override: false,
+            })
+            .unwrap();
+        rt.approve("secret-readiness", 1, &installed.code_hash, "test:card")
+            .unwrap();
+        let run = rt
+            .admit_trigger("secret-readiness", "one", JsonText::null())
+            .unwrap()
+            .run_id()
+            .unwrap()
+            .to_owned();
+        let mut first = ScriptedWorker::new(vec![
+            WorkerMessage::HostCall(HostCall {
+                position: 0,
+                kind: CallKind::Primitive(Primitive::NetFetch),
+                args: JsonText::new(
+                    json!({"url":"https://x.test/repos/a","options":{"secret":"key"}}).to_string(),
+                )
+                .unwrap(),
+            }),
+            WorkerMessage::Blocked { awaiting: vec![0] },
+            WorkerMessage::Finished {
+                activation_id: 0,
+                result: ActivationResult::Suspended { awaited: vec![0] },
+            },
+        ]);
+        assert_eq!(
+            rt.activate(&run, &mut first).unwrap(),
+            crate::ActivationEnd::Suspended { awaited: vec![0] }
+        );
+        assert!(
+            !first
+                .sent
+                .iter()
+                .any(|m| matches!(m, ParentMessage::Deliver(_)))
+        );
+        assert_eq!(carrier.0.load(Ordering::SeqCst), 1);
+        assert!(rt.fixture_deferral(&run, 0).unwrap().proven_unsent);
+        clock.advance(if expire { 60_000 } else { 1_000 });
+        let mut next = ScriptedWorker::new(vec![
+            WorkerMessage::Blocked { awaiting: vec![0] },
+            WorkerMessage::Finished {
+                activation_id: 0,
+                result: ActivationResult::Completed {
+                    value: JsonText::null(),
+                },
+            },
+        ]);
+        assert!(matches!(
+            rt.activate(&run, &mut next).unwrap(),
+            crate::ActivationEnd::Succeeded { .. }
+        ));
+        let call = rt.fixture_call_state(&run, 0).unwrap();
+        let value: Value = serde_json::from_str(call.arrival.unwrap().value.as_str()).unwrap();
+        if expire {
+            assert_eq!(value["code"], "no_flow_scope");
+            assert_eq!(value["module"], "claustrum");
+            assert_eq!(carrier.0.load(Ordering::SeqCst), 1);
+        } else {
+            // The released credential's unsupported location refuses before
+            // HTTP, proving the retry passed readiness without sending traffic.
+            assert_eq!(value["code"], "secret_location_unsupported");
+            assert_eq!(carrier.0.load(Ordering::SeqCst), 2);
+        }
+        assert_eq!(rt.flow_health().unwrap()[0].consecutive_failures, 0);
+    }
+}
+
+#[test]
 fn flow_secrets_material_stays_out_of_journal_logs_script_errors_and_replay_never_releases_again() {
     let logs = CapturedLogs::all_threads();
     let path = std::env::temp_dir().join(format!("basal-secret-journal-{}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     let store = Arc::new(Store::open(path.join("store.sqlite"), Durability::throwaway()).unwrap());
     let store_lifetime = Arc::downgrade(&store);
-    let carrier = Arc::new(Carrier(AtomicUsize::new(0)));
+    let carrier = Arc::new(Carrier(AtomicUsize::new(0), Default::default()));
     let host =
         Arc::new(basal_host::builtins::BuiltinHost::default().with_secret_host(carrier.clone()));
     let rt = Runtime::new(
