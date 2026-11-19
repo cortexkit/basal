@@ -215,10 +215,7 @@ impl Transport for SubcBrocaTransport {
                 );
                 Ok(())
             }
-            _ => Err(BrocaError::Unavailable {
-                proven_unsent: false,
-                detail: "core no longer stands behind the accepted model call".into(),
-            }),
+            _ => Err(BrocaError::FlowInstallInactive),
         }
     }
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {

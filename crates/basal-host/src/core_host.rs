@@ -9,6 +9,10 @@ use basal_proto::{CallKind, JsonText, Primitive};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "core_host_tests.rs"]
+mod tests;
+
 pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
 pub const FLOW_DIGEST_WITHDRAW_V1: &str = "flow-digest-withdraw/v1";
 pub const FLOW_OWNER_NOTICE_V1: &str = "flow-owner-notice/v1";
@@ -118,42 +122,48 @@ impl CoreHost {
     /// Read the current catalog for each gated call; a stale catalog cannot
     /// authorize fields that an older core may refuse.
     pub fn supports_capability(&self, capability: &str) -> bool {
+        core_provides(self.transport.as_ref(), capability).unwrap_or(false)
+    }
+
+    fn dispatch_capability(&self, capability: &str) -> Result<bool, TransportError> {
+        // Even if the catalog request was sent, the requested operation was not.
         core_provides(self.transport.as_ref(), capability)
+            .map_err(|error| TransportError::unsent(format!("{error:?}")))
     }
 }
 
 /// Whether core's entry in the daemon's current catalog lists `capability`
-/// among what it provides. A catalog that cannot be read provides nothing,
-/// so a field an older core would refuse is never sent on a guess.
+/// among what it provides. A read failure is not evidence of absence.
 ///
 /// The typed snapshot is the shared watch-fed copy in production, so the
 /// check usually costs no catalog read. A catalog that does not decode into
 /// typed entries (a test transport's partial JSON) is read as JSON instead.
-pub fn core_provides<T: Transport + ?Sized>(transport: &T, capability: &str) -> bool {
+pub fn core_provides<T: Transport + ?Sized>(
+    transport: &T,
+    capability: &str,
+) -> Result<bool, WireError> {
     match transport.catalog_snapshot() {
-        Ok(catalog) => catalog
+        Ok(catalog) => Ok(catalog
             .module(CORE)
-            .is_some_and(|core| core.provides(capability)),
-        Err(WireError::Unreadable(_)) => core_provides_in_json(transport, capability),
-        Err(_) => false,
+            .is_some_and(|core| core.provides(capability))),
+        Err(error @ WireError::Unreadable(_)) => {
+            core_provides_in_json(transport, capability).ok_or(error)
+        }
+        Err(error) => Err(error),
     }
 }
 
-fn core_provides_in_json<T: Transport + ?Sized>(transport: &T, capability: &str) -> bool {
-    transport
-        .catalog()
-        .ok()
-        .and_then(|catalog| {
-            catalog["modules"].as_array().map(|modules| {
-                modules.iter().any(|module| {
-                    module["module_id"] == CORE
-                        && module["capabilities"]["provides"]
-                            .as_array()
-                            .is_some_and(|provided| provided.iter().any(|item| item == capability))
-                })
+fn core_provides_in_json<T: Transport + ?Sized>(transport: &T, capability: &str) -> Option<bool> {
+    transport.catalog().ok().and_then(|catalog| {
+        catalog["modules"].as_array().map(|modules| {
+            modules.iter().any(|module| {
+                module["module_id"] == CORE
+                    && module["capabilities"]["provides"]
+                        .as_array()
+                        .is_some_and(|provided| provided.iter().any(|item| item == capability))
             })
         })
-        .unwrap_or(false)
+    })
 }
 
 /// Validates a core reply against the primitive and the digest request kind.
@@ -380,37 +390,36 @@ impl Host for CoreHost {
         };
         // Recheck at dispatch as well as preparation: a frozen call can be
         // retried after core's catalog has changed.
-        if p == Primitive::SinkWaitResolve && !self.supports_capability(FLOW_WAIT_RESOLVE_V1) {
+        if p == Primitive::SinkWaitResolve && !self.dispatch_capability(FLOW_WAIT_RESOLVE_V1)? {
             return outcome(Err(WireError::Refused {
                 code: "wait_resolve_unsupported".into(),
                 message: "core does not advertise flow-wait-resolve/v1".into(),
             }));
         }
-        if p == Primitive::SinkRoomPost && !self.supports_capability(FLOW_ROOM_POST_V1) {
+        if p == Primitive::SinkRoomPost && !self.dispatch_capability(FLOW_ROOM_POST_V1)? {
             return outcome(Err(WireError::Refused {
                 code: "room_post_unsupported".into(),
                 message: "core does not advertise flow-room-post/v1".into(),
             }));
         }
         let notice = matches!(p, Primitive::SinkNoticeSend | Primitive::SinkNoticeResolve);
-        if notice && !self.supports_capability(FLOW_NOTICE_V1) {
+        if notice && !self.dispatch_capability(FLOW_NOTICE_V1)? {
             return outcome(Err(WireError::Refused {
                 code: "notice_unsupported".into(),
                 message: "core does not advertise flow-notice/v1".into(),
             }));
         }
-        let params = serde_json::from_str(request.args.as_str())
+        let params = serde_json::from_str::<Value>(request.args.as_str())
             .map_err(|e| WireError::NeverSent(e.to_string()));
-        outcome(params.and_then(|mut v: Value| {
-            if p == Primitive::SinkDigest
-                && v["withdraw"] == true
-                && !self.supports_capability(FLOW_DIGEST_WITHDRAW_V1)
-            {
-                return Err(WireError::Refused {
-                    code: "digest_withdraw_unsupported".into(),
-                    message: "core does not advertise flow-digest-withdraw/v1".into(),
-                });
-            }
+        let withdrawal =
+            p == Primitive::SinkDigest && params.as_ref().is_ok_and(|v| v["withdraw"] == true);
+        if withdrawal && !self.dispatch_capability(FLOW_DIGEST_WITHDRAW_V1)? {
+            return outcome(Err(WireError::Refused {
+                code: "digest_withdraw_unsupported".into(),
+                message: "core does not advertise flow-digest-withdraw/v1".into(),
+            }));
+        }
+        outcome(params.and_then(|mut v| {
             if matches!(
                 p,
                 Primitive::SinkBoard | Primitive::SinkWaitResolve | Primitive::SinkRoomPost
@@ -434,7 +443,6 @@ impl Host for CoreHost {
                 }
                 v["clientId"] = json!(request.idempotency_key);
             }
-            let withdrawal = p == Primitive::SinkDigest && v["withdraw"] == true;
             let operation = v["operation"]["op"].as_str().map(str::to_owned);
             self.transport
                 .management(CORE, op, v)

@@ -610,6 +610,12 @@ impl StateStore for MemoryStore {
         lock(&self.wakes).retain(|w| !(w.event_key == event_key && w.send_id == send_id));
         Ok(())
     }
+    fn delete_flow_call(&self, send_id: &str) -> Result<(), BrocaError> {
+        lock(&self.calls).remove(send_id);
+        lock(&self.wakes).retain(|wake| wake.send_id != send_id);
+        lock(&self.session_refs).remove(send_id);
+        Ok(())
+    }
     fn get(&self, send_id: &str) -> Result<Option<StoredCall>, BrocaError> {
         Ok(lock(&self.calls).get(send_id).cloned())
     }

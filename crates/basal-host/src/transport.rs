@@ -336,18 +336,24 @@ pub fn map_error(error: CallError) -> WireError {
 /// through [`refusal`] instead.
 fn run_scope_error(error: CallError) -> WireError {
     match error {
-        // Scope-state refusals (`scope_ended`, `scope_changed`, ...) describe
-        // the run's own scope, and the supervisor reads them as typed reasons
-        // to end the run or retry a withdrawal, so they keep `refusal`'s
-        // mapping.
-        CallError::Module(body) if body.code.starts_with("scope_") => refusal(body),
-        CallError::Module(body) => provider_refusal(body),
+        CallError::Module(body) => run_scope_refusal(body),
         // Everything else keeps `map_error`'s meaning: a request that never
         // left or whose outcome is unknown is not the provider's refusal. A
         // route open on a run's own scope is mapped where it happens
         // ([`bind_error`]), so a flow-coded bind refusal keeps the provider's
         // words too.
         error => map_error(error),
+    }
+}
+
+fn run_scope_refusal(body: subc_protocol::ErrorBody) -> WireError {
+    // Scope-state refusals describe the run's own scope. The supervisor uses
+    // the typed reason to recognize when that scope has ended. Flow refusals
+    // keep the provider's wording.
+    if body.code.starts_with("scope_") {
+        refusal(body)
+    } else {
+        provider_refusal(body)
     }
 }
 
@@ -361,13 +367,16 @@ fn bind_error(open: WireError, codemode: bool) -> WireError {
     }
     match open {
         WireError::Refused { code, message } => {
-            provider_refusal(subc_protocol::ErrorBody::new(code, message))
+            run_scope_refusal(subc_protocol::ErrorBody::new(code, message))
         }
         WireError::RefusedDetails {
             code,
             message,
             detail,
-        } => provider_refusal(subc_protocol::ErrorBody::new(code, message).with_detail(detail)),
+        } => run_scope_refusal(subc_protocol::ErrorBody::new(code, message).with_detail(detail)),
+        WireError::Typed(typed) if typed.reason.as_str().starts_with("scope_") => {
+            WireError::Typed(typed)
+        }
         // The daemon's bind refusal is decoded before this route is opened, so
         // a flow code arrives as a flow refusal. The program reads it under the
         // code the provider sent, with the provider's own message and detail.
@@ -1305,7 +1314,6 @@ impl Transport for SubcTransport {
                     Some(&options.identity),
                     options.identity.clone(),
                 )
-                .map_err(|error| contextual(error, module, name))
             },
             |handle| {
                 self.handle.block_on(
@@ -1568,16 +1576,15 @@ fn send_run_request<H: Copy>(
     mut send: impl FnMut(H) -> Result<Vec<u8>, CallError>,
     mut evict: impl FnMut(H),
 ) -> Result<Vec<u8>, WireError> {
-    use crate::flow_refusal::RefusalReason;
     let mut reopened = false;
     loop {
         let handle = match open() {
             Ok(handle) => handle,
-            Err(WireError::Typed(refusal))
+            Err(error)
                 if !reopened
                     && matches!(
-                        refusal.reason,
-                        RefusalReason::ScopeChanged | RefusalReason::ScopeNotSynced
+                        error.refusal_code(),
+                        Some("scope_changed" | "scope_not_synced")
                     ) =>
             {
                 reopened = true;
@@ -2604,12 +2611,18 @@ mod tests {
     fn run_tool_bind_refused_scope_changed_reopens_once_and_sends_one_request() {
         use crate::flow_refusal::RefusalReason::{ScopeChanged, ScopeNotSynced};
         for reason in [ScopeChanged, ScopeNotSynced] {
-            let (result, opened, sent) = reopen_trace(
-                vec![Err(bind_refused(reason)), Ok(1)],
-                vec![Ok(b"{}".to_vec())],
-            );
-            assert_eq!(result, Ok(b"{}".to_vec()), "{reason:?}");
-            assert_eq!((opened, sent), (2, 1), "{reason:?}");
+            for error in [
+                bind_refused(reason),
+                WireError::Refused {
+                    code: reason.as_str().into(),
+                    message: "refused bind".into(),
+                },
+            ] {
+                let (result, opened, sent) =
+                    reopen_trace(vec![Err(error), Ok(1)], vec![Ok(b"{}".to_vec())]);
+                assert_eq!(result, Ok(b"{}".to_vec()), "{reason:?}");
+                assert_eq!((opened, sent), (2, 1), "{reason:?}");
+            }
         }
     }
 
@@ -2631,11 +2644,16 @@ mod tests {
 
     #[test]
     fn run_tool_other_bind_refusals_and_sent_requests_are_never_retried() {
-        use crate::flow_refusal::RefusalReason::{ScopeChanged, ScopeEnded};
+        use crate::flow_refusal::RefusalReason::{ScopeChanged, ScopeEnded, ScopeNotLive};
         // A terminal bind refusal is not re-opened.
-        let (result, opened, sent) = reopen_trace(vec![Err(bind_refused(ScopeEnded))], vec![]);
-        assert!(matches!(result, Err(WireError::Typed(_))));
-        assert_eq!((opened, sent), (1, 0));
+        for reason in [ScopeEnded, ScopeNotLive] {
+            let error = bind_error(bind_refused(reason), true);
+            let (result, opened, sent) = reopen_trace(vec![Err(error)], vec![]);
+            assert!(
+                matches!(result, Err(WireError::Typed(ref refusal)) if refusal.reason == reason)
+            );
+            assert_eq!((opened, sent), (1, 0));
+        }
         // The provider received the request and answered scope_changed: the
         // answer is returned as the scope reason the supervisor reads, never
         // followed by a second request.

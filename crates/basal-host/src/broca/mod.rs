@@ -63,6 +63,7 @@ pub enum BrocaError {
     UnsupportedKind,
     Wire(String),
     Refused { code: String, detail: String },
+    FlowInstallInactive,
     Unavailable { proven_unsent: bool, detail: String },
     Store(String),
     Sink(String),
@@ -107,6 +108,9 @@ impl fmt::Display for BrocaError {
             Self::UnsupportedKind => f.write_str("unsupported Broca call kind"),
             Self::Wire(detail) => write!(f, "Broca reply: {detail}"),
             Self::Refused { code, detail } => write!(f, "Broca refused {code}: {detail}"),
+            Self::FlowInstallInactive => {
+                f.write_str("core no longer stands behind the accepted model call")
+            }
             Self::Unavailable { detail, .. } => write!(f, "Broca unavailable: {detail}"),
             Self::Store(detail) => write!(f, "Broca store: {detail}"),
             Self::Sink(detail) => write!(f, "Broca completion: {detail}"),
@@ -124,6 +128,8 @@ pub trait Transport: Send + Sync {
     ) -> Result<(), crate::flow_refusal::FlowRefusal> {
         Ok(())
     }
+    /// Only a decoded install status that no longer attests the version
+    /// returns `FlowInstallInactive`. A failed read is not such an answer.
     fn refresh_flow(&self, _identity: &FlowIdentity) -> Result<(), BrocaError> {
         Ok(())
     }
@@ -198,6 +204,12 @@ pub trait StateStore: Send + Sync {
     /// pending call, so nothing stays due for it.
     fn forget(&self, _send_id: &str) -> Result<(), BrocaError> {
         Ok(())
+    }
+    /// Deletes a settled flow call along with its wait and wakes.
+    fn delete_flow_call(&self, _send_id: &str) -> Result<(), BrocaError> {
+        Err(BrocaError::Store(
+            "flow call deletion is unsupported".into(),
+        ))
     }
     /// Records the session_ref a verified run event body names for a
     /// pending call, unless the call already has one.
@@ -1083,7 +1095,7 @@ impl BrocaHost {
                             }
                         }
                         Ok(WakeStep::Busy) => {}
-                        // A failure that may pass keeps the wake for a retry.
+                        // If wake bookkeeping fails, leave the wake for a retry.
                         Err(error) => {
                             first_error.get_or_insert(error);
                         }
@@ -1160,12 +1172,16 @@ impl BrocaHost {
                         tracing::warn!(send_id = %call.send_id, event_key = %wake.event_key, "Broca run.ended names another run than the call's; ignoring it");
                         return Ok(WakeStep::Done);
                     }
-                    // A call that cannot be read now (a codemode call whose
-                    // supervisor has not attached) is left to its check.
-                    let Some(route) = self.event_route(&mut call)? else {
-                        return Ok(WakeStep::Done);
-                    };
-                    Some(route)
+                    // If the route cannot be read now, discard the wake and
+                    // let the call's scheduled check govern its next read.
+                    match self.event_route(&mut call) {
+                        Ok(Some(route)) => Some(route),
+                        Ok(None) => return Ok(WakeStep::Done),
+                        Err(error) => {
+                            tracing::warn!(send_id = %wake.send_id, %error, "cannot bind a Broca wake's route; the call waits for its scheduled check");
+                            return Ok(WakeStep::Done);
+                        }
+                    }
                 }
             }
         };
@@ -1300,7 +1316,16 @@ impl BrocaHost {
         let codemode =
             call.route.flow_id.as_deref() == Some(&format!("codemode:{}", call.basal_run_id));
         let read = (|| {
-            if !self.bind_route(&mut call)? {
+            let bound = match self.bind_route(&mut call) {
+                Err(BrocaError::FlowInstallInactive)
+                    if call.waiting() && self.store.run_ended(&call.basal_run_id)? =>
+                {
+                    self.settle_inactive_flow_call(&mut call)?;
+                    return Ok(false);
+                }
+                bound => bound?,
+            };
+            if !bound {
                 return Ok(false);
             }
             let sink = if codemode {
@@ -1355,6 +1380,23 @@ impl BrocaHost {
         }
     }
 
+    fn settle_inactive_flow_call(&self, call: &mut StoredCall) -> Result<(), BrocaError> {
+        let Some(sink) = lock(&self.sink).clone() else {
+            return Err(BrocaError::FlowInstallInactive);
+        };
+        // Do not discard a recorded outcome. If Broca's outcome was never
+        // recorded, the runtime charges the full reservation on an unknown.
+        let detail = BrocaError::FlowInstallInactive.to_string();
+        if Self::deliver_terminal(call, sink.as_ref(), Some(&detail))? {
+            self.store.delete_flow_call(&call.send_id)?;
+            call.acknowledged = true;
+            lock(&self.status_lag).remove(&call.send_id);
+            self.transport.release(&call.route);
+            sink.route_released(&call.basal_run_id);
+        }
+        Ok(())
+    }
+
     fn advance(
         &self,
         call: &mut StoredCall,
@@ -1371,8 +1413,25 @@ impl BrocaHost {
             }
         }
         self.report_terminal(call)?;
-        let (Some(handle), Some(sink)) = (&call.handle, sink) else {
+        let Some(sink) = sink else {
             return Ok(());
+        };
+        if Self::deliver_terminal(call, sink, None)? {
+            call.acknowledged = true;
+            self.store.save(call)?;
+            self.transport.release(&call.route);
+            sink.route_released(&call.basal_run_id);
+        }
+        Ok(())
+    }
+
+    fn deliver_terminal(
+        call: &StoredCall,
+        sink: &dyn CompletionSink,
+        lost_route: Option<&str>,
+    ) -> Result<bool, BrocaError> {
+        let Some(handle) = &call.handle else {
+            return Ok(false);
         };
         if let Some(outcome) = &call.outcome {
             sink.complete(&Completion {
@@ -1382,25 +1441,24 @@ impl BrocaHost {
                 outcome: outcome.host()?,
             })
             .map_err(|e| BrocaError::Sink(e.to_string()))?;
-        } else if let Some(detail) = &call.unknown {
+        } else if let Some((reason, detail)) = call
+            .unknown
+            .as_deref()
+            .map(|detail| (UnknownReason::ProviderLostRun, detail))
+            .or(lost_route.map(|detail| (UnknownReason::ConnectionLost, detail)))
+        {
             sink.unknown(&UnknownOutcome {
                 run_id: call.basal_run_id.clone(),
                 position: call.position,
                 handle: handle.clone(),
-                // `call.unknown` is set only when Broca answers
-                // `unknown_run` for a run it accepted.
-                reason: UnknownReason::ProviderLostRun,
-                detail: detail.clone(),
+                reason,
+                detail: detail.into(),
             })
             .map_err(|e| BrocaError::Sink(e.to_string()))?;
         } else {
-            return Ok(());
+            return Ok(false);
         }
-        call.acknowledged = true;
-        self.store.save(call)?;
-        self.transport.release(&call.route);
-        sink.route_released(&call.basal_run_id);
-        Ok(())
+        Ok(true)
     }
 
     pub fn dispatch_model(&self, request: &CallRequest) -> Result<Dispatched, BrocaError> {

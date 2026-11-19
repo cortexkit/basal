@@ -784,31 +784,28 @@ fn the_fake_cerebellum_refuses_envelope_keys_on_role_ops_and_unknown_catalog_mem
     });
 }
 
-/// Broca refuses a codemode program's model call with `flow_scope_required`
-/// and its own message. The program has no flow scope, so it must read that
-/// refusal as Broca sent it, not as basal's flow wording for a call that
-/// should have carried one. The call goes through `management_for_model`, the
-/// way the program's `model` and `classify` tools reach Broca.
+/// A codemode program has no flow scope. It must read a provider's
+/// `flow_scope_required` refusal as sent, whether refused at bind or on a
+/// model request after binding.
 #[test]
 fn a_program_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
-    // Both the model call and the bind that opens its route are refused with
-    // the code: whichever layer of Broca refuses, the program keeps Broca's
-    // message and detail.
-    for bind_refusal in [false, true] {
+    for (module, op, bind_refusal) in [
+        ("broca", "session.send", false),
+        ("broca", "session.send", true),
+        ("cerebellum", "recall", true),
+    ] {
         with_daemon("linked", |transport, state| {
             let refusal = json!({
                 "code": "flow_scope_required",
-                "message": "Basal model tools require a daemon-stamped flow scope",
-                "detail": {"provider":"broca","call":"llm_classify"},
+                "message": "this provider needs a daemon-stamped flow scope",
+                "detail": {"provider":module,"call":op},
             });
             {
                 let mut daemon = state.lock().unwrap();
                 if bind_refusal {
-                    daemon.bind_refusals.insert("broca".into(), refusal.clone());
+                    daemon.bind_refusals.insert(module.into(), refusal.clone());
                 } else {
-                    daemon
-                        .tool_refusals
-                        .insert("session.send".into(), refusal.clone());
+                    daemon.tool_refusals.insert(op.into(), refusal.clone());
                 }
             }
             let flow = format!("codemode:{RUN}");
@@ -820,17 +817,20 @@ fn a_program_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
                         scope_ref: RUN.into(),
                         epoch: 19,
                     },
-                    targets: ["broca"].map(String::from).into(),
+                    targets: [module].map(String::from).into(),
                 }),
             );
             let identity = BindIdentity::new("opencode", "head-session");
-            let reply = transport.management_for_model(
-                &flow,
-                identity,
-                "broca",
-                "session.send",
-                br#"{"send_id":"s1"}"#,
-            );
+            let reply = if module == "broca" {
+                transport.management_for_model(&flow, identity, module, op, br#"{"send_id":"s1"}"#)
+            } else {
+                let options = RunToolOptions {
+                    identity,
+                    reply_timeout: Duration::from_secs(10),
+                    preset: None,
+                };
+                transport.tool_for_run(&flow, module, op, json!({"q":1}), "bk1", &options)
+            };
             match reply {
                 Err(WireError::RefusedDetails {
                     code,
@@ -838,13 +838,10 @@ fn a_program_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
                     detail,
                 }) => {
                     assert_eq!(code, "flow_scope_required");
-                    assert_eq!(
-                        message,
-                        "Basal model tools require a daemon-stamped flow scope"
-                    );
+                    assert_eq!(message, refusal["message"]);
                     assert_eq!(detail, refusal["detail"], "bind refusal: {bind_refusal}");
                 }
-                other => panic!("the program was answered {other:?}, bind refusal: {bind_refusal}"),
+                other => panic!("{module}.{op} answered {other:?}, bind refusal: {bind_refusal}"),
             }
         });
     }

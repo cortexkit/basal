@@ -14,6 +14,7 @@ struct RoutingTransport {
     attempts: Mutex<Vec<Attempt>>,
     input_tokens: Mutex<bool>,
     describe_reads: Mutex<usize>,
+    describe_replies: Mutex<VecDeque<Result<Value, WireError>>>,
 }
 
 impl RoutingTransport {
@@ -27,6 +28,7 @@ impl RoutingTransport {
             attempts: Mutex::new(Vec::new()),
             input_tokens: Mutex::new(false),
             describe_reads: Mutex::new(0),
+            describe_replies: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -54,6 +56,9 @@ impl Transport for RoutingTransport {
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
         if op == "role.describe" {
             *self.describe_reads.lock().unwrap() += 1;
+            if let Some(reply) = self.describe_replies.lock().unwrap().pop_front() {
+                return reply;
+            }
             return Ok(fake_describe(*self.input_tokens.lock().unwrap()));
         }
         self.attempts.lock().unwrap().push(Attempt {
@@ -173,6 +178,33 @@ fn input_estimate_is_sent_only_when_live_routing_advertises_it() {
         }
         assert_eq!(*transport.describe_reads.lock().unwrap(), 1);
     }
+}
+
+#[test]
+fn input_estimate_recovers_after_failed_routing_describes() {
+    let transport = RoutingTransport::new(&[&["model-picker"]], vec![Ok(answer()); 4]);
+    *transport.input_tokens.lock().unwrap() = true;
+    transport.describe_replies.lock().unwrap().extend([
+        Err(WireError::TimedOut("reply deadline passed".into())),
+        Ok(json!({"not_a_role_description": true})),
+    ]);
+    let selector = RoutingSelector::new(transport.clone());
+    let mut request = request();
+    request.input_tokens = 150_000;
+    for _ in 0..4 {
+        selector.select(&request).unwrap();
+    }
+
+    let attempts = transport.attempts.lock().unwrap();
+    let input_tokens: Vec<_> = attempts
+        .iter()
+        .map(|attempt| attempt.params["requirements"].get("input_tokens").cloned())
+        .collect();
+    assert_eq!(
+        input_tokens,
+        [None, None, Some(json!(150_000)), Some(json!(150_000))]
+    );
+    assert_eq!(*transport.describe_reads.lock().unwrap(), 3);
 }
 
 #[test]

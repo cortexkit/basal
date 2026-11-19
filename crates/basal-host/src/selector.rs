@@ -241,7 +241,7 @@ impl RoutingSelector {
                     serde_json::from_value::<cortexkit_role_routing::describe::RoleDescribe>(value)
                         .ok()
                 })
-                .is_some_and(|description| {
+                .map(|description| {
                     description.role == "routing"
                         && description.version == 1
                         && description
@@ -249,7 +249,7 @@ impl RoutingSelector {
                             .iter()
                             .any(|field| field == "input_tokens")
                 });
-            *cached = Some((module.to_owned(), advertised));
+            *cached = advertised.map(|advertised| (module.to_owned(), advertised));
         }
         let mut params = select_params(request);
         if cached.as_ref().is_some_and(|(_, advertised)| *advertised) {
