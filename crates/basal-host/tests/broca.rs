@@ -173,7 +173,7 @@ fn exact_send_contract_and_parallel_sessions() {
     );
     assert_eq!(sends[1].0.session, "basal:flow-f:r:1");
     assert_ne!(sends[0].0.session, sends[1].0.session);
-    let expected = json!({"prompt":"hello","system":null,"send_id":"key:0","model":{"provider":"fake","model":"test"},"tools":[],"tool_choice":{"type":"none"},"generation":{"max_output_tokens":12},"stop_when":[],"cache":null,"work_class":"flow:f","append_episode":false});
+    let expected = json!({"prompt":"hello","system":null,"send_id":"key:0","model":{"provider":"fake","model":"test"},"tools":[],"tool_choice":{"type":"none"},"generation":{"max_output_tokens":12},"stop_when":[],"work_class":"flow:f","append_episode":false});
     assert_eq!(
         serde_json::from_slice::<Value>(&sends[0].1).unwrap(),
         expected
