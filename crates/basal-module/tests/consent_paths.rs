@@ -373,7 +373,10 @@ fn vector_card(kind: DecisionKind) -> DecisionCard {
                 run_admitted_at_ms: 1_780_408_800_000,
                 step: Some("writer/send".into()),
                 call_key: "call-x".into(),
-                op: "prefrontal.sink.digest".into(),
+                // The card shows the op as it was recorded. These pinned
+                // Cingulate samples were recorded before the rename, so the
+                // text keeps the old module name.
+                op: "prefrontal-core.sink.digest".into(),
                 attempts: 2,
                 unknown_reason: UnknownReason::ConnectionLost,
             },
