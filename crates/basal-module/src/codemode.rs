@@ -1002,6 +1002,10 @@ mod result_tests;
 mod bus_tests;
 
 #[cfg(test)]
+#[path = "codemode_tests.rs"]
+mod late_cursor_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
