@@ -528,7 +528,6 @@ impl Engine {
                 self.ensure_spare()?;
                 self.rotate()?;
             }
-            self.check()?;
             self.write_frame(&bytes)?;
             self.contents
                 .get_mut(&self.header.seq)
@@ -547,10 +546,11 @@ impl Engine {
         Ok(())
     }
     fn sync(&mut self) -> Result<()> {
-        self.check()?;
         if self.end.lsn > self.synced {
             self.sync_file()?;
             self.synced = self.end.lsn;
+        } else {
+            self.check()?;
         }
         Ok(())
     }
