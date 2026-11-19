@@ -23,7 +23,7 @@ use std::{
     ops::{Deref, DerefMut},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 
@@ -159,6 +159,7 @@ pub struct Run<R> {
     id: String,
     flow: String,
     routing: AtomicU8,
+    deadline_close_failed: AtomicBool,
     actor: Ordered<Actor<R>>,
     drained: Condvar,
     closer: Mutex<()>,
@@ -251,10 +252,20 @@ impl<R: RunRecords> Run<R> {
 }
 
 impl Run<crate::run_records::Records> {
+    pub(crate) fn deadline_close_failed(&self) -> bool {
+        self.deadline_close_failed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_deadline_close_failed(&self) {
+        self.deadline_close_failed.store(true, Ordering::Release);
+    }
+
     pub(crate) fn budgets(&self) -> Result<crate::run_driver::Budgets> {
-        self.actor.lock().records.budgets().ok_or_else(|| {
-            CoreError::Corrupt(format!("run {} has no accounting budgets", self.id))
-        })
+        self.actor
+            .lock()
+            .records
+            .budgets()
+            .ok_or_else(|| CoreError::Corrupt(format!("run {} has no accounting budgets", self.id)))
     }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn retain_detail_for_test(&self, store: Arc<Store>) -> Result<()> {
@@ -687,6 +698,7 @@ impl<R: RunRecords> RunStore<R> {
             id: id.clone(),
             flow,
             routing: AtomicU8::new(Routing::Open as u8),
+            deadline_close_failed: AtomicBool::new(false),
             actor: Ordered::new(
                 Actor {
                     generation,

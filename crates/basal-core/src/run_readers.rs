@@ -56,13 +56,16 @@ pub(crate) struct RunTimer {
     pub(crate) deadline_at: Option<i64>,
     pub(crate) deferral_retry_at: Option<i64>,
     pub(crate) body_retry_at: Option<i64>,
+    pub(crate) close_failed: bool,
 }
 
 impl RunTimer {
-    pub(crate) fn of(state: &State, owner_generation: Option<u64>) -> Self {
+    pub(crate) fn of(state: &State, owner_generation: Option<u64>, close_failed: bool) -> Self {
         let lifecycle = lifecycle(state, owner_generation == Some(state.generation));
         let deferral_retry_at = if lifecycle == RunState::Suspended {
-            state.calls.values()
+            state
+                .calls
+                .values()
                 .filter(|call| call.arrival.is_none())
                 .filter_map(|call| call.deferred.as_ref().map(|d| d.retry_not_before))
                 .min()
@@ -70,16 +73,24 @@ impl RunTimer {
             None
         };
         let body_retry_at = state.event_bodies.last().and_then(|body| match body {
-            crate::run_records::Body::EventBody { body: None, retry_at, .. } => *retry_at,
+            crate::run_records::Body::EventBody {
+                body: None,
+                retry_at,
+                ..
+            } => *retry_at,
             _ => None,
         });
         Self {
             lifecycle,
-            deadline_at: matches!(lifecycle, RunState::Pending | RunState::Running | RunState::Suspended)
-                .then(|| state.claim.as_ref().map(|claim| claim.deadline_at))
-                .flatten(),
+            deadline_at: matches!(
+                lifecycle,
+                RunState::Pending | RunState::Running | RunState::Suspended
+            )
+            .then(|| state.claim.as_ref().map(|claim| claim.deadline_at))
+            .flatten(),
             deferral_retry_at,
             body_retry_at,
+            close_failed,
         }
     }
 }
@@ -380,15 +391,25 @@ impl crate::Runtime {
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
-        Ok(ids.into_iter().filter_map(|(id, flow)| {
-            let timer = self.run_timer(&id)?;
-            Some((id, flow, timer))
-        }).collect())
+        Ok(ids
+            .into_iter()
+            .filter_map(|(id, flow)| {
+                let timer = self.run_timer(&id)?;
+                Some((id, flow, timer))
+            })
+            .collect())
     }
 
     pub(crate) fn run_timer(&self, id: &str) -> Option<RunTimer> {
-        let owner = self.shared.staged_owners.lock().unwrap().get(id).map(|(generation, _)| *generation);
-        self.staged_read(id, |state| RunTimer::of(state, owner))
+        let owner = self
+            .shared
+            .staged_owners
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|(generation, _)| *generation);
+        let actor = self.shared.staged_hosts.as_ref()?.registry().get(id)?;
+        Some(actor.read_state(|state| RunTimer::of(state, owner, actor.deadline_close_failed())))
     }
     pub(crate) fn log_token_usage(
         &self,

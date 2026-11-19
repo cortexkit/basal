@@ -1757,7 +1757,11 @@ impl Runtime {
         kind: Option<&str>,
         detail: Option<&str>,
     ) -> Result<()> {
-        self.staged_finish_with_audit(id, state, kind, detail, None)
+        self.staged_finish_with_audit(id, state, kind, detail, None, false)
+    }
+
+    pub(crate) fn staged_finish_deadline(&self, id: &str, kind: &str, detail: &str) -> Result<()> {
+        self.staged_finish_with_audit(id, RunState::Failed, Some(kind), Some(detail), None, true)
     }
 
     pub(crate) fn staged_cancel(&self, id: &str, actor: &str) -> Result<()> {
@@ -1775,6 +1779,7 @@ impl Runtime {
             Some("cancelled"),
             Some(&format!("cancelled by {actor}")),
             Some(actor),
+            false,
         )
     }
 
@@ -1785,6 +1790,7 @@ impl Runtime {
         kind: Option<&str>,
         detail: Option<&str>,
         audit_actor: Option<&str>,
+        isolate_constraint_errors: bool,
     ) -> Result<()> {
         let hosts = self.shared.staged_hosts.as_ref().expect("staged runtime");
         let live = self
@@ -1810,6 +1816,7 @@ impl Runtime {
         );
         terminal.error_kind = kind.map(str::to_owned);
         terminal.error_detail = detail.map(str::to_owned);
+        terminal.isolate_constraint_errors = isolate_constraint_errors;
         hosts
             .registry()
             .close(&actor, &terminal, services.as_ref())?;
@@ -1826,11 +1833,9 @@ impl Runtime {
         let now = self.config.clock.now_ms();
         let mut ready = Vec::new();
         for (id, flow, enabled) in ids {
-            let Some(actor) = hosts
-                .registry()
-                .get(&id)
-                .filter(|r| r.routing() == crate::run_store::Routing::Open)
-            else {
+            let Some(actor) = hosts.registry().get(&id).filter(|r| {
+                r.routing() == crate::run_store::Routing::Open && !r.deadline_close_failed()
+            }) else {
                 continue;
             };
             if enabled && let Ok(entrant) = actor.enter() {

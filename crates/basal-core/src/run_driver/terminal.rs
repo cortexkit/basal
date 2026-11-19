@@ -40,6 +40,7 @@ pub struct Terminal {
     pub result: Option<Value>,
     pub budgets: Budgets,
     pub effects: Arc<dyn TerminalEffects>,
+    pub(crate) isolate_constraint_errors: bool,
     pub(super) receipt: Arc<AtomicU64>,
 }
 
@@ -60,6 +61,7 @@ impl Terminal {
             result: None,
             budgets,
             effects,
+            isolate_constraint_errors: false,
             receipt: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -228,6 +230,7 @@ impl TerminalBuilder<Records> for Terminal {
             state,
             budgets: self.budgets.clone(),
             effects,
+            isolate_constraint_errors: self.isolate_constraint_errors,
             receipt: self.receipt.clone(),
         }))
     }
@@ -239,6 +242,7 @@ struct Projection {
     state: State,
     budgets: Budgets,
     effects: Box<dyn TerminalWrite>,
+    isolate_constraint_errors: bool,
     receipt: Arc<AtomicU64>,
 }
 
@@ -246,6 +250,16 @@ impl TerminalWrite for Projection {
     fn apply(&self, tx: &Transaction<'_>) -> Result<()> {
         let mut history = self.summary.clone();
         history.commit_seq = sql::next_commit_seq(tx)?;
+        if self.isolate_constraint_errors {
+            crate::error::classify_terminal_constraints(|| self.apply_run(tx, history))
+        } else {
+            self.apply_run(tx, history)
+        }
+    }
+}
+
+impl Projection {
+    fn apply_run(&self, tx: &Transaction<'_>, history: RunHistory) -> Result<()> {
         sql::finish_live(tx, &history)?;
         let id = &history.run_id;
         // A re-created template owns a new state domain. Ordinary closes,
