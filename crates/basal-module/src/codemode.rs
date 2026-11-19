@@ -2,7 +2,7 @@
 //! handler's thread. Admission writes the run, then basal-core's Supervisor
 //! drives its fresh worker and tool calls on a separate blocking thread.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -39,10 +39,27 @@ struct LateCalls {
     /// Runs whose foreground wait expired before an inline answer was chosen.
     /// A keyed retry returning the result inline does not cancel that debt.
     held: BTreeSet<String>,
-    /// Held runs whose late result is durable. Remembering them stops a timeout
-    /// that raced with completion from reopening publication after the caller
-    /// acknowledges the late result through `late_results.ack`.
-    published: BTreeSet<String>,
+    /// Held runs whose late result is durable, with when it was published.
+    /// Remembering them stops a timeout that raced with completion from
+    /// reopening publication after the caller acknowledges the late result
+    /// through `late_results.ack`. Only a foreground wait that began before the
+    /// program ended can race this way, so an entry is kept for
+    /// `PUBLISHED_MEMORY_MS` and then dropped, which keeps the map bounded.
+    published: BTreeMap<String, i64>,
+}
+
+/// How long a published held run is remembered. A racing wait started before
+/// the program ended, and a foreground wait lasts at most 25 s, so ten minutes
+/// leaves a wide margin.
+const PUBLISHED_MEMORY_MS: i64 = 10 * 60 * 1000;
+
+impl LateCalls {
+    fn mark_published(&mut self, id: &str, now_ms: i64) {
+        self.held.remove(id);
+        self.published.insert(id.to_owned(), now_ms);
+        self.published
+            .retain(|_, at| now_ms.saturating_sub(*at) < PUBLISHED_MEMORY_MS);
+    }
 }
 
 #[derive(Clone)]
@@ -91,8 +108,7 @@ impl Codemode {
                 if late.held.contains(id) {
                     publish_result(&store, id, result)
                         .map_err(|e| CoreError::Invalid(e.message))?;
-                    late.held.remove(id);
-                    late.published.insert(id.to_owned());
+                    late.mark_published(id, clock.now_ms());
                 }
                 maintain_late(&store, &clock).map_err(|e| CoreError::Invalid(e.message))?;
             }
@@ -272,7 +288,7 @@ impl Codemode {
                 Some(render(id, result))
             }
             None => {
-                if !late.published.contains(id) && late.held.insert(id.to_owned()) {
+                if !late.published.contains_key(id) && late.held.insert(id.to_owned()) {
                     self.store
                         .write(|tx| {
                             // Record the held decision before running() can return
@@ -400,8 +416,7 @@ impl Codemode {
                 && result["status"] != "running"
             {
                 publish_result(&self.store, &id, result)?;
-                late.held.remove(&id);
-                late.published.insert(id);
+                late.mark_published(&id, self.clock.now_ms());
             }
         }
         maintain_late(&self.store, &self.clock)
