@@ -882,21 +882,8 @@ fn changes(a: &Computer) -> Vec<(&'static str, Caller, Value)> {
     ]
 }
 
-fn hints(alpha: [u8; 32]) -> Vec<(&'static str, Value)> {
-    vec![
-        (
-            "flow.install_decided",
-            json!({"flow_id":"f-alpha","version":1,"attempt":1}),
-        ),
-        (
-            "flow.install_revoked",
-            json!({"flow_id":"f-alpha","version":1,"code_hash":hex(&alpha)}),
-        ),
-    ]
-}
-
 #[test]
-fn a_frozen_agents_flows_refuse_every_change_and_a_moved_agents_ignore_core_hints() {
+fn a_frozen_agents_flows_refuse_every_change_and_a_moved_agents_ignore_revocation_hints() {
     let door = FakeDoor::new();
     let a = Computer::new("frozen-writes", &door);
     let (alpha, _) = a.seed();
@@ -910,10 +897,12 @@ fn a_frozen_agents_flows_refuse_every_change_and_a_moved_agents_ignore_core_hint
             "{method}"
         );
     }
-    for (method, params) in hints(alpha) {
-        let refused = a.module.handle(&Caller::Core, method, params).unwrap_err();
-        assert_eq!(refused.code, "agent_moving", "{method}");
-    }
+    let revocation = json!({"flow_id":"f-alpha","version":1,"code_hash":hex(&alpha)});
+    let refused = a
+        .module
+        .handle(&Caller::Core, "flow.install_revoked", revocation.clone())
+        .unwrap_err();
+    assert_eq!(refused.code, "agent_moving");
     // Nothing changed the frozen rows: the cut still describes them.
     assert_eq!(
         a.sql("SELECT flow_id||':'||state||':'||removed FROM flows ORDER BY flow_id"),
@@ -935,13 +924,12 @@ fn a_frozen_agents_flows_refuse_every_change_and_a_moved_agents_ignore_core_hint
         );
     }
     let before = a.sql("SELECT flow_id||':'||COALESCE(approved_version,'-')||':'||removed_by FROM flows ORDER BY flow_id");
-    for (method, params) in hints(alpha) {
-        assert_eq!(
-            a.module.handle(&Caller::Core, method, params).unwrap(),
-            json!({}),
-            "{method}"
-        );
-    }
+    assert_eq!(
+        a.module
+            .handle(&Caller::Core, "flow.install_revoked", revocation)
+            .unwrap(),
+        json!({})
+    );
     assert_eq!(
         a.sql("SELECT flow_id||':'||COALESCE(approved_version,'-')||':'||removed_by FROM flows ORDER BY flow_id"),
         before,
