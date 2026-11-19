@@ -120,6 +120,17 @@ impl Runtime {
             .staged_hosts
             .as_ref()
             .expect("recovered run registry");
+        let epoch = hosts.watermark.synced_lsn().log_epoch;
+        let active_segments: Vec<_> = self.store().read(|conn| {
+            Ok(crate::run_store_sql::segments(conn, epoch)?
+                .into_iter()
+                .filter(|segment| segment.state == crate::run_log::SegmentState::Active)
+                .map(|segment| segment.seq)
+                .collect())
+        })?;
+        hosts
+            .registry()
+            .snapshot_due_runs(now, &active_segments, self.shared.hooks.as_ref())?;
         // Copy replay anchors under actors, then release them before the log
         // writer enters SQLite. Unlinking happens after its floor commit, with
         // neither an actor nor a SQLite connection held by maintenance.

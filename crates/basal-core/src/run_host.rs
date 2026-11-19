@@ -8,7 +8,7 @@
 //! | Closed callback | Broca send gate (if any), accounting, SQLite | Crash hook and acknowledgement after commit |
 //! | Broca state read | Actor snapshot, released before any SQLite fallback | Host polling afterward |
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use basal_host::{
     Completion, CompletionAck, CompletionSink, HostOutcome, SinkError, UnknownOutcome,
@@ -109,6 +109,13 @@ impl RecoveredHosts {
             watermark.clone(),
         ));
         let epoch = watermark.synced_lsn().log_epoch;
+        let mut frames_by_run: BTreeMap<&str, Vec<_>> = BTreeMap::new();
+        for frame in frames {
+            frames_by_run
+                .entry(&frame.record.run_id)
+                .or_default()
+                .push(frame);
+        }
         for (live, identity) in live {
             let run_budgets = budgets_for(&store, &live.run_id, &budgets)?;
             if live.admit_lsn.log_epoch != epoch {
@@ -116,17 +123,18 @@ impl RecoveredHosts {
                     "live admission belongs to another log epoch".into(),
                 ));
             }
-            let frames: Vec<_> = frames
-                .iter()
-                .filter(|f| f.lsn >= live.admit_lsn.lsn && f.record.run_id == live.run_id)
-                .map(|f| RecoveredRecord {
-                    lsn: f.lsn,
-                    record: f.record.clone(),
-                })
-                .collect();
-            let mut records =
-                Records::recover(live.run_id.clone(), live.admitted_at, log.clone(), &frames)?;
+            let mut frames = frames_by_run
+                .remove(live.run_id.as_str())
+                .unwrap_or_default();
+            frames.retain(|f| f.lsn >= live.admit_lsn.lsn);
+            let mut records = Records::recover_selected(
+                live.run_id.clone(),
+                live.admitted_at,
+                log.clone(),
+                &frames,
+            )?;
             records.bind_identity(identity);
+            records.bind_budgets(run_budgets.clone());
             let rows = accounting::rows(records.state(), &run_budgets)?;
             registry.insert_accounted(
                 live.run_id,

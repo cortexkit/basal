@@ -86,8 +86,8 @@ pub fn trigger_key(flow_id: &str, trigger_id: &str) -> String {
     format!("{}:{flow_id}\u{0}{trigger_id}", flow_id.len())
 }
 
-pub(crate) fn draining(tx: &Transaction) -> Result<bool> {
-    let v: Option<String> = tx
+pub(crate) fn draining(conn: &rusqlite::Connection) -> Result<bool> {
+    let v: Option<String> = conn
         .query_row("SELECT value FROM meta WHERE key = 'draining'", [], |r| {
             r.get(0)
         })

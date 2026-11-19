@@ -13,9 +13,16 @@ use crate::model::RunState;
 pub enum CoreError {
     /// The database refused or failed an operation.
     Store(String),
+    /// A SQLite constraint rejected the history or other rows written to close one run.
+    TerminalConstraint(String),
     /// The store was cut on purpose (a simulated crash); every later
     /// operation through it fails.
     Cut,
+    /// One run supplied more bytes than fit in a single log frame.
+    RunRecordTooLarge {
+        run_id: String,
+        bytes: usize,
+    },
     /// The run is no longer owned by this activation: another activation
     /// took it over, or it was cancelled. Nothing more may be written for
     /// the old activation.
@@ -55,8 +62,13 @@ pub enum CoreError {
 impl fmt::Display for CoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Store(e) => write!(f, "store: {e}"),
+            Self::Store(e) | Self::TerminalConstraint(e) => write!(f, "store: {e}"),
             Self::Cut => write!(f, "the store was cut"),
+            Self::RunRecordTooLarge { run_id, bytes } => write!(
+                f,
+                "run {run_id} log record is {bytes} bytes, exceeding the {}-byte cap",
+                crate::run_log::MAX_RECORD
+            ),
             Self::OwnerLost { run_id, generation } => write!(
                 f,
                 "activation generation {generation} no longer owns run {run_id}"
@@ -88,11 +100,34 @@ impl fmt::Display for CoreError {
 
 impl std::error::Error for CoreError {}
 
+thread_local! {
+    static TERMINAL_PROJECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Preserve the SQLite error code through helpers that return CoreError. Only
+// the opted-in projection gets this treatment, never the surrounding commit.
+pub(crate) fn classify_terminal_constraints<T>(apply: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TERMINAL_PROJECTION.set(self.0);
+        }
+    }
+    let _reset = Reset(TERMINAL_PROJECTION.replace(true));
+    apply()
+}
+
 impl From<rusqlite::Error> for CoreError {
     fn from(e: rusqlite::Error) -> Self {
         match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 Self::Invalid("the requested row does not exist".into())
+            }
+            rusqlite::Error::SqliteFailure(code, _)
+                if code.code == rusqlite::ErrorCode::ConstraintViolation
+                    && TERMINAL_PROJECTION.get() =>
+            {
+                Self::TerminalConstraint(e.to_string())
             }
             other => Self::Store(other.to_string()),
         }

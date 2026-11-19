@@ -590,3 +590,22 @@ fn sqlite_registry_fences_each_mutation_and_filters_other_epochs() {
 
 #[path = "restore_tests.rs"]
 pub(crate) mod restore;
+
+#[test]
+fn sqlite_lease_check_reads_only_the_fence() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    let f = Fixture::new();
+    f.store
+        .read(|conn| {
+            conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+                AuthAction::Read { table_name, .. } if table_name != "cortexkit_fence" => {
+                    Authorization::Deny
+                }
+                _ => Authorization::Allow,
+            }));
+            Ok(())
+        })
+        .unwrap();
+    f.registry.check_lease(f.store.lease_epoch()).unwrap();
+}

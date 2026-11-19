@@ -1663,3 +1663,49 @@ fn keyed_retry_cannot_change_its_idempotency_key() {
         Err(CoreError::Corrupt(_))
     ));
 }
+
+#[test]
+fn oversized_snapshot_preserves_its_start_and_the_shared_writer() {
+    let fixture = Fixture::new("oversized-snapshot");
+    let config = run_log::Config {
+        directory: fixture.dir.join("run-log"),
+        identity: run_log::Identity {
+            store_id: [7; 16],
+            log_epoch: 1,
+        },
+        lease_epoch: 1,
+        target_size: run_log::Config::TARGET_SIZE,
+        hooks: Arc::new(NoHooks),
+    };
+    let log = Arc::new(RunLog::<Record>::create(config, Arc::new(Registry::new())).unwrap());
+    let mut records = Records::new("run".into(), 0, log.clone());
+    let value = json(&format!("\"{}\"", "a".repeat(900 * 1024)));
+    for position in 0..10 {
+        append(
+            &mut records,
+            Body::Intent(intent(position, StoredClass::Query)),
+        );
+        let mut arrived = arrival(position, position);
+        arrived.value_hash = crate::ids::payload_hash(Settlement::Fulfilled, &value);
+        arrived.value = value.clone();
+        append(&mut records, Body::Arrived(arrived));
+    }
+    let journal: usize = records
+        .state()
+        .calls
+        .values()
+        .map(|call| call.arrival.as_ref().unwrap().value.len())
+        .sum();
+    assert!(journal < 16 * 1024 * 1024);
+    let start = records.required_start();
+    let (_store, run) = fixture.register(records);
+    assert_eq!(run.snapshot_if_due(600_001, &[0, 1], &NoHooks), Ok(None));
+    assert_eq!(run.snapshot_if_due(600_002, &[0, 1], &NoHooks), Ok(None));
+    run.activate(1, |a| {
+        assert_eq!(a.records().required_start(), start);
+        Ok(())
+    })
+    .unwrap();
+    let mut other = Records::new("other".into(), 0, log);
+    append(&mut other, Body::Activated);
+}

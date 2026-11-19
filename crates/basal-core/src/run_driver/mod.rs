@@ -357,6 +357,10 @@ impl Driver {
         let Some(run) = self.registry.get(run_id) else {
             return Ok(false);
         };
+        Self::wake_actor(&run, self.services.now_ms())
+    }
+
+    pub(crate) fn wake_actor(run: &Arc<Run<Records>>, now: i64) -> Result<bool> {
         let Ok(entrant) = run.enter() else {
             return Ok(false);
         };
@@ -368,7 +372,7 @@ impl Driver {
                         || c.unknown.is_some()
                         || c.deferred
                             .as_ref()
-                            .is_some_and(|d| d.retry_not_before <= self.services.now_ms())
+                            .is_some_and(|d| d.retry_not_before <= now)
                 })
             });
             if state.parked && ready {
@@ -415,6 +419,7 @@ impl Driver {
                 .ok_or_else(|| CoreError::Corrupt("live run has no identity".into()))
         })?;
         records.bind_identity(identity);
+        records.bind_budgets(self.budgets.clone());
         let rows = accounting::rows(records.state(), &self.budgets)?;
         let inserted = self.registry.insert_accounted(
             live.run_id.clone(),

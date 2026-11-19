@@ -175,3 +175,59 @@ fn production_runtime_first_maintenance_reclaims_sealed_backlog() {
         Some(clock.now_ms() + 3_600_000)
     );
 }
+
+#[test]
+fn retention_checkpoints_a_live_run_before_reclaiming_the_finished_prefix() {
+    let f = Fixture::new(false);
+    f.install("finished", 1, json!({}));
+    f.install("live", 1, json!({}));
+    f.host.accept.store(true, Ordering::SeqCst);
+    let live = f.admit("live", "waiting");
+    let mut worker = ScriptedWorker::new(vec![
+        op(0, "query", json!({})),
+        WorkerMessage::Blocked { awaiting: vec![0] },
+        suspended(vec![0]),
+    ]);
+    assert_eq!(
+        f.rt.activate(&live, &mut worker).unwrap(),
+        ActivationEnd::Suspended { awaited: vec![0] }
+    );
+    let mut sealed = vec![seal(&f.rt)];
+    for i in 0..4 {
+        finish(&f, &format!("after-live-{i}"));
+        sealed.push(seal(&f.rt));
+    }
+    let active = log(&f.rt).synced_lsn().sequence;
+    f.rt.enforce_deadlines().unwrap();
+    let after = floor(&f.rt);
+    assert_eq!(
+        after.first_retained, active,
+        "the live run pinned the prefix"
+    );
+    assert_eq!(after.live_starts[&live].sequence, active);
+    for seq in sealed {
+        assert!(!segment(&f.root, after.log_epoch, seq).exists());
+    }
+
+    let store = f.rt.shared.store.clone();
+    let Fixture {
+        rt,
+        host,
+        catalog,
+        clock,
+        ..
+    } = f;
+    drop(rt);
+    let reopened = Runtime::new(
+        store,
+        host,
+        catalog,
+        Arc::new(NoHooks),
+        None,
+        config(&clock),
+    )
+    .unwrap();
+    let state = reopened.staged_snapshot(&live).unwrap();
+    assert_eq!(state.calls.len(), 1);
+    assert!(state.calls[&0].accepted.is_some());
+}

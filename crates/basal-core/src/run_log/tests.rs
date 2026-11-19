@@ -856,3 +856,70 @@ fn ordinary_open_never_initializes_absent_or_foreign_logs() {
         Err(Error::RestoreRequired("foreign segment identity"))
     ));
 }
+
+#[test]
+fn oversized_append_rejects_the_whole_batch_without_stopping_the_writer() {
+    let scratch = Scratch::new();
+    let registry = MemoryRegistry::new();
+    let mut config = scratch.config(Arc::new(NoHooks), 1);
+    config.target_size = u64::MAX;
+    let log = RunLog::<Facts>::create(config.clone(), registry.clone()).unwrap();
+    let mut too_large = Facts::committed();
+    too_large.key = "x".repeat(format::MAX_RECORD);
+    let mut rejected_prefix = Facts::committed();
+    rejected_prefix.key = "rejected prefix".into();
+    log.append(vec![rejected_prefix, too_large]).unwrap_err();
+    let end = log
+        .append(vec![Facts::committed()])
+        .expect("a refused batch must not stop the writer");
+    log.sync_through(end).unwrap();
+    drop(log);
+    registry.known(end);
+    let (_log, recovered) = RunLog::<Facts>::open(config, registry).unwrap();
+    assert_eq!(
+        recovered.records.len(),
+        1,
+        "a refused batch must write nothing"
+    );
+    assert_eq!(recovered.records[0].record, Facts::committed());
+}
+
+struct CountingRegistry {
+    inner: Arc<MemoryRegistry>,
+    checks: AtomicU64,
+}
+impl SegmentRegistry for CountingRegistry {
+    fn check_lease(&self, expected: u64) -> Result<()> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        self.inner.check_lease(expected)
+    }
+    fn snapshot(&self) -> Result<RegistrySnapshot> {
+        self.inner.snapshot()
+    }
+    fn reserve(&self, expected: u64, sequence: u64) -> Result<()> {
+        self.inner.reserve(expected, sequence)
+    }
+    fn promote(&self, expected: u64, sequence: u64, synced: Lsn) -> Result<()> {
+        self.inner.promote(expected, sequence, synced)
+    }
+}
+
+#[test]
+fn append_batch_and_sync_each_check_the_lease_once() {
+    let scratch = Scratch::new();
+    let registry = Arc::new(CountingRegistry {
+        inner: MemoryRegistry::new(),
+        checks: AtomicU64::new(0),
+    });
+    let log =
+        RunLog::<Facts>::create(scratch.config(Arc::new(NoHooks), 1), registry.clone()).unwrap();
+    let count = || registry.checks.load(Ordering::SeqCst);
+    let before = count();
+    log.append(vec![Facts::committed()]).unwrap();
+    let one = count();
+    let end = log.append(vec![Facts::committed(); 4]).unwrap();
+    let four = count();
+    log.sync_through(end).unwrap();
+    let synced = count();
+    assert_eq!([one - before, four - one, synced - four], [1, 1, 1]);
+}

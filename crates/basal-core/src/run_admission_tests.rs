@@ -730,6 +730,37 @@ fn admission_epoch_fence_failure_never_acknowledges() {
 }
 
 #[test]
+fn blocked_planned_fires_do_not_open_idle_write_transactions() {
+    let f = Fixture::new("idle-held-fire");
+    f.scheduled("busy");
+    f.scheduled("ready");
+    f.schema();
+    let path = f.path(Arc::new(NoHooks));
+    f.planned("busy", "old-epoch", 1000);
+    assert_eq!(tick(&path, 1000).unwrap().new_runs().len(), 1);
+    f.approve("busy", 2, 2, json!({"schedule":{"interval":"1m"}}));
+    f.planned("busy", "new-epoch", 1001);
+    let measure = |waiting| {
+        let writes = f.store.write_transactions_for_test();
+        let report = tick(&path, 1001).unwrap();
+        assert_eq!(report.waiting, waiting);
+        assert!(report.new_runs().is_empty());
+        f.store.write_transactions_for_test() - writes
+    };
+    let state_busy = measure(1);
+    f.store
+        .write(|tx| admission::set_draining(tx, true))
+        .unwrap();
+    f.planned("ready", "drained", 1001);
+    let draining = measure(2);
+    assert_eq!([state_busy, draining], [0, 0], "idle write transactions");
+    f.store
+        .write(|tx| admission::set_draining(tx, false))
+        .unwrap();
+    assert_eq!(tick(&path, 1001).unwrap().new_runs().len(), 1);
+}
+
+#[test]
 fn template_admission_snapshots_all_inputs_and_one_shot_end_flag() {
     let f = Fixture::new("template-inputs");
     f.schema();

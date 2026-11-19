@@ -32,6 +32,7 @@ pub use registry::SqliteRegistry;
 pub(crate) mod tests;
 
 use crate::{Boundary, Hooks, Step};
+pub(crate) use format::MAX_RECORD;
 pub use format::SegmentEnd;
 use format::{HEADER_LEN, Header, LINK, SEAL};
 pub use recovery::{Recovered, RecoveredRecord};
@@ -51,6 +52,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     Io(String),
     Corrupt(&'static str),
+    RecordTooLarge { bytes: usize },
     RestoreRequired(&'static str),
     Fenced,
     Cut,
@@ -308,7 +310,9 @@ impl<R: LogRecord> RunLog<R> {
                                 Some(e) => Err(e.clone()),
                                 None => engine.append(&records),
                             };
-                            if let Err(e) = &result {
+                            if let Err(e) = &result
+                                && !matches!(e, Error::RecordTooLarge { .. })
+                            {
                                 fatal = Some(e.clone());
                             }
                             let _ = reply.send(result);
@@ -508,19 +512,22 @@ impl Engine {
         Ok(self.end.lsn)
     }
     fn append<R: LogRecord>(&mut self, records: &[R]) -> Result<Lsn> {
-        self.check()?;
+        // Refuse a bad batch before writing any data or rotating the log.
+        let mut frames = Vec::with_capacity(records.len());
         for record in records {
             if record.record_type() <= SEAL {
                 return Err(Error::Corrupt("reserved record type"));
             }
-            let bytes = format::frame(record.record_type(), record)?;
+            frames.push(format::frame(record.record_type(), record)?);
+        }
+        self.check()?;
+        for (record, bytes) in records.iter().zip(frames) {
             if self.end.lsn.offset + bytes.len() as u64 > self.config.target_size
                 && self.end.lsn.offset > HEADER_LEN
             {
                 self.ensure_spare()?;
                 self.rotate()?;
             }
-            self.check()?;
             self.write_frame(&bytes)?;
             self.contents
                 .get_mut(&self.header.seq)
@@ -539,10 +546,11 @@ impl Engine {
         Ok(())
     }
     fn sync(&mut self) -> Result<()> {
-        self.check()?;
         if self.end.lsn > self.synced {
             self.sync_file()?;
             self.synced = self.end.lsn;
+        } else {
+            self.check()?;
         }
         Ok(())
     }

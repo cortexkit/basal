@@ -14,45 +14,19 @@ impl Runtime {
     /// timer, on the runtime clock. Pending work is signalled separately:
     /// including it here would spin while all activation slots are occupied.
     pub fn next_wake_at(&self, pool_next: Option<i64>) -> Result<Option<i64>> {
-        let (deadline, retry) = {
-            let runs = self.log_live_runs()?;
-            let states = self.log_states();
-            let deadline = runs
+        let timers = self.live_run_timers()?;
+        // A failed close is retried by retention, not by that run's stale timers.
+        let timers = || {
+            timers
                 .iter()
-                .filter(|r| {
-                    matches!(
-                        r.state,
-                        crate::RunState::Pending
-                            | crate::RunState::Running
-                            | crate::RunState::Suspended
-                    )
-                })
-                .filter_map(|r| r.deadline_at)
-                .min();
-            let retry = runs
-                .iter()
-                .filter(|r| !r.state.is_terminal())
-                .filter_map(|r| states.get(&r.run_id).map(|state| (r, state)))
-                .flat_map(|(run, s)| {
-                    s.calls
-                        .values()
-                        // Runnable work is signalled separately. Its past retry
-                        // time must not turn an occupied worker pool into a spin.
-                        .filter(move |_| run.state == crate::RunState::Suspended)
-                        .filter(|c| c.arrival.is_none())
-                        .filter_map(|c| c.deferred.as_ref().map(|d| d.retry_not_before))
-                        .chain(s.event_bodies.last().and_then(|b| match b {
-                            crate::run_records::Body::EventBody {
-                                body: None,
-                                retry_at,
-                                ..
-                            } => *retry_at,
-                            _ => None,
-                        }))
-                })
-                .min();
-            (deadline, retry)
+                .map(|(_, _, timer)| timer)
+                .filter(|timer| !timer.close_failed)
         };
+        let deadline = timers().filter_map(|timer| timer.deadline_at).min();
+        let retry = timers()
+            .flat_map(|timer| [timer.deferral_retry_at, timer.body_retry_at])
+            .flatten()
+            .min();
         let durable = self.store().read(|c| {
             let schedule: Option<i64> = c.query_row(NEXT_SCHEDULE, [], |r| r.get(0))?;
             let expiry: Option<i64> = c.query_row("SELECT MIN(expires_at) FROM template_instances t JOIN flows f USING(flow_id) WHERE f.removed=0 AND t.expiry_notified=0", [], |r| r.get(0))?;
@@ -113,7 +87,7 @@ mod tests {
     use super::*;
     use crate::{
         Clock, RunState, StoredClass,
-        run_records::{Body, CallIdentity, Deferred, Intent, State},
+        run_records::{Body, CallIdentity, Claim, Deferred, Intent, State},
     };
     use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
     use basal_proto::{CallKind, JsonText};
@@ -219,6 +193,76 @@ mod tests {
         f.rt.fixture_finish("run", RunState::Failed, None, Some(("test", "ended")))
             .unwrap();
         assert_eq!(f.rt.next_wake_at(None).unwrap(), Some(3_600_000));
+    }
+
+    fn failed_deadline_close_fixture() -> crate::runtime_authorization_regressions::TestRuntime {
+        let f = fixture();
+        *f.rt.shared.retention_next.lock().unwrap() = None;
+        let mut state = State::new(0);
+        state.claim = Some(Claim {
+            first_claim_ms: 0,
+            deadline_at: 10,
+        });
+        for id in ["bad", "good"] {
+            f.rt.fixture_run(id, "flow", 1, "return 1", "{}", state.clone())
+                .unwrap();
+        }
+        f.rt.store()
+            .write(|tx| {
+                tx.execute_batch(
+                    "CREATE TRIGGER reject_bad_deadline_close BEFORE INSERT ON run_history
+                WHEN NEW.run_id='bad' BEGIN SELECT RAISE(ABORT,'bad run projection'); END;",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        f.rt.config.clock.set(10);
+        f
+    }
+
+    fn deadline_failure_audits(rt: &Runtime) -> Vec<(i64, String)> {
+        rt.store().read(|c| {
+            Ok(c.prepare("SELECT at,detail FROM audit WHERE action='run.deadline_close_failed' AND run_id='bad'")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?)
+        }).unwrap()
+    }
+
+    #[test]
+    fn failed_deadline_close_leaves_other_runs_and_timers_unblocked() {
+        let f = failed_deadline_close_fixture();
+        assert_eq!(f.rt.enforce_deadlines().unwrap(), ["good"]);
+        assert_eq!(f.rt.run("good").unwrap().state, RunState::Failed);
+        let due = f.rt.shared.retention_next.lock().unwrap().unwrap();
+        assert_eq!(due, 3_600_010);
+        assert_eq!(f.rt.next_wake_at(None).unwrap(), Some(due));
+        assert!(f.rt.staged_startable().unwrap().is_empty());
+        let audits = deadline_failure_audits(&f.rt);
+        assert_eq!(audits.len(), 1);
+        assert!(audits[0].1.contains("bad run projection"));
+    }
+
+    #[test]
+    fn failed_deadline_close_retries_only_on_retention_without_reauditing() {
+        let f = failed_deadline_close_fixture();
+        assert_eq!(f.rt.enforce_deadlines().unwrap(), ["good"]);
+        let audits = deadline_failure_audits(&f.rt);
+        assert_eq!(audits.len(), 1);
+        f.rt.config.clock.set(3_600_010);
+        assert!(f.rt.enforce_deadlines().unwrap().is_empty());
+        assert_eq!(deadline_failure_audits(&f.rt), audits);
+        f.rt.store()
+            .write(|tx| {
+                tx.execute_batch("DROP TRIGGER reject_bad_deadline_close")?;
+                Ok(())
+            })
+            .unwrap();
+        f.rt.config.clock.set(3_600_011);
+        assert!(f.rt.enforce_deadlines().unwrap().is_empty());
+        assert!(!f.rt.run("bad").unwrap().state.is_terminal());
+        f.rt.config.clock.set(7_200_010);
+        assert_eq!(f.rt.enforce_deadlines().unwrap(), ["bad"]);
+        assert_eq!(deadline_failure_audits(&f.rt), audits);
     }
 
     #[test]

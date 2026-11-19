@@ -1027,29 +1027,33 @@ impl Runtime {
         self.resume_run_removals()?;
         self.flush_refusals()?;
         let now = self.config.clock.now_ms();
+        let retention_due = self
+            .shared
+            .retention_next
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_none_or(|at| now >= at);
         let mut expired = Vec::new();
-        for run in self.log_live_runs()? {
-            if matches!(
-                run.state,
-                RunState::Pending | RunState::Running | RunState::Suspended
-            ) && run.deadline_at.is_some_and(|at| at <= now)
+        for (id, flow, timer) in self.live_run_timers()? {
+            if timer.deadline_at.is_some_and(|at| at <= now)
+                && (!timer.close_failed || retention_due)
             {
-                let (kind, detail) = self
-                    .event_body_deadline_failure(&run.run_id)?
-                    .unwrap_or_else(|| {
+                let closed = self.event_body_deadline_failure(&id).and_then(|failure| {
+                    let (kind, detail) = failure.unwrap_or_else(|| {
                         (
                             "deadline".into(),
                             "the run passed its wall-clock deadline".into(),
                         )
                     });
-                match self.staged_finish(&run.run_id, RunState::Failed, Some(&kind), Some(&detail))
-                {
+                    self.staged_finish_deadline(&id, &kind, &detail)
+                });
+                match closed {
                     Ok(()) => {
-                        expired.push(run.run_id);
-                        self.wake_flow(&run.flow_id);
+                        expired.push(id);
+                        self.wake_flow(&flow);
                     }
-                    Err(CoreError::Unavailable(_)) => {}
-                    Err(error) => return Err(error),
+                    Err(error @ (CoreError::Store(_) | CoreError::Cut)) => return Err(error),
+                    Err(error) => self.record_deadline_close_failure(&id, &flow, now, &error)?,
                 }
             }
         }
@@ -1057,6 +1061,40 @@ impl Runtime {
         self.retention_due(now)?;
         self.reap_threads();
         Ok(expired)
+    }
+
+    fn record_deadline_close_failure(
+        &self,
+        id: &str,
+        flow: &str,
+        now: i64,
+        error: &CoreError,
+    ) -> Result<()> {
+        let hosts = self.shared.staged_hosts.as_ref().expect("staged runtime");
+        let Some(actor) = hosts.registry().get(id) else {
+            // A concurrent closer already retired this actor.
+            return Ok(());
+        };
+        if actor.deadline_close_failed() {
+            return Ok(());
+        }
+        let inserted = self.store().write(|tx| {
+            Ok(tx.execute(
+                "INSERT INTO audit (at,actor,action,run_id,detail)
+                 SELECT ?1,'runtime','run.deadline_close_failed',?2,?3 WHERE NOT EXISTS (
+                     SELECT 1 FROM audit WHERE action='run.deadline_close_failed' AND run_id=?2)",
+                rusqlite::params![
+                    now,
+                    id,
+                    serde_json::json!({"error":error.to_string()}).to_string()
+                ],
+            )? != 0)
+        })?;
+        actor.mark_deadline_close_failed();
+        if inserted {
+            tracing::warn!(run_id = id, flow_id = flow, %error, "deadline close failed; retrying on retention cadence");
+        }
+        Ok(())
     }
 
     /// Wakes the next startable run while respecting the flow slot.

@@ -727,10 +727,16 @@ impl Runtime {
     }
 
     pub(crate) fn event_body_deadline_failure(&self, id: &str) -> Result<Option<(String, String)>> {
-        {}
         let last = self
-            .saved_event_body(id)?
-            .and_then(|(body, _, _, refusal)| if body.is_none() { refusal } else { None });
+            .staged_read(id, |state| match state.event_bodies.last() {
+                Some(crate::run_records::Body::EventBody {
+                    body: None,
+                    refusal,
+                    ..
+                }) => refusal.clone(),
+                _ => None,
+            })
+            .flatten();
         last.map(|detail| {
             let reply: serde_json::Value =
                 serde_json::from_str(&detail).map_err(|e| CoreError::Corrupt(e.to_string()))?;

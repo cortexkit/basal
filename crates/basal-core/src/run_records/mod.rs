@@ -100,7 +100,13 @@ impl RecordLog for RunLog<Record> {
         RunLog::synced_lsn(self)
     }
     fn append(&self, record: Record) -> Result<Lsn> {
-        RunLog::append(self, vec![record]).map_err(log_error)
+        let run_id = record.run_id.clone();
+        RunLog::append(self, vec![record]).map_err(|error| match error {
+            run_log::Error::RecordTooLarge { bytes } => {
+                CoreError::RunRecordTooLarge { run_id, bytes }
+            }
+            other => log_error(other),
+        })
     }
     fn sync_through(&self, lsn: Lsn) -> Result<()> {
         RunLog::sync_through(self, lsn)
@@ -119,8 +125,11 @@ pub struct Records {
     state: State,
     last_lsn: Lsn,
     required_start: Option<Lsn>,
+    warned_oversized_snapshot: bool,
     poisoned: bool,
     identity: Option<crate::run_store_sql::RunIdentity>,
+    // Parsed from the immutable run snapshot when the actor is registered.
+    budgets: Option<crate::run_driver::Budgets>,
     intent_cuts: std::collections::BTreeMap<u64, Lsn>,
     confirmed_sync: Lsn,
 }
@@ -143,8 +152,10 @@ impl Records {
             state: State::new(admitted_ms),
             last_lsn: Lsn::default(),
             required_start: None,
+            warned_oversized_snapshot: false,
             poisoned: false,
             identity: None,
+            budgets: None,
             intent_cuts: Default::default(),
             confirmed_sync: Lsn::default(),
         }
@@ -160,6 +171,12 @@ impl Records {
     }
     pub(crate) fn bind_identity(&mut self, identity: crate::run_store_sql::RunIdentity) {
         self.identity = Some(identity);
+    }
+    pub(crate) fn bind_budgets(&mut self, budgets: crate::run_driver::Budgets) {
+        self.budgets = Some(budgets);
+    }
+    pub(crate) fn budgets(&self) -> Option<crate::run_driver::Budgets> {
+        self.budgets.clone()
     }
     pub(crate) fn identity(&self) -> Option<&crate::run_store_sql::RunIdentity> {
         self.identity.as_ref()
@@ -427,6 +444,13 @@ impl Records {
     pub(crate) fn snapshot_synced(&mut self, lsn: Lsn) {
         self.required_start = Some(self.required_start.map_or(lsn, |old| old.max(lsn)));
     }
+    pub(crate) fn warn_oversized_snapshot(&mut self, bytes: usize) {
+        if !self.warned_oversized_snapshot {
+            tracing::warn!(run_id = %self.run_id, bytes, max_bytes = run_log::MAX_RECORD,
+                "run snapshot exceeds the log record limit; keeping its previous replay start");
+            self.warned_oversized_snapshot = true;
+        }
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn fixture_update_state(&mut self, edit: impl FnOnce(&mut State)) -> Result<()> {
         edit(&mut self.state);
@@ -451,6 +475,15 @@ impl Records {
             .iter()
             .filter(|r| r.record.run_id == run_id)
             .collect();
+        Self::recover_selected(run_id, admitted_ms, log, &relevant)
+    }
+
+    pub(crate) fn recover_selected(
+        run_id: String,
+        admitted_ms: i64,
+        log: Arc<dyn RecordLog>,
+        relevant: &[&RecoveredRecord<Record>],
+    ) -> Result<Self> {
         if relevant.windows(2).any(|pair| pair[0].lsn >= pair[1].lsn) {
             return Err(CoreError::Corrupt(
                 "run records are not in LSN order".into(),

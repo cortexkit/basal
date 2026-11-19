@@ -91,7 +91,6 @@ impl SegmentRegistry for SqliteRegistry {
         let valid = self
             .store
             .read(|conn| {
-                self.metadata(conn)?;
                 let fence: u64 =
                     conn.query_row("SELECT epoch FROM cortexkit_fence WHERE id=0", [], |r| {
                         r.get(0)
