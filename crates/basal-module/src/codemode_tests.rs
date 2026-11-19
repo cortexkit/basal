@@ -113,3 +113,25 @@ fn late_cursor_survives_a_sweep_without_skipping_kept_rows() {
     drop((codemode, store));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn published_held_runs_are_forgotten_after_the_race_window() {
+    let mut late = LateCalls::default();
+    late.held.insert("old".into());
+    late.mark_published("old", 1_000);
+    assert!(late.held.is_empty());
+    assert!(late.published.contains_key("old"));
+
+    // Inside the window the entry still blocks a stale timeout from reopening it.
+    late.mark_published("recent", 1_000 + PUBLISHED_MEMORY_MS - 1);
+    assert!(late.published.contains_key("old"));
+
+    // Once the window has passed, recording another run drops it, so the map
+    // holds only runs published within the last window.
+    late.mark_published("newer", 1_000 + PUBLISHED_MEMORY_MS);
+    assert!(!late.published.contains_key("old"));
+    assert_eq!(
+        late.published.keys().cloned().collect::<Vec<_>>(),
+        ["newer", "recent"]
+    );
+}
