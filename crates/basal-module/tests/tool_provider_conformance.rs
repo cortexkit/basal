@@ -927,7 +927,12 @@ async fn complete(route: &Route, key: &str) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_route_late_cursor_ack_and_custodian_only_serving() {
     let root = common::scratch("late-cursor");
-    let subject = Subject::default();
+    // A zero foreground window answers the first call `running`, so basal owes
+    // a late result. A result answered inline owes none.
+    let subject = Subject {
+        foreground: Some(Duration::ZERO),
+        ..Default::default()
+    };
     let live = subject.spawn(&root).await.unwrap();
     let carrier = content_route(&subject, &live, principals().stamp("reserved:broca")).await;
     let other = subject
@@ -977,7 +982,11 @@ async fn real_route_late_cursor_ack_and_custodian_only_serving() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_route_late_retention_and_direct_call_owner_custody() {
     let root = common::scratch("late-retention");
-    let subject = Subject::default();
+    // Held first, as above, so the run owes a late result.
+    let subject = Subject {
+        foreground: Some(Duration::ZERO),
+        ..Default::default()
+    };
     let live = subject.spawn(&root).await.unwrap();
     let direct = content_route(&subject, &live, principals().stamp("direct")).await;
     let owner = subject

@@ -11,6 +11,8 @@
 //! | `flow.drain` | yes | no | no | no | no |
 //! | `flow.disable` | yes | no | yes | no | no |
 //! | `flow.enable` | yes | no | only to undo a disable it made itself | no | no |
+//! | `flow.instantiate` | yes, with `agent_id` | no | for itself only | for itself only | yes, with `agent_id` |
+//! | `flow.instance.end` | any template instance | no | own template instances | no | any template instance |
 //! | `package.register` | yes | no | no | no | yes |
 //! | `package.get`, `flow.instance.ensure`, `flow.instance.remove` | no | no | no | no | yes |
 //! | `attribution.read` | no | no | no | no | no (only attested `reserved:astrocyte`) |
@@ -346,7 +348,6 @@ impl Module {
             "flow.instance.live" => self.op_live_instances(caller, params),
             "events_get" => self.op_events_get(caller, params),
             "flow.install" => self.op_install(caller, params),
-            "flow.install_decided" => self.op_install_decided(caller, params),
             "flow.install_revoked" => self.op_install_revoked(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
             "flow.health" => self.op_health(caller, params),
@@ -455,11 +456,11 @@ impl Module {
         }
     }
 
-    /// Whether core's install hint names a flow whose agent moved away: the
+    /// Whether core's revocation hint names a flow whose agent moved away: the
     /// flow lives on another computer now, whose basal reads its own
     /// prefrontal, so the hint changes nothing here. While the agent is
     /// moving the hint is refused `agent_moving`, and core sends it again.
-    fn hint_for_moved_flow(&self, flow_id: &str) -> Result<bool, OpError> {
+    fn revocation_for_moved_flow(&self, flow_id: &str) -> Result<bool, OpError> {
         let tombstoned = self
             .rt
             .store()
@@ -558,7 +559,10 @@ impl Module {
     }
 
     fn op_instantiate(&self, caller: &Caller, params: Value) -> OpResult {
-        if !matches!(caller, Caller::Operator | Caller::Agent { .. }) {
+        if !matches!(
+            caller,
+            Caller::Operator | Caller::Core | Caller::Agent { .. }
+        ) {
             return Err(OpError::not_permitted("flow.instantiate", caller));
         }
         #[derive(Deserialize)]
@@ -573,7 +577,7 @@ impl Module {
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
         let agent = match caller {
-            Caller::Operator => p
+            Caller::Operator | Caller::Core => p
                 .agent_id
                 .as_deref()
                 .ok_or_else(|| invalid_params("operator must name agent_id"))?,
@@ -594,7 +598,7 @@ impl Module {
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
         match caller {
-            Caller::Operator => {}
+            Caller::Operator | Caller::Core => {}
             Caller::Agent { agent_id, .. } if self.owns(agent_id, &p.flow_id)? => {}
             _ => {
                 return Err(OpError::new(
@@ -1090,39 +1094,6 @@ impl Module {
         Ok(reply)
     }
 
-    fn op_install_decided(&self, caller: &Caller, params: Value) -> OpResult {
-        if !matches!(caller, Caller::Core) {
-            return Err(OpError::new(
-                "not_permitted",
-                format!(
-                    "flow.install_decided is core-only; caller is {}",
-                    caller.label()
-                ),
-            ));
-        }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Params {
-            flow_id: String,
-            version: u32,
-            attempt: i64,
-        }
-        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
-        if p.flow_id.is_empty() || p.version == 0 || p.attempt < 1 {
-            return Err(OpError::new(
-                "invalid_params",
-                "flow_id, positive version and positive attempt are required",
-            ));
-        }
-        if self.hint_for_moved_flow(&p.flow_id)? {
-            return Ok(json!({}));
-        }
-        self.rt
-            .install_decided(&p.flow_id, p.version, p.attempt)
-            .map_err(|e| self.core_error(e))?;
-        Ok(json!({}))
-    }
-
     fn op_install_revoked(&self, caller: &Caller, params: Value) -> OpResult {
         if !matches!(caller, Caller::Core) {
             return Err(OpError::new(
@@ -1154,7 +1125,7 @@ impl Module {
                 "flow_id, positive version and lowercase SHA-256 code_hash are required",
             ));
         }
-        if self.hint_for_moved_flow(&p.flow_id)? {
+        if self.revocation_for_moved_flow(&p.flow_id)? {
             return Ok(json!({}));
         }
         self.rt

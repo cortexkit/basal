@@ -1,0 +1,13 @@
+{
+  "name": "end_success",
+  "reply": {
+    "ended": true,
+    "flow_id": "docs-proposals_29f363a65d3d989f"
+  },
+  "request": {
+    "method": "flow.instance.end",
+    "params": {
+      "flow_id": "docs-proposals_29f363a65d3d989f"
+    }
+  }
+}

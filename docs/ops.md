@@ -134,7 +134,7 @@ An opaque top-level `call_key` deduplicates flow calls durably per carrier, boun
 
 ## flow.instantiate
 
-Creates or extends a bounded [template instance](templates.md), without raising an approval card. Caller identity is the daemon-stamped agent; the operator may instead name `agent_id`. The management operation requires `version`; the `flow` tool resolves an omitted version as described above.
+Creates or extends a bounded [template instance](templates.md), without raising an approval card. Agents act for themselves using their daemon-stamped identity. The attested operator and core must name the target `agent_id`. The management operation requires `version`; the `flow` tool resolves an omitted version as described above.
 
 `flow.instantiate` parameters:
 ```json
@@ -144,7 +144,7 @@ Agents must not supply `agent_id`. Replies contain `flow_id`, `template`, `versi
 
 ## flow.instance.end
 
-Owner or operator only, for template instances. Params `{"flow_id":"string"}`. Reply `{"flow_id":"string","ended":"boolean"}`; `ended` is false on a repeat. Ending prevents all further admission and scheduling, but keeps state and history. Creating the same valid values later reopens that id. Non-template flows return `package_not_template`; an unknown id returns `not_found` to the operator. Other callers receive `not_permitted`.
+Only the owning agent, the operator, or core may end a template instance. Params `{"flow_id":"string"}`. Reply `{"flow_id":"string","ended":"boolean"}`; `ended` is false on a repeat. Ending prevents all further admission and scheduling, but keeps state and history. Creating the same valid values later reopens that id. Non-template flows return `package_not_template`; an unknown id returns `not_found` to the operator or core. Other callers receive `not_permitted`.
 
 ## flow.install
 
@@ -218,7 +218,7 @@ that full decode. Approval validates the candidate's stored manifest before
 scheduling it; conservative secret inspection does not make an unreadable
 candidate runnable.
 
-Uninstall preserves card history. Repeating an already-approved version after uninstall does not restore it or raise a fresh card: restoration requires a new version, which gets a new local card and install id. A still-pending card keeps its id across uninstall because no grant has been approved under it; approving it afterwards is a fresh approval decision, not revival of an old grant. Startup recovery and `flow.install_decided` only read status, never resend an install request or rotate its id. A later explicit retry sends the saved id if core advertises the capability.
+Uninstall preserves card history. Repeating an already-approved version after uninstall does not restore it or raise a fresh card: restoration requires a new version, which gets a new local card and install id. A still-pending card keeps its id across uninstall because no grant has been approved under it; approving it afterwards is a fresh approval decision, not revival of an old grant. Startup recovery and install change events only read status from core; they never resend an install request or rotate its id. A later explicit retry sends the saved id if core advertises the capability.
 
 When core's daemon catalog entry lists the capability `flow-install-dry-run-text/v1`, the `flow_install` body also carries `dry_run_text`: the install dry run in plain words, which core and cingulate show as written. Without the capability basal sends exactly the body above, without the key. The raw `dry_run_summary` is sent either way, unchanged, for audits. The card basal records always holds both. The shape is:
 ```json
@@ -230,7 +230,7 @@ When core's daemon catalog entry lists the capability `flow-install-dry-run-text
 
 All of it is UTF-8 with control and direction-changing characters removed, cut on a character boundary with "…". Text the script supplied (agent names, titles, error messages, paths) is always in single quotes and at most 80 bytes; a straight quote inside it becomes ’. Committed examples of real output, for `flows/board-hygiene` and the `remind-at` template, are in [`test-vectors/dry-run-text/`](../test-vectors/dry-run-text).
 
-Any author, including an agent, may request a self, workspace or global audience. Workspace ids must still exist (`unknown_workspace`). Core's default ladder allows self installs, asks for workspace installs, and always asks for global installs; workspace policy is configurable. The authority for broad reach is core's card answer or permitted policy decision, not the requester's identity. A global audience requires a card answer: basal refuses policy approval for it, logs an error naming the flow, version and policy rule, and leaves the version pending with an `install_checks` error. This applies to synchronous install replies, decision hints and startup recovery alike; a synchronous refusal returns `install_policy_unconfirmed`.
+Any author, including an agent, may request a self, workspace or global audience. Workspace ids must still exist (`unknown_workspace`). Core's default ladder allows self installs, asks for workspace installs, and always asks for global installs; workspace policy is configurable. The authority for broad reach is core's card answer or permitted policy decision, not the requester's identity. A global audience requires a card answer: basal refuses policy approval for it, logs an error naming the flow, version and policy rule, and leaves the version pending with an `install_checks` error. This applies to synchronous install replies, install change events and startup recovery alike; a synchronous refusal returns `install_policy_unconfirmed`.
 
 basal declares `flow-install-policy/v1` in its daemon capabilities so core may approve synchronously under its configured installation policy. A policy reply (`outcome: approved_by_policy`, `rule`, `code_hash`) is not sufficient by itself: basal first checks its hash against the installed version, then calls `flow.install_status` once and requires `active` with that same hash. Unknown outcomes are errors. A failed hash or status check returns `install_policy_unconfirmed`, leaves the version pending, and logs and records the failure in `flow.health` and `flow.list` under `install_checks`.
 
@@ -244,27 +244,26 @@ A manifest carrying `params` or `template` is refused with `params_require_packa
 
 An agent-owned flow may name only its author in static `sinks[].agent`, `status[]`, `board_read[]`, `claims[].agent` and `facts.targets[]`, even if the operator installs it in that agent's name. Manifest agents resolve through the catalog from display names or stable ids; each must resolve to the author's stable `agent_id`. A foreign target is refused with code `foreign_agent_target` and a message naming the field, target agent and author; no version or card is recorded or raised. Operator-authored flows and local installs may name any known agent. Audience-based sinks use `$audience` instead of static recipients and may request broader reach regardless of author. Ids ending in `_` and exactly 16 lowercase hex characters are refused with `flow_id_reserved` before basal records a version or asks core to raise its install card, because that namespace is reserved for package instances.
 
-## flow.install_decided
+### Install change events
 
-Core-only; every other caller receives `not_permitted`. Params are exactly:
-```json
-{"flow_id":"string","version":"positive integer","attempt":"positive integer"}
-```
-Reply: `{}`. Core sends this at-least-once hint after an install card decision commits (approval, decline or expiry), never for policy approvals. Unknown triples and already settled cards are acknowledged and ignored. For an open known card basal reads `flow.install_status` once; the hint itself carries no authority. Only `active` with the installed hash approves, through the same transaction as policy approval and with core's approval kind and rule. `declined` and `expired` leave the version unapproved and settle the card; both are visible under `install_cards: [{version, attempt, state}]` in `flow.list` and `flow.health`. `pending` changes nothing, and `unknown` is logged. Mismatched hashes, revoked records and failed reads never approve.
-
-The activation gate still accepts only a matching `active` hash. `pending`, `declined` and `expired` are treated like `unknown` there: none means approved.
-
-Basal also reads `ck.<account>.event.prefrontal.flow_install_changed.v1`.
+Basal reads `ck.<account>.event.prefrontal.flow_install_changed.v1`.
 Its payload is the control notice itself, `{flow_id, seq}` with a positive
 sequence, rather than an `events_get` reference. Basal checks all pending cards
-for that flow oldest version first, with one `flow.install_status` read per card,
-up to eight reads per notice (warning once if more remain), and applies the same
-reconciliation as the call hint. No pending card means no read. Core I/O never
-runs under SQLite's write lock. The reader acknowledges after the resulting
-commits or a no-change decision; malformed payloads are warned once and
-acknowledged without reading status. The activation gate and `flow.install_revoked`
-remain the backstops for settled installs. The call hint remains as fallback
-until prefrontal confirms this reader has run.
+for that flow in version and attempt order, oldest first, with one
+`flow.install_status` read per card, up to eight reads per notice (warning once
+if more remain). The event is only a prompt to read status, not authority to
+approve. Basal applies the same reconciliation as at startup: only `active`
+with the installed hash can approve, and terminal refusals are visible under
+`install_cards` in `flow.list` and `flow.health`. A pending status changes
+nothing, and an unknown status is logged. Mismatched hashes, revoked records,
+and failed reads never approve.
+
+The card check makes no status read when there are no pending cards. Core I/O
+never runs under SQLite's write lock. The reader acknowledges after the
+resulting commits or a no-change decision; malformed payloads are warned once
+and acknowledged without reading status. A startup recheck covers missed
+events for pending cards; the activation gate and `flow.install_revoked` remain
+the backstops for settled installs.
 
 ## flow.install_revoked
 
@@ -1202,14 +1201,14 @@ While an agent is frozen, changes to its flows are refused `agent_moving`
 (detail `{agent_id, retryable: true}`): `flow.install`, `flow.instantiate`,
 `flow.enable`, `flow.disable`, `flow.uninstall`, `flow.instance.end`,
 `flow.instance.ensure`, `flow.instance.remove`, and core's
-`flow.install_decided` and `flow.install_revoked`. Retry after the move is
+`flow.install_revoked`. Retry after the move is
 released or aborted; a frozen flow admits nothing meanwhile. A flow belongs to
 an agent by the rule a move uses: its owner, or before any approval the single
 author of its versions. Once the agent has moved away the same ops are refused
 `agent_moved` (detail `{agent_id, holder_box}`, where `holder_box` is the
 receiving computer's box id, present only when the release named one) until a
 move back replaces the
-tombstone, except core's two install hints, which are accepted and change
+tombstone, except `flow.install_revoked`, which is accepted and changes
 nothing: the flow lives on the other computer, whose basal reads its own
 prefrontal. A freeze held for 6 hours shows in `diagnostics.findings` as
 `agent_move_frozen`.

@@ -66,6 +66,17 @@ fn reserved(module_id: &str) -> Principal {
 }
 
 #[test]
+fn install_decided_is_an_unknown_method() {
+    let f = fixture("ops-retired-install-decided", Options::default());
+    let result = f.module.handle(
+        &Caller::Core,
+        "flow.install_decided",
+        json!({"flow_id":FLOW,"version":1,"attempt":1}),
+    );
+    assert_eq!(result.unwrap_err().code, "unknown_method");
+}
+
+#[test]
 fn diagnostics_findings_serves_healthy_reads_and_strict_errors() {
     let f = fixture("ops-diagnostics", Options::default());
     for caller in [Caller::Operator, Caller::Core] {

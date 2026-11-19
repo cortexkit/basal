@@ -1,0 +1,23 @@
+{
+  "error": {
+    "code": "instance_limit_reached",
+    "detail": {
+      "limit": 100,
+      "scope": "agent"
+    },
+    "message": "instance_limit_reached"
+  },
+  "name": "instance_limit_reached",
+  "request": {
+    "method": "flow.instantiate",
+    "params": {
+      "agent_id": "agent_0000000000000001",
+      "expires_in": "30d",
+      "params": {
+        "project_id": "pj-over-limit"
+      },
+      "template": "docs-proposals",
+      "version": 1
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "error": {
+    "code": "agent_unknown",
+    "message": "agent_unknown"
+  },
+  "name": "agent_unknown",
+  "request": {
+    "method": "flow.instantiate",
+    "params": {
+      "agent_id": "agent_0000000000000003",
+      "expires_in": "30d",
+      "params": {
+        "project_id": "pj-sample"
+      },
+      "template": "docs-proposals",
+      "version": 1
+    }
+  }
+}

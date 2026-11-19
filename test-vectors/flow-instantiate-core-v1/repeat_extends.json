@@ -1,0 +1,28 @@
+{
+  "name": "repeat_extends",
+  "reply": {
+    "agent_id": "agent_0000000000000001",
+    "expires_at": 1780272000000,
+    "fire_is_due": false,
+    "flow_id": "docs-proposals_29f363a65d3d989f",
+    "new": false,
+    "next_fire_at_ms": null,
+    "params": {
+      "project_id": "pj-sample"
+    },
+    "template": "docs-proposals",
+    "version": 1
+  },
+  "request": {
+    "method": "flow.instantiate",
+    "params": {
+      "agent_id": "agent_0000000000000001",
+      "expires_in": "30d",
+      "params": {
+        "project_id": "pj-sample"
+      },
+      "template": "docs-proposals",
+      "version": 1
+    }
+  }
+}

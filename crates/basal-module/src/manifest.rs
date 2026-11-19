@@ -100,11 +100,6 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
         "Validate a flow version, run its capture-only dry run and raise its consent card; returns the pending install.",
     ),
     (
-        "flow.install_decided",
-        ManagementOperationKind::Mutate,
-        "Recheck core's install status after a card decision; prefrontal only, idempotent.",
-    ),
-    (
         "flow.install_revoked",
         ManagementOperationKind::Mutate,
         "Verify a revocation hint with core and stop later calls on that version; prefrontal only, idempotent.",
@@ -266,8 +261,9 @@ pub fn manifest() -> ModuleManifest {
 fn routing_consumers() -> serde_json::Map<String, serde_json::Value> {
     // Flows run unattended, so they yield to callers that are waiting. A
     // program's model call holds up the agent turn that started the program,
-    // so it is `blocking`. Routing reads `priority` only from a router that
-    // advertises `consumer_priority`, which the live router does.
+    // so it is `blocking`. Routing reads `priority` only when it advertises
+    // `consumer_priority`. Flow and program model calls are one-shot and use
+    // the `quick` workload; routing's own settings still take precedence.
     let consumers = [
         FLOW_CONSUMER,
         CODEMODE_CONSUMER,
@@ -288,6 +284,9 @@ fn routing_consumers() -> serde_json::Map<String, serde_json::Value> {
             .with_selectors(vec!["broca".into()])
             .with_priority(priority);
         defaults.tools = Some(ToolsRequirement::None);
+        if name == FLOW_CONSUMER || name == CODEMODE_CONSUMER {
+            defaults = defaults.with_workload("quick");
+        }
         ConsumerDeclaration::new(name).with_defaults(defaults)
     })
     .collect();

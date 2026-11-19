@@ -229,13 +229,7 @@ impl Rig {
         // before every activation finds the version active.
         let version = flow["version"].as_i64().expect("version");
         self.fake.approve_install(FLOW, version);
-        self.m()
-            .handle(
-                &Caller::Core,
-                "flow.install_decided",
-                json!({"flow_id":FLOW,"version":version,"attempt":1}),
-            )
-            .expect("approval applied");
+        self.m().rt.install_changed(FLOW).expect("approval applied");
     }
 
     fn admit(&self, trigger: &str) -> Option<String> {

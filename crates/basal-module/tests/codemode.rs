@@ -512,6 +512,60 @@ fn held_context() -> Context {
     }
 }
 
+fn late_result_counts(rig: &Rig) -> (i64, i64) {
+    rig.fixture
+        .module
+        .rt
+        .store()
+        .read(|conn| {
+            Ok((
+                conn.query_row("SELECT COUNT(*) FROM codemode_late_results", [], |row| {
+                    row.get(0)
+                })?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM outbox WHERE kind='codemode.late_result_ready'",
+                    [],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .unwrap()
+}
+
+#[test]
+fn inline_answer_needs_no_late_result_or_wake() {
+    let rig = rig("inline-no-late-result", false);
+    let reply = call(&rig, "inline-only", "return 42;", Duration::from_secs(180));
+    assert_eq!(reply["structuredContent"]["status"], "completed");
+    assert_eq!(late_result_counts(&rig), (0, 0));
+    let published = rig
+        .fixture
+        .module
+        .rt
+        .store()
+        .read(|conn| {
+            Ok(conn.query_row(
+                "SELECT published FROM codemode_tool_calls WHERE call_key='inline-only'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(published, 1);
+
+    let page = rig
+        .fixture
+        .module
+        .handle_tool(
+            &held_context(),
+            ToolCallRequest::new("late_results", json!({"since":null})),
+            Duration::ZERO,
+        )
+        .unwrap();
+    assert_eq!(page["entries"], json!([]));
+    assert_eq!(late_result_counts(&rig), (0, 0));
+}
+
 #[test]
 fn legacy_prefrontal_ack_is_inert_for_the_new_custodian() {
     let rig = rig("late-core-rename", true);
@@ -645,8 +699,10 @@ fn running_reply_is_held_only_when_the_route_declared_both_capabilities() {
             Duration::ZERO,
         )
         .unwrap();
+    assert_eq!(page["entries"].as_array().unwrap().len(), 1);
     assert_eq!(page["entries"][0]["call_key"], "running-held");
     assert_eq!(page["entries"][0]["result"], final_reply);
+    assert_eq!(late_result_counts(&rig), (1, 1));
 }
 
 #[test]
@@ -681,7 +737,8 @@ fn running_reply_mirrors_the_consent_held_call_reason() {
         .handle_tool(&held_context(), request.clone(), Duration::ZERO)
         .unwrap();
     rig.core.release();
-    rig.fixture
+    let final_reply = rig
+        .fixture
         .module
         .handle_tool(&held_context(), request, Duration::from_secs(180))
         .unwrap();
@@ -692,6 +749,19 @@ fn running_reply_mirrors_the_consent_held_call_reason() {
             .unwrap()
             .contains("echo (call 1) needs their consent")
     );
+    let page = rig
+        .fixture
+        .module
+        .handle_tool(
+            &held_context(),
+            ToolCallRequest::new("late_results", json!({"since":null})),
+            Duration::ZERO,
+        )
+        .unwrap();
+    assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(page["entries"][0]["call_key"], "person-held");
+    assert_eq!(page["entries"][0]["result"], final_reply);
+    assert_eq!(late_result_counts(&rig), (1, 1));
 }
 
 #[test]
