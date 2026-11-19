@@ -285,14 +285,23 @@ fn instantiate_caller_version_and_reply_are_stamped_without_cards() {
     let f = setup("template-caller", false);
     let m = manifest();
     let registered = register(&f, &m, "return 1;");
-    for caller in [Caller::Core, Caller::Local, Caller::Other("unknown".into())] {
+    let without_agent =
+        json!({"template":"watch","version":1,"params":{"note":"a"},"expires_in":"1h"});
+    let operator_error = f
+        .module
+        .handle(&Caller::Operator, "flow.instantiate", without_agent.clone())
+        .unwrap_err();
+    assert_eq!(operator_error.code, "invalid_params");
+    assert_eq!(
+        f.module
+            .handle(&Caller::Core, "flow.instantiate", without_agent.clone())
+            .unwrap_err(),
+        operator_error
+    );
+    for caller in [Caller::Local, Caller::Other("unknown".into())] {
         let e = f
             .module
-            .handle(
-                &caller,
-                "flow.instantiate",
-                json!({"template":"watch","version":1,"params":{"note":"a"},"expires_in":"1h"}),
-            )
+            .handle(&caller, "flow.instantiate", without_agent.clone())
             .unwrap_err();
         assert_eq!(
             e.code,
@@ -333,6 +342,69 @@ fn instantiate_caller_version_and_reply_are_stamped_without_cards() {
     let stored = f.module.rt.get_package("watch", 1).unwrap();
     assert_eq!(stored["manifest"], m.to_string());
     assert_eq!(stored["code_hash"], registered["code_hash"]);
+}
+
+#[test]
+fn core_can_create_extend_and_end_a_template_instance() {
+    let f = setup("template-core-lifecycle", false);
+    register(&f, &manifest(), "return 1;");
+    let request = json!({"template":"watch","version":1,"agent_id":OWNER,"params":{"note":"a"},"expires_in":"1h"});
+    let reserved = Caller::Module {
+        module_id: "astrocyte".into(),
+    };
+    assert_eq!(
+        f.module
+            .handle(&reserved, "flow.instantiate", request.clone())
+            .unwrap_err()
+            .code,
+        "not_permitted"
+    );
+    let created = f
+        .module
+        .handle(&Caller::Core, "flow.instantiate", request.clone())
+        .expect("core can instantiate for a named agent");
+    assert_eq!(created["agent_id"], OWNER);
+    assert_eq!(created["new"], true);
+    let now = f.clock.now_ms();
+    assert_eq!(created["expires_at"], now + 3_600_000);
+    f.clock.set(now + 60_000);
+    let extended = f
+        .module
+        .handle(&Caller::Core, "flow.instantiate", request.clone())
+        .unwrap();
+    assert_eq!(id(&extended), id(&created));
+    assert_eq!(extended["new"], false);
+    assert_eq!(extended["expires_at"], now + 3_660_000);
+    let mut shorter = request;
+    shorter["expires_in"] = json!("1m");
+    assert_eq!(
+        f.module
+            .handle(&Caller::Core, "flow.instantiate", shorter)
+            .unwrap(),
+        extended
+    );
+
+    let end = json!({"flow_id":id(&created)});
+    assert_eq!(
+        f.module
+            .handle(&reserved, "flow.instance.end", end.clone())
+            .unwrap_err()
+            .code,
+        "not_permitted"
+    );
+    assert_eq!(
+        f.module
+            .handle(&Caller::Core, "flow.instance.end", end.clone())
+            .unwrap(),
+        json!({"flow_id":id(&created),"ended":true})
+    );
+    assert_eq!(
+        f.module
+            .handle(&Caller::Core, "flow.instance.end", end)
+            .unwrap(),
+        json!({"flow_id":id(&created),"ended":false})
+    );
+    no_admission(&f, id(&created), "after-core-end");
 }
 
 #[test]
@@ -650,7 +722,7 @@ fn end_is_owner_scoped_repeatable_kept_and_reopened_by_same_values() {
     let f = setup("template-end", false);
     register(&f, &manifest(), "return 1;");
     let created = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
-    for caller in [agent(OTHER), Caller::Core, Caller::Local] {
+    for caller in [agent(OTHER), Caller::Local] {
         assert_eq!(
             f.module
                 .handle(
@@ -715,17 +787,19 @@ fn end_is_owner_scoped_repeatable_kept_and_reopened_by_same_values() {
             json!({"package":"persona","version":1,"agent_id":OWNER,"generation":1}),
         )
         .unwrap();
-    assert_eq!(
-        f.module
-            .handle(
-                &Caller::Operator,
-                "flow.instance.end",
-                json!({"flow_id":ensured["flow_id"]})
-            )
-            .unwrap_err()
-            .code,
-        "package_not_template"
-    );
+    for caller in [Caller::Operator, Caller::Core] {
+        assert_eq!(
+            f.module
+                .handle(
+                    &caller,
+                    "flow.instance.end",
+                    json!({"flow_id":ensured["flow_id"]})
+                )
+                .unwrap_err()
+                .code,
+            "package_not_template"
+        );
+    }
 }
 
 #[test]

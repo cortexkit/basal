@@ -1,0 +1,24 @@
+{
+  "error": {
+    "code": "param_missing",
+    "detail": {
+      "bound": {
+        "max_bytes": 200,
+        "type": "string"
+      },
+      "param": "project_id"
+    },
+    "message": "param_missing: parameter `project_id`"
+  },
+  "name": "param_missing",
+  "request": {
+    "method": "flow.instantiate",
+    "params": {
+      "agent_id": "agent_0000000000000001",
+      "expires_in": "30d",
+      "params": {},
+      "template": "docs-proposals",
+      "version": 1
+    }
+  }
+}

@@ -134,7 +134,7 @@ An opaque top-level `call_key` deduplicates flow calls durably per carrier, boun
 
 ## flow.instantiate
 
-Creates or extends a bounded [template instance](templates.md), without raising an approval card. Caller identity is the daemon-stamped agent; the operator may instead name `agent_id`. The management operation requires `version`; the `flow` tool resolves an omitted version as described above.
+Creates or extends a bounded [template instance](templates.md), without raising an approval card. Agents act for themselves using their daemon-stamped identity. The attested operator and core must name the target `agent_id`. The management operation requires `version`; the `flow` tool resolves an omitted version as described above.
 
 `flow.instantiate` parameters:
 ```json
@@ -144,7 +144,7 @@ Agents must not supply `agent_id`. Replies contain `flow_id`, `template`, `versi
 
 ## flow.instance.end
 
-Owner or operator only, for template instances. Params `{"flow_id":"string"}`. Reply `{"flow_id":"string","ended":"boolean"}`; `ended` is false on a repeat. Ending prevents all further admission and scheduling, but keeps state and history. Creating the same valid values later reopens that id. Non-template flows return `package_not_template`; an unknown id returns `not_found` to the operator. Other callers receive `not_permitted`.
+Only the owning agent, the operator, or core may end a template instance. Params `{"flow_id":"string"}`. Reply `{"flow_id":"string","ended":"boolean"}`; `ended` is false on a repeat. Ending prevents all further admission and scheduling, but keeps state and history. Creating the same valid values later reopens that id. Non-template flows return `package_not_template`; an unknown id returns `not_found` to the operator or core. Other callers receive `not_permitted`.
 
 ## flow.install
 

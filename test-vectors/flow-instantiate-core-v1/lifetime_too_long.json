@@ -1,0 +1,19 @@
+{
+  "error": {
+    "code": "lifetime_too_long",
+    "message": "lifetime_too_long"
+  },
+  "name": "lifetime_too_long",
+  "request": {
+    "method": "flow.instantiate",
+    "params": {
+      "agent_id": "agent_0000000000000001",
+      "expires_in": "366d",
+      "params": {
+        "project_id": "pj-sample"
+      },
+      "template": "docs-proposals",
+      "version": 1
+    }
+  }
+}
