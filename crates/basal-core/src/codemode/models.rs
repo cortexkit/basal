@@ -44,19 +44,14 @@ pub fn add_catalog(catalog: &Value) -> Result<Value, &'static str> {
 }
 
 pub fn provider_ready(transport: &dyn Transport) -> Result<(), WireError> {
-    let catalog = transport.catalog()?;
+    let catalog = transport.catalog_snapshot()?;
     // Broca is gated on the legacy run-scope capability, not on per-tool
     // call modes: a codemode run reaches Broca to open model routes, not to
     // call one of Broca's tools, so there is no tool whose `modes` could say
     // codemode. Broca declares this capability for that purpose.
-    let opted_in = catalog["modules"].as_array().is_some_and(|modules| {
-        modules.iter().any(|m| {
-            m["module_id"] == "broca"
-                && m["capabilities"]["provides"]
-                    .as_array()
-                    .is_some_and(|caps| caps.iter().any(|cap| cap == "agent-run-scopes/v1"))
-        })
-    });
+    let opted_in = catalog
+        .module("broca")
+        .is_some_and(|m| m.provides("agent-run-scopes/v1"));
     if !opted_in {
         return Err(WireError::RefusedDetails {
             code: "tool_unavailable".into(),
@@ -273,3 +268,7 @@ pub fn settle(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "models_tests.rs"]
+mod tests;
