@@ -100,7 +100,13 @@ impl RecordLog for RunLog<Record> {
         RunLog::synced_lsn(self)
     }
     fn append(&self, record: Record) -> Result<Lsn> {
-        RunLog::append(self, vec![record]).map_err(log_error)
+        let run_id = record.run_id.clone();
+        RunLog::append(self, vec![record]).map_err(|error| match error {
+            run_log::Error::RecordTooLarge { bytes } => {
+                CoreError::RunRecordTooLarge { run_id, bytes }
+            }
+            other => log_error(other),
+        })
     }
     fn sync_through(&self, lsn: Lsn) -> Result<()> {
         RunLog::sync_through(self, lsn)
@@ -119,6 +125,7 @@ pub struct Records {
     state: State,
     last_lsn: Lsn,
     required_start: Option<Lsn>,
+    warned_oversized_snapshot: bool,
     poisoned: bool,
     identity: Option<crate::run_store_sql::RunIdentity>,
     intent_cuts: std::collections::BTreeMap<u64, Lsn>,
@@ -143,6 +150,7 @@ impl Records {
             state: State::new(admitted_ms),
             last_lsn: Lsn::default(),
             required_start: None,
+            warned_oversized_snapshot: false,
             poisoned: false,
             identity: None,
             intent_cuts: Default::default(),
@@ -426,6 +434,13 @@ impl Records {
     }
     pub(crate) fn snapshot_synced(&mut self, lsn: Lsn) {
         self.required_start = Some(self.required_start.map_or(lsn, |old| old.max(lsn)));
+    }
+    pub(crate) fn warn_oversized_snapshot(&mut self, bytes: usize) {
+        if !self.warned_oversized_snapshot {
+            tracing::warn!(run_id = %self.run_id, bytes, max_bytes = run_log::MAX_RECORD,
+                "run snapshot exceeds the log record limit; keeping its previous replay start");
+            self.warned_oversized_snapshot = true;
+        }
     }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn fixture_update_state(&mut self, edit: impl FnOnce(&mut State)) -> Result<()> {

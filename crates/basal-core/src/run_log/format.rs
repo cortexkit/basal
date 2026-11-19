@@ -7,7 +7,7 @@ const VERSION: u32 = 1;
 pub(super) const LINK: u8 = 1;
 pub(super) const SEAL: u8 = 2;
 // Bounds allocation when a damaged length field is read during recovery.
-pub(super) const MAX_RECORD: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_RECORD: usize = 8 * 1024 * 1024;
 
 pub(super) fn crc32c(bytes: &[u8]) -> u32 {
     let mut crc = !0u32;
@@ -83,7 +83,7 @@ pub(super) fn frame<T: Serialize>(kind: u8, value: &T) -> Result<Vec<u8>> {
     let payload = postcard::to_allocvec(value).map_err(|_| Error::Corrupt("postcard encoding"))?;
     let len = payload.len() + 1;
     if len > MAX_RECORD {
-        return Err(Error::Corrupt("record too large"));
+        return Err(Error::RecordTooLarge { bytes: len });
     }
     let mut covered = (len as u32).to_le_bytes().to_vec();
     covered.push(kind);

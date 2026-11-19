@@ -301,7 +301,14 @@ impl Run<crate::run_records::Records> {
                 return Ok(None);
             }
             let generation = actor.generation;
-            actor.records.append_snapshot(generation)?
+            match actor.records.append_snapshot(generation) {
+                Ok(appended) => appended,
+                Err(CoreError::RunRecordTooLarge { bytes, .. }) => {
+                    actor.records.warn_oversized_snapshot(bytes);
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            }
         };
         lock_order::assert_lock_free();
         if hooks.at(&self.id, &Boundary::MidSnapshot) == Step::Crash {

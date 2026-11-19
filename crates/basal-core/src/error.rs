@@ -16,6 +16,11 @@ pub enum CoreError {
     /// The store was cut on purpose (a simulated crash); every later
     /// operation through it fails.
     Cut,
+    /// One run supplied more bytes than fit in a single log frame.
+    RunRecordTooLarge {
+        run_id: String,
+        bytes: usize,
+    },
     /// The run is no longer owned by this activation: another activation
     /// took it over, or it was cancelled. Nothing more may be written for
     /// the old activation.
@@ -57,6 +62,11 @@ impl fmt::Display for CoreError {
         match self {
             Self::Store(e) => write!(f, "store: {e}"),
             Self::Cut => write!(f, "the store was cut"),
+            Self::RunRecordTooLarge { run_id, bytes } => write!(
+                f,
+                "run {run_id} log record is {bytes} bytes, exceeding the {}-byte cap",
+                crate::run_log::MAX_RECORD
+            ),
             Self::OwnerLost { run_id, generation } => write!(
                 f,
                 "activation generation {generation} no longer owns run {run_id}"

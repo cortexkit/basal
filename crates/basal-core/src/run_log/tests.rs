@@ -856,3 +856,30 @@ fn ordinary_open_never_initializes_absent_or_foreign_logs() {
         Err(Error::RestoreRequired("foreign segment identity"))
     ));
 }
+
+#[test]
+fn oversized_append_rejects_the_whole_batch_without_stopping_the_writer() {
+    let scratch = Scratch::new();
+    let registry = MemoryRegistry::new();
+    let mut config = scratch.config(Arc::new(NoHooks), 1);
+    config.target_size = u64::MAX;
+    let log = RunLog::<Facts>::create(config.clone(), registry.clone()).unwrap();
+    let mut too_large = Facts::committed();
+    too_large.key = "x".repeat(format::MAX_RECORD);
+    let mut rejected_prefix = Facts::committed();
+    rejected_prefix.key = "rejected prefix".into();
+    log.append(vec![rejected_prefix, too_large]).unwrap_err();
+    let end = log
+        .append(vec![Facts::committed()])
+        .expect("a refused batch must not stop the writer");
+    log.sync_through(end).unwrap();
+    drop(log);
+    registry.known(end);
+    let (_log, recovered) = RunLog::<Facts>::open(config, registry).unwrap();
+    assert_eq!(
+        recovered.records.len(),
+        1,
+        "a refused batch must write nothing"
+    );
+    assert_eq!(recovered.records[0].record, Facts::committed());
+}
