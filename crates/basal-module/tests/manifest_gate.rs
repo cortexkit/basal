@@ -22,24 +22,51 @@ fn routing_consumers_declare_placement_and_delegate_broca() {
     assert_eq!(
         declarations,
         serde_json::json!({"consumers": [
-            {"name":"basal.flow", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"background"},
-            {"name":"basal.codemode", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"blocking"},
+            {"name":"basal.flow", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"background", "workload":"quick"},
+            {"name":"basal.codemode", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"blocking", "workload":"quick"},
             {"name":"basal.flow.classify", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"background"},
             {"name":"basal.codemode.classify", "placement":{"module":"broca"}, "tools":"none", "selectors":["broca"], "priority":"blocking"}
         ]})
     );
     let parsed = cortexkit_role_routing::parse_consumer_declarations_serving(
         &declarations,
-        &["consumer_declarations", "consumer_priority"],
+        &[
+            "consumer_declarations",
+            "consumer_priority",
+            "select_workload",
+        ],
     )
     .expect("routing/v1 accepts the declarations");
     assert_eq!(parsed.consumers.len(), 4);
+    assert_eq!(
+        parsed.consumers[0].defaults.workload.as_deref(),
+        Some("quick")
+    );
+    assert_eq!(
+        parsed.consumers[1].defaults.workload.as_deref(),
+        Some("quick")
+    );
+    assert_eq!(parsed.consumers[2].defaults.workload, None);
+    assert_eq!(parsed.consumers[3].defaults.workload, None);
     // A router without priority support refuses the member, which is why the
     // declarations waited for the live router to advertise it.
     assert!(
         cortexkit_role_routing::parse_consumer_declarations_serving(
             &declarations,
-            &["consumer_declarations"],
+            &["consumer_declarations", "select_workload"],
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn routing_consumers_require_select_workload_capability() {
+    let manifest = basal_module::manifest::manifest();
+    let declarations = serde_json::to_value(&manifest.role_declarations["routing/v1"]).unwrap();
+    assert!(
+        cortexkit_role_routing::parse_consumer_declarations_serving(
+            &declarations,
+            &["consumer_declarations", "consumer_priority"],
         )
         .is_err()
     );
