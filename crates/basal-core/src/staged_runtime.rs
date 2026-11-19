@@ -1185,16 +1185,36 @@ impl Runtime {
         &self,
         notices: &[crate::events::Notice],
     ) -> Result<crate::events::Report> {
+        self.staged_admit_event_batch(notices, &[])
+    }
+
+    pub(crate) fn staged_admit_event_batch(
+        &self,
+        notices: &[crate::events::Notice],
+        install_changes: &[&str],
+    ) -> Result<crate::events::Report> {
         if self.is_stopping() {
             return Err(CoreError::Unavailable(
                 "runtime stopped for recovery".into(),
             ));
         }
-        self.staged_admission().admit_events(
+        let ctx = self.admit_context()?;
+        self.staged_admission().admit_events_with(
             notices,
-            &self.admit_context()?,
+            &ctx,
             &EventWakes(self),
-            || self.publish_pending_runs(),
+            |tx| {
+                for flow in install_changes {
+                    crate::install_policy::mark_install_cards_due(tx, flow, ctx.now_ms)?;
+                }
+                Ok(())
+            },
+            || {
+                if !install_changes.is_empty() {
+                    self.shared.signal.bump();
+                }
+                self.publish_pending_runs()
+            },
         )
     }
 

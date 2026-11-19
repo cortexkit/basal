@@ -268,6 +268,7 @@ impl Engine {
         inner.rt.poll_lost_grants().map_err(fatal)?;
         // Moved flows waiting for approval here, read outside the store lock.
         inner.rt.check_due_moved_flows().map_err(fatal)?;
+        inner.rt.check_due_install_cards().map_err(fatal)?;
         inner.rt.drain_owner_notices().map_err(fatal)?;
         inner.rt.drain_secret_revocations().map_err(fatal)?;
         inner.rt.drain_event_backlog().map_err(fatal)?;

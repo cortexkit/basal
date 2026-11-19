@@ -519,6 +519,12 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 53,
         statements: include_str!("../schema_agent_move_v53.sql"),
     },
+    Migration {
+        version: 54,
+        statements: "ALTER TABLE install_cards ADD COLUMN retry_at INTEGER;
+                     ALTER TABLE install_cards ADD COLUMN retry_failures INTEGER;
+                     ALTER TABLE install_cards ADD COLUMN checked_at INTEGER;",
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,

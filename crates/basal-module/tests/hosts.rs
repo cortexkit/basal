@@ -318,6 +318,7 @@ fn approve(f: &Fake, module: &basal_module::module::Module) {
         .rt
         .install_changed(flow["flow_id"].as_str().unwrap())
         .unwrap();
+    module.rt.check_due_install_cards().unwrap();
 }
 #[test]
 fn catalog_install_refuses_missing_ops_and_events_and_marks_mutations() {

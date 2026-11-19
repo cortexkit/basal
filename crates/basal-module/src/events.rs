@@ -580,8 +580,9 @@ async fn commit_batch_report(
     let owned_messages = messages.to_vec();
     // Decoding consults the synchronous daemon catalog. Keep it with SQLite
     // admission on the blocking pool, while the async task sends progress acks.
-    let mut commit = tokio::task::spawn_blocking(move || {
+    let mut commit = tokio::task::spawn_blocking(move || -> Result<(Report, usize), String> {
         let mut notices = Vec::new();
+        let mut install_changes = std::collections::BTreeSet::new();
         let mut malformed = 0;
         let mut card_settled = false;
         for m in &owned_messages {
@@ -643,11 +644,7 @@ async fn commit_batch_report(
                         }
                     }) {
                         Ok(change) => {
-                            rt.install_changed(&change.flow_id)
-                                .map_err(|e| e.to_string())?;
-                            // A moved flow waiting for approval here has no
-                            // card of its own: prefrontal's notice is its cue.
-                            rt.recheck_moved_flows_after(Some(&change.flow_id), None);
+                            install_changes.insert(change.flow_id);
                         }
                         Err(reason) => {
                             malformed += 1;
@@ -677,14 +674,19 @@ async fn commit_batch_report(
         if card_settled && let Some(consent) = &consent {
             consent.card_settled();
         }
-        // Control-only batches admit no flow work, so do not open an empty
-        // admission transaction merely to acknowledge their bus messages.
-        if notices.is_empty() {
+        if notices.is_empty() && install_changes.is_empty() {
             return Ok((Report::default(), malformed));
         }
-        rt.admit_events(&notices)
-            .map(|report| (report, malformed))
-            .map_err(|e| e.to_string())
+        let install_changes: Vec<_> = install_changes.iter().map(String::as_str).collect();
+        let report = rt
+            .admit_events_with_install_changes(&notices, &install_changes)
+            .map_err(|e| e.to_string())?;
+        for flow in install_changes {
+            // Agent moves don't carry install cards to the destination, so
+            // schedule an approval check for those flows separately.
+            rt.recheck_moved_flows_after(Some(flow), None);
+        }
+        Ok((report, malformed))
     });
     let mut progress = tokio::time::interval_at(
         tokio::time::Instant::now() + Duration::from_secs(5),
@@ -692,7 +694,7 @@ async fn commit_batch_report(
     );
     let report = loop {
         tokio::select! {
-            result = &mut commit => break result.map_err(|e| format!("reader stopped: batch worker {e}"))?.map_err(|e| e.to_string())?,
+            result = &mut commit => break result.map_err(|e| format!("reader stopped: batch worker {e}"))??,
             _ = progress.tick() => {
                 for message in messages { message.ack_with(jetstream::AckKind::Progress).await.map_err(|e| e.to_string())?; }
             }

@@ -106,6 +106,11 @@ fn install_version(f: &common::Fixture, version: u32) -> Result<Value, basal_mod
     )
 }
 
+fn check_install_change(f: &common::Fixture, flow_id: &str) {
+    f.module.rt.install_changed(flow_id).unwrap();
+    f.module.rt.check_due_install_cards().unwrap();
+}
+
 fn policy_reply(hash: &str) -> Value {
     json!({"outcome":"approved_by_policy","rule":RULE,"code_hash":hash})
 }
@@ -355,7 +360,7 @@ fn install_id_survives_startup_and_install_change_status_checks_before_retry() {
     );
     assert_eq!(fake.calls("flow.install_status").len(), 1);
     assert_eq!(fake.calls("flow.install_request").len(), 1);
-    recovered.module.rt.install_changed(FLOW).unwrap();
+    check_install_change(&recovered, FLOW);
     assert_eq!(fake.calls("flow.install_status").len(), 2);
     assert_eq!(fake.calls("flow.install_request").len(), 1);
     assert_eq!(
@@ -394,7 +399,7 @@ fn install_id_approved_uninstall_requires_a_new_version_for_a_fresh_request() {
             json!({"state":"active","code_hash":hash(FLOW,1),"approval":{"kind":"card"}}),
         )],
     );
-    f.module.rt.install_changed(FLOW).unwrap();
+    check_install_change(&f, FLOW);
     f.module
         .handle(&Caller::Operator, "flow.uninstall", json!({"flow_id":FLOW}))
         .unwrap();
@@ -444,7 +449,7 @@ fn agent_global_install_waits_for_core_card_answer() {
             json!({"state":"pending","code_hash":hash,"attempt":attempt}),
         )],
     );
-    f.module.rt.install_changed(FLOW).unwrap();
+    check_install_change(&f, FLOW);
     assert_eq!(
         f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
         None
@@ -455,7 +460,7 @@ fn agent_global_install_waits_for_core_card_answer() {
             json!({"state":"active","code_hash":hash,"approval":{"kind":"card"}}),
         )],
     );
-    f.module.rt.install_changed(FLOW).unwrap();
+    check_install_change(&f, FLOW);
     assert_eq!(
         f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
         Some(1)
@@ -518,7 +523,7 @@ fn global_policy_approval_is_refused_live() {
             } else {
                 install_audience(&f, &caller, &manifest).unwrap();
                 fake.enqueue("flow.install_status", vec![Ok(active(&hash))]);
-                f.module.rt.install_changed(FLOW).unwrap();
+                check_install_change(&f, FLOW);
             }
             assert_global_policy_refused(&f);
             assert_eq!(fake.calls("flow.install_status").len(), 1);
@@ -551,17 +556,17 @@ fn self_and_workspace_audiences_accept_policy_approval() {
 }
 
 #[test]
-fn install_change_requires_active_status_with_the_local_hash() {
+fn install_change_leaves_pending_unknown_or_mismatched_status_unapproved() {
     for status in [
         json!({"state":"unknown","code_hash":null}),
         json!({"state":"pending","code_hash":hash(FLOW,1),"attempt":7}),
-        json!({"state":"revoked","code_hash":hash(FLOW,1)}),
+        json!({"state":"held","code_hash":"ab".repeat(32),"reason":"scope_stale"}),
         active(&"ab".repeat(32)),
         json!({"state":"active","code_hash":"bad"}),
     ] {
         let (fake, f) = raised_fixture("change-not-approved");
         fake.enqueue("flow.install_status", vec![Ok(status)]);
-        f.module.rt.install_changed(FLOW).unwrap();
+        check_install_change(&f, FLOW);
         assert_eq!(
             f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
             None
@@ -590,7 +595,7 @@ fn install_change_confirms_card_or_policy_provenance_in_the_shared_transaction()
                 json!({"state":"active","code_hash":hash(FLOW,1),"approval":approval}),
             )],
         );
-        f.module.rt.install_changed(FLOW).unwrap();
+        check_install_change(&f, FLOW);
         assert_eq!(fake.calls("flow.install_status").len(), 1);
         assert_eq!(
             f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
@@ -631,7 +636,7 @@ fn install_change_settles_declined_and_expired_cards_without_approving() {
                 json!({"state":state,"code_hash":hash(FLOW,1),"attempt":7}),
             )],
         );
-        f.module.rt.install_changed(FLOW).unwrap();
+        check_install_change(&f, FLOW);
         assert_eq!(
             f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
             None
@@ -652,17 +657,17 @@ fn install_change_settles_declined_and_expired_cards_without_approving() {
 fn install_change_skips_unknown_flows_and_settled_cards() {
     for state in ["active", "declined", "expired"] {
         let (fake, f) = raised_fixture("change-duplicate");
-        f.module.rt.install_changed("absent").unwrap();
+        check_install_change(&f, "absent");
         assert!(fake.calls("flow.install_status").is_empty());
         let mut status = json!({"state":state,"code_hash":hash(FLOW,1)});
         if state == "active" {
             status["approval"] = json!({"kind":"card"});
         }
         fake.enqueue("flow.install_status", vec![Ok(status)]);
-        f.module.rt.install_changed(FLOW).unwrap();
+        check_install_change(&f, FLOW);
         let before = f.module.rt.outbox().unwrap().len();
         for _ in 0..3 {
-            f.module.rt.install_changed(FLOW).unwrap();
+            check_install_change(&f, FLOW);
         }
         assert_eq!(fake.calls("flow.install_status").len(), 1);
         assert_eq!(f.module.rt.outbox().unwrap().len(), before);
