@@ -4,8 +4,9 @@
 //! costs latency, never an outcome.
 use basal_host::broca::{BrocaError, Route, Transport};
 use basal_host::broca::{
-    BrocaHost, ENDED_RUN_CHECK_MS, EventRefusal, FIRST_CHECK_MS, FIRST_RETRY_MS, MAX_CHECK_MS,
-    MAX_RETRY_MS, MIN_TIMER_MS, RECHECK_MIN_INTERVAL_MS, RunWake, StateStore, WakeKind,
+    BrocaHost, ENDED_RUN_CHECK_MS, EventRefusal, FIRST_CHECK_MS, FIRST_RETRY_MS, FlowIdentity,
+    MAX_CHECK_MS, MAX_RETRY_MS, MIN_TIMER_MS, RECHECK_MIN_INTERVAL_MS, RunWake, StateStore,
+    WakeKind,
     fake::{FakeBroca, MemoryStore},
     next_check_at, retry_at,
     subc::PollWake,
@@ -60,6 +61,7 @@ fn llm(position: u64) -> CallRequest {
 #[derive(Default)]
 struct Sink {
     completions: Mutex<Vec<Completion>>,
+    unknowns: Mutex<Vec<UnknownOutcome>>,
 }
 impl CompletionSink for Sink {
     fn complete(&self, c: &Completion) -> Result<CompletionAck, SinkError> {
@@ -70,7 +72,8 @@ impl CompletionSink for Sink {
         completions.push(c.clone());
         Ok(CompletionAck::Accepted)
     }
-    fn unknown(&self, _: &UnknownOutcome) -> Result<CompletionAck, SinkError> {
+    fn unknown(&self, unknown: &UnknownOutcome) -> Result<CompletionAck, SinkError> {
+        self.unknowns.lock().unwrap().push(unknown.clone());
         Ok(CompletionAck::Accepted)
     }
 }
@@ -718,6 +721,156 @@ fn a_failed_read_of_an_ended_run_without_a_deadline_waits_for_the_ended_interval
     assert!(f.host.wake().is_err());
     assert_eq!(f.stored(0).failures, 1);
     assert_eq!(f.stored(0).check_at, Some(f.now() + ENDED_RUN_CHECK_MS));
+}
+
+#[derive(Default)]
+struct FlowStore(MemoryStore);
+
+impl StateStore for FlowStore {
+    fn identity(&self, run_id: &str) -> Result<Option<FlowIdentity>, BrocaError> {
+        assert_eq!(run_id, "r");
+        Ok(Some(FlowIdentity {
+            flow_id: "f".into(),
+            version: 1,
+            code_hash: "a".repeat(64),
+        }))
+    }
+
+    fn run_ended(&self, run_id: &str) -> Result<bool, BrocaError> {
+        self.0.run_ended(run_id)
+    }
+
+    fn load(&self) -> Result<Vec<basal_host::broca::StoredCall>, BrocaError> {
+        self.0.load()
+    }
+
+    fn save(&self, call: &basal_host::broca::StoredCall) -> Result<(), BrocaError> {
+        self.0.save(call)
+    }
+
+    fn wakes(&self) -> Result<Vec<RunWake>, BrocaError> {
+        self.0.wakes()
+    }
+
+    fn clear_wake(&self, event: &str, send: &str) -> Result<(), BrocaError> {
+        self.0.clear_wake(event, send)
+    }
+
+    fn delete_flow_call(&self, send: &str) -> Result<(), BrocaError> {
+        self.0.delete_flow_call(send)
+    }
+}
+
+#[derive(Default)]
+struct RefreshProbe {
+    fake: FakeBroca,
+    error: Mutex<Option<BrocaError>>,
+    reads: AtomicUsize,
+}
+
+impl Transport for RefreshProbe {
+    fn refresh_flow(&self, _: &FlowIdentity) -> Result<(), BrocaError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.error.lock().unwrap().clone().map_or(Ok(()), Err)
+    }
+
+    fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError> {
+        self.fake.send(route, params)
+    }
+
+    fn send_status(&self, route: &Route, p: &SendStatusParams) -> Result<Value, BrocaError> {
+        self.fake.send_status(route, p)
+    }
+
+    fn event_get(&self, route: &Route, p: &RunEventGetParams) -> Result<RunEventReply, BrocaError> {
+        self.fake.event_get(route, p)
+    }
+
+    fn result(&self, route: &Route, p: &RunResultParams) -> Result<RunResultResponse, BrocaError> {
+        self.fake.result(route, p)
+    }
+
+    fn status(&self, route: &Route, p: &StatusParams) -> Result<RunStatusResponse, BrocaError> {
+        self.fake.status(route, p)
+    }
+}
+
+#[test]
+fn a_revoked_flow_wake_does_not_spin_and_its_ended_call_settles_unknown() {
+    for revoked in [true, false] {
+        let transport = Arc::new(RefreshProbe::default());
+        let store = Arc::new(FlowStore::default());
+        let sink = Arc::new(Sink::default());
+        let clock = Arc::new(AtomicI64::new(START));
+        let tick = clock.clone();
+        let host = BrocaHost::new(
+            transport.clone(),
+            store.clone(),
+            "/project".into(),
+            "basal".into(),
+            Arc::new(FakeSelector::default()),
+        )
+        .with_clock(Arc::new(move || tick.load(Ordering::SeqCst)));
+        host.attach(sink.clone());
+        let mut request = llm(0);
+        request.flow_version = Some(1);
+        let Dispatched::Accepted { handle } = host.dispatch_model(&request).unwrap() else {
+            panic!("expected a pending model call");
+        };
+        host.dispatch_committed(&request);
+        store.0.end_run("r");
+        transport.reads.store(0, Ordering::SeqCst);
+        *transport.error.lock().unwrap() = Some(if revoked {
+            BrocaError::FlowInstallInactive
+        } else {
+            BrocaError::Unavailable {
+                proven_unsent: false,
+                detail: "core install status read timed out".into(),
+            }
+        });
+        let send = &request.idempotency_key;
+        transport
+            .fake
+            .finish(send, "late", RunFinishReason::Completed, None)
+            .unwrap();
+        store
+            .0
+            .add_wake(transport.fake.publish_ended(send).unwrap());
+
+        // Drive the simulated timer for one idle hour.
+        while clock.load(Ordering::SeqCst) < START + 3_600_000 {
+            let _ = host.wake();
+            let Some(wait) = host.next_wake_in() else {
+                break;
+            };
+            clock.fetch_add(i64::try_from(wait.as_millis()).unwrap(), Ordering::SeqCst);
+        }
+        let reads = transport.reads.load(Ordering::SeqCst);
+        assert!(
+            (1..=3).contains(&reads),
+            "revoked={revoked}: {reads} core reads in an idle hour"
+        );
+        assert!(store.wakes().unwrap().is_empty());
+        assert_eq!(transport.fake.event_gets(), 0);
+        assert!(sink.completions.lock().unwrap().is_empty());
+        let unknowns = sink.unknowns.lock().unwrap().clone();
+        if revoked {
+            assert_eq!(unknowns.len(), 1);
+            assert_eq!(unknowns[0].handle, handle);
+            assert_eq!(unknowns[0].run_id, request.run_id);
+            assert_eq!(unknowns[0].position, request.position);
+            assert!(store.get(send).unwrap().is_none());
+            assert_eq!(host.next_wake_in(), None);
+            host.poll().unwrap();
+            assert_eq!(transport.reads.load(Ordering::SeqCst), reads);
+        } else {
+            assert!(unknowns.is_empty());
+            assert_eq!(
+                store.get(send).unwrap().unwrap().check_at,
+                Some(START + FIRST_CHECK_MS + ENDED_RUN_CHECK_MS)
+            );
+        }
+    }
 }
 
 fn codemode_request(position: u64) -> CallRequest {

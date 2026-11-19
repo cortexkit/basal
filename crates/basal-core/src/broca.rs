@@ -214,6 +214,16 @@ impl StateStore for BrocaStore {
             })
             .map_err(|e| BrocaError::Store(e.to_string()))
     }
+    fn delete_flow_call(&self, send_id: &str) -> Result<(), BrocaError> {
+        self.store()?
+            .write(|tx| {
+                tx.execute("DELETE FROM broca_waits WHERE send_id = ?1", [send_id])?;
+                tx.execute("DELETE FROM broca_wakes WHERE send_id = ?1", [send_id])?;
+                tx.execute("DELETE FROM broca_calls WHERE send_id = ?1", [send_id])?;
+                Ok(())
+            })
+            .map_err(|e| BrocaError::Store(e.to_string()))
+    }
     fn learn_session_ref(&self, send_id: &str, session_ref: &str) -> Result<(), BrocaError> {
         self.store()?
             .write(|tx| {
