@@ -2,6 +2,7 @@
 //! handler's thread. Admission writes the run, then basal-core's Supervisor
 //! drives its fresh worker and tool calls on a separate blocking thread.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,6 +34,17 @@ impl WorkerSource for FreshWorkers {
     }
 }
 
+#[derive(Default)]
+struct LateCalls {
+    /// Runs whose foreground wait expired before an inline answer was chosen.
+    /// A keyed retry returning the result inline does not cancel that debt.
+    held: BTreeSet<String>,
+    /// Held runs whose late result is durable. Remembering them stops a timeout
+    /// that raced with completion from reopening publication after the caller
+    /// acknowledges the late result through `late_results.ack`.
+    published: BTreeSet<String>,
+}
+
 #[derive(Clone)]
 pub(crate) struct Codemode {
     supervisor: Supervisor,
@@ -42,7 +54,7 @@ pub(crate) struct Codemode {
     transport: Arc<dyn basal_host::transport::Transport>,
     admission: Arc<Mutex<()>>,
     records: Arc<Mutex<()>>,
-    late_lock: Arc<Mutex<()>>,
+    late_lock: Arc<Mutex<LateCalls>>,
     incarnation: String,
 }
 
@@ -67,14 +79,21 @@ impl Codemode {
             config.shell_denylist.clone(),
         )?
         .with_models(hosts.host.clone(), config.selector.clone());
-        let late_lock = Arc::new(Mutex::new(()));
+        let late_lock = Arc::new(Mutex::new(LateCalls::default()));
         let weak_store = Arc::downgrade(&store);
         let serial = late_lock.clone();
         let clock = config.clock.clone();
         supervisor.on_terminal(Arc::new(move |id, result| {
             if let Some(store) = weak_store.upgrade() {
-                let _serial = serial.lock().unwrap();
-                publish_result(&store, id, result).map_err(|e| CoreError::Invalid(e.message))?;
+                let mut late = serial.lock().unwrap();
+                // An inline wait either claims this result or records a held
+                // answer and publishes it. Only the latter owes a feed entry.
+                if late.held.contains(id) {
+                    publish_result(&store, id, result)
+                        .map_err(|e| CoreError::Invalid(e.message))?;
+                    late.held.remove(id);
+                    late.published.insert(id.to_owned());
+                }
                 maintain_late(&store, &clock).map_err(|e| CoreError::Invalid(e.message))?;
             }
             Ok(())
@@ -91,7 +110,7 @@ impl Codemode {
             incarnation: random_id().map_err(|e| CoreError::Invalid(e.message))?,
         };
         codemode
-            .publish()
+            .publish_recovered()
             .map_err(|e| CoreError::Invalid(e.message))?;
         Ok(codemode)
     }
@@ -231,14 +250,46 @@ impl Codemode {
     }
 
     pub(crate) fn wait(&self, id: &str, timeout: Duration) -> Result<Option<Value>, ErrorBody> {
-        let result = self
-            .supervisor
-            .wait(id, timeout)
-            .map_err(storage)?
-            .map(|result| render(id, result));
-        if result.is_some() {
-            self.publish()?;
-        }
+        let result = self.supervisor.wait(id, timeout).map_err(storage)?;
+        let mut late = self.late_lock.lock().unwrap();
+        let result = match result {
+            Some(result) => {
+                if !late.held.contains(id) {
+                    self.store
+                        .write(|tx| {
+                            // `published` means "nothing left to publish": either
+                            // the feed entry is durable or the answer is inline.
+                            // A crash before this write can cause a harmless
+                            // recovery copy, but cannot suppress a held answer.
+                            tx.execute(
+                                "UPDATE codemode_tool_calls SET published=1 WHERE run_id=?1",
+                                [id],
+                            )?;
+                            Ok(())
+                        })
+                        .map_err(storage)?;
+                }
+                Some(render(id, result))
+            }
+            None => {
+                if !late.published.contains(id) && late.held.insert(id.to_owned()) {
+                    self.store
+                        .write(|tx| {
+                            // Record the held decision before running() can return
+                            // it. A concurrent inline reply does not cancel the late
+                            // result owed to this caller.
+                            tx.execute(
+                                "UPDATE codemode_tool_calls SET published=0 WHERE run_id=?1",
+                                [id],
+                            )?;
+                            Ok(())
+                        })
+                        .map_err(storage)?;
+                }
+                None
+            }
+        };
+        self.publish_held(&mut late)?;
         Ok(result)
     }
 
@@ -338,7 +389,29 @@ impl Codemode {
     }
 
     fn publish(&self) -> Result<(), ErrorBody> {
+        let mut late = self.late_lock.lock().unwrap();
+        self.publish_held(&mut late)
+    }
+
+    fn publish_held(&self, late: &mut LateCalls) -> Result<(), ErrorBody> {
+        let ids = late.held.iter().cloned().collect::<Vec<_>>();
+        for id in ids {
+            if let Some(result) = self.supervisor.result(&id).map_err(storage)?
+                && result["status"] != "running"
+            {
+                publish_result(&self.store, &id, result)?;
+                late.held.remove(&id);
+                late.published.insert(id);
+            }
+        }
+        maintain_late(&self.store, &self.clock)
+    }
+
+    fn publish_recovered(&self) -> Result<(), ErrorBody> {
         let _records = self.late_lock.lock().unwrap();
+        // A published=0 row left by a stopped process may have answered held,
+        // so recovery must publish every terminal one. Rows marked inline by
+        // this build are published=1 and do not appear here.
         let ids = self
             .store
             .read(|conn| {
