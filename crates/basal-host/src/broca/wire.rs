@@ -44,6 +44,10 @@ pub struct SendParams {
     pub tool_choice: Value,
     pub generation: GenerationConfig,
     pub stop_when: Vec<Value>,
+    /// Basal sets no cache policy. An absent policy is left out of the request
+    /// rather than sent as `null`: Broca's send reads a present `cache` member
+    /// as a policy object and refuses `null` as `invalid_params`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<Value>,
     pub work_class: Option<String>,
     pub append_episode: bool,
