@@ -1020,20 +1020,23 @@ fn model_calls_use_distinct_run_scoped_sessions() {
 #[test]
 fn model_routing_is_journaled_before_send_and_reused_on_resend() {
     let f = ModelFixture::new();
-    f.wire.fake.cut_next_reply();
-    f.f.issue(0, "model", json!({"prompt":"hello","max_output":1}));
-    assert_eq!(f.f.delivery().settlement, Settlement::Rejected);
-    assert_eq!(*f.wire.frozen.lock().unwrap(), [true]);
-    let call = HostCall {
-        position: 0,
-        kind: CallKind::Tool {
-            name: "model".into(),
-        },
-        args: JsonText::new(json!({"prompt":"hello","max_output":1}).to_string()).unwrap(),
-    };
+    // Keep the call pending across the lost reply. The driver would settle a
+    // failed delivery, and a settled call is no longer eligible for preparation.
+    let call = queued_model(&f);
     let first = models::prepare(&f.f.host.store, f.selector.as_ref(), &f.run(), &call).unwrap();
-    f.broca.dispatch_model(&first).unwrap();
+    f.f.host
+        .store
+        .write(|tx| {
+            assert!(store::prepare_queued(tx, "r", 0, f.f.clock.now_ms())?);
+            assert!(store::enter_call(tx, "r", 0, f.f.clock.now_ms())?);
+            Ok(())
+        })
+        .unwrap();
+    f.wire.fake.cut_next_reply();
+    assert!(f.broca.dispatch_model(&first).is_err());
     let again = models::prepare(&f.f.host.store, f.selector.as_ref(), &f.run(), &call).unwrap();
+    f.broca.dispatch_model(&again).unwrap();
+    assert_eq!(*f.wire.frozen.lock().unwrap(), [true, true]);
     assert_eq!(first, again);
     assert_eq!(f.routing.calls.lock().unwrap().len(), 1);
     let sends = f.wire.fake.sends();
@@ -1492,4 +1495,90 @@ fn deleting_a_codemode_call_cascades_to_its_wait_and_wakes() {
         })
         .unwrap();
     assert_eq!(counts(&f.f.host.store), (0, 0));
+}
+
+#[derive(Debug)]
+struct ParkedSelection {
+    inner: Arc<dyn ModelSelector>,
+    selected: mpsc::Sender<()>,
+    resume: Mutex<mpsc::Receiver<()>>,
+}
+
+impl ModelSelector for ParkedSelection {
+    fn select(
+        &self,
+        request: &basal_host::selector::SelectionRequest,
+    ) -> std::result::Result<
+        basal_host::selector::ModelSelection,
+        basal_host::selector::SelectionError,
+    > {
+        let result = self.inner.select(request);
+        self.selected.send(()).unwrap();
+        self.resume.lock().unwrap().recv_timeout(TIMEOUT).unwrap();
+        result
+    }
+
+    fn report_outcome(
+        &self,
+        decision_id: &str,
+        outcome: basal_host::selector::ModelOutcome,
+    ) -> std::result::Result<(), basal_host::selector::SelectionError> {
+        self.inner.report_outcome(decision_id, outcome)
+    }
+}
+
+fn queued_model(f: &ModelFixture) -> HostCall {
+    let call = HostCall {
+        position: 0,
+        kind: CallKind::Tool {
+            name: "model".into(),
+        },
+        args: JsonText::new(r#"{"prompt":"hello","max_output":1}"#).unwrap(),
+    };
+    f.f.host
+        .store
+        .write(|tx| {
+            store::insert_call(
+                tx,
+                "r",
+                0,
+                "model",
+                call.args.len() as u64,
+                CallStart::Queued,
+            )
+        })
+        .unwrap();
+    call
+}
+
+#[test]
+fn cancelled_selection_cannot_add_model_spend() {
+    let f = ModelFixture::new();
+    let store = f.f.host.store.clone();
+    let run = f.run();
+    let call = queued_model(&f);
+    let (selected, selection) = mpsc::channel();
+    let (resume, parked) = mpsc::channel();
+    let selector = ParkedSelection {
+        inner: f.selector.clone(),
+        selected,
+        resume: Mutex::new(parked),
+    };
+    let prepare_store = store.clone();
+    let prepare = thread::spawn(move || models::prepare(&prepare_store, &selector, &run, &call));
+    selection.recv_timeout(TIMEOUT).unwrap();
+    assert_eq!(
+        f.f.supervisor.cancel("r").unwrap().unwrap()["status"],
+        "cancelled"
+    );
+    resume.send(()).unwrap();
+    let prepared = prepare.join().unwrap();
+    let spent = store
+        .read(|c| crate::classify_cost::spent(c, "program", "r"))
+        .unwrap();
+    assert_eq!(
+        spent, 0.0,
+        "an unsent model call added spend after cancellation"
+    );
+    assert!(prepared.is_err());
 }
