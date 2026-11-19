@@ -444,7 +444,7 @@ fn pending_card(rt: &Runtime, version: u32) -> basal_core::cards::CardRecord {
 }
 
 #[tokio::test]
-async fn install_change_notice_reads_status_once_and_applies_like_hint() {
+async fn install_change_notice_reads_status_once_and_skips_settled_cards() {
     let server = Server::start().await;
     let host = Arc::new(NoticeHost::default());
     let rt = with_host(&server.dir.join("install.db"), host.clone());
@@ -452,9 +452,10 @@ async fn install_change_notice_reads_status_once_and_applies_like_hint() {
     *host.status.lock().unwrap() = Some(InstallStatus::Declined {
         code_hash: basal_core::ids::hex(&card.code_hash),
     });
+    let subject = "ck.account.event.prefrontal-core.flow_install_changed.v1";
     publish_control(
         &server,
-        "ck.account.event.prefrontal-core.flow_install_changed.v1",
+        subject,
         json!({"flow_id":"control-flow","seq":1}),
         "install-change:1",
     )
@@ -468,8 +469,17 @@ async fn install_change_notice_reads_status_once_and_applies_like_hint() {
         basal_core::cards::CardState::Declined
     );
     assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
-    rt.install_decided("control-flow", 1, 1).unwrap();
+    publish_control(
+        &server,
+        subject,
+        json!({"flow_id":"control-flow","seq":2}),
+        "install-change:2",
+    )
+    .await;
+    let messages = pull(&consumer).await.unwrap();
+    commit_batch(rt, &messages, true).await.unwrap();
     assert_eq!(host.statuses.lock().unwrap().len(), 1);
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
 }
 
 #[tokio::test]

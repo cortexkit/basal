@@ -187,19 +187,6 @@ impl Runtime {
         }
     }
 
-    /// A hint carries identity only. Unknown and already settled cards are
-    /// acknowledged without querying core; every open card gets one status read.
-    pub fn install_decided(&self, flow_id: &str, version: u32, attempt: i64) -> Result<()> {
-        let card = self.store().read(|c| {
-            let id: Option<String> = c.query_row("SELECT card_id FROM install_cards WHERE flow_id=?1 AND version=?2 AND attempt=?3 AND state='pending'", params![flow_id, version, attempt], |r| r.get(0)).optional()?;
-            id.map(|id| crate::cards::load(c, &id)).transpose().map(Option::flatten)
-        })?;
-        if let Some(card) = card {
-            self.reconcile_install_card(&card, "install_decided")?;
-        }
-        Ok(())
-    }
-
     /// A bus hint has no version: check pending cards oldest first, without
     /// holding SQLite across a core read. With no pending card, the activation
     /// gate still rechecks status and flow.install_revoked still handles revocation.
@@ -218,11 +205,9 @@ impl Runtime {
         Ok(())
     }
 
-    /// `signal` names what prompted the check: prefrontal's direct hint, its
-    /// bus event, or startup recovery. Logging it on a resolved card shows which
-    /// path settles cards in practice, so the redundant one can be retired.
-    /// Only a still-pending card is reconciled, so normally only the first
-    /// signal logs; two arriving in the same instant may both log.
+    /// `signal` records whether prefrontal's install change event or startup
+    /// recovery prompted the status check. The status reply, not the signal,
+    /// determines whether the card can be settled.
     fn reconcile_install_card(&self, card: &crate::cards::CardRecord, signal: &str) -> Result<()> {
         let flow_id = &card.flow_id;
         let version = card.version;
@@ -297,7 +282,7 @@ impl Runtime {
     }
 
     /// At startup, check each undecided card and each pending policy request
-    /// once. Lost hints and lost request replies are recovered without polling.
+    /// once. Missed events and lost request replies are recovered without polling.
     pub fn recover_cardless_installs(&self) -> Result<()> {
         self.supersede_older_pending_cards()?;
         let pending = self.store().read(|c| {

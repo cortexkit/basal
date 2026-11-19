@@ -315,11 +315,8 @@ fn approve(f: &Fake, module: &basal_module::module::Module) {
         )],
     );
     module
-        .handle(
-            &Caller::Core,
-            "flow.install_decided",
-            json!({"flow_id":flow["flow_id"],"version":flow["version"],"attempt":1}),
-        )
+        .rt
+        .install_changed(flow["flow_id"].as_str().unwrap())
         .unwrap();
 }
 #[test]

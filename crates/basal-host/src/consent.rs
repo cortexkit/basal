@@ -1,5 +1,5 @@
 //! Install requests go to core, which owns their cards and durable approval.
-//! Install decision hints trigger status reads, not answer-feed actions.
+//! Install change events prompt basal to read install status from core.
 //! Operator decision cards use the consent provider and deliver their answers
 //! to an attached [`DecisionSink`] until accepted, including after a restart.
 
