@@ -187,7 +187,7 @@ pub enum InstallError {
         flow_id: String,
         retirement: String,
     },
-    /// An agent tried to disable a flow it does not own.
+    /// A caller tried to change a flow it does not own.
     NotOwner {
         flow_id: String,
         agent: String,
@@ -1152,6 +1152,26 @@ pub fn check_version_text(
         .map_err(InstallError::Manifest)
 }
 
+fn check_install_owner(
+    conn: &Connection,
+    flow_id: &str,
+    author: &str,
+) -> std::result::Result<(), InstallError> {
+    let foreign: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM installs WHERE flow_id=?1 AND author<>?2)
+             OR EXISTS(SELECT 1 FROM flows WHERE flow_id=?1 AND owner<>?2)",
+        params![flow_id, author],
+        |r| r.get(0),
+    )?;
+    if foreign {
+        return Err(InstallError::NotOwner {
+            flow_id: flow_id.to_owned(),
+            agent: author.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 fn check_install(
     conn: &Connection,
     manifest: &Manifest,
@@ -1871,6 +1891,22 @@ impl Runtime {
         &self,
         request: &InstallRequest,
     ) -> std::result::Result<Installed, InstallError> {
+        self.install_with_owner_check(request, false)
+    }
+
+    /// Installs on behalf of a non-operator who may only change their own flows.
+    pub fn install_for_owner(
+        &self,
+        request: &InstallRequest,
+    ) -> std::result::Result<Installed, InstallError> {
+        self.install_with_owner_check(request, true)
+    }
+
+    fn install_with_owner_check(
+        &self,
+        request: &InstallRequest,
+        require_owner: bool,
+    ) -> std::result::Result<Installed, InstallError> {
         let cap = basal_proto::MAX_SCRIPT_BYTES;
         if request.script.len() > cap {
             return Err(InstallError::ScriptTooLarge {
@@ -1880,6 +1916,10 @@ impl Runtime {
         }
         let (manifest, stored_hash) =
             self.parse_install_version(&request.script, &request.manifest)?;
+        if require_owner {
+            self.store()
+                .read(|conn| Ok(check_install_owner(conn, &manifest.id, &request.author)))??;
+        }
         if let Some(code_hash) = stored_hash {
             return Ok(Installed {
                 flow_id: manifest.id,
@@ -1903,6 +1943,9 @@ impl Runtime {
         )?;
         let now = self.config().clock.now_ms();
         decide(self, |tx| {
+            if require_owner {
+                check_install_owner(tx, &manifest.id, &request.author)?;
+            }
             check_install(tx, &manifest, request)?;
             record(tx, &manifest, request, validation, now)
         })

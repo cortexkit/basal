@@ -742,6 +742,19 @@ impl Module {
             })
     }
 
+    fn install_owner_refusal(caller: &Caller, flow_id: &str) -> OpError {
+        if matches!(caller, Caller::Local | Caller::DevOperatorApp) {
+            OpError::operator_attestation_required(&format!(
+                "replacing flow {flow_id}, which someone else wrote"
+            ))
+        } else {
+            OpError::new(
+                "not_permitted",
+                format!("flow {flow_id} belongs to someone else"),
+            )
+        }
+    }
+
     fn op_install(&self, caller: &Caller, params: Value) -> OpResult {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -790,10 +803,7 @@ impl Module {
                 }
                 let owners = self.owners(&manifest.id)?;
                 if owners.iter().any(|o| o != agent) {
-                    return Err(OpError::new(
-                        "not_permitted",
-                        format!("flow {} belongs to someone else", manifest.id),
-                    ));
+                    return Err(Self::install_owner_refusal(caller, &manifest.id));
                 }
                 agent.clone()
             }
@@ -812,10 +822,7 @@ impl Module {
                 }
                 let owners = self.owners(&manifest.id)?;
                 if owners.iter().any(|o| o != LOCAL_AUTHOR) {
-                    return Err(OpError::operator_attestation_required(&format!(
-                        "replacing flow {}, which someone else wrote",
-                        manifest.id
-                    )));
+                    return Err(Self::install_owner_refusal(caller, &manifest.id));
                 }
                 // Core needs a declared digest sink to route a local install's
                 // approval card, whether the target is static or audience-wide.
@@ -839,10 +846,17 @@ impl Module {
             author,
             loop_override: p.loop_override,
         };
-        let installed = self
-            .rt
-            .install(&request)
-            .map_err(|e| self.install_error(e))?;
+        let installed = if matches!(caller, Caller::Operator) {
+            self.rt.install(&request)
+        } else {
+            self.rt.install_for_owner(&request)
+        }
+        .map_err(|e| match e {
+            InstallError::NotOwner { ref flow_id, .. } => {
+                Self::install_owner_refusal(caller, flow_id)
+            }
+            _ => self.install_error(e),
+        })?;
 
         self.install_card(caller, &manifest, &request, installed)
     }
