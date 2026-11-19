@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use basal_proto::JsonText;
 use jiff::Timestamp;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
 use crate::admission::{self, Admission, AdmitContext, TriggerSpec};
@@ -37,6 +37,32 @@ pub struct RunAdmission {
     store: Arc<Store>,
     log: Arc<dyn AdmissionLog>,
     hooks: Arc<dyn Hooks>,
+}
+
+fn planned_flow_state_busy(conn: &Connection, flow: &str, now: i64) -> Result<bool> {
+    let holds_slot: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM live_runs WHERE flow_id=?1)",
+        [flow],
+        |r| r.get(0),
+    )?;
+    if !holds_slot
+        || crate::packages::removed(conn, flow)?
+        || crate::templates::expired(conn, flow, now)?
+        || !install::flow(conn, flow)?.is_some_and(|f| f.enabled)
+    {
+        return Ok(false);
+    }
+    let Some(approved) = install::approved(conn, flow)? else {
+        return Ok(false);
+    };
+    let Ok(manifest) = crate::manifest::Manifest::parse_stored(&approved.manifest) else {
+        // Let the write path quarantine invalid approvals and planned payloads.
+        return Ok(false);
+    };
+    Ok(
+        approved.code_hash == crate::ids::code_hash(&approved.script, &approved.manifest)
+            && crate::state_epoch::recorded(conn, flow)? != manifest.state_epoch,
+    )
 }
 
 impl RunAdmission {
@@ -349,19 +375,40 @@ impl RunAdmission {
         };
         // This read is only a no-work fast path. All planning, expiry and
         // admission checks still share the fenced commit below when work exists.
-        let due = self.store.read(|c| {
-            Ok(c.query_row(
+        let (due, waiting) = self.store.read(|c| {
+            let due: bool = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM schedules WHERE state='active' AND next_due_ms<=?1 AND flow_id NOT IN (SELECT flow_id FROM agent_move_held_flows))
-                 OR EXISTS(SELECT 1 FROM schedule_fires WHERE flow_id NOT IN (SELECT flow_id FROM agent_move_held_flows))
                  OR EXISTS(SELECT 1 FROM template_instances t JOIN flows f USING(flow_id) WHERE t.expires_at<=?1 AND t.expiry_notified=0 AND f.removed=0)
                  OR EXISTS(SELECT 1 FROM schedules s JOIN template_instances t USING(flow_id) WHERE t.expires_at<=?1 AND s.state<>'disabled')
                  OR EXISTS(SELECT 1 FROM template_event_outbox WHERE published_at IS NOT NULL AND published_at<?2)",
                 params![ctx.now_ms, ctx.now_ms.saturating_sub(crate::template_events::BODY_RETENTION_MS)],
                 |r| r.get::<_, bool>(0),
-            )?)
+            )?;
+            if due {
+                return Ok((true, 0));
+            }
+            let mut fires = c.prepare("SELECT DISTINCT flow_id FROM schedule_fires WHERE flow_id NOT IN (SELECT flow_id FROM agent_move_held_flows)")?;
+            let mut flows = fires.query_map([], |r| r.get::<_, String>(0))?.peekable();
+            if flows.peek().is_none() {
+                return Ok((false, 0));
+            }
+            if !admission::draining(c)? {
+                for flow in flows {
+                    match planned_flow_state_busy(c, &flow?, ctx.now_ms) {
+                        Ok(true) => {}
+                        Ok(false) => return Ok((true, 0)),
+                        Err(error) if fire_error(&error) => return Ok((true, 0)),
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+            Ok((false, schedule::tick::planned_count(c)?))
         })?;
         if !due {
-            return Ok(TickReport::default());
+            return Ok(TickReport {
+                waiting,
+                ..TickReport::default()
+            });
         }
         let report = self.batch(|tx| {
             crate::templates::expire_schedules(tx, ctx.now_ms)?;
