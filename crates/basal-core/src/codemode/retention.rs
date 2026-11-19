@@ -4,9 +4,9 @@
 //!
 //! The sweep runs from the runtime's deadline pass (see
 //! `Runtime::retention_due`), on the engine's own thread, never on an async
-//! executor. Each pruned run is its own short transaction, and one sweep
-//! handles at most a bounded batch; a full batch leaves the next one due
-//! at once, so the engine's next pass continues it.
+//! executor. Each pruned run is its own short transaction; a full run batch
+//! leaves the next one due at once. Uncollected late results are also swept
+//! in bounded batches, without scheduling a separate wake.
 
 use rusqlite::{Connection, Transaction, params};
 
@@ -15,6 +15,11 @@ use crate::store::Store;
 
 /// How long an ended run stays readable: 24 hours on the runtime's clock.
 pub const RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
+
+// Seven days from settlement is well beyond a live custodian's collection
+// cadence (core drains every five minutes). The 24-hour payload reduction
+// runs on publication or collection, so an idle feed may still have full rows.
+const LATE_RESULT_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 const BATCH: usize = 128;
 
@@ -36,7 +41,7 @@ pub fn next_sweep_at(conn: &Connection) -> Result<Option<i64>> {
 
 /// Prunes up to one batch of runs that ended more than [`RETENTION_MS`]
 /// before `now_ms`, oldest first, and returns their ids. A running run is
-/// never pruned.
+/// never pruned. Also prunes up to one batch of overdue late results.
 pub fn sweep(store: &Store, now_ms: i64) -> Result<Vec<String>> {
     let cutoff = now_ms.saturating_sub(RETENTION_MS);
     let ids: Vec<String> = store.read(|c| {
@@ -54,7 +59,49 @@ pub fn sweep(store: &Store, now_ms: i64) -> Result<Vec<String>> {
             pruned.push(id);
         }
     }
+    sweep_late_results(store, now_ms)?;
     Ok(pruned)
+}
+
+fn sweep_late_results(store: &Store, now_ms: i64) -> Result<()> {
+    let cutoff = now_ms.saturating_sub(LATE_RESULT_RETENTION_MS);
+    let due = store.read(|conn| {
+        Ok(conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM codemode_late_results WHERE settled_at <= ?1)",
+            [cutoff],
+            |r| r.get::<_, bool>(0),
+        )?)
+    })?;
+    if !due {
+        return Ok(());
+    }
+
+    store.write(|tx| {
+        let deleted = {
+            let mut stmt = tx.prepare(
+                "DELETE FROM codemode_late_results WHERE seq IN (
+                    SELECT seq FROM codemode_late_results WHERE settled_at <= ?1
+                    ORDER BY seq LIMIT ?2
+                ) RETURNING custodian, seq",
+            )?;
+            stmt.query_map(params![cutoff, BATCH], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+
+        // The ack row doubles as a floor for the custodian's head after a
+        // sweep: a cursor pointing to a deleted row must still be valid.
+        // Reads still start at the caller's cursor, not at this floor.
+        let mut floor = tx.prepare(
+            "INSERT INTO codemode_late_acks(custodian, through_seq) VALUES (?1, ?2)
+             ON CONFLICT(custodian) DO UPDATE SET through_seq = MAX(through_seq, excluded.through_seq)",
+        )?;
+        for (custodian, seq) in deleted {
+            floor.execute(params![custodian, seq])?;
+        }
+        Ok(())
+    })
 }
 
 fn prune(tx: &Transaction, run_id: &str, cutoff: i64, now_ms: i64) -> Result<bool> {

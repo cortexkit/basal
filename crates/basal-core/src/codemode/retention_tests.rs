@@ -204,6 +204,69 @@ fn the_sweep_prunes_oldest_first_in_bounded_batches() {
 }
 
 #[test]
+fn deadline_pass_prunes_uncollected_late_results_after_seven_days() {
+    let now = ENDED_AT + 7 * DAY_MS;
+    let f = fixture(now);
+    f.rt.store()
+        .write(|tx| {
+            for (id, settled_at, expired) in [
+                ("old-expired", ENDED_AT - 1, true),
+                ("old-unreduced", ENDED_AT, false),
+                ("recent-expired", ENDED_AT + 1, true),
+                ("recent-result", now - 1, false),
+            ] {
+                tx.execute(
+                    "INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at,expired)
+                     VALUES ('reserved:retired','{}',?1,?2,?3)",
+                    params![id, settled_at, expired],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(f.rt.store().read(next_sweep_at).unwrap(), None);
+    f.rt.enforce_deadlines().unwrap();
+    let remaining =
+        f.rt.store()
+            .read(|conn| {
+                let mut stmt =
+                    conn.prepare("SELECT event_id FROM codemode_late_results ORDER BY seq")?;
+                Ok(stmt
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+    assert_eq!(remaining, ["recent-expired", "recent-result"]);
+}
+
+#[test]
+fn late_result_sweep_limits_writes_and_leaves_idle_store_read_only() {
+    let now = ENDED_AT + 7 * DAY_MS;
+    let f = fixture(now);
+    f.rt.store()
+        .write(|tx| {
+            for n in 0..BATCH + 3 {
+                tx.execute(
+                    "INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at)
+                     VALUES ('reserved:retired','{}',?1,?2)",
+                    params![n.to_string(), ENDED_AT],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let writes = f.rt.store().write_transactions_for_test();
+    sweep(f.rt.store(), now).unwrap();
+    assert_eq!(count(&f, "SELECT COUNT(*) FROM codemode_late_results"), 3);
+    assert_eq!(f.rt.store().write_transactions_for_test(), writes + 1);
+    sweep(f.rt.store(), now).unwrap();
+    assert_eq!(count(&f, "SELECT COUNT(*) FROM codemode_late_results"), 0);
+    assert_eq!(f.rt.store().write_transactions_for_test(), writes + 2);
+    sweep(f.rt.store(), now).unwrap();
+    assert_eq!(f.rt.store().write_transactions_for_test(), writes + 2);
+}
+
+#[test]
 fn the_schema_refuses_to_reuse_a_pruned_run_id() {
     let f = fixture(ENDED_AT);
     ended_run(&f, "r1");
