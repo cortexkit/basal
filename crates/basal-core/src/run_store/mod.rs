@@ -251,6 +251,11 @@ impl<R: RunRecords> Run<R> {
 }
 
 impl Run<crate::run_records::Records> {
+    pub(crate) fn budgets(&self) -> Result<crate::run_driver::Budgets> {
+        self.actor.lock().records.budgets().ok_or_else(|| {
+            CoreError::Corrupt(format!("run {} has no accounting budgets", self.id))
+        })
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn retain_detail_for_test(&self, store: Arc<Store>) -> Result<()> {
         self.actor.lock().records.retain_detail(store)

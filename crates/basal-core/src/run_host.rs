@@ -134,6 +134,7 @@ impl RecoveredHosts {
                 &frames,
             )?;
             records.bind_identity(identity);
+            records.bind_budgets(run_budgets.clone());
             let rows = accounting::rows(records.state(), &run_budgets)?;
             registry.insert_accounted(
                 live.run_id,

@@ -128,6 +128,8 @@ pub struct Records {
     warned_oversized_snapshot: bool,
     poisoned: bool,
     identity: Option<crate::run_store_sql::RunIdentity>,
+    // Parsed from the immutable run snapshot when the actor is registered.
+    budgets: Option<crate::run_driver::Budgets>,
     intent_cuts: std::collections::BTreeMap<u64, Lsn>,
     confirmed_sync: Lsn,
 }
@@ -153,6 +155,7 @@ impl Records {
             warned_oversized_snapshot: false,
             poisoned: false,
             identity: None,
+            budgets: None,
             intent_cuts: Default::default(),
             confirmed_sync: Lsn::default(),
         }
@@ -168,6 +171,12 @@ impl Records {
     }
     pub(crate) fn bind_identity(&mut self, identity: crate::run_store_sql::RunIdentity) {
         self.identity = Some(identity);
+    }
+    pub(crate) fn bind_budgets(&mut self, budgets: crate::run_driver::Budgets) {
+        self.budgets = Some(budgets);
+    }
+    pub(crate) fn budgets(&self) -> Option<crate::run_driver::Budgets> {
+        self.budgets.clone()
     }
     pub(crate) fn identity(&self) -> Option<&crate::run_store_sql::RunIdentity> {
         self.identity.as_ref()

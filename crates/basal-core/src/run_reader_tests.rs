@@ -272,3 +272,55 @@ fn recent_flow_runs_bound_loads_and_preserve_admission_order() {
         "running"
     );
 }
+
+#[test]
+fn timer_passes_do_not_read_run_snapshot_blobs() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let f = TestRuntime::new();
+    f.rt.store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO flows(flow_id,created_at) VALUES ('flow',0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    f.rt.fixture_run("run", "flow", 1, "return 1", "{}", State::new(0))
+        .unwrap();
+    *f.rt.shared.retention_next.lock().unwrap() = Some(i64::MAX);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let meter = reads.clone();
+    f.rt.store()
+        .read(|conn| {
+            conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+                if let AuthAction::Read {
+                    table_name: "run_snapshots",
+                    column_name: "script" | "manifest",
+                    ..
+                } = ctx.action
+                {
+                    meter.fetch_add(1, Ordering::Relaxed);
+                }
+                Authorization::Allow
+            }));
+            Ok(())
+        })
+        .unwrap();
+    f.rt.next_wake_at(None).unwrap();
+    let wake = reads.swap(0, Ordering::Relaxed);
+    assert!(f.rt.enforce_deadlines().unwrap().is_empty());
+    let deadlines = reads.swap(0, Ordering::Relaxed);
+    assert_eq!(
+        f.rt.staged_startable().unwrap(),
+        [("run".into(), "flow".into())]
+    );
+    let startable = reads.swap(0, Ordering::Relaxed);
+    assert_eq!(
+        [wake, deadlines, startable],
+        [0, 0, 0],
+        "script/manifest column reads (wake, deadlines, startable)"
+    );
+}

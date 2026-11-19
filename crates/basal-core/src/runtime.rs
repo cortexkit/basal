@@ -1028,25 +1028,20 @@ impl Runtime {
         self.flush_refusals()?;
         let now = self.config.clock.now_ms();
         let mut expired = Vec::new();
-        for run in self.log_live_runs()? {
-            if matches!(
-                run.state,
-                RunState::Pending | RunState::Running | RunState::Suspended
-            ) && run.deadline_at.is_some_and(|at| at <= now)
-            {
+        for (id, flow, timer) in self.live_run_timers()? {
+            if timer.deadline_at.is_some_and(|at| at <= now) {
                 let (kind, detail) = self
-                    .event_body_deadline_failure(&run.run_id)?
+                    .event_body_deadline_failure(&id)?
                     .unwrap_or_else(|| {
                         (
                             "deadline".into(),
                             "the run passed its wall-clock deadline".into(),
                         )
                     });
-                match self.staged_finish(&run.run_id, RunState::Failed, Some(&kind), Some(&detail))
-                {
+                match self.staged_finish(&id, RunState::Failed, Some(&kind), Some(&detail)) {
                     Ok(()) => {
-                        expired.push(run.run_id);
-                        self.wake_flow(&run.flow_id);
+                        expired.push(id);
+                        self.wake_flow(&flow);
                     }
                     Err(CoreError::Unavailable(_)) => {}
                     Err(error) => return Err(error),

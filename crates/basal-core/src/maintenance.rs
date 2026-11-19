@@ -14,45 +14,10 @@ impl Runtime {
     /// timer, on the runtime clock. Pending work is signalled separately:
     /// including it here would spin while all activation slots are occupied.
     pub fn next_wake_at(&self, pool_next: Option<i64>) -> Result<Option<i64>> {
-        let (deadline, retry) = {
-            let runs = self.log_live_runs()?;
-            let states = self.log_states();
-            let deadline = runs
-                .iter()
-                .filter(|r| {
-                    matches!(
-                        r.state,
-                        crate::RunState::Pending
-                            | crate::RunState::Running
-                            | crate::RunState::Suspended
-                    )
-                })
-                .filter_map(|r| r.deadline_at)
-                .min();
-            let retry = runs
-                .iter()
-                .filter(|r| !r.state.is_terminal())
-                .filter_map(|r| states.get(&r.run_id).map(|state| (r, state)))
-                .flat_map(|(run, s)| {
-                    s.calls
-                        .values()
-                        // Runnable work is signalled separately. Its past retry
-                        // time must not turn an occupied worker pool into a spin.
-                        .filter(move |_| run.state == crate::RunState::Suspended)
-                        .filter(|c| c.arrival.is_none())
-                        .filter_map(|c| c.deferred.as_ref().map(|d| d.retry_not_before))
-                        .chain(s.event_bodies.last().and_then(|b| match b {
-                            crate::run_records::Body::EventBody {
-                                body: None,
-                                retry_at,
-                                ..
-                            } => *retry_at,
-                            _ => None,
-                        }))
-                })
-                .min();
-            (deadline, retry)
-        };
+        let timers = self.live_run_timers()?;
+        let deadline = timers.iter().filter_map(|(_, _, timer)| timer.deadline_at).min();
+        let retry = timers.iter().flat_map(|(_, _, timer)| [timer.deferral_retry_at, timer.body_retry_at])
+            .flatten().min();
         let durable = self.store().read(|c| {
             let schedule: Option<i64> = c.query_row(NEXT_SCHEDULE, [], |r| r.get(0))?;
             let expiry: Option<i64> = c.query_row("SELECT MIN(expires_at) FROM template_instances t JOIN flows f USING(flow_id) WHERE f.removed=0 AND t.expiry_notified=0", [], |r| r.get(0))?;

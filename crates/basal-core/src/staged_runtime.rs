@@ -1805,7 +1805,7 @@ impl Runtime {
             live,
             state,
             self.config.clock.now_ms(),
-            hosts.budgets_for(id)?,
+            actor.budgets()?,
             services.clone(),
         );
         terminal.error_kind = kind.map(str::to_owned);
@@ -1861,16 +1861,16 @@ impl Runtime {
                     Ok(())
                 })?;
             }
-            self.staged_driver(&id)?.wake(&id)?;
-            let Some(state) = hosts.registry().get(&id).map(|r| r.reader_snapshot().3) else {
+            Driver::wake_actor(&actor, now)?;
+            let Some(timer) = self.run_timer(&id) else {
                 continue;
             };
-            let run = self.run(&id)?;
-            if run.state == RunState::Pending && self.gate_wait(&id).is_none() {
-                let waiting = state.event_bodies.last().is_some_and(|body| matches!(body, crate::run_records::Body::EventBody { body: None, retry_at: Some(at), .. } if *at > now));
-                if !waiting && actor.routing() == crate::run_store::Routing::Open {
-                    ready.push((id, flow));
-                }
+            if timer.lifecycle == RunState::Pending
+                && timer.body_retry_at.is_none_or(|at| at <= now)
+                && self.gate_wait(&id).is_none()
+                && actor.routing() == crate::run_store::Routing::Open
+            {
+                ready.push((id, flow));
             }
         }
         Ok(ready)
