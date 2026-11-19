@@ -929,11 +929,14 @@ impl Consent for CoreConsent {
         let dry_run_text = crate::core_host::core_provides(
             self.state.transport.as_ref(),
             FLOW_INSTALL_DRY_RUN_TEXT_V1,
-        );
+        )
+        .unwrap_or(false);
         // Include the plain-language dry run only if the connected core says it
         // accepts one; an older core refuses the unknown key.
         let mut request = request_for(card, dry_run_text)?;
-        if crate::core_host::core_provides(self.state.transport.as_ref(), FLOW_INSTALL_ID_V1) {
+        if crate::core_host::core_provides(self.state.transport.as_ref(), FLOW_INSTALL_ID_V1)
+            .unwrap_or(false)
+        {
             request["flow_install"]["install_id"] = json!(field(&card.fields, "install_id")?);
         }
         let manifest: Value = serde_json::from_str(field(&card.fields["code"], "manifest")?)
@@ -946,7 +949,9 @@ impl Consent for CoreConsent {
             if !crate::core_host::core_provides(
                 self.state.transport.as_ref(),
                 FLOW_INSTALL_SECRETS_V1,
-            ) {
+            )
+            .unwrap_or(false)
+            {
                 return Err(ConsentError::Secret {
                     code: "install_secrets_unsupported".into(),
                     retryable: false,
