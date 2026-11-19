@@ -249,7 +249,7 @@ fn room_post_wire_matches_every_published_vector() {
     );
     assert_eq!(
         basal_host::op_label(&CallKind::Primitive(Primitive::SinkRoomPost)),
-        "prefrontal-core.sink.room.post"
+        "prefrontal.sink.room.post"
     );
 }
 
@@ -435,7 +435,7 @@ fn room_grants_decode_and_install_only_for_an_agent_audience_with_stable_ids() {
     // needs no op line of its own.
     let mut missing = manifest.clone();
     missing["sinks"] = json!([]);
-    missing["ops"] = json!([{"module":"prefrontal-core","op":"sink.room.post"}]);
+    missing["ops"] = json!([{"module":"prefrontal","op":"sink.room.post"}]);
     assert!(Manifest::parse(&missing.to_string()).is_err());
 }
 

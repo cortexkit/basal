@@ -197,7 +197,7 @@ impl CallPreparation<'_> {
         {
             return Err(Refusal::new(
                 codes::NOTICE_UNSUPPORTED,
-                "prefrontal-core does not currently advertise flow-notice/v1",
+                "prefrontal does not currently advertise flow-notice/v1",
             ));
         }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkWaitResolve))
@@ -209,7 +209,7 @@ impl CallPreparation<'_> {
         {
             return Err(Refusal::new(
                 "wait_resolve_unsupported",
-                "prefrontal-core does not currently advertise flow-wait-resolve/v1",
+                "prefrontal does not currently advertise flow-wait-resolve/v1",
             ));
         }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkRoomPost))
@@ -221,7 +221,7 @@ impl CallPreparation<'_> {
         {
             return Err(Refusal::new(
                 codes::ROOM_POST_UNSUPPORTED,
-                "prefrontal-core does not currently advertise flow-room-post/v1",
+                "prefrontal does not currently advertise flow-room-post/v1",
             ));
         }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
@@ -238,7 +238,7 @@ impl CallPreparation<'_> {
         {
             return Err(Refusal::new(
                 codes::DIGEST_REPLACE_KEY_UNSUPPORTED,
-                "prefrontal-core does not currently advertise flow-digest-replace-key/v1",
+                "prefrontal does not currently advertise flow-digest-replace-key/v1",
             ));
         }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
@@ -251,7 +251,7 @@ impl CallPreparation<'_> {
         {
             return Err(Refusal::new(
                 codes::DIGEST_WITHDRAW_UNSUPPORTED,
-                "prefrontal-core does not currently advertise flow-digest-withdraw/v1",
+                "prefrontal does not currently advertise flow-digest-withdraw/v1",
             ));
         }
         if !matches!(call.kind, CallKind::OpFor { .. }) {
@@ -270,7 +270,22 @@ impl CallPreparation<'_> {
         }
         let classify_cost = match &call.kind {
             CallKind::Op { module, op } => {
-                match self.tool_policies.get(&(module.clone(), op.clone())) {
+                // A legacy grant's saved policy is keyed by the spelling
+                // that was approved, even when the request routes to prefrontal.
+                let policy = self
+                    .tool_policies
+                    .get(&(module.clone(), op.clone()))
+                    .or_else(|| {
+                        if module == basal_host::core_identity::CORE_MODULE
+                            && manifest.legacy_prefrontal_ops.contains(op)
+                        {
+                            self.tool_policies
+                                .get(&(crate::manifest::LEGACY_PREFRONTAL.into(), op.clone()))
+                        } else {
+                            None
+                        }
+                    });
+                match policy {
                     Some(crate::classify_cost::ToolPolicy::Classify) => true,
                     Some(
                         crate::classify_cost::ToolPolicy::Ordinary

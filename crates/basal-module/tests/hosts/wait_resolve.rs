@@ -75,7 +75,7 @@ fn wait_wire_matches_met_failed_and_all_reply_vectors() {
     );
     assert_eq!(
         basal_host::op_label(&CallKind::Primitive(Primitive::SinkWaitResolve)),
-        "prefrontal-core.sink.wait_resolve"
+        "prefrontal.sink.wait_resolve"
     );
 }
 
@@ -136,7 +136,7 @@ fn wait_manifest_rejects_targeted_grants_and_missing_op_grant_at_install() {
     }
     let mut missing = m.clone();
     missing["sinks"] = json!([]);
-    missing["ops"] = json!([{"module":"prefrontal-core","op":"sink.wait_resolve"}]);
+    missing["ops"] = json!([{"module":"prefrontal","op":"sink.wait_resolve"}]);
     assert!(Manifest::parse(&missing.to_string()).is_err());
     let fake = Fake::new();
     let f = worker_fixture(
@@ -445,7 +445,7 @@ fn wait_repeated_unsent_refusals_reproduce_fifteen_attempt_deadline_shape_with_a
         let error = if code == "resource_busy" {
             WireError::Typed(basal_host::flow_refusal::FlowRefusal::new(
                 basal_host::flow_refusal::RefusalReason::ResourceBusy,
-                "prefrontal-core",
+                "prefrontal",
                 "sink.wait_resolve",
             ))
         } else {
@@ -538,13 +538,8 @@ fn wait_failure_candidates_that_cannot_produce_the_fifteen_attempt_shape() {
         code: code.into(),
         message: "refused".into(),
     };
-    let typed = |reason| {
-        WireError::Typed(FlowRefusal::new(
-            reason,
-            "prefrontal-core",
-            "sink.wait_resolve",
-        ))
-    };
+    let typed =
+        |reason| WireError::Typed(FlowRefusal::new(reason, "prefrontal", "sink.wait_resolve"));
     for (name, reply, result, sends, unknown) in [
         (
             "timeout",

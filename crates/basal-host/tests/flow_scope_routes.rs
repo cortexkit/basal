@@ -16,7 +16,7 @@ fn route_cache_reuses_handles_and_replaces_changed_selectors() {
     let mut routes = ScopedRoutes::<u64>::default();
     let mut scope = FlowScope {
         owner: Principal::Reserved {
-            module_id: "prefrontal-core".into(),
+            module_id: "prefrontal".into(),
         },
         scope_ref: "flow-a".into(),
         epoch: 1,
@@ -99,7 +99,7 @@ fn codemode_scope() -> RegisteredScope {
     RegisteredScope {
         selector: FlowScope {
             owner: Principal::Reserved {
-                module_id: "prefrontal-core".into(),
+                module_id: "prefrontal".into(),
             },
             scope_ref: "scope:codemode".into(),
             epoch: 7,

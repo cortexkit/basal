@@ -83,7 +83,7 @@ fn codemode_evidence_reads_actual_keyed_run_and_owner_scope() {
     assert_eq!(scope["agent_id"], "agent-1");
     assert_eq!(
         scope["selector"],
-        json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"opaque-scope","scope_epoch":9})
+        json!({"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"opaque-scope","scope_epoch":9})
     );
     assert_eq!(scope["catalog"][0]["tool"], "probe_echo");
     let selector: subc_protocol::scope::ScopeSelector =
@@ -422,9 +422,7 @@ fn core_scope_reader_requires_this_active_version_and_an_accepted_registration()
     };
     assert_eq!(
         store.flow_scope("owned", 1).unwrap(),
-        Some(
-            json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"ref-a","epoch":7})
-        )
+        Some(json!({"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"ref-a","epoch":7}))
     );
     assert_eq!(
         store.flow_scope("global", 1).unwrap().unwrap()["ref"],
@@ -459,7 +457,7 @@ fn scoped_ownership_preserves_ref_epoch_flow_and_attested_sender_for_the_exact_b
     let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE meta (session TEXT, admission_checkpoint_json TEXT);")
         .unwrap();
-    let owner = json!({"scope":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},
+    let owner = json!({"scope":{"owner":{"kind":"reserved","module_id":"prefrontal"},
         "ref":"core-ref","scope_epoch":7,"flow_id":"flow-a","sender":{"kind":"reserved","module_id":"basal"}},
         "first_principal":{"kind":"reserved","module_id":"basal"},
         "recorded_principals":[{"kind":"reserved","module_id":"basal"}],"episodes":1});

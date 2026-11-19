@@ -185,7 +185,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
     /// The caller serializes opening per route identity. When the daemon
     /// closes a route because its scope ended, the route is kept as a
     /// tombstone that refuses every use with `scope_ended` instead of
-    /// reopening under the same selector. It stays until prefrontal-core
+    /// reopening under the same selector. It stays until prefrontal
     /// re-registers the flow's scope with a different selector (a new epoch,
     /// for example), which `configure` records.
     pub fn route(
@@ -279,7 +279,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
     ) -> Result<H, WireError> {
         // The route is opened outside the table lock, so two things may have
         // changed while the daemon was answering the open: the flow's scope
-        // registration (prefrontal-core re-registered or removed it, and
+        // registration (prefrontal re-registered or removed it, and
         // `configure` recorded that) and the connection generation (the
         // daemon connection dropped and was restored, so handles from the old
         // connection are dead). Install the handle only if both still match
@@ -340,11 +340,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         let Some((scope, _)) = self.flows.get(flow) else {
             return Err(FlowRefusal::new(RefusalReason::NoFlowScope, module, action));
         };
-        if !scope
-            .targets
-            .iter()
-            .any(|target| crate::core_identity::same_module(target, module))
-        {
+        if !scope.targets.iter().any(|target| target == module) {
             // Name the registered targets, so a scope built without this
             // module reads differently from a daemon-side refusal.
             let mut refusal =
@@ -414,7 +410,7 @@ mod tests {
     use serde_json::json;
 
     fn fixture() -> serde_json::Value {
-        json!({"scope":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"flow:a","epoch":7},"flow_scope_targets":["broca","cerebellum"]})
+        json!({"scope":{"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"flow:a","epoch":7},"flow_scope_targets":["broca","cerebellum"]})
     }
     fn registered(selector: FlowScope) -> RegisteredScope {
         RegisteredScope {

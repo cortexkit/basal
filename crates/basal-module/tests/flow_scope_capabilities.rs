@@ -11,7 +11,7 @@ use serde_json::json;
 fn core_op_install_requires_catalog_capability_for_every_author() {
     let f = fixture("core-op-cap", Options::default());
     f.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "board.write",
         OpDecl {
             kind: Some(OpKind::Query),
@@ -25,19 +25,19 @@ fn core_op_install_requires_catalog_capability_for_every_author() {
         } else {
             "flow-op-owned"
         });
-        manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.write"}]);
+        manifest["ops"] = json!([{"module":"prefrontal","op":"board.write"}]);
         let params = json!({"script":"return 7;","manifest":manifest.to_string()});
         let error = f
             .module
             .handle(&caller, "flow.install", params.clone())
             .unwrap_err();
         assert!(
-            error.message.contains("prefrontal-core") && error.message.contains("board.write"),
+            error.message.contains("prefrontal") && error.message.contains("board.write"),
             "{error:?}"
         );
-        f.catalog.set_flow_capable("prefrontal-core", true);
+        f.catalog.set_flow_capable("prefrontal", true);
         assert!(f.module.handle(&caller, "flow.install", params).is_ok());
-        f.catalog.set_flow_capable("prefrontal-core", false);
+        f.catalog.set_flow_capable("prefrontal", false);
     }
 }
 
@@ -45,7 +45,7 @@ fn core_op_install_requires_catalog_capability_for_every_author() {
 fn dry_run_rechecks_core_op_catalog_capability() {
     let f = fixture("dry-core-cap", Options::default());
     f.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "board.write",
         OpDecl {
             kind: Some(OpKind::Query),
@@ -54,8 +54,8 @@ fn dry_run_rechecks_core_op_catalog_capability() {
         },
     );
     let mut manifest = events_manifest("flow-dry-core");
-    manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.write"}]);
-    f.catalog.set_flow_capable("prefrontal-core", true);
+    manifest["ops"] = json!([{"module":"prefrontal","op":"board.write"}]);
+    f.catalog.set_flow_capable("prefrontal", true);
     f.module
         .handle(
             &Caller::Operator,
@@ -69,13 +69,13 @@ fn dry_run_rechecks_core_op_catalog_capability() {
             .handle(&Caller::Operator, "flow.dry_run", params.clone())
             .is_ok()
     );
-    f.catalog.set_flow_capable("prefrontal-core", false);
+    f.catalog.set_flow_capable("prefrontal", false);
     let error = f
         .module
         .handle(&Caller::Operator, "flow.dry_run", params)
         .unwrap_err();
     assert!(
-        error.message.contains("prefrontal-core") && error.message.contains("board.write"),
+        error.message.contains("prefrontal") && error.message.contains("board.write"),
         "{error:?}"
     );
 }
@@ -83,10 +83,10 @@ fn dry_run_rechecks_core_op_catalog_capability() {
 #[test]
 fn board_hygiene_manifest_installs_without_core_flow_scopes() {
     let f = fixture("board-carrier-cap", Options::default());
-    f.catalog.set_flow_capable("prefrontal-core", false);
+    f.catalog.set_flow_capable("prefrontal", false);
     for op in ["board.read", "work.unsettled"] {
         f.catalog.set_op(
-            "prefrontal-core",
+            "prefrontal",
             op,
             OpDecl {
                 kind: Some(OpKind::Query),
@@ -95,9 +95,10 @@ fn board_hygiene_manifest_installs_without_core_flow_scopes() {
             },
         );
     }
-    let manifest = include_str!("../../../flows/board-hygiene/manifest.json");
+    let manifest = include_str!("../../../flows/board-hygiene/manifest.json")
+        .replace("prefrontal-core", "prefrontal");
     // The shipped manifest describes an upgrade rather than a first install.
-    let mut previous: serde_json::Value = serde_json::from_str(manifest).unwrap();
+    let mut previous: serde_json::Value = serde_json::from_str(&manifest).unwrap();
     previous["version"] = json!(19);
     previous.as_object_mut().unwrap().remove("changes");
     basal_core::test_support::seed_stored_version(
@@ -112,7 +113,7 @@ fn board_hygiene_manifest_installs_without_core_flow_scopes() {
             &Caller::Operator,
             "flow.install",
             json!({
-                "script": include_str!("../../../flows/board-hygiene/flow.js"),
+                "script": include_str!("../../../flows/board-hygiene/flow.js").replace("prefrontal-core", "prefrontal"),
                 "manifest": manifest,
             }),
         )
@@ -132,9 +133,9 @@ fn work_unsettled_installs_without_core_flow_scopes() {
     // neither install nor a dry run asks core for flow-scopes/v1. An ordinary
     // core op in the same manifest would be refused (see the test above).
     let f = fixture("work-unsettled-cap", Options::default());
-    f.catalog.set_flow_capable("prefrontal-core", false);
+    f.catalog.set_flow_capable("prefrontal", false);
     f.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "work.unsettled",
         OpDecl {
             kind: Some(OpKind::Query),
@@ -147,7 +148,7 @@ fn work_unsettled_installs_without_core_flow_scopes() {
     manifest["id"] = json!("work-unsettled-only");
     manifest["explanation"] =
         json!("Reads unsettled deliveries for a test, without other effects.");
-    manifest["ops"] = json!([{"module":"prefrontal-core","op":"work.unsettled"}]);
+    manifest["ops"] = json!([{"module":"prefrontal","op":"work.unsettled"}]);
     manifest.as_object_mut().unwrap().remove("changes");
     manifest.as_object_mut().unwrap().remove("board_read");
     f.module
@@ -170,9 +171,11 @@ fn work_unsettled_installs_without_core_flow_scopes() {
 fn board_read_op_and_target_grants_are_required_at_install_dry_run_and_package_registration() {
     let f = fixture("board-read-required", Options::default());
     for missing in ["board_read", "ops"] {
-        let mut manifest: serde_json::Value =
-            serde_json::from_str(include_str!("../../../flows/board-hygiene/manifest.json"))
-                .unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_str(
+            &include_str!("../../../flows/board-hygiene/manifest.json")
+                .replace("prefrontal-core", "prefrontal"),
+        )
+        .unwrap();
         manifest["id"] = json!(format!("missing-{missing}"));
         manifest["explanation"] = json!("Reads boards for a test, without other effects.");
         manifest.as_object_mut().unwrap().remove("changes");

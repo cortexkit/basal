@@ -1572,41 +1572,42 @@ fn queued_history_before_approval_is_refused_without_a_run() {
 fn flow_targeted_notice_missing_header_is_refused_without_flows() {
     let f = Fixture::new(60);
     let mut notice = notice(0);
-    notice.subject = "ck.account.event.prefrontal-core.digest_delivered.v1".into();
+    notice.subject = "ck.account.event.prefrontal.digest_delivered.v1".into();
     let error = f.rt.admit_events(&[notice]).unwrap_err();
     assert!(error.to_string().contains("flow_id"), "{error}");
 }
 
 #[test]
-fn prefrontal_rename_matches_both_event_names_without_losing_targeting_or_age() {
-    for declared in ["prefrontal-core", "prefrontal"] {
-        let manifest = Manifest::parse(&json!({"id":"flow","version":1,"explanation":"Checks renamed event identity.","purpose":"Receive events",
-            "trigger":{"events":[{"module":declared,"name":"digest_delivered","version":1,"max_age":"1m"}]}}).to_string()).unwrap();
-        for published in ["prefrontal-core", "prefrontal"] {
-            let mut n = notice(0);
-            n.subject = format!("ck.account.event.{published}.digest_delivered.v1");
-            assert!(n.target_flow().is_err());
-            n.headers.insert("flow_id".into(), "flow".into());
-            assert!(matches!(
-                matches(&manifest, &n, "flow").unwrap(),
-                HeaderMatch::Accepted
-            ));
-            assert!(matches!(
-                matches(&manifest, &n, "other").unwrap(),
-                HeaderMatch::Unrelated
-            ));
-            n.published_at_ms = 1000;
-            assert!(stale(&manifest, &n, 62_000).unwrap());
-        }
-    }
+fn stored_prefrontal_trigger_matches_only_the_new_subject() {
+    let manifest = Manifest::parse_stored(&json!({"id":"flow","version":1,"purpose":"Receive events",
+        "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1,"max_age":"1m"}]}}).to_string()).unwrap();
+    let mut n = notice(0);
+    n.subject = "ck.account.event.prefrontal.digest_delivered.v1".into();
+    assert!(n.target_flow().is_err());
+    n.headers.insert("flow_id".into(), "flow".into());
+    assert!(matches!(
+        matches(&manifest, &n, "flow").unwrap(),
+        HeaderMatch::Accepted
+    ));
+    assert!(matches!(
+        matches(&manifest, &n, "other").unwrap(),
+        HeaderMatch::Unrelated
+    ));
+    n.published_at_ms = 1000;
+    assert!(stale(&manifest, &n, 62_000).unwrap());
+    n.subject = "ck.account.event.prefrontal-core.digest_delivered.v1".into();
+    assert!(matches!(
+        matches(&manifest, &n, "flow").unwrap(),
+        HeaderMatch::Unrelated
+    ));
 }
 
 #[test]
 fn journaled_flow_targeted_body_is_checked_against_run() {
     let f = Fixture::new(60);
-    f.catalog.set_flow_capable("prefrontal-core", true);
+    f.catalog.set_flow_capable("prefrontal", true);
     f.catalog.set_event(
-        "prefrontal-core",
+        "prefrontal",
         "digest_delivered",
         1,
         basal_host::EventDecl {
@@ -1618,7 +1619,7 @@ fn journaled_flow_targeted_body_is_checked_against_run() {
         },
     );
     f.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         basal_host::catalog::EVENT_BODY_OP,
         OpDecl {
             kind: Some(OpKind::Query),
@@ -1629,14 +1630,14 @@ fn journaled_flow_targeted_body_is_checked_against_run() {
     let request = InstallRequest {
         script: "return trigger.event.body.flow_id;".into(), author: "operator".into(), loop_override: false,
         manifest: json!({"id":"flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Replay delivered events",
-            "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1}]},
-            "ops":[{"module":"prefrontal-core","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
+            "trigger":{"events":[{"module":"prefrontal","name":"digest_delivered","version":1}]},
+            "ops":[{"module":"prefrontal","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
     };
     let installed = f.rt.install(&request).unwrap();
     f.rt.approve("flow", 1, &installed.code_hash, "test")
         .unwrap();
     let mut notice = notice(0);
-    notice.subject = "ck.account.event.prefrontal-core.digest_delivered.v1".into();
+    notice.subject = "ck.account.event.prefrontal.digest_delivered.v1".into();
     notice.headers.insert("flow_id".into(), "flow".into());
     f.rt.admit_events(&[notice]).unwrap();
     let (id, _) = f.rt.startable().unwrap().remove(0);

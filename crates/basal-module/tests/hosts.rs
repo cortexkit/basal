@@ -59,7 +59,7 @@ fn set_core_capability(fake: &Fake, capability: &str, supported: bool) {
     let modules = catalog["modules"].as_array_mut().unwrap();
     let core = modules
         .iter_mut()
-        .find(|module| module["module_id"] == "prefrontal-core");
+        .find(|module| module["module_id"] == "prefrontal");
     if let Some(core) = core {
         let capabilities = core["capabilities"]["provides"]
             .as_array_mut()
@@ -70,7 +70,7 @@ fn set_core_capability(fake: &Fake, capability: &str, supported: bool) {
         }
     } else {
         modules.push(json!({
-            "module_id": "prefrontal-core",
+            "module_id": "prefrontal",
             "roles": [],
             "capabilities": {"provides": if supported {
                 vec![capability]
@@ -520,7 +520,7 @@ fn board_read_install_request_preserves_manifest_bytes_and_hash() {
         .as_array_mut()
         .unwrap()
         .push(json!({
-            "module_id":"prefrontal-core", "roles":[{"role":"management_surface",
+            "module_id":"prefrontal", "roles":[{"role":"management_surface",
                 "operations":[{"name":"board.read","kind":"query"},{"name":"work.unsettled","kind":"query"}],
                 "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],
             "control_ops":[]
@@ -528,7 +528,9 @@ fn board_read_install_request_preserves_manifest_bytes_and_hash() {
     let consent = Arc::new(CoreConsent::new(fake.clone()));
     let f = fixture(fake.clone(), consent, "board-read-bytes");
     let script = "return 1;\n";
-    let manifest = include_str!("../../../flows/board-hygiene/manifest.json");
+    let manifest = include_str!("../../../flows/board-hygiene/manifest.json")
+        .replace("prefrontal-core", "prefrontal");
+    let manifest = manifest.as_str();
     // The shipped manifest's change summary requires an earlier stored version.
     let mut previous: Value = serde_json::from_str(manifest).unwrap();
     previous["version"] = json!(19);
@@ -838,105 +840,41 @@ fn routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end() {
 }
 
 #[test]
-fn prefrontal_rename_stored_approval_dispatches_without_changing_manifest_bytes() {
-    for registered in ["prefrontal-core", "prefrontal"] {
-        let fake = Fake::new();
-        let entry = |module: &str| {
-            json!({"module_id":module,"roles":[
-            {"role":"management_surface","operations":[{"name":"board.read","kind":"query"},{"name":"work.unsettled","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}
-        ],"control_ops":[]})
-        };
-        fake.catalog.lock().unwrap()["modules"]
-            .as_array_mut()
-            .unwrap()
-            .push(entry("prefrontal-core"));
-        let consent = Arc::new(CoreConsent::new(fake.clone()));
-        let f = worker_fixture(fake.clone(), consent, "core-rename");
-        let m = json!({"id":"rename","version":1,"explanation":"Reads approved boards for a rename regression.","purpose":"Read boards",
-            "trigger":{"schedule":{"interval":"1h"}},"board_read":["SYNAPSE"],
-            "ops":[{"module":"prefrontal-core","op":"board.read"}]});
-        let script = "return await ops.call('prefrontal-core','board.read',{});";
-        common::install(&f, &Caller::Operator, script, &m);
-        approve(&fake, &f.module);
-        fake.catalog.lock().unwrap()["modules"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|module| module["module_id"] != "prefrontal-core");
-        fake.catalog.lock().unwrap()["modules"]
-            .as_array_mut()
-            .unwrap()
-            .push(entry(registered));
-        *fake.cached_core_module.lock().unwrap() = Some(registered);
-        f.module
-            .rt
-            .store()
-            .write(|tx| {
-                for (event_id, custodian) in [
-                    ("event:1", "reserved:prefrontal-core"),
-                    ("event:2", "reserved:prefrontal"),
-                ] {
-                    basal_core::bus_outbox::enqueue_late_result_wake(
-                        tx,
-                        custodian,
-                        "call:key",
-                        "ok",
-                        event_id,
-                        common::T0,
-                    )?;
-                }
-                Ok(())
-            })
+fn stored_prefrontal_approval_dispatches_without_changing_manifest_bytes() {
+    let fake = Fake::new();
+    fake.catalog.lock().unwrap()["modules"].as_array_mut().unwrap().push(json!({"module_id":"prefrontal","roles":[
+        {"role":"management_surface","operations":[{"name":"board.read","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}
+    ],"control_ops":[]}));
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = worker_fixture(fake.clone(), consent, "core-rename");
+    let manifest = json!({"id":"rename","version":1,"purpose":"Read boards",
+        "trigger":{"schedule":{"interval":"1h"}},"board_read":["SYNAPSE"],
+        "ops":[{"module":"prefrontal-core","op":"board.read"}]})
+    .to_string();
+    let script = "return await ops.call('prefrontal-core','board.read',{});";
+    let hash =
+        basal_core::test_support::seed_stored_version(&f.module.rt, script, &manifest, false)
             .unwrap();
-        let wakes = f
-            .module
-            .rt
-            .pending_bus_events(10)
-            .unwrap()
-            .into_iter()
-            .filter(|event| event.name == "late_result_ready")
-            .collect::<Vec<_>>();
-        assert_eq!(wakes.len(), 2);
-        assert!(
-            wakes
-                .iter()
-                .all(|wake| wake.reader.as_deref() == Some(registered))
-        );
-        for (wake, event_id) in wakes.iter().zip(["event:1", "event:2"]) {
-            assert_eq!(wake.message_id, format!("{event_id}:{registered}"));
-        }
-        fake.enqueue("board.read", vec![Ok(json!({"read":true}))]);
-        let run = common::admit(&f, "rename", "after-cut");
-        f.module.engine.run_until_idle(50).unwrap();
-        let done = f.module.rt.run(&run).unwrap();
-        assert_eq!(done.state, RunState::Succeeded, "{registered}: {done:?}");
-        assert_eq!(done.manifest, m.to_string());
-        assert_eq!(
-            done.code_hash,
-            basal_core::ids::code_hash(script, &m.to_string())
-        );
-        assert_eq!(fake.calls_to(registered, "board.read").len(), 1);
-        assert_eq!(fake.calls("flow.install_request").len(), 1);
-        for name in ["prefrontal-core", "prefrontal"] {
-            let mut next = m.clone();
-            next["id"] = json!(format!("new-{}", name));
-            next["ops"][0]["module"] = json!(name);
-            common::install(&f, &Caller::Operator, "return 1;", &next);
-            let parsed = basal_core::Manifest::parse(&next.to_string()).unwrap();
-            for called in ["prefrontal-core", "prefrontal"] {
-                basal_core::authorize::check(
-                    &parsed,
-                    &Default::default(),
-                    f.module.rt.catalog(),
-                    &CallKind::Op {
-                        module: called.into(),
-                        op: "board.read".into(),
-                    },
-                    &json!({}),
-                )
-                .unwrap();
-            }
-        }
-    }
+    f.module.rt.store().write(|tx| {
+        assert_eq!(tx.execute("UPDATE install_tool_policies SET module='prefrontal-core' WHERE flow_id='rename' AND op='board.read'", [])?, 1);
+        Ok(())
+    }).unwrap();
+    fake.enqueue(
+        "flow.install_status",
+        vec![Ok(
+            json!({"state":"active","code_hash":basal_proto::util::hex(&hash)}),
+        )],
+    );
+    fake.enqueue("board.read", vec![Ok(json!({"read":true}))]);
+    let run = common::admit(&f, "rename", "after-cut");
+    f.module.engine.run_until_idle(50).unwrap();
+    let done = f.module.rt.run(&run).unwrap();
+    assert_eq!(done.state, RunState::Succeeded, "{done:?}");
+    assert_eq!(done.manifest, manifest);
+    assert_eq!(done.code_hash, hash);
+    assert_eq!(fake.calls_to("prefrontal", "board.read").len(), 1);
+    assert!(fake.calls_to("prefrontal-core", "board.read").is_empty());
+    assert!(fake.calls("flow.install_request").is_empty());
 }
 
 #[test]
@@ -2484,7 +2422,7 @@ fn runtime_owner_notice_uses_the_core_management_carrier() {
         vec![json!({"method":"flow.owner_notice","params":request})]
     );
     assert!(
-        !basal_host::core_host::is_core_carrier_op("prefrontal-core", "flow.owner_notice"),
+        !basal_host::core_host::is_core_carrier_op("prefrontal", "flow.owner_notice"),
         "runtime notices must not become manifest-declared script carrier calls"
     );
     set_core_capability(&fake, capability, false);

@@ -5,7 +5,7 @@
 # default root ~/Work/Projects/CortexKit-scratch/ckdev-flows (override with
 # BASAL_RIG_ROOT), and its own ckdev-* binaries, each built here from a named
 # revision. It runs the credentials vault, Fusiform, Broca, entorhinal,
-# cingulate, prefrontal-core, prefrontal-routing, ck-basal and a rig-only
+# cingulate, prefrontal, prefrontal-routing, ck-basal and a rig-only
 # callosum stub and run-scope probe. It never reads, writes or starts anything
 # belonging to the production daemon or another rig.
 #
@@ -62,7 +62,7 @@
 #             commit and each binary's sha256 and signing identifier.
 #   test      start the rig if needed, write a manifest and run the live
 #             contract suite (basal-rig-contract) against the real
-#             prefrontal-core, with contract.json and contract.log beside
+#             prefrontal, with contract.json and contract.log beside
 #             the manifest. It fails if any check failed.
 #             A full run without --models reports model cases as not run by name.
 #             --packages runs only setup, the package group and its cleanup;
@@ -202,7 +202,7 @@ VAULT_KEY="$CONFIG_HOME/claustrum/master.key"
 # The stores the contract suite reads (read-only), and the file whose content
 # names the runtime boundary at which the rig build of ck-basal kills itself
 # once (crates/basal-module/src/rig_kill.rs); the suite writes it.
-CORE_STORE="$DATA_HOME/cortexkit/prefrontal-core/store.db"
+CORE_STORE="$DATA_HOME/cortexkit/prefrontal/store.db"
 BASAL_STORE="$DATA_HOME/cortexkit/basal/store.db"
 MACHINE_ID="$DATA_HOME/cortexkit/machine-id"
 KILL_FILE="$RUNTIME_DIR/basal-kill-at"
@@ -487,7 +487,7 @@ entorhinal	entorhinal	ck-entorhinal	ckdev-entorhinal
 fusiform	fusiform	ck-fusiform	ckdev-fusiform
 models	fusiform	ck-models	ckdev-models
 cingulate	cingulate	ck-cingulate	ckdev-cingulate
-prefrontal-core	prefrontal	ck-prefrontal-core	ckdev-prefrontal-core
+prefrontal	prefrontal	ck-prefrontal	ckdev-prefrontal
 prefrontal-routing	prefrontal	ck-prefrontal-routing	ckdev-prefrontal-routing
 basal	basal	ck-basal	ckdev-basal
 basal-worker	basal	ck-basal-worker	ckdev-basal-worker
@@ -504,7 +504,7 @@ broca	ckdev-broca
 fusiform	ckdev-fusiform
 entorhinal	ckdev-entorhinal
 cingulate	ckdev-cingulate
-prefrontal-core	ckdev-prefrontal-core
+prefrontal	ckdev-prefrontal
 prefrontal-routing	ckdev-prefrontal-routing
 basal	ckdev-basal
 callosum	ckdev-callosum
@@ -597,7 +597,7 @@ EOF_REPOS
   # prefrontal's build scripts embed the revision they were told; the clone
   # is at that exact commit with no local changes, so it is not dirty.
   cargo_build prefrontal "CK_BUILD_GIT_SHA=$prefrontal_sha CK_BUILD_GIT_DIRTY=false" \
-    -p prefrontal-core-module --bin ck-prefrontal-core
+    -p prefrontal-core-module --bin ck-prefrontal
   cargo_build prefrontal "CK_BUILD_GIT_SHA=$prefrontal_sha CK_BUILD_GIT_DIRTY=false" \
     -p prefrontal-routing-module --bin ck-prefrontal-routing
   # The rig's ck-basal carries the one-shot kill switch the contract suite's
@@ -910,7 +910,7 @@ cmd_config() (
   [ -z "$(daemon_pid)" ] || die "refusing: the rig daemon is running; stop it first"
   # From scratch: the whole file is generated here, never merged with a
   # previous one. ck-bus and nats-server are left out (the bus needs its own
-  # NATS server, operator JWT and vault signing); prefrontal-core then
+  # NATS server, operator JWT and vault signing); prefrontal then
   # reports "bus: connecting" in its health, which is expected on this rig.
   write_file "$SUBC_CONFIG" <<EOF
 {
@@ -949,7 +949,7 @@ cmd_config() (
       "env": {},
       "enabled": true
     },
-    // The project-identity/v1 provider. prefrontal-core declares that
+    // The project-identity/v1 provider. prefrontal declares that
     // capability required, and the daemon refuses every route to core until
     // a provider has registered. Its store is data/cortexkit/entorhinal/.
     "entorhinal": {
@@ -970,8 +970,8 @@ cmd_config() (
     // as in production.
     // Never set PREFRONTAL_CORE_DIAGNOSTICS here: it opens core's test seams,
     // which exist for prefrontal's end-to-end harness only.
-    "prefrontal-core": {
-      "program": "$BIN/ckdev-prefrontal-core",
+    "prefrontal": {
+      "program": "$BIN/ckdev-prefrontal",
       "args": [],
       "env": {},
       "enabled": true,
@@ -1205,7 +1205,7 @@ cmd_start() {
   say "started (pid $pid, daemon output: $log); check it with: $0 status"
 }
 
-# prefrontal-core runs git constantly, and the rig's PATH is the caller's with
+# prefrontal runs git constantly, and the rig's PATH is the caller's with
 # CortexKit directories removed, so refuse to start unless /usr/bin is still
 # on it and git resolves through it. Read-only, so a dry run performs it too.
 check_rig_tools() {
@@ -1369,7 +1369,7 @@ EOF
 
 store_verdict() {
   case "$1" in
-    "$CK_SHARE"/prefrontal-core/*) say "PRODUCTION prefrontal-core store" ;;
+    "$CK_SHARE"/prefrontal/*) say "PRODUCTION prefrontal store" ;;
     "$DATA_HOME"/* | "$CONFIG_HOME"/* | "$RUNTIME_DIR"/*) say "inside the rig's homes" ;;
     "$RIG"/*) say "OUTSIDE the rig's homes, inside the rig root" ;;
     "$CK_SHARE"/* | "$CK_CONFIG"/*) say "PRODUCTION CortexKit path" ;;
@@ -1487,7 +1487,7 @@ EOF_BINARIES
   source_tsv="rig-build"
   [ ! -f "$BASAL_SOURCE" ] || source_tsv=$(cat "$BASAL_SOURCE")
   expected_core=$(printf '%s' "$repos_tsv" | awk -F'\t' '$1=="prefrontal"{print $4}')
-  core_sha=$(rig_env "$BIN/ckdev-prefrontal-core" --print-manifest | core_revision "$expected_core") \
+  core_sha=$(rig_env "$BIN/ckdev-prefrontal" --print-manifest | core_revision "$expected_core") \
     || die "the placed core does not report the built revision"
   json=$(REPOS="$repos_tsv" BINS="$bins_tsv" CORE_SHA="$core_sha" python3 - "$stamp" "$RIG" "$PORT" \
       "$CONTRACT" "$contract_sum" "$source_tsv" "$ROUTING_CONFIG" <<'PY'

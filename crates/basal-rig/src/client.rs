@@ -98,13 +98,6 @@ pub struct Client {
 const RELAY_TIMEOUT: Duration = Duration::from_secs(150);
 
 impl Client {
-    pub async fn core_module(&self) -> Result<&'static str, Refusal> {
-        let catalog = self.consumer.catalog_list().await.map_err(refusal)?;
-        Ok(basal_host::core_identity::resolve(|id| {
-            catalog.modules.iter().any(|module| module.module_id == id)
-        })
-        .unwrap_or(basal_host::core_identity::LEGACY_CORE_MODULE))
-    }
     pub async fn connect(connection_file: &Path, timeout: Duration) -> Result<Self, String> {
         let consumer = SubcConsumer::connect(
             connection_file,
@@ -161,11 +154,6 @@ impl Client {
         method: &str,
         params: Value,
     ) -> Reply {
-        let module = if basal_host::core_identity::is_core_module(module) {
-            self.core_module().await?
-        } else {
-            module
-        };
         let reply = self
             .consumer
             .call(
@@ -222,10 +210,7 @@ impl Client {
     /// takes the caller from that bind identity, so no caller goes in the
     /// params; `arguments` are basal's own params for `action`.
     pub async fn relay(&self, head: &BindIdentity, action: &str, arguments: Value) -> Relayed {
-        let module = match self.core_module().await {
-            Ok(module) => module,
-            Err(error) => return Relayed::NotRelayed(error),
-        };
+        let module = basal_host::core_identity::CORE_MODULE;
         let reply = self
             .consumer
             .call(

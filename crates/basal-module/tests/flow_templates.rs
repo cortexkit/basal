@@ -171,7 +171,7 @@ impl Host for TemplateHost {
             return Err(TransportError::Refused(
                 basal_host::flow_refusal::FlowRefusal::new(
                     basal_host::flow_refusal::RefusalReason::SinkStoreFailed,
-                    "prefrontal-core",
+                    "prefrontal",
                     "sink.wait_resolve",
                 ),
             ));

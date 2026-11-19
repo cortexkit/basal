@@ -330,7 +330,7 @@ fn agentless_audience_op_warning(
 ) -> Option<Warning> {
     // Sink and status delivery permissions come from the manifest's `sinks` and
     // `status` fields, not from `ops`. The core carrier ops
-    // (`prefrontal-core.board.read` and `prefrontal-core.work.unsettled`) are
+    // (`prefrontal.board.read` and `prefrontal.work.unsettled`) are
     // sent through basal's management route instead of an agent's provider
     // route, so exclude them from this provider-write warning.
     if let Some(audience) = audience
@@ -570,7 +570,7 @@ mod agentless_audience_warning_tests {
         assert_eq!(
             agentless_audience_op_warning(
                 Some("global"),
-                &op_ref("prefrontal-core", "board.read", None),
+                &op_ref("prefrontal", "board.read", None),
                 Some(OpKind::Mutate),
             ),
             None,
@@ -906,13 +906,7 @@ pub(crate) fn validate_inner(
                         // instantiation, even when its alternatives are identical.
                         let granted = manifest.ops.iter().any(|grant| {
                             grant.op == *resolve_op
-                                && (basal_host::core_identity::same_module(
-                                    &grant.module,
-                                    &event.module,
-                                ) || basal_host::core_identity::same_module(
-                                    &grant.module,
-                                    &e.module,
-                                ))
+                                && (grant.module == event.module || grant.module == e.module)
                         });
                         if !granted {
                             return Err(InstallError::EventBodyOpNotGranted {
@@ -977,11 +971,7 @@ pub(crate) fn validate_inner(
                     return Err(InstallError::UnmarkedOp { module, op });
                 };
                 if kind == OpKind::Mutate {
-                    if trigger_modules
-                        .iter()
-                        .any(|trigger| basal_host::core_identity::same_module(trigger, module))
-                        && !decl.cause_echo
-                    {
+                    if trigger_modules.iter().any(|trigger| trigger == module) && !decl.cause_echo {
                         // Only an explicit `false` exempts: the module's promise that
                         // no call to this tool makes it emit an event, so the call
                         // cannot loop back into a trigger. Absent or `true` may emit.
@@ -1837,6 +1827,43 @@ fn decide<T>(
 }
 
 impl Runtime {
+    /// Re-sending an exact historical version does not submit new bytes for
+    /// approval. Only the retired-module check can take this path.
+    pub fn parse_install_manifest(
+        &self,
+        script: &str,
+        text: &str,
+    ) -> std::result::Result<Manifest, InstallError> {
+        self.parse_install_version(script, text)
+            .map(|(manifest, _)| manifest)
+    }
+
+    fn parse_install_version(
+        &self,
+        script: &str,
+        text: &str,
+    ) -> std::result::Result<(Manifest, Option<[u8; 32]>), InstallError> {
+        let error = match Manifest::parse_ordinary(text) {
+            Ok(manifest) => return Ok((manifest, None)),
+            Err(error) if crate::manifest::is_prefrontal_name_error(&error) => error,
+            Err(error) => return Err(InstallError::Manifest(error)),
+        };
+        let manifest = Manifest::parse_stored(text).map_err(InstallError::Manifest)?;
+        let hash = code_hash(script, text);
+        let exists = self.store().read(|conn| {
+            Ok(conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM installs WHERE flow_id=?1 AND version=?2 AND code_hash=?3)",
+                params![manifest.id, manifest.version, hash.as_slice()],
+                |row| row.get(0),
+            )?)
+        })?;
+        if exists {
+            Ok((manifest, Some(hash)))
+        } else {
+            Err(InstallError::Manifest(error))
+        }
+    }
+
     /// Validates and records a flow version. The steps that come between
     /// this and approval (the dry run and the operator's consent card) are
     /// not part of it.
@@ -1851,8 +1878,17 @@ impl Runtime {
                 cap,
             });
         }
-        let manifest =
-            Manifest::parse_ordinary(&request.manifest).map_err(InstallError::Manifest)?;
+        let (manifest, stored_hash) =
+            self.parse_install_version(&request.script, &request.manifest)?;
+        if let Some(code_hash) = stored_hash {
+            return Ok(Installed {
+                flow_id: manifest.id,
+                version: manifest.version,
+                code_hash,
+                warnings: Vec::new(),
+                new: false,
+            });
+        }
         // Parse/intake errors precede version text, immutable-byte conflicts
         // and stale versions; all precede catalog/provider validation. These
         // state-dependent refusals are rechecked under the writer before use.

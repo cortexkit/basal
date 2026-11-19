@@ -470,9 +470,8 @@ impl Custody {
                 .get(&(module.into(), call_key.into()))
                 .cloned();
             if let Some(target) = target {
-                // A held call belongs to this exact live scope. Core's restart
-                // ends run scopes, so the module rename cannot carry a held
-                // invocation into a differently owned scope.
+                // A held call belongs to this exact live scope, not to a
+                // replacement scope with the same reference.
                 if raw.get("owner").and_then(Value::as_str) != Some(target.scope.owner.as_str())
                     || raw.get("ref").and_then(Value::as_str)
                         != Some(target.scope.scope_ref.as_str())

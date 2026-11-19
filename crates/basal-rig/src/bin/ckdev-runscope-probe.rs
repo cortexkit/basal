@@ -145,18 +145,12 @@ mod tests {
     use super::*;
 
     fn stamp() -> ScopeStamp {
-        serde_json::from_value(json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"run:rig","scope_epoch":3,"kind":"ephemeral","attributes":{"agent_id":"agent-rig","run_id":"run-rig"},"owner_authorized":true})).unwrap()
+        serde_json::from_value(json!({"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"run:rig","scope_epoch":3,"kind":"ephemeral","attributes":{"agent_id":"agent-rig","run_id":"run-rig"},"owner_authorized":true})).unwrap()
     }
 
     #[test]
     fn accepts_core_owned_run_identity() {
-        for module in ["prefrontal-core", "prefrontal"] {
-            let mut stamp = stamp();
-            stamp.owner = Principal::Reserved {
-                module_id: module.into(),
-            };
-            assert_eq!(identity(Some(&stamp)), Ok(("agent-rig", "run-rig")));
-        }
+        assert_eq!(identity(Some(&stamp())), Ok(("agent-rig", "run-rig")));
     }
 
     #[test]

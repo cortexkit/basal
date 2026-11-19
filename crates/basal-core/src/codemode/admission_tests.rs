@@ -32,7 +32,7 @@ const NOW: i64 = 100;
 fn request(id: &str, agent: &str) -> Value {
     json!({
         "run_id": id, "agent_id": agent, "program": "return 1;", "catalog": [],
-        "scope": {"owner": {"kind": "reserved", "module_id": "prefrontal-core"}, "ref": "scope:run", "epoch": 19},
+        "scope": {"owner": {"kind": "reserved", "module_id": "prefrontal"}, "ref": "scope:run", "epoch": 19},
         "deadline_ms": 1000
     })
 }
@@ -42,7 +42,7 @@ fn description(agent: &str) -> basal_host::ScopeDescription {
         "status": "live", "scope_epoch": 19,
         "daemon_incarnation": "daemon:attesting", "owner_synced": true,
         "owner_configured": true,
-        "scope": {"owner": {"kind": "reserved", "module_id": "prefrontal-core"},
+        "scope": {"owner": {"kind": "reserved", "module_id": "prefrontal"},
             "ref": "scope:run", "scope_epoch": 19, "kind": "head",
             "attributes": {"agent_id": agent, "run_id": "run"}, "owner_authorized": true}
     }))
@@ -52,7 +52,7 @@ fn description(agent: &str) -> basal_host::ScopeDescription {
 fn set_description(host: &MockHost, answer: basal_host::ScopeDescription) {
     host.set_scope_description(
         Principal::Reserved {
-            module_id: "prefrontal-core".into(),
+            module_id: "prefrontal".into(),
         },
         "scope:run",
         Ok(answer),
@@ -384,10 +384,10 @@ fn scope_shape_precedes_attestation_and_needs_no_flow_targets() {
         Some(Value::Null),
         Some(json!({})),
         Some(
-            json!({"owner": {"kind": "reserved", "module_id": "prefrontal-core"}, "ref": "scope:run", "epoch": "19"}),
+            json!({"owner": {"kind": "reserved", "module_id": "prefrontal"}, "ref": "scope:run", "epoch": "19"}),
         ),
         Some(
-            json!({"owner": {"kind": "reserved", "module_id": "prefrontal-core"}, "ref": "scope:run", "epoch": 19, "extra": true}),
+            json!({"owner": {"kind": "reserved", "module_id": "prefrontal"}, "ref": "scope:run", "epoch": 19, "extra": true}),
         ),
     ] {
         let mut req = request("run", "agent");
@@ -421,7 +421,7 @@ fn non_reserved_owner_and_blank_ref_are_refused_before_describe() {
     let h = host("agent");
     for scope in [
         json!({"owner": {"kind": "direct"}, "ref": "scope:run", "epoch": 19}),
-        json!({"owner": {"kind": "reserved", "module_id": "prefrontal-core"}, "ref": " \t\n", "epoch": 19}),
+        json!({"owner": {"kind": "reserved", "module_id": "prefrontal"}, "ref": " \t\n", "epoch": 19}),
     ] {
         let mut req = request("run", "agent");
         req["scope"] = scope;

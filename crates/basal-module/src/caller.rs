@@ -7,14 +7,14 @@
 //! and has no consumer identity. The operator is the attested
 //! `reserved:callosum` (the module that relays the operator's own actions),
 //! never `direct`: every local process can be `direct`, so treating it as the
-//! operator would hand any of them basal's operator powers. prefrontal-core
+//! operator would hand any of them basal's operator powers. prefrontal
 //! draws the same line (only a bind attested as callosum is the operator).
 //! An unscoped `direct` caller is a [`Caller::Local`]: it may ask to install
 //! a flow, since the install card is what authorizes the install, and is
 //! refused everything else the operator alone may do.
 //!
 //! An agent is identified by the scope its route was admitted under:
-//! prefrontal-core owns every agent's session scope and sets the scope's
+//! prefrontal owns every agent's session scope and sets the scope's
 //! `agent_id`, and the daemon stamps the scope (with whether its owner is on
 //! the daemon's scope-authority list) on the route. The stamp reaches basal
 //! in `on_bind` as `RouteBindRequest::scope` (subc-client-rs 0.24 and
@@ -23,7 +23,7 @@
 //!
 //! Of the `ScopeStamp`, basal reads four fields:
 //!
-//! - `owner`: the scope must be core's (`reserved:prefrontal-core`), the
+//! - `owner`: the scope must be core's (`reserved:prefrontal`), the
 //!   module that owns agents' session scopes. Anyone else's scope is their
 //!   own business and names no agent here.
 //! - `owner_authorized`: the daemon's word that the owner is on its
@@ -50,9 +50,7 @@ use subc_protocol::BindIdentity;
 use subc_protocol::Principal;
 use subc_protocol::scope::{ScopeKind, ScopeStamp};
 
-/// `prefrontal-core` remains in labels and harness fixtures. Admission also
-/// recognizes `prefrontal` through the shared identity helper.
-pub use basal_host::core_identity::LEGACY_CORE_MODULE as CORE_MODULE;
+pub use basal_host::core_identity::CORE_MODULE;
 use basal_host::core_identity::is_core_module;
 
 /// The module the daemon attests for the operator's own actions. Only a
@@ -163,7 +161,7 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
 /// `dev_operator_app_admission`: a `direct` carrier with no scope stamp,
 /// whose harness does not start with `fed-`, and whose bind identity is not
 /// the OpenCode plugin's shared channel (`harness == "alfonso"` and
-/// `session == "prefrontal-core"`). `Reserved` and `Unverified` binds are
+/// the session is `prefrontal` or `prefrontal-core`). Reserved and unverified binds are
 /// never admitted: the principal check admits only `Direct`. Core's other
 /// exclusion, a federated operator, is a `reserved:callosum` bind, which
 /// that same check already refuses.
@@ -184,9 +182,11 @@ pub fn dev_operator_app_admission(
     if identity.harness.starts_with("fed-") {
         return false;
     }
-    // The OpenCode plugin's shared channel: an exact harness and session
-    // pair, no prefix match and no other field.
-    if identity.harness == "alfonso" && identity.session == "prefrontal-core" {
+    // The shared OpenCode channel can use either spelling across the rename.
+    // Neither exact session on this harness may pass as the desktop app.
+    if identity.harness == "alfonso"
+        && matches!(identity.session.as_str(), "prefrontal" | "prefrontal-core")
+    {
         return false;
     }
     true
@@ -331,7 +331,7 @@ mod tests {
             include_str!("../tests/vectors/flow-scope-v1/registered-global-scope.json"),
         ] {
             let fixture: serde_json::Value = serde_json::from_str(fixture).unwrap();
-            let flow = ScopeStamp::new(
+            let mut flow = ScopeStamp::new(
                 serde_json::from_value(fixture["owner"].clone()).unwrap(),
                 "flow-ref",
                 1,
@@ -341,6 +341,8 @@ mod tests {
                 serde_json::from_value(fixture["record"]["attributes"].clone()).unwrap(),
             )
             .with_owner_authorized(true);
+            assert!(!diagnostics_admitted(None, Some(&flow)));
+            flow.owner = reserved(CORE_MODULE);
             assert!(diagnostics_admitted(None, Some(&flow)));
             let mut worker = flow.clone();
             worker.kind = ScopeKind::Worker;
@@ -373,20 +375,29 @@ mod tests {
     }
 
     #[test]
-    fn both_core_names_are_admitted() {
-        for module in ["prefrontal", "prefrontal-core"] {
+    fn only_prefrontal_is_admitted_as_core() {
+        for (module, admitted) in [("prefrontal", true), ("prefrontal-core", false)] {
             let principal = Principal::Reserved {
                 module_id: module.into(),
             };
-            assert_eq!(from_route(Some(&principal), None), Caller::Core);
+            assert_eq!(from_route(Some(&principal), None) == Caller::Core, admitted);
             let head = scope(module, Some("SYNAPSE"), true);
-            assert!(matches!(
-                from_route(Some(&Principal::Direct), Some(&head)),
-                Caller::Agent { .. }
-            ));
-            assert!(diagnostics_admitted(Some(&principal), None));
-            assert!(diagnostics_admitted(Some(&Principal::Direct), Some(&head)));
-            assert!(worker_scope(&worker(module, true, ScopeAttributes::default())).is_some());
+            assert_eq!(
+                matches!(
+                    from_route(Some(&Principal::Direct), Some(&head)),
+                    Caller::Agent { .. }
+                ),
+                admitted
+            );
+            assert_eq!(diagnostics_admitted(Some(&principal), None), admitted);
+            assert_eq!(
+                diagnostics_admitted(Some(&Principal::Direct), Some(&head)),
+                admitted
+            );
+            assert_eq!(
+                worker_scope(&worker(module, true, ScopeAttributes::default())).is_some(),
+                admitted
+            );
         }
     }
 
@@ -570,8 +581,9 @@ mod tests {
             // Federated harnesses keep their own authority.
             (direct.clone(), None, identity("fed-phone", "s")),
             (direct.clone(), None, identity("fed-anything", "s")),
-            // The OpenCode plugin's shared channel is exactly this pair.
+            // Both spellings of the OpenCode plugin's shared channel.
             (direct.clone(), None, identity("alfonso", "prefrontal-core")),
+            (direct.clone(), None, identity("alfonso", "prefrontal")),
             // Reserved (other than callosum) and unverified binds are never admitted.
             (
                 Some(Principal::Reserved {
@@ -618,6 +630,7 @@ mod tests {
             ("alfonso", "other"),
             ("alfonso-desktop", "prefrontal-core"),
             ("ckdesk", "prefrontal-core"),
+            ("ckdesk", "prefrontal"),
         ] {
             let id = identity(harness, session);
             assert!(

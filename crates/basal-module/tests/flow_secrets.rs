@@ -35,8 +35,12 @@ fn manifest(version: u32) -> Value {
 }
 
 fn capability(fake: &Fake) {
-    fake.catalog.lock().unwrap()["modules"].as_array_mut().unwrap().push(
-        json!({"module_id":"prefrontal-core","capabilities":{"provides":[FLOW_INSTALL_SECRETS_V1]}}));
+    fake.catalog.lock().unwrap()["modules"]
+        .as_array_mut()
+        .unwrap()
+        .push(
+            json!({"module_id":"prefrontal","capabilities":{"provides":[FLOW_INSTALL_SECRETS_V1]}}),
+        );
 }
 
 fn fixture<T: Transport + 'static>(fake: Arc<T>) -> common::Fixture {

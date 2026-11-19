@@ -1,5 +1,5 @@
 //! Decision cards go only to a catalogued `consent/v1` provider; install cards
-//! stay on prefrontal-core. A stored card keeps its provider for updates,
+//! stay on prefrontal. A stored card keeps its provider for updates,
 //! withdrawals and answers even if the daemon catalog later changes. With no
 //! provider in the catalog a new card stays pending and is raised again later.
 use crate::core_consent::{CoreConsent, decision_request, error};

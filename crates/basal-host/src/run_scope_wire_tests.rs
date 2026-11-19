@@ -10,7 +10,7 @@
 //! gets codemode only by opening under the run's scope.
 //!
 //! - `cerebellum` admits basal only when the bind has an ephemeral scope with
-//!   `run_id` and no `flow_id`, owned by an authorized `prefrontal-core`,
+//!   `run_id` and no `flow_id`, owned by an authorized `prefrontal`,
 //!   principal `reserved:basal` and call mode codemode (else
 //!   `principal_denied`), and when the run's parent is linked and its agent
 //!   has a live head route (else `run_parent_unavailable`). Role ops
@@ -42,7 +42,7 @@ const AGENT: &str = "agent-1";
 
 fn core() -> Principal {
     Principal::Reserved {
-        module_id: "prefrontal-core".into(),
+        module_id: "prefrontal".into(),
     }
 }
 
@@ -58,8 +58,8 @@ fn head_selector() -> ScopeSelector {
 
 fn run_stamp(parent_state: &str) -> ScopeStamp {
     serde_json::from_value(json!({
-        "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":RUN,"scope_epoch":19,
-        "kind":"ephemeral","parent":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},
+        "owner":{"kind":"reserved","module_id":"prefrontal"},"ref":RUN,"scope_epoch":19,
+        "kind":"ephemeral","parent":{"owner":{"kind":"reserved","module_id":"prefrontal"},
         "ref":"agent-scope","scope_epoch":7},"parent_state":parent_state,
         "attributes":{"agent_id":AGENT,"run_id":RUN},"owner_authorized":true
     }))
@@ -68,7 +68,7 @@ fn run_stamp(parent_state: &str) -> ScopeStamp {
 
 fn head_stamp() -> ScopeStamp {
     serde_json::from_value(json!({
-        "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7,
+        "owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"agent-scope","scope_epoch":7,
         "kind":"head","attributes":{"agent_id":AGENT,"delegates":true},"owner_authorized":true
     }))
     .unwrap()
@@ -89,7 +89,7 @@ struct Received {
 
 #[derive(Default)]
 struct Daemon {
-    /// Live scope records by (ref, epoch), all owned by prefrontal-core.
+    /// Live scope records by (ref, epoch), all owned by prefrontal.
     scopes: BTreeMap<(String, u64), ScopeStamp>,
     /// Agents with a live head route.
     head_routes: BTreeSet<String>,

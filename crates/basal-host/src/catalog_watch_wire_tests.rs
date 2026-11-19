@@ -19,7 +19,6 @@ struct Daemon {
     watch: AtomicBool,
     /// Whether `provider` is in the catalog.
     provider: AtomicBool,
-    renamed_core: AtomicBool,
     opens: Mutex<Vec<Value>>,
     lists: AtomicUsize,
     watches: AtomicUsize,
@@ -27,12 +26,7 @@ struct Daemon {
 
 impl Daemon {
     fn list(&self) -> Value {
-        let core = if self.renamed_core.load(Ordering::SeqCst) {
-            "prefrontal"
-        } else {
-            "prefrontal-core"
-        };
-        let mut modules = vec![json!({"module_id":core,"roles":[],"control_ops":[]})];
+        let mut modules = vec![json!({"module_id":"prefrontal","roles":[],"control_ops":[]})];
         if self.provider.load(Ordering::SeqCst) {
             modules.push(json!({"module_id":"provider","control_ops":[],
                 "capabilities":{"provides":["flow-scopes/v1"]},"roles":[
@@ -264,7 +258,7 @@ fn requests_between_pushes_make_no_catalog_reads() {
     let catalog = crate::subc_catalog::SubcCatalog::new(wire.transport.clone());
     for _ in 0..100 {
         let snapshot = catalog.request_snapshot().unwrap();
-        assert_eq!(snapshot.lookup_op("prefrontal-core", "read"), Ok(None));
+        assert_eq!(snapshot.lookup_op("prefrontal", "read"), Ok(None));
         assert_eq!(wire.transport.catalog_snapshot().unwrap().generation, 1);
     }
     assert_eq!(
@@ -275,31 +269,11 @@ fn requests_between_pushes_make_no_catalog_reads() {
 }
 
 #[test]
-fn cached_core_identity_routes_to_the_renamed_module_without_catalog_reads() {
+fn core_route_opens_without_a_catalog_read() {
     use crate::Host;
 
-    let wire = wire(true);
-    watching(&wire);
-    assert_eq!(wire.transport.core_module(), "prefrontal-core");
-    wire.daemon.renamed_core.store(true, Ordering::SeqCst);
-    wire.push.send(2).unwrap();
-    eventually("the renamed core's catalog", || {
-        wire.transport
-            .shared_catalog
-            .current()
-            .is_some_and(|snapshot| {
-                snapshot.generation == 2 && snapshot.module("prefrontal").is_some()
-            })
-    });
+    let wire = wire(false);
     let before = wire.daemon.lists.load(Ordering::SeqCst);
-    // Routing identity remains usable while declarations await a new watch.
-    wire.transport.shared_catalog.stop();
-    wire._runtime.handle().block_on(async {
-        assert_eq!(
-            crate::core_identity::core_module(wire.transport.as_ref()),
-            "prefrontal"
-        );
-    });
     crate::core_host::CoreHost::new(wire.transport.clone())
         .owner_notice(json!({"flow_id":"flow"}))
         .unwrap();
@@ -354,7 +328,7 @@ fn a_module_missing_from_the_shared_copy_is_read_once_more() {
 fn calls_before_the_connection_opens_wait_and_then_refuse_as_never_sent() {
     let transport = SubcTransport::deferred(Duration::from_millis(50)).unwrap();
     assert!(matches!(
-        transport.management("prefrontal-core", "agent.list", json!({})),
+        transport.management("prefrontal", "agent.list", json!({})),
         Err(WireError::NeverSent(message)) if message.contains("not open yet")
     ));
     assert!(matches!(

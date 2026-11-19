@@ -75,11 +75,6 @@ pub trait Transport: Send + Sync {
     /// captures so notifications do not keep their state alive.
     fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
 
-    /// Core's routing identity, without I/O. Stand-ins use `LEGACY_CORE_MODULE`.
-    fn core_module(&self) -> &'static str {
-        crate::core_identity::LEGACY_CORE_MODULE
-    }
-
     /// Read a caller's file under the short-lived scope core registered for this
     /// flow-tool call, never with basal's own file grants.
     fn flow_read_exact(
@@ -93,7 +88,8 @@ pub trait Transport: Send + Sync {
 
     fn newest_approved_template_version(&self, package: &str) -> Result<Option<u32>, WireError> {
         let catalog = self.catalog_snapshot()?;
-        let supported = crate::core_identity::catalog_module(&catalog, crate::subc_catalog::CORE)
+        let supported = catalog
+            .module(crate::subc_catalog::CORE)
             .is_some_and(|core| core.provides(PACKAGE_APPROVED_VERSIONS_CAPABILITY));
         if !supported {
             return Err(WireError::Refused {
@@ -103,7 +99,7 @@ pub trait Transport: Send + Sync {
             });
         }
         let reply = self.management(
-            crate::core_identity::routed_module(&catalog, crate::subc_catalog::CORE),
+            crate::subc_catalog::CORE,
             "package.approved_versions",
             json!({"package":package}),
         )?;
@@ -1138,7 +1134,7 @@ impl Transport for SubcTransport {
         let result = cache.resolve(
             &request.flow_id, &request.run_id, call, i64::try_from(now).unwrap_or(i64::MAX),
             |scope| self.routes.lock().unwrap_or_else(|p| p.into_inner()).ended(&scope.route_key()),
-            || self.management(self.core_module(), "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
+            || self.management(crate::subc_catalog::CORE, "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
         );
         let retired = cache.take_retired();
         drop(cache);
@@ -1156,7 +1152,7 @@ impl Transport for SubcTransport {
         self.configure_flow(
             &key,
             Some(crate::flow_scope::RegisteredScope {
-                selector: scope.selector(crate::core_identity::core_module(self)),
+                selector: scope.selector(crate::subc_catalog::CORE),
                 targets,
             }),
         );
@@ -1413,9 +1409,6 @@ impl Transport for SubcTransport {
     }
     fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
         self.catalog_changes.subscribe(notify);
-    }
-    fn core_module(&self) -> &'static str {
-        self.shared_catalog.core_module()
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
         self.call(
@@ -1749,7 +1742,7 @@ mod tests {
         crate::flow_scope::RegisteredScope {
             selector: crate::flow_scope::FlowScope {
                 owner: subc_protocol::Principal::Reserved {
-                    module_id: "prefrontal-core".into(),
+                    module_id: "prefrontal".into(),
                 },
                 scope_ref: "flow:stale".into(),
                 epoch: 1,
@@ -2122,7 +2115,7 @@ mod tests {
         with_scoped_transport(|transport, opens, calls, _| {
             let selector = subc_protocol::scope::ScopeSelector::new(
                 subc_protocol::Principal::Reserved {
-                    module_id: "prefrontal-core".into(),
+                    module_id: "prefrontal".into(),
                 },
                 "flow-read/call",
                 Some(1),
@@ -2163,7 +2156,7 @@ mod tests {
             let identity = BindIdentity::new("runner", "basal:codemode:run-1");
             let scope = subc_protocol::scope::ScopeSelector::new(
                 subc_protocol::Principal::Reserved {
-                    module_id: "prefrontal-core".into(),
+                    module_id: "prefrontal".into(),
                 },
                 "run-1",
                 Some(19),
@@ -2322,7 +2315,7 @@ mod tests {
         with_paused_open_timeout(None, call_timeout, |transport, opens, calls, _| {
             let selector = crate::flow_scope::FlowScope {
                 owner: subc_protocol::Principal::Reserved {
-                    module_id: "prefrontal-core".into(),
+                    module_id: "prefrontal".into(),
                 },
                 scope_ref: "run-scope".into(),
                 epoch: 19,
@@ -2534,7 +2527,7 @@ mod tests {
             Some(crate::flow_scope::RegisteredScope {
                 selector: crate::flow_scope::FlowScope {
                     owner: subc_protocol::Principal::Reserved {
-                        module_id: "prefrontal-core".into(),
+                        module_id: "prefrontal".into(),
                     },
                     scope_ref: "run-scope".into(),
                     epoch: 19,
@@ -2806,7 +2799,7 @@ mod tests {
         with_scoped_transport(|transport, opens, calls, close_seen| {
             let selector = FlowScope {
                 owner: subc_protocol::Principal::Reserved {
-                    module_id: "prefrontal-core".into(),
+                    module_id: "prefrontal".into(),
                 },
                 scope_ref: "registered-flow".into(),
                 epoch: 7,
@@ -2871,7 +2864,7 @@ mod tests {
             assert_eq!(
                 transport
                     .management(
-                        "prefrontal-core",
+                        "prefrontal",
                         "sink.digest",
                         json!({"flow_id":"flow-a","flow_version":1})
                     )
@@ -2993,7 +2986,7 @@ mod tests {
                 Some(RegisteredScope {
                     selector: FlowScope {
                         owner: subc_protocol::Principal::Reserved {
-                            module_id: "prefrontal-core".into(),
+                            module_id: "prefrontal".into(),
                         },
                         scope_ref: "registered".into(),
                         epoch: 7,
@@ -3149,7 +3142,7 @@ mod tests {
         with_scoped_transport(|transport, opens, calls, _| {
             let selector = FlowScope {
                 owner: subc_protocol::Principal::Reserved {
-                    module_id: "prefrontal-core".into(),
+                    module_id: "prefrontal".into(),
                 },
                 scope_ref: "registered-flow".into(),
                 epoch: 7,

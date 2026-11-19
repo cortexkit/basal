@@ -68,7 +68,7 @@ struct Rig {
     run: String,
 }
 
-/// Installs and approves a flow whose script makes one `prefrontal-core` call
+/// Installs and approves a flow whose script makes one `prefrontal` call
 /// under the flow's scope, queues `reply` as core's answer to it, and runs the
 /// engine until it is idle.
 fn run_refused(tag: &str, script: &str, reply: WireError) -> Rig {
@@ -79,7 +79,7 @@ fn run_refused(tag: &str, script: &str, reply: WireError) -> Rig {
     fake.catalog.lock().unwrap()["modules"]
         .as_array_mut()
         .unwrap()
-        .push(json!({"module_id":"prefrontal-core",
+        .push(json!({"module_id":"prefrontal",
             "capabilities":{"provides":["flow-scopes/v1"]},
             "roles":[{"role":"management_surface","operations":[{"name":"sink.digest","kind":"mutate"}],
                 "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],
@@ -108,7 +108,7 @@ fn run_refused(tag: &str, script: &str, reply: WireError) -> Rig {
         },
     );
     let mut m = manifest();
-    m["ops"] = json!([{"module":"prefrontal-core","op":"sink.digest"}]);
+    m["ops"] = json!([{"module":"prefrontal","op":"sink.digest"}]);
     common::install(&f, &Caller::Operator, script, &m);
     approve(&fake, &f.module);
     fake.enqueue("sink.digest", vec![Err(reply)]);
@@ -137,7 +137,7 @@ fn core_flow_scope_refusal_reaches_the_script_whole_and_is_never_retried() {
     let vector = refusal_vector();
     let rig = run_refused(
         "flow-scope-refusal",
-        "try { await ops.call('prefrontal-core','sink.digest',{}); return 'fulfilled'; } \
+        "try { await ops.call('prefrontal','sink.digest',{}); return 'fulfilled'; } \
          catch (e) { return {message: e.message, data: e.data}; }",
         provider_reply(vector.clone()),
     );
@@ -151,9 +151,9 @@ fn core_flow_scope_refusal_reaches_the_script_whole_and_is_never_retried() {
     // The call went to core on the flow's scoped route, once.
     assert_eq!(
         *transport.routed.lock().unwrap(),
-        [("prefrontal-core".to_owned(), "sink.digest".to_owned())]
+        [("prefrontal".to_owned(), "sink.digest".to_owned())]
     );
-    assert_eq!(fake.calls_to("prefrontal-core", "sink.digest").len(), 1);
+    assert_eq!(fake.calls_to("prefrontal", "sink.digest").len(), 1);
 
     // The script saw a rejection carrying core's code, message and detail
     // unchanged, and finished.
@@ -191,7 +191,7 @@ fn core_flow_scope_refusal_reaches_the_script_whole_and_is_never_retried() {
     // hourly schedule fires again, another pass sends nothing more.
     f.clock.set(common::T0 + 10 * 60_000);
     f.module.engine.run_until_idle(50).unwrap();
-    assert_eq!(fake.calls_to("prefrontal-core", "sink.digest").len(), 1);
+    assert_eq!(fake.calls_to("prefrontal", "sink.digest").len(), 1);
     assert_eq!(transport.routed.lock().unwrap().len(), 1);
     assert_eq!(f.module.rt.calls(run).unwrap().len(), 1);
 
@@ -212,7 +212,7 @@ fn uncaught_core_flow_scope_refusal_counts_like_any_final_provider_refusal() {
     ] {
         let rig = run_refused(
             tag,
-            "return await ops.call('prefrontal-core','sink.digest',{});",
+            "return await ops.call('prefrontal','sink.digest',{});",
             provider_reply(body),
         );
         let done = rig.f.module.rt.run(&rig.run).unwrap();

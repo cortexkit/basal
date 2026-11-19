@@ -34,14 +34,15 @@ pub struct Notice {
 // EventDeclaration currently has no flow-targeting field. Keep the known
 // flow-targeted event contracts here so ingress, fan-out and body replay use
 // the same rule without inventing a declaration wire field.
-const FLOW_TARGETED_EVENTS: &[(&str, &str)] = &[("prefrontal-core", "digest_delivered")];
+const FLOW_TARGETED_EVENTS: &[(&str, &str)] = &[("prefrontal", "digest_delivered")];
 
 impl Notice {
     pub fn target_flow(&self) -> Result<Option<&str>> {
         let (module, name, _) = self.identity()?;
-        if !FLOW_TARGETED_EVENTS.iter().any(|(provider, event)| {
-            basal_host::core_identity::same_module(module, provider) && name == *event
-        }) {
+        if !FLOW_TARGETED_EVENTS
+            .iter()
+            .any(|(provider, event)| module == *provider && name == *event)
+        {
             return Ok(None);
         }
         self.headers
@@ -218,11 +219,13 @@ pub(crate) fn matches(manifest: &Manifest, notice: &Notice, flow_id: &str) -> Re
         return Ok(HeaderMatch::Unrelated);
     }
     let (module, name, version) = notice.identity()?;
-    let Some(event) = manifest.trigger.events.iter().flatten().find(|e| {
-        basal_host::core_identity::same_module(&e.module, module)
-            && e.name == name
-            && e.version == version
-    }) else {
+    let Some(event) = manifest
+        .trigger
+        .events
+        .iter()
+        .flatten()
+        .find(|e| e.module == module && e.name == name && e.version == version)
+    else {
         return Ok(HeaderMatch::Unrelated);
     };
     Ok(
@@ -247,7 +250,7 @@ pub(crate) fn stale(manifest: &Manifest, notice: &Notice, now: i64) -> Result<bo
     }
     let (module, name, version) = notice.identity()?;
     Ok(manifest.trigger.events.iter().flatten().any(|event| {
-        basal_host::core_identity::same_module(&event.module, module)
+        event.module == module
             && event.name == name
             && event.version == version
             && event
@@ -349,10 +352,13 @@ impl Runtime {
                     continue;
                 };
                 let manifest = effective_manifest(conn, &approved.manifest, &flow)?;
-                if manifest.trigger.events.iter().flatten().any(|event| {
-                    basal_host::core_identity::same_module(&event.module, module)
-                        && event.name == name
-                }) {
+                if manifest
+                    .trigger
+                    .events
+                    .iter()
+                    .flatten()
+                    .any(|event| event.module == module && event.name == name)
+                {
                     return Ok(true);
                 }
             }

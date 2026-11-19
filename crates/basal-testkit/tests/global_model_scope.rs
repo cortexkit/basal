@@ -179,7 +179,7 @@ fn global_model_call_defers_without_scope_then_uses_registered_scope_once() {
     *gate.scope.lock().unwrap() = Some(RegisteredScope {
         selector: FlowScope {
             owner: Principal::Reserved {
-                module_id: "prefrontal-core".into(),
+                module_id: "prefrontal".into(),
             },
             scope_ref: "global-flow".into(),
             epoch: 1,
@@ -254,7 +254,7 @@ fn local_primitives_need_no_model_scope() {
     *gate.scope.lock().unwrap() = Some(RegisteredScope {
         selector: FlowScope {
             owner: Principal::Reserved {
-                module_id: "prefrontal-core".into(),
+                module_id: "prefrontal".into(),
             },
             scope_ref: "no-model-flow".into(),
             epoch: 1,

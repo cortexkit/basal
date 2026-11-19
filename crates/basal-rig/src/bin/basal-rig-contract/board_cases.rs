@@ -111,7 +111,7 @@ mod tests {
         ));
         assert_eq!(
             flow.script,
-            "return await ops.call('prefrontal-core', 'board.read', {limit:16});"
+            "return await ops.call('prefrontal', 'board.read', {limit:16});"
         );
         let mut manifest = flow.manifest_value();
         manifest.as_object_mut().unwrap().remove("board_read");

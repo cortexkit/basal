@@ -135,7 +135,7 @@ impl Host for DeliveredBodySource {
         assert_eq!(
             request.kind,
             CallKind::Op {
-                module: "prefrontal-core".into(),
+                module: "prefrontal".into(),
                 op: basal_host::catalog::EVENT_BODY_OP.into(),
             }
         );
@@ -167,9 +167,9 @@ fn delivered_body_flow_mismatch_fails_run_before_script() {
             calls: AtomicUsize::new(0),
         });
         let catalog = MockCatalog::new();
-        catalog.set_flow_capable("prefrontal-core", true);
+        catalog.set_flow_capable("prefrontal", true);
         catalog.set_event(
-            "prefrontal-core",
+            "prefrontal",
             "digest_delivered",
             1,
             basal_host::EventDecl {
@@ -181,7 +181,7 @@ fn delivered_body_flow_mismatch_fails_run_before_script() {
             },
         );
         catalog.set_op(
-            "prefrontal-core",
+            "prefrontal",
             basal_host::catalog::EVENT_BODY_OP,
             basal_host::OpDecl {
                 kind: Some(basal_host::OpKind::Query),
@@ -205,8 +205,8 @@ fn delivered_body_flow_mismatch_fails_run_before_script() {
         let installed = f.module.rt.install(&InstallRequest {
             script: "await kv.set('script-ran', true); return trigger.event.body.flow_id;".into(),
             manifest: json!({"id":"flow","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Receive digest delivery",
-                "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1}]},
-                "ops":[{"module":"prefrontal-core","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
+                "trigger":{"events":[{"module":"prefrontal","name":"digest_delivered","version":1}]},
+                "ops":[{"module":"prefrontal","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
             author: "operator".into(), loop_override: false,
         }).unwrap();
         f.module
@@ -216,7 +216,7 @@ fn delivered_body_flow_mismatch_fails_run_before_script() {
         f.module
             .rt
             .admit_events(&[basal_core::events::Notice {
-                subject: "ck.account.event.prefrontal-core.digest_delivered.v1".into(),
+                subject: "ck.account.event.prefrontal.digest_delivered.v1".into(),
                 event_key: "0".repeat(64),
                 digest: format!("{:x}", sha2::Sha256::digest(body.as_bytes())),
                 headers: std::collections::BTreeMap::from([("flow_id".into(), "flow".into())]),

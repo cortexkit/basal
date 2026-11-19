@@ -44,7 +44,7 @@ fn retained_projection(c: &Connection) -> Result<bool, String> {
     Ok(false)
 }
 
-/// prefrontal-core's store, read-only.
+/// prefrontal's store, read-only.
 pub struct CoreStore {
     pub path: PathBuf,
 }
@@ -104,7 +104,7 @@ impl CoreStore {
             let catalog: Value = serde_json::from_str(&catalog).map_err(|e| e.to_string())?;
         // The synthesized owner mirrors the rig core's module id. Change it
         // when the rig's core is renamed; the stored scope row has no owner.
-        Ok(json!({"agent_id":agent,"selector":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":reference,"scope_epoch":epoch},"catalog":catalog,"lifecycle":lifecycle,"end_settled":settled}))
+        Ok(json!({"agent_id":agent,"selector":{"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":reference,"scope_epoch":epoch},"catalog":catalog,"lifecycle":lifecycle,"end_settled":settled}))
         }).transpose()
     }
 
@@ -171,10 +171,8 @@ impl CoreStore {
                AND s.removed_at_ms IS NULL AND s.flow_scope_targets_json IS NOT NULL",
             params![flow_id, version],
             |r| {
-                Ok(
-                    json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},
-                "ref":r.get::<_, String>(0)?, "epoch":r.get::<_, u64>(1)?}),
-                )
+                Ok(json!({"owner":{"kind":"reserved","module_id":"prefrontal"},
+                "ref":r.get::<_, String>(0)?, "epoch":r.get::<_, u64>(1)?}))
             },
         )
         .optional()

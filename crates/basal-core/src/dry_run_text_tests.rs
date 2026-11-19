@@ -12,7 +12,7 @@ fn board_manifest() -> Manifest {
         json!({"id":"board-hygiene","version":3,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Nudge board owners",
         "trigger":{"schedule":{"cron":"*/5 * * * *","tz":"UTC","missed":"skip"}},
         "audience":{"kind":"global"},
-        "ops":[{"module":"prefrontal-core","op":"board.read"}],
+        "ops":[{"module":"prefrontal","op":"board.read"}],
         "board_read":["$audience"],
         "facts":{"targets":["$audience"]},
         "sinks":[{"agent":"$audience","digest_max":"wake"}]}),
@@ -105,12 +105,7 @@ fn board_runs() -> Vec<Value> {
                 "failed",
                 capture_error(),
                 true,
-                vec![op_call(
-                    0,
-                    "prefrontal-core",
-                    "board.read",
-                    json!({"limit":16}),
-                )],
+                vec![op_call(0, "prefrontal", "board.read", json!({"limit":16}))],
             )
         })
         .collect()
@@ -336,12 +331,7 @@ fn a_captured_rejection_alone_never_becomes_a_problem() {
         "succeeded",
         Value::Null,
         false,
-        vec![op_call(
-            0,
-            "prefrontal-core",
-            "board.read",
-            json!({"limit":16}),
-        )],
+        vec![op_call(0, "prefrontal", "board.read", json!({"limit":16}))],
     );
     let text = render(&board_manifest(), &summary(day_window(1, 1), vec![caught]));
     assert!(text.problems.is_empty(), "{text:#?}");

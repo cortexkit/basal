@@ -38,10 +38,10 @@ use subc_protocol::manifest::{
 use subc_protocol::{BindIdentity, PROTOCOL_VERSION, RouteTarget};
 use tokio::sync::OnceCell;
 
-/// The reserved module id whose routes prefrontal-core and basal both treat
+/// The reserved module id whose routes prefrontal and basal both treat
 /// as the operator's.
 const MODULE_ID: &str = "callosum";
-const CORE: &str = "prefrontal-core";
+const CORE: &str = "prefrontal";
 const BASAL: &str = "basal";
 const CINGULATE: &str = "cingulate";
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -157,18 +157,6 @@ impl Stub {
         {
             Ok(consumer) => consumer,
             Err(e) => return error("stub_unconnected", e.to_string()),
-        };
-        let module = if basal_host::core_identity::is_core_module(module) {
-            let catalog = match consumer.catalog_list().await {
-                Ok(catalog) => catalog,
-                Err(e) => return error("stub_unconnected", e.to_string()),
-            };
-            basal_host::core_identity::resolve(|id| {
-                catalog.modules.iter().any(|module| module.module_id == id)
-            })
-            .unwrap_or(CORE)
-        } else {
-            module
         };
         let body = json!({ "method": method, "params": params });
         let reply = consumer

@@ -12,11 +12,11 @@ const HEAD: &str = "SYNAPSE";
 
 fn core() -> Principal {
     Principal::Reserved {
-        module_id: "prefrontal-core".into(),
+        module_id: "prefrontal".into(),
     }
 }
 
-/// prefrontal-core's run-scope ops. Every open gets run scope `rs-<run_id>`
+/// prefrontal's run-scope ops. Every open gets run scope `rs-<run_id>`
 /// at epoch 7; each request is kept so a test can read what basal sent.
 #[derive(Default)]
 struct Core {
@@ -115,7 +115,7 @@ impl Fixture {
                 carrier: "direct",
                 call_key: None,
                 record_scope: "null",
-                custodian: "reserved:prefrontal-core",
+                custodian: "reserved:prefrontal",
                 bind_identity: &self.bind,
             },
             &json!({"code":"return 42;"}),
@@ -288,7 +288,7 @@ fn core_refusing_a_worker_run_reaches_the_caller_with_cores_code() {
             carrier: "direct",
             call_key: None,
             record_scope: "null",
-            custodian: "reserved:prefrontal-core",
+            custodian: "reserved:prefrontal",
             bind_identity: &f.bind,
         },
         &json!({"code":"return 42;"}),

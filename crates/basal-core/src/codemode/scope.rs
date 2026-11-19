@@ -69,7 +69,7 @@ pub fn close(store: &Store, transport: &dyn Transport, id: &str) -> crate::error
     })
 }
 
-/// prefrontal-core's route refusals explain why it denied a run scope: a code
+/// prefrontal's route refusals explain why it denied a run scope: a code
 /// such as not_granted, a message and optional JSON details such as an expiry
 /// ceiling or an availability reason. Keep unfamiliar codes and details as data
 /// for the caller because core defines them; basal must not invent a new policy

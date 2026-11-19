@@ -1,4 +1,4 @@
-//! `flow.health` as prefrontal-core reads it. Core polls the op on its own
+//! `flow.health` as prefrontal reads it. Core polls the op on its own
 //! route to decide whether a flow's claim on a source still holds, and
 //! treats any reply it cannot decode as unhealthy. So the reply is decoded
 //! here exactly as core decodes it: into a struct with only the contract's
@@ -267,7 +267,7 @@ fn health_and_list_show_grant_loss_and_retirement_evidence() {
         );
         assert_eq!(entry["grant_losses"][0]["state"], "stopped");
     }
-    let retirement = json!({"agent_id":"SYNAPSE","agent_reference":"SYNAPSE","provider":"prefrontal-core","action":"sink.status","at_ms":T0});
+    let retirement = json!({"agent_id":"SYNAPSE","agent_reference":"SYNAPSE","provider":"prefrontal","action":"sink.status","at_ms":T0});
     f.module.rt.store().write(|tx| {
         tx.execute("UPDATE flows SET disabled_reason='agent_retired',agent_retirement=?2 WHERE flow_id=?1",rusqlite::params![flow,retirement.to_string()])?;
         Ok(())

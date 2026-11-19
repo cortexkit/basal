@@ -293,7 +293,7 @@ fn a_route_without_a_scope_is_never_an_agent() {
     for (harness, session) in [
         ("fed-phone", SESSION),
         ("fed-anything", SESSION),
-        ("alfonso", "prefrontal-core"),
+        ("alfonso", "prefrontal"),
     ] {
         assert_eq!(
             unscoped_with(20, harness, session),
@@ -308,7 +308,7 @@ fn a_route_without_a_scope_is_never_an_agent() {
         Caller::DevOperatorApp
     );
     assert_eq!(
-        unscoped_with(22, "alfonso-desktop", "prefrontal-core"),
+        unscoped_with(22, "alfonso-desktop", "prefrontal"),
         Caller::DevOperatorApp
     );
     let local = unscoped_with(23, "fed-phone", SESSION);
@@ -485,7 +485,7 @@ fn every_phone_exclusion_is_refused_with_todays_refusal() {
     );
     let shared = caller_of(
         &handler,
-        bind_with(RouteHandle::detached(14, 1), "alfonso", "prefrontal-core")
+        bind_with(RouteHandle::detached(14, 1), "alfonso", "prefrontal")
             .with_principal(Principal::Direct),
     );
     let reserved = caller_of(

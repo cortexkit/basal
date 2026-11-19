@@ -129,10 +129,10 @@ pub fn board_read(id: &str) -> Flow {
             "explanation":"Reads a page of boards every minute without waking anyone or writing data, to check the approved audience grant.",
             "trigger":{"schedule":{"cron":EVERY_MINUTE}},
             "audience":{"kind":"global"},
-            "ops":[{"module":"prefrontal-core","op":"board.read"}],
+            "ops":[{"module":"prefrontal","op":"board.read"}],
             "board_read":["$audience"]})
         .to_string(),
-        script: "return await ops.call('prefrontal-core', 'board.read', {limit:16});".into(),
+        script: "return await ops.call('prefrontal', 'board.read', {limit:16});".into(),
     }
 }
 

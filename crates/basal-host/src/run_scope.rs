@@ -1,4 +1,4 @@
-//! prefrontal-core authorizes run scopes. The invoking tool route's daemon stamp
+//! prefrontal authorizes run scopes. The invoking tool route's daemon stamp
 //! records the verified principal, scope owner, reference, epoch and agent_id.
 //! Basal sends that agent and scope identity with a fixed expiry to core over its
 //! own route stamped reserved:basal, the daemon-verified basal module principal.
@@ -87,8 +87,7 @@ fn call<T: Serialize, R: for<'de> Deserialize<'de>>(
     request: &T,
 ) -> Result<R, WireError> {
     let params = serde_json::to_value(request).map_err(|e| WireError::NeverSent(e.to_string()))?;
-    let value: Value =
-        transport.management(crate::core_identity::core_module(transport), op, params)?;
+    let value: Value = transport.management(crate::core_identity::CORE_MODULE, op, params)?;
     serde_json::from_value(value).map_err(|e| WireError::Unreadable(e.to_string()))
 }
 
@@ -1278,7 +1277,7 @@ mod call_mode_tests {
             &[
                 entry("read"),
                 entry("board"),
-                module_entry("prefrontal-core", "work"),
+                module_entry("prefrontal", "work"),
                 entry("delete"),
             ],
         );
@@ -1291,8 +1290,8 @@ mod call_mode_tests {
                 .all(|gap| gap.reason == RefusalReason::NotDeclared)
         );
         assert_eq!(resolved.gaps[0].tools, ["mock_board", "mock_delete"]);
-        assert_eq!(resolved.gaps[1].module, "prefrontal-core");
-        assert_eq!(resolved.gaps[1].tools, ["prefrontal-core_work"]);
+        assert_eq!(resolved.gaps[1].module, "prefrontal");
+        assert_eq!(resolved.gaps[1].tools, ["prefrontal_work"]);
         assert_eq!(resolved.gaps[0].reason.code(), "tool_not_declared");
     }
 

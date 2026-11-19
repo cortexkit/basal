@@ -12,7 +12,7 @@ use subc_protocol::Principal;
 
 fn owner() -> Principal {
     Principal::Reserved {
-        module_id: "prefrontal-core".into(),
+        module_id: "prefrontal".into(),
     }
 }
 
@@ -21,7 +21,7 @@ fn live_reply() -> Value {
         "op": "scope.describe", "status": "live", "scope_epoch": 19,
         "daemon_incarnation": "daemon:attesting", "owner_synced": true,
         "owner_configured": true,
-        "scope": {"owner": {"kind": "reserved", "module_id": "prefrontal-core"},
+        "scope": {"owner": {"kind": "reserved", "module_id": "prefrontal"},
             "ref": "scope:run", "scope_epoch": 19, "kind": "head",
             "attributes": {"agent_id": "agent:7", "flow_id": "flow:parent"},
             "owner_authorized": true}
@@ -137,7 +137,7 @@ fn module_describe_preserves_live_and_non_live_answers() {
             for call in calls.iter() {
                 assert_eq!(
                     *call,
-                    json!({"op":"scope.describe", "owner":{"kind":"reserved", "module_id":"prefrontal-core"}, "ref":"scope:run"})
+                    json!({"op":"scope.describe", "owner":{"kind":"reserved", "module_id":"prefrontal"}, "ref":"scope:run"})
                 );
             }
         },

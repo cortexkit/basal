@@ -2,11 +2,11 @@
 //! nothing else. Two binaries use it:
 //!
 //! - `ck-callosum-stub`, placed on the rig as `ckdev-callosum`: a module with
-//!   the reserved id `callosum`, the only principal prefrontal-core and basal
+//!   the reserved id `callosum`, the only principal prefrontal and basal
 //!   treat as the operator. It exists only to answer consent cards (and to
 //!   carry the few operator-only calls the suite needs) on the rig.
 //! - `basal-rig-contract`, run by `script/flows-rig.sh test`: the live
-//!   contract suite against the real prefrontal-core.
+//!   contract suite against the real prefrontal.
 //!
 //! - [`client`]: management calls over the rig's daemon, scoped or not.
 //! - [`stores`]: read-only views of core's and basal's stores.

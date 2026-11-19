@@ -1038,7 +1038,7 @@ mod error_tests {
             module_id: id.into(),
         };
         let scope = ScopeStamp::new(
-            reserved("prefrontal-core"),
+            reserved("prefrontal"),
             "s-1",
             1,
             subc_protocol::scope::ScopeKind::Head,

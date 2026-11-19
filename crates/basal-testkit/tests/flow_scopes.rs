@@ -87,7 +87,7 @@ impl Transport for Wire {
         let mut cache = self.target_scopes.lock().unwrap();
         let result = cache.resolve(&request.flow_id, &request.run_id, call, *self.now.lock().unwrap(),
             |scope| self.routes.lock().unwrap().ended(&scope.route_key()),
-            || self.management("prefrontal-core", "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
+            || self.management("prefrontal", "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
         );
         for key in cache.take_retired() {
             self.configure_flow(&key, None);
@@ -104,7 +104,7 @@ impl Transport for Wire {
             &key,
             Some(RegisteredScope {
                 // This fake core registers target scopes under its old name.
-                selector: scope.selector("prefrontal-core"),
+                selector: scope.selector("prefrontal"),
                 targets,
             }),
         );
@@ -136,12 +136,12 @@ impl Transport for Wire {
                 json!([{"name":"echo","kind":"query"},{"name":"post","kind":"mutate"}]);
             modules[0]["roles"].as_array_mut().unwrap().push(json!({"role":"tool_provider","tools":[{"name":"send","execution_mode":"mutating","schema":{}}],"identity_scope":[],"config_schema":{},"observability":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}));
         }
-        modules.push(json!({"module_id":"prefrontal-core", "capabilities":{"provides":if *self.core_capable.lock().unwrap() {vec!["flow-scopes/v1"]} else {vec![]}}, "roles":[{"role":"management_surface","operations":[{"name":"board.read","kind":"query"},{"name":"work.unsettled","kind":"query"},{"name":"board.write","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
+        modules.push(json!({"module_id":"prefrontal", "capabilities":{"provides":if *self.core_capable.lock().unwrap() {vec!["flow-scopes/v1"]} else {vec![]}}, "roles":[{"role":"management_surface","operations":[{"name":"board.read","kind":"query"},{"name":"work.unsettled","kind":"query"},{"name":"board.write","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
         Ok(json!({"generation":1,"modules":modules,"subc_ops":[]}))
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
         if op == "flow.target_scope" {
-            assert_eq!(module, "prefrontal-core");
+            assert_eq!(module, "prefrontal");
             let mut asks = self.target_asks.lock().unwrap();
             asks.push(params.clone());
             if let Some(answer) = self.target_answers.lock().unwrap().pop_front() {
@@ -227,7 +227,7 @@ fn scope(epoch: u64) -> RegisteredScope {
     RegisteredScope {
         selector: FlowScope {
             owner: Principal::Reserved {
-                module_id: "prefrontal-core".into(),
+                module_id: "prefrontal".into(),
             },
             scope_ref: "flow:flow-test".into(),
             epoch,
@@ -1171,7 +1171,7 @@ fn carrier_core_payload_and_route_remain_unchanged() {
         .find(|(_, _, v)| v["method"] == "sink.digest")
         .unwrap();
     assert_eq!(*route, None);
-    assert_eq!(module, "prefrontal-core");
+    assert_eq!(module, "prefrontal");
     assert!(f.wire.opens.lock().unwrap().is_empty());
     let intent = f.rt.calls(&run).unwrap()[0].request.clone().unwrap();
     assert_eq!(
@@ -1316,7 +1316,7 @@ fn other_core_flow_ops_require_a_scope_and_never_change_script_arguments() {
         run_id: "run-a".into(),
         position: 0,
         kind: CallKind::Op {
-            module: "prefrontal-core".into(),
+            module: "prefrontal".into(),
             op: "board.write".into(),
         },
         args: JsonText::new(args.to_string()).unwrap(),
@@ -1331,14 +1331,14 @@ fn other_core_flow_ops_require_a_scope_and_never_change_script_arguments() {
     assert!(wire.calls.lock().unwrap().is_empty());
     *wire.core_capable.lock().unwrap() = true;
     let mut core_scope = scope(1);
-    core_scope.targets.insert("prefrontal-core".into());
+    core_scope.targets.insert("prefrontal".into());
     host.configure_flow("flow-a", Some(core_scope));
     host.dispatch(&request).unwrap();
     assert_eq!(
         wire.calls.lock().unwrap()[0],
         (
             Some(1),
-            "prefrontal-core".into(),
+            "prefrontal".into(),
             management_body("board.write", args)
         )
     );
@@ -1355,9 +1355,9 @@ fn other_core_flow_ops_require_a_scope_and_never_change_script_arguments() {
 
 fn board_read_fixture(tag: &str, script: &str) -> Fixture {
     let f = Fixture::new(tag, script, false, false);
-    f.world.catalog.set_flow_capable("prefrontal-core", false);
+    f.world.catalog.set_flow_capable("prefrontal", false);
     f.world.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "board.read",
         basal_host::OpDecl {
             kind: Some(basal_host::OpKind::Query),
@@ -1366,7 +1366,7 @@ fn board_read_fixture(tag: &str, script: &str) -> Fixture {
         },
     );
     install_target_manifest(&f, |manifest| {
-        manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+        manifest["ops"] = json!([{"module":"prefrontal","op":"board.read"}]);
         manifest["board_read"] = json!(["$audience"]);
     });
     f
@@ -1376,7 +1376,7 @@ fn board_read_fixture(tag: &str, script: &str) -> Fixture {
 fn board_read_uses_basal_route_with_journaled_approved_stamp() {
     let f = board_read_fixture(
         "board-carrier",
-        "return await ops.call('prefrontal-core', 'board.read', {limit: 3, cursor: 'agent_0'});",
+        "return await ops.call('prefrontal', 'board.read', {limit: 3, cursor: 'agent_0'});",
     );
     let run = f.admit("board-carrier");
     f.activate(&run);
@@ -1394,7 +1394,7 @@ fn board_read_uses_basal_route_with_journaled_approved_stamp() {
         *board_calls[0],
         (
             None,
-            "prefrontal-core".into(),
+            "prefrontal".into(),
             management_body("board.read", expected.clone())
         )
     );
@@ -1431,7 +1431,7 @@ fn board_read_refuses_script_supplied_stamp_fields() {
         let f = board_read_fixture(
             "board-forged-stamp",
             &format!(
-                "try {{ await ops.call('prefrontal-core', 'board.read', {args}); return 'sent'; }} catch (e) {{ return e.data; }}"
+                "try {{ await ops.call('prefrontal', 'board.read', {args}); return 'sent'; }} catch (e) {{ return e.data; }}"
             ),
         );
         let run = f.admit("board-forged-stamp");
@@ -1454,9 +1454,9 @@ fn board_read_refuses_script_supplied_stamp_fields() {
 #[test]
 fn board_read_requires_object_arguments_and_own_audience_selector() {
     for call in [
-        "ops.call('prefrontal-core', 'board.read', null)",
-        "ops.call('prefrontal-core', 'board.read', [])",
-        "ops.call('prefrontal-core', 'board.read', {limit: 1}, {for: 'Alice'})",
+        "ops.call('prefrontal', 'board.read', null)",
+        "ops.call('prefrontal', 'board.read', [])",
+        "ops.call('prefrontal', 'board.read', {limit: 1}, {for: 'Alice'})",
     ] {
         let f = board_read_fixture(
             "board-carrier-args",
@@ -1481,9 +1481,9 @@ fn work_unsettled_fixture(tag: &str, script: &str) -> Fixture {
     let f = Fixture::new(tag, script, false, false);
     // Core does not advertise flow-scopes/v1: a carrier op must still install
     // and run, because it never uses a flow-scoped route.
-    f.world.catalog.set_flow_capable("prefrontal-core", false);
+    f.world.catalog.set_flow_capable("prefrontal", false);
     f.world.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "work.unsettled",
         basal_host::OpDecl {
             kind: Some(basal_host::OpKind::Query),
@@ -1492,7 +1492,7 @@ fn work_unsettled_fixture(tag: &str, script: &str) -> Fixture {
         },
     );
     install_target_manifest(&f, |manifest| {
-        manifest["ops"] = json!([{"module":"prefrontal-core","op":"work.unsettled"}]);
+        manifest["ops"] = json!([{"module":"prefrontal","op":"work.unsettled"}]);
     });
     f
 }
@@ -1525,8 +1525,8 @@ fn as_vector_bytes(f: &Fixture, mut params: Value) -> Vec<u8> {
 fn work_unsettled_requests_match_core_vectors_on_basal_route() {
     let f = work_unsettled_fixture(
         "work-unsettled-carrier",
-        "const first = await ops.call('prefrontal-core', 'work.unsettled', {});
-         const next = await ops.call('prefrontal-core', 'work.unsettled', {cursor: '1199:bg_page_199'});
+        "const first = await ops.call('prefrontal', 'work.unsettled', {});
+         const next = await ops.call('prefrontal', 'work.unsettled', {cursor: '1199:bg_page_199'});
          return [first, next];",
     );
     let run = f.admit("work-unsettled-carrier");
@@ -1545,7 +1545,7 @@ fn work_unsettled_requests_match_core_vectors_on_basal_route() {
     {
         let (route, module, body) = sent[index];
         assert_eq!(*route, None, "{vector}: sent on a flow-scoped route");
-        assert_eq!(module, "prefrontal-core");
+        assert_eq!(module, "prefrontal");
         assert_eq!(
             body,
             &management_body("work.unsettled", result[index].clone())
@@ -1586,7 +1586,7 @@ fn work_unsettled_refusals_reach_the_script_typed() {
     for refusal in refusals {
         let f = work_unsettled_fixture(
             "work-unsettled-refused",
-            "try { await ops.call('prefrontal-core', 'work.unsettled', {}); return 'sent'; } catch (e) { return e.data; }",
+            "try { await ops.call('prefrontal', 'work.unsettled', {}); return 'sent'; } catch (e) { return e.data; }",
         );
         f.wire
             .refusals
@@ -1619,7 +1619,7 @@ fn work_unsettled_never_uses_a_flow_scoped_route() {
         run_id: "run-a".into(),
         position: 0,
         kind: CallKind::Op {
-            module: "prefrontal-core".into(),
+            module: "prefrontal".into(),
             op: op.into(),
         },
         args: JsonText::new(
@@ -1636,7 +1636,7 @@ fn work_unsettled_never_uses_a_flow_scoped_route() {
     // takes it; work.unsettled still does not.
     *wire.core_capable.lock().unwrap() = true;
     let mut core_scope = scope(1);
-    core_scope.targets.insert("prefrontal-core".into());
+    core_scope.targets.insert("prefrontal".into());
     host.configure_flow("flow-a", Some(core_scope));
     host.dispatch(&request("work.unsettled")).unwrap();
     host.dispatch(&request("board.write")).unwrap();

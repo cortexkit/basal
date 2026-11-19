@@ -131,7 +131,8 @@ impl CoreHost {
 /// typed entries (a test transport's partial JSON) is read as JSON instead.
 pub fn core_provides<T: Transport + ?Sized>(transport: &T, capability: &str) -> bool {
     match transport.catalog_snapshot() {
-        Ok(catalog) => crate::core_identity::catalog_module(&catalog, CORE)
+        Ok(catalog) => catalog
+            .module(CORE)
             .is_some_and(|core| core.provides(capability)),
         Err(WireError::Unreadable(_)) => core_provides_in_json(transport, capability),
         Err(_) => false,
@@ -144,11 +145,8 @@ fn core_provides_in_json<T: Transport + ?Sized>(transport: &T, capability: &str)
         .ok()
         .and_then(|catalog| {
             catalog["modules"].as_array().map(|modules| {
-                let resolved = crate::core_identity::resolve(|id| {
-                    modules.iter().any(|m| m["module_id"] == id)
-                });
                 modules.iter().any(|module| {
-                    module["module_id"].as_str() == resolved
+                    module["module_id"] == CORE
                         && module["capabilities"]["provides"]
                             .as_array()
                             .is_some_and(|provided| provided.iter().any(|item| item == capability))
@@ -335,11 +333,8 @@ impl Host for CoreHost {
         self.transport.on_catalog_change(notify);
     }
     fn owner_notice(&self, request: Value) -> Result<Value, WireError> {
-        self.transport.management(
-            crate::core_identity::core_module(self.transport.as_ref()),
-            "flow.owner_notice",
-            request,
-        )
+        self.transport
+            .management(CORE, "flow.owner_notice", request)
     }
     fn supports_core_capability(&self, capability: &str) -> bool {
         self.supports_capability(capability)
@@ -442,11 +437,7 @@ impl Host for CoreHost {
             let withdrawal = p == Primitive::SinkDigest && v["withdraw"] == true;
             let operation = v["operation"]["op"].as_str().map(str::to_owned);
             self.transport
-                .management(
-                    crate::core_identity::core_module(self.transport.as_ref()),
-                    op,
-                    v,
-                )
+                .management(CORE, op, v)
                 .map_err(|e| crate::transport::contextual(e, CORE, op))
                 .map_err(|e| {
                     if p == Primitive::SinkBoard {
@@ -492,7 +483,7 @@ impl Host for CoreHost {
         let reply = self
             .transport
             .management(
-                crate::core_identity::core_module(self.transport.as_ref()),
+                CORE,
                 "flow.install_status",
                 json!({"flow_id": flow_id, "version": version}),
             )

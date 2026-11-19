@@ -1,6 +1,6 @@
 # Architecture
 
-basal is the fleet's flow runtime, and it also provides the agent-facing `codemode` tool. A **flow** is a small JavaScript script with a JSON manifest. It runs on a schedule (recurring, or once at a set time) or on a module event. It reads module data and facts, decides what to do, and sends its output to agents through prefrontal-core ("core"). A **codemode run** is a short JavaScript program an agent sends; it calls that agent's own tools and returns one result.
+basal is the fleet's flow runtime, and it also provides the agent-facing `codemode` tool. A **flow** is a small JavaScript script with a JSON manifest. It runs on a schedule (recurring, or once at a set time) or on a module event. It reads module data and facts, decides what to do, and sends its output to agents through prefrontal ("core"). A **codemode run** is a short JavaScript program an agent sends; it calls that agent's own tools and returns one result.
 
 Both run in the same kind of confined JavaScript worker, and both follow one rule: the worker computes, and the parent decides. The worker cannot authorize a call, record an outcome, or reach a file, socket or module except through the parent.
 
@@ -25,7 +25,7 @@ Spares exist because on macOS the first launch of a freshly signed binary has be
 ## Trust boundaries
 
 - **The worker is untrusted.** It runs approved code that is still untrusted input to a C engine. Confinement differs per OS: seccomp plus Landlock on Linux, a deny-default Seatbelt profile on macOS, and on Windows a Less Privileged AppContainer launch that the worker lowers to an Untrusted-integrity token before reading input. The parent refuses a worker whose confinement report does not pass. Workers start with an empty environment and three anonymous pipes (`process.rs`).
-- **Callers are who the daemon says they are.** `caller.rs` decides every caller from the principal and scope the daemon stamped on the inbound route, never from request fields. The operator is the attested `reserved:callosum`; core is `reserved:prefrontal-core`; an agent is a head scope carrying its `agent_id`; a direct unscoped key-holder is a local caller. Each op's table of who may call it is in `ops.rs`.
+- **Callers are who the daemon says they are.** `caller.rs` decides every caller from the principal and scope the daemon stamped on the inbound route, never from request fields. The operator is the attested `reserved:callosum`; core is `reserved:prefrontal`; an agent is a head scope carrying its `agent_id`; a direct unscoped key-holder is a local caller. Each op's table of who may call it is in `ops.rs`.
 - **basal carries authority; it does not mint it.** Core registers each flow's route scope (keyed by flow id and version) and each codemode run's scope. basal opens routes on those scopes, and the target module checks its own grants against the daemon's stamp. Core's sinks, `board.read` and `work.unsettled` are the exception: they go over basal's own `reserved:basal` route carrying the flow's `{flow_id, flow_version, code_hash}`, which core checks against the approved install (`basal-host/src/core_host.rs`).
 - **Approval binds to the exact bytes.** A flow version's code hash is BLAKE3 over its script and manifest bytes (`ids.rs`). Core renders the install card from the hashed manifest, and before every activation basal asks core whether it still stands behind that hash (`gate.rs`).
 
@@ -99,7 +99,7 @@ A codemode call is never replayed. A worker crash, deadline or cancel ends the r
 |---|---|
 | subc daemon | HELLO and route binding, the catalog, scope stamps and `scope.describe`, supervision. |
 | ck-bus (NATS JetStream) | The `m_basal` consumer for module events, and publishing basal's own template lifecycle events. |
-| prefrontal-core | Install cards and status, revocation hints, flow and run scopes, sinks, `board.read`, `work.unsettled`, agent lookup, owner notices. |
+| prefrontal | Install cards and status, revocation hints, flow and run scopes, sinks, `board.read`, `work.unsettled`, agent lookup, owner notices. |
 | Cingulate | Decision cards (`consent/v1`). |
 | The routing module (the `routing/v1` provider) | Model choice (`route.select`). |
 | Broca | Model calls, `run.ended` events, `llm_classify`. |

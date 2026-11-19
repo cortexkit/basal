@@ -89,15 +89,12 @@ impl Runtime {
             let event = (|| {
                 let value: Value = serde_json::from_str(&body).map_err(|e| CoreError::Corrupt(e.to_string()))?;
                 let (name, reader, message_id, body) = if kind == LATE_RESULT_READY {
-                    let reader = reader.ok_or_else(|| CoreError::Corrupt("wake lacks recipient".into()))?;
+                    let target = reader.ok_or_else(|| CoreError::Corrupt("wake lacks recipient".into()))?;
                     let wake: LateResultWake = serde_json::from_str(&body).map_err(|e| CoreError::Corrupt(e.to_string()))?;
                     wake.ready.validate().map_err(|e| CoreError::Corrupt(e.to_string()))?;
                     if wake.event_id.is_empty() {
                         return Err(CoreError::Corrupt("wake lacks event id".into()));
                     }
-                    let target = if basal_host::core_identity::is_core_module(&reader) {
-                        self.catalog().core_module().to_owned()
-                    } else { reader };
                     let message_id = late_result_ready_msg_id(&wake.event_id, &target);
                     let payload = serde_json::to_string(&wake.ready).map_err(|e| CoreError::Corrupt(e.to_string()))?;
                     ("late_result_ready", Some(target), message_id, payload)

@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn scope_evidence_rejects_mismatched_ref_epoch_owner_and_missing_fields() {
-        let registered = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"core-ref","epoch":7});
+        let registered = json!({"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"core-ref","epoch":7});
         let owner = json!({"scope":{"owner":registered["owner"],"ref":"core-ref","scope_epoch":7}});
         assert!(scope_matches(&owner, &registered));
         let mut renamed = registered.clone();

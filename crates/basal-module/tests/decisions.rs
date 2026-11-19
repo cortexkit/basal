@@ -535,7 +535,7 @@ fn each_unknown_site_records_its_reason_and_the_card_shows_it() {
         .fake
         .decision_cards(&decisions::reconcile_key(FLOW, &run, 0))[0]
         .1[0];
-    assert_eq!(body(request, "op"), "prefrontal-core.sink.digest");
+    assert_eq!(body(request, "op"), "prefrontal.sink.digest");
     // Every transport send needs its own durable authorization record and
     // increments the attempt count.
     assert_eq!(body(request, "attempts"), retries + 1);
@@ -1059,6 +1059,7 @@ fn reconcile_context(run_id: &str, call_key: &str) -> DecisionContext {
         run_admitted_at_ms: 1_780_408_800_000,
         step: Some("writer/send".into()),
         call_key: call_key.into(),
+        // The pinned request describes a call recorded before the rename.
         op: "prefrontal-core.sink.digest".into(),
         attempts: 2,
         unknown_reason: UnknownReason::ConnectionLost,
@@ -1142,7 +1143,7 @@ const VECTORS: &str = concat!(
     "/tests/vectors/flow-decision-card-v2"
 );
 
-/// The prefrontal-core service publishes v2 consent-request examples that
+/// The prefrontal service publishes v2 consent-request examples that
 /// define the request envelope and typed decision body it accepts. Basal adds
 /// phone `facts` as separate display rows; this test removes only that array
 /// when comparing core-defined fields, then checks the full request with the

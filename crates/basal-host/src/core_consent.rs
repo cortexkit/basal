@@ -1,4 +1,4 @@
-//! Install cards go to prefrontal-core through `flow.install_request`. Decision
+//! Install cards go to prefrontal through `flow.install_request`. Decision
 //! cards are held by `consent/v1` providers, which retain answers until basal
 //! has durably applied every decision in a page.
 use crate::transport::{Transport, WireError};
@@ -166,7 +166,7 @@ const DECISION_FACT_VALUE_MAX_BYTES: usize = 200;
 const CONSENT_REQUEST_ENVELOPE_MAX_BYTES: usize = 1_310_720;
 
 /// Builds the consent request for a basal decision card shown to the operator.
-/// prefrontal-core (core) validates the v2 request envelope and typed decision
+/// prefrontal (core) validates the v2 request envelope and typed decision
 /// body; its pinned examples define those core-owned fields. Basal derives the
 /// phone's plain-text facts from that same body and may add durable
 /// `dedup_key` or `args_digest` keys when a production record has them.
@@ -1002,7 +1002,7 @@ impl Consent for CoreConsent {
             .state
             .transport
             .management(
-                crate::core_identity::core_module(self.state.transport.as_ref()),
+                crate::core_identity::CORE_MODULE,
                 "flow.install_request",
                 request,
             )

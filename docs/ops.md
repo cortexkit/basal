@@ -2,9 +2,9 @@
 
 Basal serves the `flow` tool alongside `codemode`. Core selects it with the tool capability tag `basal:flow.manage/v1`; until core selects that tag and retires its wrapper, agents use core's scoped relay to `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable`, `flow.list`, `flow.instantiate` and `flow.instance.end`. Caller identity comes from `attributes.agent_id` on the daemon's core-owned route scope stamp, never request parameters. `flow.health` is an operator and core pull view, not relayed to agents. Core does not poll it; basal pushes durable owner notices for failure episodes and rate auto-disables.
 
-The daemon delivers agent-facing `codemode` calls directly to basal; prefrontal-core does not forward them. See [codemode](#codemode).
+The daemon delivers agent-facing `codemode` calls directly to basal; prefrontal does not forward them. See [codemode](#codemode).
 
-During the rename from `prefrontal-core` to `prefrontal`, basal accepts both module names and both reserved principals as the same core identity. Outbound calls use `prefrontal` when present in the daemon catalog, otherwise `prefrontal-core`, so the same basal build works before and after the daemon restart. Approved manifest bytes, audit rows, run history and stored card principals are not rewritten; late program results share one acknowledgement cursor across the two custodian names.
+Basal routes to `prefrontal` and admits only `reserved:prefrontal` as that module. Stored flow, template and package versions may still name `prefrontal-core` in their approved bytes; basal uses `prefrontal` when running those versions without changing their bytes or approval hash. New manifest bytes must use `prefrontal`. Re-sending an identical stored version remains idempotent.
 
 Package management is not agent-relayed: `package.register` is available to the attested operator and core; `package.get`, `flow.instance.ensure`, and `flow.instance.remove` are core-only. The attested operator is a caller on a route the daemon stamps as the reserved `callosum` module, the operator's own module. A plain local caller is a process holding the daemon's direct connection key, on a route with no scope, which the daemon cannot vouch for. A plain local caller refused any of these receives `operator_attestation_required`, consistently with the other management operations; other unauthorized callers receive `not_permitted`. See [package manifests](packages.md).
 
@@ -67,7 +67,7 @@ Every finding includes `check`, stable `key`, `severity`, positive `count`,
 `first_seen_ms`, `last_seen_ms`, `summary`, `samples`, and `hint`.
 
 Admission uses only daemon route stamps: unscoped `reserved:callosum` and
-`reserved:prefrontal-core`; authorized core-owned agent Head scopes with no
+`reserved:prefrontal`; authorized core-owned agent Head scopes with no
 flow/run identity; and authorized core-owned scopes carrying a nonempty
 `flow_id`, except Worker scopes. Workers, foreign/unauthorized owners, direct
 local callers and dev desktop apps are refused. No repair, delivery, reconcile
@@ -124,7 +124,7 @@ Each action invokes the corresponding management operation below as the agent id
 
 The text uses plain language, not embedded JSON. Install replies identify the flow version and full code hash, and report the approval-card status (including the card ID when available). Install and dry-run replies describe the replay window, schedule caps and partial traces, then group equivalent run outcomes into at most five lines with counts; any omitted outcomes are counted. Distinct warnings appear as individual lines when present. Per-run IDs, arguments, results and the complete report remain in `structuredContent` for programs.
 
-Install reads the script and manifest through the AFT file provider's `file.read_exact` operation. Core registers a short-lived `flow-read/…` scope for the call, and basal uses the scope owner (`reserved:prefrontal-core`), reference and epoch from the daemon's stamp to open the file-provider route. Relative paths resolve at your root in AFT, not basal's working directory. Basal verifies each returned SHA-256 digest and enforces 1 MiB for script and 64 KiB for manifest, then installs the exact UTF-8 bytes. A missing or incorrect read scope is `flow_read_scope_missing`, a changed digest is `flow_read_digest_mismatch`; there is no fallback to basal's own file access. AFT's `file_read_exact_*` refusals pass through unchanged.
+Install reads the script and manifest through the AFT file provider's `file.read_exact` operation. Core registers a short-lived `flow-read/…` scope for the call, and basal uses the scope owner (`reserved:prefrontal`), reference and epoch from the daemon's stamp to open the file-provider route. Relative paths resolve at your root in AFT, not basal's working directory. Basal verifies each returned SHA-256 digest and enforces 1 MiB for script and 64 KiB for manifest, then installs the exact UTF-8 bytes. A missing or incorrect read scope is `flow_read_scope_missing`, a changed digest is `flow_read_digest_mismatch`; there is no fallback to basal's own file access. AFT's `file_read_exact_*` refusals pass through unchanged.
 
 If `instantiate.version` is absent, basal asks core's `package.approved_versions` as `reserved:basal`, without borrowing the agent's scope. Core must advertise `package-approved-versions/v1`; otherwise the call returns `version_required` (pass an explicit version). An unknown template or one with no approved versions returns `package_unknown`. Explicit versions go to the operation unchanged; core's run gate still enforces approval and revocation at activation. Registration alone is not approval.
 
@@ -160,7 +160,7 @@ Reply:
 ```
 `warnings` is an array of warning objects (`kind`, `module`, `op`, all strings), or null if unavailable. `dry_run` has the same summary shape documented below for `flow.dry_run`, or `{error: string}` if the capture failed, or null if unavailable.
 
-Installation records a version and asks prefrontal-core to authorize it through `flow.install_request`, with a `flow_install` consent body containing the exact code, manifest and attested author. Core owns the install record and files its card through cingulate when available, otherwise through its own provider. basal never sends install cards directly to cingulate. The reply `outcome: card_raised` names `flow_id`, `version` and `attempt`, not an elicitation id; basal saves that triple. A reply of any other shape is not accepted. Decision cards (`flow_decision`, including `grant_lost`) use the catalogued consent provider and its answer feed.
+Installation records a version and asks prefrontal to authorize it through `flow.install_request`, with a `flow_install` consent body containing the exact code, manifest and attested author. Core owns the install record and files its card through cingulate when available, otherwise through its own provider. basal never sends install cards directly to cingulate. The reply `outcome: card_raised` names `flow_id`, `version` and `attempt`, not an elicitation id; basal saves that triple. A reply of any other shape is not accepted. Decision cards (`flow_decision`, including `grant_lost`) use the catalogued consent provider and its answer feed.
 
 When core's daemon catalog entry advertises `flow-install-id/v1`, basal sends `flow_install.install_id` in `flow.install_request`, beside `flow_id`, `version` and `code_hash` inside `flow_install`. Otherwise the key is omitted. Basal mints 16 bytes from OS entropy, encodes them as 32 lowercase hexadecimal characters (within core's 1–64 character `[A-Za-z0-9_-]` alphabet), and saves the id with the local install card in the same transaction. Each new local card gets a new id. Retrying a pending card whose request may still be live, including after a lost reply, reuses its stored id; core assigns `attempt` only in its reply, so basal does not mint ids from attempt numbers. Existing cards without an id acquire one transactionally before their next request is sent. Core binds an id to the exact flow, version and code hash and refuses its reuse for a different install.
 
@@ -254,7 +254,7 @@ Reply: `{}`. Core sends this at-least-once hint after an install card decision c
 
 The activation gate still accepts only a matching `active` hash. `pending`, `declined` and `expired` are treated like `unknown` there: none means approved.
 
-Basal also reads `ck.<account>.event.prefrontal-core.flow_install_changed.v1`.
+Basal also reads `ck.<account>.event.prefrontal.flow_install_changed.v1`.
 Its payload is the control notice itself, `{flow_id, seq}` with a positive
 sequence, rather than an `events_get` reference. Basal checks all pending cards
 for that flow oldest version first, with one `flow.install_status` read per card,
@@ -352,7 +352,7 @@ write lock and makes no network call. See the
 ## flow.audience
 
 This management query is not agent-relayed. Only daemon-attested reserved
-module principals on unscoped routes (for example prefrontal-core, plexus, or
+module principals on unscoped routes (for example prefrontal, plexus, or
 callosum) may call it. Agents, scoped module routes, direct local callers and
 unverified routes receive `not_permitted`. A request cannot claim a module
 identity in its parameters.
@@ -434,7 +434,7 @@ Template instance entries additionally contain `template`, `version`, canonical 
 
 ## flow.overview
 
-Operator and admitted dev operator apps: the daemon must attest the unscoped route as `reserved:callosum`, or the route must be a direct, unscoped, non-federated app bind admitted by `dev_operator_app_admission` in `crates/basal-module/src/caller.rs` (no `fed-` harness prefix, and not the OpenCode plugin's shared channel `alfonso` + `prefrontal-core`). Release plan: replace that function with SUBC's `operator_app` stamp (subc-protocol 0.33.5, capability `operator-app/v1`). Core, agents and other modules receive `not_permitted`; an excluded local caller receives `operator_attestation_required`. These same admissions and refusals apply to `flow.details` and `flow.uninstall`, before parameter decoding.
+Operator and admitted dev operator apps: the daemon must attest the unscoped route as `reserved:callosum`, or the route must be a direct, unscoped, non-federated app bind admitted by `dev_operator_app_admission` in `crates/basal-module/src/caller.rs` (no `fed-` harness prefix, and not the OpenCode plugin's shared channel `alfonso` with session `prefrontal` or `prefrontal-core`). Release plan: replace that function with SUBC's `operator_app` stamp (subc-protocol 0.33.5, capability `operator-app/v1`). Core, agents and other modules receive `not_permitted`; an excluded local caller receives `operator_attestation_required`. These same admissions and refusals apply to `flow.details` and `flow.uninstall`, before parameter decoding.
 
 Params (an object with no other keys, or null for defaults):
 ```json
@@ -621,7 +621,7 @@ The run finish (or rate disable), episode latch and notice enqueue commit in
 one transaction. Episodes use a persistent, per-flow increasing integer;
 auto-disable gets its own episode without clearing an outstanding failing latch.
 
-The background engine hands notices to `prefrontal-core.flow.owner_notice` on
+The background engine hands notices to `prefrontal.flow.owner_notice` on
 basal's unscoped `reserved:basal` management route, not a script call or flow
 grant. It sends only when core's current daemon catalog provides
 `flow-owner-notice/v1`. Until then rows remain queued. Enqueues, observed catalog
@@ -705,7 +705,7 @@ old/new epoch, keys cleared and reset time.
 ## Target flow scopes
 
 For an audience flow's targeted module call, basal uses its reserved carrier
-route to prefrontal-core for `flow.target_scope`:
+route to prefrontal for `flow.target_scope`:
 
 ```json
 {"flow_id":"flow-id","version":1,"agent":"stable-agent-id","expires_at_ms":123456789}
@@ -730,12 +730,12 @@ call is a lost reply, never evidence that a mutation was unsent.
 
 ## Core carrier operations: `board.read` and `work.unsettled`
 
-The explicit core carrier-op list contains `prefrontal-core` / `board.read` and
-`prefrontal-core` / `work.unsettled`. Both are queries basal sends on its own
+The explicit core carrier-op list contains `prefrontal` / `board.read` and
+`prefrontal` / `work.unsettled`. Both are queries basal sends on its own
 reserved route with the approved install's stamp, as described below for
 `board.read`; `work.unsettled` has its own section after it.
 
-Declare `{"module":"prefrontal-core","op":"board.read"}` in `ops` and a
+Declare `{"module":"prefrontal","op":"board.read"}` in `ops` and a
 nonempty `board_read` string array in the manifest, for example
 `"board_read": ["$audience"]` with `"audience": {"kind":"global"}`. Basal
 refuses either declaration without the other, naming `board_read`. With an
@@ -743,7 +743,7 @@ audience every board-read reference must be exactly `$audience`; without one,
 use known static agents (or `$self` in packages), following the same self-only
 rules as sinks and status. Core checks each entry's separate live, revocable
 grant as well as audience membership. See [the manifest](manifest.md).
-Call it with `ops.call('prefrontal-core', 'board.read', args)`. Basal sends this
+Call it with `ops.call('prefrontal', 'board.read', args)`. Basal sends this
 query on its own reserved route (principal `reserved:basal`), not a flow-scoped
 provider route; it does not require core to advertise `flow-scopes/v1`. Other
 declared core ops still require that capability. The normal grant, catalog and
@@ -816,9 +816,9 @@ rejections and journals them like other replies.
 ### `work.unsettled`
 
 `work.unsettled` lists every delivered work item whose owning head has not
-settled it yet. Declare `{"module":"prefrontal-core","op":"work.unsettled"}` in
+settled it yet. Declare `{"module":"prefrontal","op":"work.unsettled"}` in
 `ops`; there is no separate manifest field. Call it with
-`ops.call('prefrontal-core', 'work.unsettled', {})`, or `{cursor}` for a later
+`ops.call('prefrontal', 'work.unsettled', {})`, or `{cursor}` for a later
 page. Basal routes it exactly like `board.read`: on its own `reserved:basal`
 route, never a flow-scoped one, without requiring `flow-scopes/v1`, with the
 approved stamp added and journaled, refusing script-supplied stamp fields and
@@ -1022,7 +1022,7 @@ auto-disabled flow, and lost grants. Each initial raise reads the daemon
 catalog: a provider advertising `consent/v1` receives `consent.request` on
 basal's attested `reserved:basal` route. If no provider advertises that
 capability, selection returns `Unavailable` naming `consent/v1`; no path is
-committed and the card stays pending for retry. prefrontal-core holds no
+committed and the card stays pending for retry. prefrontal holds no
 decision cards (its `elicitation.*` ops are gone), so there is no other
 endpoint to fall back to. Install cards still go through core's
 `flow.install_request`.

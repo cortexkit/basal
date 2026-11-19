@@ -191,7 +191,7 @@ fn install_status_encoder_reproduces_core_request_bytes() {
         .install_status("flow-x", 1)
         .unwrap();
     let records = transport.0.lock().unwrap();
-    assert_eq!(records[0].0, "prefrontal-core");
+    assert_eq!(records[0].0, "prefrontal");
     assert_eq!(
         records[0].1,
         json!({"method":"flow.install_status","params":{"flow_id":"flow-x","version":1}})

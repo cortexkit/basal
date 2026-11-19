@@ -50,7 +50,7 @@ pub(super) fn fixture_path_for(
     if !home.is_absolute() || home != root.join("home") {
         return Err("fixture writes require the isolated rig home".into());
     }
-    if !["basal", "prefrontal-core"].contains(&module) {
+    if !["basal", "prefrontal"].contains(&module) {
         return Err("unsupported fixture module".into());
     }
     let expected = root.join(format!("data/cortexkit/{module}/store.db"));

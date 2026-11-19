@@ -241,7 +241,7 @@ impl Transport for FakeTransport {
         op: &str,
         params: Value,
     ) -> std::result::Result<Value, WireError> {
-        assert_eq!(module, "prefrontal-core");
+        assert_eq!(module, "prefrontal");
         assert_eq!(op, "codemode.run_scope.close");
         assert_eq!(params, json!({"run_id":"r","epoch":7}));
         self.events.lock().unwrap().push("core_close".into());

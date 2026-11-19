@@ -187,13 +187,23 @@ impl Runtime {
         if manifest.id.len() > MAX_PACKAGE_ID_BYTES {
             return Err(refused("package_id_too_long"));
         }
-        manifest
-            .check_for_intake(crate::manifest::IntakeKind::Package)
-            .map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
+        let hash = code_hash(script, text);
+        if let Err(error) = manifest.check_for_intake(crate::manifest::IntakeKind::Package) {
+            if crate::manifest::is_prefrontal_name_error(&error)
+                && self
+                    .store()
+                    .read(|conn| get(conn, &manifest.id, manifest.version))?
+                    .is_some_and(|version| version.code_hash.as_slice() == hash.as_slice())
+            {
+                return Ok(
+                    json!({"package":manifest.id,"version":manifest.version,"code_hash":hex(&hash),"new":false}),
+                );
+            }
+            return Err(PackageError::Install(InstallError::Manifest(error)));
+        }
         if manifest.agents().iter().any(|(_, agent)| *agent != "$self") {
             return Err(refused("package_names_agent"));
         }
-        let hash = code_hash(script, text);
         // Local intake errors, missing version text, then immutable bytes take
         // precedence over remote validation. Repeat state-dependent checks in
         // the write transaction, but never make catalog calls under its lock.

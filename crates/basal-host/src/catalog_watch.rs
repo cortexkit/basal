@@ -34,8 +34,6 @@ struct State {
     announced: u64,
     /// The newest catalog read while the subscription was open.
     snapshot: Option<Arc<CatalogSnapshot>>,
-    /// Routing identity survives watch gaps; unlike declarations it grants no authority.
-    core_module: Option<&'static str>,
 }
 
 #[derive(Default)]
@@ -61,15 +59,6 @@ impl SharedCatalog {
             .cloned()
     }
 
-    pub(crate) fn core_module(&self) -> &'static str {
-        // Until the first catalog read or watch snapshot arrives, use the
-        // legacy id. If only the renamed module is registered, its route miss
-        // defers work until the catalog identifies the new routing target.
-        self.state()
-            .core_module
-            .unwrap_or(crate::core_identity::LEGACY_CORE_MODULE)
-    }
-
     /// Whether `seen` is the snapshot the cache is serving now, so a lookup
     /// that missed in it may be worth one fresh read.
     pub(crate) fn is_serving(&self, seen: &Arc<CatalogSnapshot>) -> bool {
@@ -77,17 +66,12 @@ impl SharedCatalog {
             .is_some_and(|current| Arc::ptr_eq(&current, seen))
     }
 
-    /// Remember routing identity from each read, including without a watch.
     /// Share declarations only while a watch is open: without one nothing
     /// would say when they go stale.
     /// `replace` installs a read of the same generation too (a route miss
     /// refresh); otherwise only a newer generation replaces the copy.
     pub(crate) fn offer(&self, snapshot: &Arc<CatalogSnapshot>, replace: bool) {
         let mut state = self.state();
-        state.core_module = Some(crate::core_identity::routed_module(
-            snapshot,
-            crate::core_identity::LEGACY_CORE_MODULE,
-        ));
         if !state.watching || snapshot.generation < state.announced {
             return;
         }
@@ -240,28 +224,5 @@ mod tests {
             shared.announce(1, true),
             "a new watch reads even an older number"
         );
-    }
-
-    #[test]
-    fn core_routing_identity_survives_watch_gaps_and_updates_without_a_watch() {
-        let shared = SharedCatalog::default();
-        assert_eq!(shared.core_module(), "prefrontal-core");
-        let renamed = CatalogSnapshot::from_value(serde_json::json!({
-            "generation":3,"modules":[{"module_id":"prefrontal"}]
-        }))
-        .unwrap();
-        shared.offer(&renamed, false);
-        assert!(shared.current().is_none());
-        assert_eq!(shared.core_module(), "prefrontal");
-        assert!(shared.announce(4, true));
-        assert_eq!(shared.core_module(), "prefrontal");
-        shared.end_watch();
-        assert_eq!(shared.core_module(), "prefrontal");
-        let legacy = CatalogSnapshot::from_value(serde_json::json!({
-            "generation":1,"modules":[{"module_id":"prefrontal-core"}]
-        }))
-        .unwrap();
-        shared.offer(&legacy, false);
-        assert_eq!(shared.core_module(), "prefrontal-core");
     }
 }

@@ -51,7 +51,7 @@ impl Host for Provider {
             scope: Some(RegisteredScope {
                 selector: FlowScope {
                     owner: Principal::Reserved {
-                        module_id: "prefrontal-core".into(),
+                        module_id: "prefrontal".into(),
                     },
                     scope_ref: "flow-test".into(),
                     epoch: 1,

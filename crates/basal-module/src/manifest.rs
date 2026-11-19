@@ -57,12 +57,12 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
         "flow.instance.live",
         ManagementOperationKind::Query,
-        "Snapshot every unended template instance; prefrontal-core only.",
+        "Snapshot every unended template instance; prefrontal only.",
     ),
     (
         "events_get",
         ManagementOperationKind::Query,
-        "Retrieve lifecycle body bytes by event key and name; prefrontal-core only.",
+        "Retrieve lifecycle body bytes by event key and name; prefrontal only.",
     ),
     (
         "flow.instantiate",
@@ -102,12 +102,12 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
         "flow.install_decided",
         ManagementOperationKind::Mutate,
-        "Recheck core's install status after a card decision; prefrontal-core only, idempotent.",
+        "Recheck core's install status after a card decision; prefrontal only, idempotent.",
     ),
     (
         "flow.install_revoked",
         ManagementOperationKind::Mutate,
-        "Verify a revocation hint with core and stop later calls on that version; prefrontal-core only, idempotent.",
+        "Verify a revocation hint with core and stop later calls on that version; prefrontal only, idempotent.",
     ),
     (
         "flow.dry_run",

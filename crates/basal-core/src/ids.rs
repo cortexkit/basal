@@ -16,7 +16,7 @@ pub use basal_proto::util::hex;
 /// BLAKE3 of the exact script and manifest bytes. The script's length comes
 /// first so that moving bytes between the two cannot produce the same hash.
 pub fn code_hash(script: &str, manifest: &str) -> [u8; 32] {
-    // prefrontal-core recomputes this hash when it creates the consent card
+    // prefrontal recomputes this hash when it creates the consent card
     // and stores it on its own install record, so the framing is a contract
     // between the two: a domain tag, then each part prefixed with its length
     // as a little-endian u64, so bytes cannot move from one part to the
@@ -119,7 +119,7 @@ mod tests {
         assert_ne!(code_hash("ab", "c"), code_hash("a", "bc"));
     }
 
-    /// The same vectors are pinned in prefrontal-core, which recomputes the
+    /// The same vectors are pinned in prefrontal, which recomputes the
     /// hash for the consent card; a change here must change there too.
     #[test]
     fn code_hash_matches_the_shared_vectors() {

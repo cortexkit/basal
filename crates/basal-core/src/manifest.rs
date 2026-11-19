@@ -56,6 +56,10 @@ fn one() -> u32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    /// Ops whose stored grant names `prefrontal-core`, so the original
+    /// approved script can still call them with that spelling.
+    #[serde(skip)]
+    pub(crate) legacy_prefrontal_ops: std::collections::BTreeSet<String>,
     /// The manifest format; only [`MANIFEST_FORMAT`] is read.
     #[serde(default = "format_v1")]
     pub format: u32,
@@ -135,7 +139,7 @@ pub struct Manifest {
     /// Agents whose status line the flow may set.
     #[serde(default)]
     pub status: Vec<String>,
-    /// Agents whose boards the flow may read with prefrontal-core's `board.read`.
+    /// Agents whose boards the flow may read with prefrontal's `board.read`.
     #[serde(default)]
     pub board_read: Vec<String>,
     /// Boards where the flow may add and update its own items. Each grant also
@@ -855,6 +859,13 @@ pub(crate) enum IntakeKind {
     Package,
 }
 
+pub(crate) const LEGACY_PREFRONTAL: &str = "prefrontal-core";
+const PREFRONTAL_NAME_ERROR: &str = "the module is now `prefrontal`";
+
+pub(crate) fn is_prefrontal_name_error(error: &ManifestError) -> bool {
+    matches!(error, ManifestError::Invalid { reason, .. } if reason == PREFRONTAL_NAME_ERROR)
+}
+
 impl Manifest {
     /// Decodes and validates new manifest bytes for intake.
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
@@ -865,9 +876,70 @@ impl Manifest {
 
     /// Decodes a stored manifest without reapplying current intake policy.
     pub fn parse_stored(text: &str) -> Result<Self, ManifestError> {
-        let manifest = Self::decode(text)?;
+        let mut manifest = Self::decode(text)?;
         manifest.check_stored()?;
+        manifest.normalize_stored_modules();
         Ok(manifest)
+    }
+
+    pub(crate) fn normalize_stored_modules(&mut self) {
+        for grant in &mut self.ops {
+            if grant.module == LEGACY_PREFRONTAL {
+                self.legacy_prefrontal_ops.insert(grant.op.clone());
+                grant.module = basal_host::core_identity::CORE_MODULE.into();
+            }
+        }
+        for event in self.trigger.events.iter_mut().flatten() {
+            if event.module == LEGACY_PREFRONTAL {
+                event.module = basal_host::core_identity::CORE_MODULE.into();
+            }
+        }
+        for provider in &mut self.private_content_providers {
+            if provider == LEGACY_PREFRONTAL {
+                *provider = basal_host::core_identity::CORE_MODULE.into();
+            }
+        }
+    }
+
+    pub(crate) fn check_prefrontal_name(&self) -> Result<(), ManifestError> {
+        let check = |field: &str, value: &str| {
+            if value == LEGACY_PREFRONTAL {
+                Err(invalid(field, PREFRONTAL_NAME_ERROR))
+            } else {
+                Ok(())
+            }
+        };
+        for (field, module) in self
+            .ops
+            .iter()
+            .enumerate()
+            .map(|(i, op)| (format!("ops[{i}].module"), &op.module))
+            .chain(
+                self.trigger
+                    .events
+                    .iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(i, event)| (format!("trigger.events[{i}].module"), &event.module)),
+            )
+        {
+            check(&field, module)?;
+            if crate::templates::is_placeholder(module) {
+                for choice in crate::templates::module_choices(self, module)? {
+                    check(&field, &choice)?;
+                }
+            }
+        }
+        for (field, agent) in self.agents() {
+            check(field, agent)?;
+        }
+        if let Some(Audience::Workspace { id }) = &self.audience {
+            check("audience.id", id)?;
+        }
+        for provider in &self.private_content_providers {
+            check("private_content_providers", provider)?;
+        }
+        Ok(())
     }
 
     /// Refuse package-only fields before checking their shape, so malformed
@@ -958,6 +1030,7 @@ impl Manifest {
         // even template grants get the field-specific invalid-id refusal.
         self.check_private_content_providers()?;
         self.check_stored()?;
+        self.check_prefrontal_name()?;
         self.check_intake(kind)
     }
 
@@ -1102,17 +1175,14 @@ impl Manifest {
                 ));
             }
         }
-        let reads_boards = self.lists_op("prefrontal-core", "board.read");
+        let reads_boards = self.lists_op(basal_host::core_identity::CORE_MODULE, "board.read");
         if reads_boards && self.board_read.is_empty() {
-            return Err(invalid(
-                "board_read",
-                "required by prefrontal-core board.read",
-            ));
+            return Err(invalid("board_read", "required by prefrontal board.read"));
         }
         if !reads_boards && !self.board_read.is_empty() {
             return Err(invalid(
                 "board_read",
-                "requires prefrontal-core board.read in ops",
+                "requires prefrontal board.read in ops",
             ));
         }
         self.check_pack_intake()
@@ -1579,9 +1649,7 @@ impl Manifest {
     }
 
     pub fn lists_op(&self, module: &str, op: &str) -> bool {
-        self.ops
-            .iter()
-            .any(|o| basal_host::core_identity::same_module(&o.module, module) && o.op == op)
+        self.ops.iter().any(|o| o.module == module && o.op == op)
     }
 
     /// The most intrusive digest action allowed for `agent`, if any.

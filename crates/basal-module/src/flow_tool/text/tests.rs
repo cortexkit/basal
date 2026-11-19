@@ -43,7 +43,7 @@ fn events() -> Value {
 fn install_groups_identical_captured_runs_and_omits_empty_warnings() {
     let result = install(schedule(
         (0..10)
-            .map(|id| captured_run(id, "prefrontal-core", "board.read"))
+            .map(|id| captured_run(id, "prefrontal", "board.read"))
             .collect(),
     ));
     assert_eq!(
@@ -53,19 +53,19 @@ fn install_groups_identical_captured_runs_and_omits_empty_warnings() {
          Code hash (full): {HASH}.\n\
          Dry run (capture mode): 10 of 288 scheduled runs in the last 24 h replayed. Replay capped.\n\
          Partial: captured results may leave later behavior untested.\n\
-         10 runs: stopped at prefrontal-core board.read, which the dry run captured and did not execute; partial."
+         10 runs: stopped at prefrontal board.read, which the dry run captured and did not execute; partial."
         )
     );
 }
 
 #[test]
 fn dry_run_lists_distinct_outcomes_with_counts_and_does_not_hide_real_errors() {
-    let mut failed = captured_run(9, "prefrontal-core", "board.read");
+    let mut failed = captured_run(9, "prefrontal", "board.read");
     failed["error"]["detail"] = json!("TypeError: real failure after catching capture");
     let result = json!({"flow_id":"board-hygiene", "version":15,"state_reset":false,"warnings":[],
     "summary":schedule(vec![
-        captured_run(0, "prefrontal-core", "board.read"),
-        captured_run(1, "prefrontal-core", "board.read"),
+        captured_run(0, "prefrontal", "board.read"),
+        captured_run(1, "prefrontal", "board.read"),
         captured_run(2, "other-module", "items.read"),
         json!({"state":"succeeded","calls":[],"calls_total":0,"partial":false}),
         json!({"state":"succeeded","calls":[],"calls_total":0,"partial":false}),
@@ -77,10 +77,10 @@ fn dry_run_lists_distinct_outcomes_with_counts_and_does_not_hide_real_errors() {
         "Preview for board-hygiene v15.\n\
          Dry run (capture mode): 7 of 288 scheduled runs in the last 24 h replayed. Replay capped.\n\
          Partial: captured results may leave later behavior untested.\n\
-         2 runs: stopped at prefrontal-core board.read, which the dry run captured and did not execute; partial.\n\
+         2 runs: stopped at prefrontal board.read, which the dry run captured and did not execute; partial.\n\
          1 run: stopped at other-module items.read, which the dry run captured and did not execute; partial.\n\
          2 runs: succeeded; 0 calls.\n\
-         1 run: failed (script): TypeError: real failure after catching capture; 1 call: 1 captured prefrontal-core board.read (not executed); partial.\n\
+         1 run: failed (script): TypeError: real failure after catching capture; 1 call: 1 captured prefrontal board.read (not executed); partial.\n\
          1 run: not admitted: Coalesced."
     );
 }
@@ -258,7 +258,7 @@ fn list_names_temporary_install_holds_without_hiding_enable_state() {
 
 #[test]
 fn successful_runs_still_show_captured_and_refused_call_outcomes() {
-    let mut run = captured_run(0, "prefrontal-core", "board.read");
+    let mut run = captured_run(0, "prefrontal", "board.read");
     run["state"] = json!("succeeded");
     run["error"] = Value::Null;
     run["calls_total"] = json!(4);
@@ -268,5 +268,5 @@ fn successful_runs_still_show_captured_and_refused_call_outcomes() {
     let result = json!({"flow_id":"board-hygiene","version":15,"state_reset":false,"warnings":[],
         "summary":schedule(vec![run])});
     assert!(summary("dry_run", &result).ends_with(
-        "1 run: succeeded; 4 calls: 1 captured prefrontal-core board.read (not executed), 3 refused mail send (rejected: denied); partial."));
+        "1 run: succeeded; 4 calls: 1 captured prefrontal board.read (not executed), 3 refused mail send (rejected: denied); partial."));
 }

@@ -7,7 +7,7 @@ fn read_reply(bytes: &[u8]) -> Value {
 }
 
 fn stamp() -> RouteStamp {
-    let mut stamp = principals().stamp("reserved:prefrontal-core");
+    let mut stamp = principals().stamp("reserved:prefrontal");
     let scope = stamp.scope.as_mut().unwrap();
     scope.scope_ref = "flow-read/test".into();
     scope.scope_epoch = 1;
@@ -179,7 +179,7 @@ async fn install_reads_exact_head_bytes_on_stamped_scope_and_deduplicates() {
         ["head.js", "head.json"]
     );
     for (scope, _) in reads {
-        assert_eq!(scope.owner, principal("reserved:prefrontal-core"));
+        assert_eq!(scope.owner, principal("reserved:prefrontal"));
         assert_eq!(scope.scope_ref, "flow-read/test");
         assert_eq!(scope.scope_epoch, Some(1));
     }

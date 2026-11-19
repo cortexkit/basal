@@ -432,43 +432,15 @@ fn unreachable_core_keeps_the_run_pending_without_a_hot_loop() {
 }
 
 #[test]
-fn renamed_core_before_the_first_snapshot_defers_on_the_legacy_route_miss() {
+fn core_gate_runs_before_the_first_catalog_snapshot() {
     let fake = Fake::new();
-    let (f, consent) = gated(&fake, "gate-rename-before-snapshot");
+    let (f, consent) = gated(&fake, "gate-before-snapshot");
     install_approved(&f, &fake, &consent, true);
-    // The daemon has renamed core, but the transport has not observed a
-    // routing-identity snapshot. Its legacy default names an unregistered module.
-    *fake.catalog.lock().unwrap() = json!({"generation":2,"modules":[
-        {"module_id":"prefrontal","roles":[],"control_ops":[]}
-    ]});
-    assert_eq!(
-        basal_host::core_identity::core_module(fake.as_ref()),
-        "prefrontal-core"
-    );
-    fake.enqueue(
-        "flow.install_status",
-        vec![Err(WireError::NeverSent(
-            "unknown_module: prefrontal-core is not registered".into(),
-        ))],
-    );
+    *fake.catalog.lock().unwrap() = json!({"generation":2,"modules":[]});
     let run_id = common::admit(&f, FLOW, "before-snapshot");
-    f.module.engine.run_until_idle(20).expect("deferred idle");
-    assert_eq!(
-        fake.calls_to("prefrontal-core", "flow.install_status")
-            .len(),
-        1
-    );
-    assert!(
-        fake.calls_to("prefrontal", "flow.install_status")
-            .is_empty()
-    );
-    let run = f.module.rt.run(&run_id).unwrap();
-    assert_eq!(run.state, RunState::Pending);
-    assert_eq!(run.error_kind, None);
-    assert_eq!(health_entry(&f)["state"], "enabled");
-    f.module.engine.pass().unwrap();
-    f.module.engine.wait_quiet();
-    assert_eq!(status_calls(&fake).len(), 1, "wait for the gate backoff");
+    f.module.engine.run_until_idle(20).expect("idle");
+    assert_eq!(fake.calls_to("prefrontal", "flow.install_status").len(), 1);
+    assert_eq!(f.module.rt.run(&run_id).unwrap().state, RunState::Succeeded);
 }
 
 /// A reply basal cannot read is no answer: the run waits, nothing is
@@ -665,7 +637,7 @@ fn install_status_replies_decode_strictly() {
             "rejected_reason":"store_decode",
             "disposition":"approved_not_executed",
             "scope":{
-                "owner":{"kind":"reserved","module_id":"prefrontal-core"},
+                "owner":{"kind":"reserved","module_id":"prefrontal"},
                 "ref":"0123456789abcdef0123456789abcdef",
                 "epoch":1
             },

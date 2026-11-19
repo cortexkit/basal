@@ -15,7 +15,7 @@ const SCRIPT: &str = "return 1;";
 fn self_manifest(id: &str) -> Value {
     let mut m = events_manifest(id);
     m["status"] = json!([OWNER_NAME]);
-    m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+    m["ops"] = json!([{"module":"prefrontal","op":"board.read"}]);
     m["board_read"] = json!([OWNER_NAME]);
     m["claims"] = json!([{ "agent": OWNER_NAME, "source_kind": "idleness" }]);
     m["facts"] = json!({ "targets": [OWNER_NAME], "text": false });
@@ -73,7 +73,7 @@ fn agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run() {
     let f = fixture("agent-target-refusals", Options::default());
     f.catalog.add_named_agent(OWNER, OWNER_NAME);
     f.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "board.read",
         basal_host::OpDecl {
             kind: Some(basal_host::OpKind::Query),
@@ -167,7 +167,7 @@ fn self_only_agents_and_global_and_local_manifests_still_install() {
     let f = fixture("agent-target-allowed", Options::default());
     f.catalog.add_named_agent(OWNER, OWNER_NAME);
     f.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "board.read",
         basal_host::OpDecl {
             kind: Some(basal_host::OpKind::Query),

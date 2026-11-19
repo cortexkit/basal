@@ -141,7 +141,7 @@ fn notice_script_and_receipt_build_the_sample_wire_bytes() {
         );
         assert_eq!(
             basal_host::op_label(&request.kind),
-            format!("prefrontal-core.{op}")
+            format!("prefrontal.{op}")
         );
     }
 }

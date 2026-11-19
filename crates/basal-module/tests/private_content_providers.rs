@@ -34,7 +34,7 @@ fn providers_op_requires_verified_unscoped_broca() {
     );
     let scope = subc_protocol::scope::ScopeStamp::new(
         Principal::Reserved {
-            module_id: "prefrontal-core".into(),
+            module_id: "prefrontal".into(),
         },
         "s",
         1,

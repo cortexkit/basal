@@ -320,7 +320,7 @@ fn deferred_refusal_survives_resend_and_terminal_cleanup() {
     f.call("run", StoredClass::KeyedMutation);
     let refusal = FlowRefusal::new(
         RefusalReason::SinkStoreFailed,
-        "prefrontal-core",
+        "prefrontal",
         "sink.wait_resolve",
     );
     f.defer("run", &refusal, i64::MAX);

@@ -36,7 +36,7 @@ impl Subscriber for Logs {
 fn attested_logs(expiry: Option<u64>) -> Vec<(tracing::Level, String)> {
     let host = basal_host::mock::MockHost::default();
     let owner = Principal::Reserved {
-        module_id: "prefrontal-core".into(),
+        module_id: "prefrontal".into(),
     };
     let mut scope = json!({"owner":owner,"ref":"run-scope","scope_epoch":7,"kind":"ephemeral",
         "attributes":{"agent_id":"agent","run_id":"run"},"owner_authorized":true});
@@ -127,14 +127,14 @@ fn tool_scope_open_checks_the_attested_deadline() {
     let clock = Clock::manual(100);
     let host = basal_host::mock::MockHost::default();
     let owner = Principal::Reserved {
-        module_id: "prefrontal-core".into(),
+        module_id: "prefrontal".into(),
     };
     host.set_scope_description(
         owner,
         "run-scope",
         Ok(serde_json::from_value(json!({
         "status":"live","scope_epoch":7,"daemon_incarnation":"daemon","owner_synced":true,
-        "owner_configured":true,"scope":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},
+        "owner_configured":true,"scope":{"owner":{"kind":"reserved","module_id":"prefrontal"},
             "ref":"run-scope","scope_epoch":7,"kind":"ephemeral","owner_authorized":true,
             "expires_at_ms":99 + run_scope::SCOPE_LIFETIME_MS,
             "attributes":{"agent_id":"agent","run_id":"run"}}}))
@@ -159,7 +159,7 @@ fn tool_scope_open_checks_the_attested_deadline() {
             carrier: "reserved:broca",
             call_key: Some("key"),
             record_scope: "parent",
-            custodian: "reserved:prefrontal-core",
+            custodian: "reserved:prefrontal",
             bind_identity: &bind,
         },
         &json!({"code":"return 42;"}),

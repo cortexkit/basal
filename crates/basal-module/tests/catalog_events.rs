@@ -221,17 +221,16 @@ fn recorded_live_plexus_catalog_accepts_github_pr_changed_v1() {
         if module["module_id"] == "plexus" {
             module["roles"] = entry()["roles"].clone();
             module["capabilities"] = entry()["capabilities"].clone();
+        } else if module["module_id"] == "prefrontal-core" {
+            // Use today's provider name without editing the recorded catalog.
+            module["module_id"] = json!("prefrontal");
         }
     }
     let (f, wire) = fixture(entry(), capabilities.clone());
     *wire.catalog.lock().unwrap() = json!({"modules": modules});
     let catalog = SubcCatalog::new(wire).with_daemon_capabilities(capabilities);
     use basal_host::Catalog;
-    assert!(
-        catalog
-            .event("prefrontal-core", "digest_delivered", 1)
-            .is_some()
-    );
+    assert!(catalog.event("prefrontal", "digest_delivered", 1).is_some());
     let installed = install(&f, "github_pr_changed", 1).unwrap();
     println!("live catalog plexus.github_pr_changed v1 install: {installed}");
     for (name, version) in [("undeclared_event", 1), ("github_pr_changed", 99)] {

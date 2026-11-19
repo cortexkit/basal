@@ -69,7 +69,7 @@ impl BoardHost {
         let args: Value = serde_json::from_str(request.args.as_str()).unwrap();
         let mut withdrawal_refusal = None;
         let value = match &request.kind {
-            CallKind::Op { module, op } if module == "prefrontal-core" && op == "board.read" => {
+            CallKind::Op { module, op } if module == "prefrontal" && op == "board.read" => {
                 assert!(args.get("for").is_none());
                 assert_eq!(args["limit"], 16);
                 assert!(args.get("agents").is_none());
@@ -83,9 +83,7 @@ impl BoardHost {
                     boards[end-1]["agent_id"].clone()
                 } else { Value::Null }, "page_cap": 16})
             }
-            CallKind::Op { module, op }
-                if module == "prefrontal-core" && op == "work.unsettled" =>
-            {
+            CallKind::Op { module, op } if module == "prefrontal" && op == "work.unsettled" => {
                 // Basal adds the approved stamp; the script sends only a cursor.
                 let object = args.as_object().unwrap();
                 assert!(object["stamp"].is_object());
@@ -229,10 +227,10 @@ impl Test {
         host.withdrawal_supported.store(true, Ordering::Relaxed);
         *host.boards.lock().unwrap() = boards;
         let catalog = MockCatalog::standard();
-        catalog.set_flow_capable("prefrontal-core", true);
+        catalog.set_flow_capable("prefrontal", true);
         for op in ["board.read", "work.unsettled"] {
             catalog.set_op(
-                "prefrontal-core",
+                "prefrontal",
                 op,
                 OpDecl {
                     kind: Some(OpKind::Query),
@@ -274,8 +272,8 @@ impl Test {
             let reply = common::install(
                 &f,
                 &Caller::Operator,
-                SCRIPT,
-                &serde_json::from_str(MANIFEST).unwrap(),
+                &SCRIPT.replace("prefrontal-core", "prefrontal"),
+                &serde_json::from_str(&MANIFEST.replace("prefrontal-core", "prefrontal")).unwrap(),
             );
             assert!(consent.decide(
                 reply["card_id"].as_str().unwrap(),
@@ -353,8 +351,8 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     assert_eq!(
         value["ops"],
         json!([
-            {"module":"prefrontal-core","op":"board.read"},
-            {"module":"prefrontal-core","op":"work.unsettled"}
+            {"module":"prefrontal","op":"board.read"},
+            {"module":"prefrontal","op":"work.unsettled"}
         ])
     );
     assert_eq!(value["facts"]["targets"], json!(["$audience"]));

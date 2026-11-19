@@ -286,12 +286,20 @@ impl TerminalEffects for Services {
 }
 
 fn request(live: &LiveRun, intent: &Intent) -> Result<CallRequest> {
+    let mut kind = intent.call.kind.clone();
+    // Journaled calls have already passed the approved grant check. Keep the
+    // worker's original call identity for replay, but route to today's module.
+    if let CallKind::Op { module, .. } | CallKind::OpFor { module, .. } = &mut kind
+        && module == crate::manifest::LEGACY_PREFRONTAL
+    {
+        *module = basal_host::core_identity::CORE_MODULE.into();
+    }
     Ok(CallRequest {
         flow_id: live.flow_id.clone(),
         flow_version: Some(live.flow_version),
         run_id: live.run_id.clone(),
         position: intent.call.position,
-        kind: intent.call.kind.clone(),
+        kind,
         args: intent.frozen_request.clone(),
         idempotency_key: intent.idempotency_key.clone().unwrap_or_else(|| {
             crate::ids::idempotency_key(&live.flow_id, &live.run_id, intent.call.position)
@@ -507,6 +515,30 @@ impl run_driver::Services for Services {
                     .map_err(|e| CoreError::Corrupt(e.to_string()))?;
             crate::templates::effective_instance(&mut manifest, &live.params_input, &guards);
         }
+        let effective_call = if let CallKind::Op { module, op } | CallKind::OpFor { module, op } =
+            &call.kind
+            && module == crate::manifest::LEGACY_PREFRONTAL
+        {
+            if !manifest.legacy_prefrontal_ops.contains(op) {
+                return Ok(Prepared::Refused {
+                    class: StoredClass::Mutation,
+                    value: crate::authorize::Refusal::denied("the module is now `prefrontal`")
+                        .outcome()
+                        .value,
+                    notify: false,
+                });
+            }
+            let mut effective = call.clone();
+            if let CallKind::Op { module, .. } | CallKind::OpFor { module, .. } =
+                &mut effective.kind
+            {
+                *module = basal_host::core_identity::CORE_MODULE.into();
+            }
+            Some(effective)
+        } else {
+            None
+        };
+        let effective_call = effective_call.as_ref().unwrap_or(call);
         let policies = rt
             .store()
             .read(|c| crate::classify_cost::load(c, &live.flow_id, live.flow_version))?;
@@ -526,7 +558,7 @@ impl run_driver::Services for Services {
             tool_policies: &policies,
             view,
         }
-        .prepare(call);
+        .prepare(effective_call);
         let mut prepared = match preparation {
             Ok(prepared) => prepared,
             Err(refusal) => {
@@ -551,14 +583,14 @@ impl run_driver::Services for Services {
                         self.defer_refusal(&rt, live, view.current.as_ref(), None, &refusal)?
                     {
                         return Ok(Prepared::Deferred {
-                            class: rt.class_of(&call.kind, None),
+                            class: rt.class_of(&effective_call.kind, None),
                             cause,
                             retry_not_before,
                         });
                     }
                 }
                 return Ok(Prepared::Refused {
-                    class: rt.class_of(&call.kind, None),
+                    class: rt.class_of(&effective_call.kind, None),
                     value: refusal.outcome().value,
                     notify: false,
                 });
@@ -579,7 +611,7 @@ impl run_driver::Services for Services {
         let class = if prepared.classify_cost {
             StoredClass::Mutation
         } else {
-            rt.class_of(&call.kind, prepared.args.as_ref())
+            rt.class_of(&effective_call.kind, prepared.args.as_ref())
         };
         if class != StoredClass::Sync
             && rt

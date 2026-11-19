@@ -69,10 +69,10 @@ pub mod codes {
     pub const TOKEN_CAP: &str = "token_cap";
     /// A `kv` size limit.
     pub const KV_LIMIT: &str = "kv_limit";
-    /// The refusal code when prefrontal-core's current catalog does not declare
+    /// The refusal code when prefrontal's current catalog does not declare
     /// support for keyed digest writes.
     pub const DIGEST_REPLACE_KEY_UNSUPPORTED: &str = "digest_replace_key_unsupported";
-    /// The refusal code when prefrontal-core cannot withdraw a pending digest item.
+    /// The refusal code when prefrontal cannot withdraw a pending digest item.
     pub const DIGEST_WITHDRAW_UNSUPPORTED: &str = "digest_withdraw_unsupported";
     /// The refusal code when a script names a manifest placeholder such as
     /// `$audience` as a call's recipient instead of a concrete agent.
@@ -254,7 +254,7 @@ fn agent_arg(args: &Value, primitive: Primitive) -> Result<&str, Refusal> {
 ///
 /// Placeholders belong in the manifest's grants only; a call must name the
 /// concrete agent it writes to. Without this check the call would be sent
-/// and prefrontal-core would refuse it at delivery, which a capture dry run
+/// and prefrontal would refuse it at delivery, which a capture dry run
 /// never reaches, so the mistake would only show up as live run failures.
 /// Run it after the driver has replaced `$self` with a package or template
 /// owner's id, so only placeholders nothing resolved are refused.
@@ -382,7 +382,7 @@ pub fn check(
             if matches!(kind, CallKind::OpFor { .. })
                 && declaration.kind != Some(basal_host::catalog::OpKind::Query)
                 && !manifest.ops.iter().any(|grant| {
-                    basal_host::core_identity::same_module(&grant.module, module)
+                    grant.module == *module
                         && grant.op == *op
                         && grant.for_target == Some(crate::manifest::TargetAuthority::Delegate)
                 })
@@ -767,7 +767,7 @@ pub fn check(
 mod room_mention_tests {
     use super::mentions_all_members;
 
-    /// prefrontal-core's own cases for its room mention token rule
+    /// prefrontal's own cases for its room mention token rule
     /// (`all_mention_helper_matches_room_parser_token_boundaries`), so basal
     /// refuses exactly the posts core refuses.
     #[test]

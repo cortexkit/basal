@@ -22,7 +22,7 @@ impl Transport for CoreScopes {
         Ok(json!({"modules":[]}))
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
-        assert_eq!(module, "prefrontal-core");
+        assert_eq!(module, "prefrontal");
         match op {
             "codemode.run_scope.open" => {
                 let request: Open = serde_json::from_value(params).unwrap();
@@ -164,10 +164,10 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                     route_channel: 7, epoch: 1,
                     target: subc_protocol::RouteTarget::ToolProvider { module_id: "basal".into() },
                     identity: subc_protocol::BindIdentity::new("test", "session"),
-                    principal: Some(subc_protocol::Principal::Reserved { module_id: "prefrontal-core".into() }),
+                    principal: Some(subc_protocol::Principal::Reserved { module_id: "prefrontal".into() }),
                     call_mode: None,
                     consumer_capabilities: None, role_versions: None, admission_facts: None, scope: Some(serde_json::from_value(json!({
-                        "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7,"kind":"head",
+                        "owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"agent-scope","scope_epoch":7,"kind":"head",
                         "attributes":{"agent_id":format!("sdk-agent-{session}")},"owner_authorized":true
                     })).unwrap()),
                 };
@@ -181,12 +181,12 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 assert_eq!(describe.header.channel, 0);
                 let id = run_opens.lock().unwrap().last().unwrap().run_id.clone();
                 let body: Value = serde_json::from_slice(&describe.body).unwrap();
-                assert_eq!(body, json!({"op":"scope.describe", "owner":{"kind":"reserved", "module_id":"prefrontal-core"}, "ref":"scope:wire"}));
+                assert_eq!(body, json!({"op":"scope.describe", "owner":{"kind":"reserved", "module_id":"prefrontal"}, "ref":"scope:wire"}));
                 records.lock().unwrap().push(body);
                 write_frame(&mut stream, &frame(FrameType::Response, 0, 0, describe.header.corr, json!({
                     "op":"scope.describe", "status":"live", "scope_epoch":19 + session as u64,
                     "daemon_incarnation":format!("daemon:{session}"), "owner_synced":true, "owner_configured":true,
-                    "scope":{"owner":{"kind":"reserved", "module_id":"prefrontal-core"}, "ref":"scope:wire", "scope_epoch":19 + session as u64,
+                    "scope":{"owner":{"kind":"reserved", "module_id":"prefrontal"}, "ref":"scope:wire", "scope_epoch":19 + session as u64,
                         "kind":"head", "attributes":{"agent_id":agent, "run_id":id}, "owner_authorized":true}
                 }))).await.unwrap();
                 let response = read_frame(&mut stream).await.unwrap().unwrap();

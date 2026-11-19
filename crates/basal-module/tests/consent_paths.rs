@@ -373,7 +373,7 @@ fn vector_card(kind: DecisionKind) -> DecisionCard {
                 run_admitted_at_ms: 1_780_408_800_000,
                 step: Some("writer/send".into()),
                 call_key: "call-x".into(),
-                op: "prefrontal-core.sink.digest".into(),
+                op: "prefrontal.sink.digest".into(),
                 attempts: 2,
                 unknown_reason: UnknownReason::ConnectionLost,
             },

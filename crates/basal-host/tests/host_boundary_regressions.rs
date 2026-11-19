@@ -144,25 +144,19 @@ fn core_dispatch_reads_scope_capability_and_op_from_one_snapshot() {
 }
 
 #[test]
-fn core_dispatch_routes_using_the_same_snapshot_as_its_declaration() {
-    for requested in ["prefrontal", "prefrontal-core"] {
-        for listed in ["prefrontal", "prefrontal-core"] {
-            let wire = Arc::new(Wire::default());
-            wire.catalogs.lock().unwrap().extend([
-                Ok(catalog(listed, "board.read")),
-                Ok(catalog(listed, "board.read")),
-            ]);
-            let host = ModuleOpsHost::new(wire.clone(), Arc::new(SubcCatalog::new(wire.clone())));
-            let request = request(requested, "board.read");
-            let class = host.classify(&request.kind);
-            host.dispatch_classified(&request, class).unwrap();
-            assert_eq!(*wire.modules.lock().unwrap(), [listed]);
-            assert_eq!(
-                *wire.calls.lock().unwrap(),
-                ["catalog", "catalog", "board.read"]
-            );
-        }
-    }
+fn core_dispatch_does_not_fall_back_to_prefrontal_core() {
+    let wire = Arc::new(Wire::default());
+    wire.catalogs
+        .lock()
+        .unwrap()
+        .extend((0..2).map(|_| Ok(catalog("prefrontal-core", "board.read"))));
+    let host = ModuleOpsHost::new(wire.clone(), Arc::new(SubcCatalog::new(wire.clone())));
+    let request = request(CORE, "board.read");
+    let class = host.classify(&request.kind);
+    let error = host.dispatch_classified(&request, class).unwrap_err();
+    assert!(format!("{error:?}").contains("ProviderNotCatalogued"));
+    assert!(wire.modules.lock().unwrap().is_empty());
+    assert_eq!(*wire.calls.lock().unwrap(), ["catalog", "catalog"]);
 }
 #[derive(Default)]
 struct Sink(Mutex<Vec<DecisionAnswer>>);

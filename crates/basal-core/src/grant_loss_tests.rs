@@ -78,7 +78,7 @@ impl Host for ProbeHost {
         Ok(basal_host::InstallStatus::Active {
             code_hash:self.hash.clone(),
             scope:self.scoped.load(Ordering::SeqCst).then(|| RegisteredScope {
-                selector: serde_json::from_value::<FlowScope>(json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"flow-scope","epoch":1})).unwrap(),
+                selector: serde_json::from_value::<FlowScope>(json!({"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"flow-scope","epoch":1})).unwrap(),
                 targets:["plexus".into()].into_iter().collect(),
             }),
         })
@@ -482,11 +482,7 @@ fn retirement_is_durable_health_without_a_card_and_enable_is_typed_refusal() {
     let f = Fixture::new("old-agent");
     f.lose(
         "run",
-        FlowRefusal::new(
-            RefusalReason::AgentRetired,
-            "prefrontal-core",
-            "sink.status",
-        ),
+        FlowRefusal::new(RefusalReason::AgentRetired, "prefrontal", "sink.status"),
         json!({"agent":"old-agent"}),
     );
     assert_eq!(f.rt.run("run").unwrap().state, crate::RunState::Failed);
@@ -537,11 +533,7 @@ fn retirement_clears_only_when_reinstall_no_longer_involves_the_agent() {
         let f = Fixture::new("operator");
         f.lose(
             "run",
-            FlowRefusal::new(
-                RefusalReason::AgentRetired,
-                "prefrontal-core",
-                "sink.status",
-            ),
+            FlowRefusal::new(RefusalReason::AgentRetired, "prefrontal", "sink.status"),
             json!({"agent":"old-agent"}),
         );
         f.approve(owner, targets);
@@ -716,11 +708,7 @@ fn retirement_after_unknown_preserves_reconcile_then_not_applied_fails_once() {
     let f = Fixture::new("old-agent");
     f.lose_after(
         "run",
-        FlowRefusal::new(
-            RefusalReason::AgentRetired,
-            "prefrontal-core",
-            "sink.status",
-        ),
+        FlowRefusal::new(RefusalReason::AgentRetired, "prefrontal", "sink.status"),
         json!({"agent":"old-agent"}),
         false,
     );
@@ -877,11 +865,7 @@ fn retirement_label_lookup_leaves_the_sqlite_writer_available() {
         let (f, probe) = probing_fixture("operator");
         f.lose_after(
             "run",
-            FlowRefusal::new(
-                RefusalReason::AgentRetired,
-                "prefrontal-core",
-                "sink.status",
-            ),
+            FlowRefusal::new(RefusalReason::AgentRetired, "prefrontal", "sink.status"),
             json!({"agent":"OLD"}),
             prior_unsent,
         );
@@ -904,11 +888,7 @@ fn retirement_clear_lookup_leaves_the_sqlite_writer_available() {
     let (f, probe) = probing_fixture("operator");
     f.lose(
         "run",
-        FlowRefusal::new(
-            RefusalReason::AgentRetired,
-            "prefrontal-core",
-            "sink.status",
-        ),
+        FlowRefusal::new(RefusalReason::AgentRetired, "prefrontal", "sink.status"),
         json!({"agent":"old-agent"}),
     );
     let labelled = probe.lookups.load(Ordering::SeqCst);

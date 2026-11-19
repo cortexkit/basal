@@ -576,6 +576,7 @@ pub fn effective(manifest: &mut Manifest, values: &Value) {
     for grant in &mut manifest.ops {
         replace(&mut grant.module, false);
     }
+    manifest.normalize_stored_modules();
 }
 
 #[derive(Debug)]

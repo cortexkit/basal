@@ -217,37 +217,13 @@ fn runtime_with_catalog(path: &std::path::Path, catalog: MockCatalog) -> Runtime
     .expect("runtime startup")
 }
 
-const DELIVERED_SUBJECT: &str = "ck.account.event.prefrontal-core.digest_delivered.v1";
-
-#[tokio::test]
-async fn prefrontal_rename_events_target_the_stored_flow_under_either_subject() {
-    let server = Server::start().await;
-    let consumer = bind(&server.bus, STREAM).await.unwrap();
-    for (n, module) in ["prefrontal-core", "prefrontal"].into_iter().enumerate() {
-        let rt = delivered_runtime(&server.dir.join(format!("rename-{n}.db")));
-        let subject = format!("ck.account.event.{module}.digest_delivered.v1");
-        server
-            .publish_with_headers(
-                n as u64,
-                &subject,
-                std::collections::BTreeMap::from([
-                    ("flow_id".into(), "b".into()),
-                    ("agent".into(), "SYNAPSE".into()),
-                ]),
-            )
-            .await;
-        let messages = pull(&consumer).await.unwrap();
-        assert_eq!(messages.len(), 1);
-        let report = commit_batch(rt.clone(), &messages, true).await.unwrap();
-        assert_eq!((report.matched, report.admitted), (1, 1), "{module}");
-    }
-}
+const DELIVERED_SUBJECT: &str = "ck.account.event.prefrontal.digest_delivered.v1";
 
 fn delivered_runtime(path: &std::path::Path) -> Runtime {
     let catalog = MockCatalog::standard();
-    catalog.set_flow_capable("prefrontal-core", true);
+    catalog.set_flow_capable("prefrontal", true);
     catalog.set_event(
-        "prefrontal-core",
+        "prefrontal",
         "digest_delivered",
         1,
         basal_host::EventDecl {
@@ -259,7 +235,7 @@ fn delivered_runtime(path: &std::path::Path) -> Runtime {
         },
     );
     catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         basal_host::catalog::EVENT_BODY_OP,
         basal_host::OpDecl {
             kind: Some(basal_host::OpKind::Query),
@@ -272,8 +248,8 @@ fn delivered_runtime(path: &std::path::Path) -> Runtime {
         let installed = rt.install(&InstallRequest {
             script: "return 1;".into(), author: "operator".into(), loop_override: false,
             manifest: json!({"id":id,"version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Receive digest delivery",
-                "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1}]},
-                "ops":[{"module":"prefrontal-core","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
+                "trigger":{"events":[{"module":"prefrontal","name":"digest_delivered","version":1}]},
+                "ops":[{"module":"prefrontal","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
         }).unwrap();
         rt.approve(id, 1, &installed.code_hash, "test").unwrap();
     }

@@ -72,12 +72,12 @@ impl Transport for MockCore {
             "role":"tool_provider","identity_scope":[],"concurrency":"module_managed","emits_push":false,"sub_supervises":false,
             "tools":[{"name":"write_marker","execution_mode":"mutating","schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}]});
         if self.approval_capability.load(Ordering::SeqCst) {
-            catalog["modules"].as_array_mut().unwrap().push(json!({"module_id":"prefrontal-core","capabilities":{"provides":[basal_host::transport::PACKAGE_APPROVED_VERSIONS_CAPABILITY]}}));
+            catalog["modules"].as_array_mut().unwrap().push(json!({"module_id":"prefrontal","capabilities":{"provides":[basal_host::transport::PACKAGE_APPROVED_VERSIONS_CAPABILITY]}}));
         }
         Ok(catalog)
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
-        assert_eq!(module, "prefrontal-core");
+        assert_eq!(module, "prefrontal");
         match op {
             "package.approved_versions" => {
                 let package = params["package"].as_str().unwrap();
@@ -95,9 +95,9 @@ impl Transport for MockCore {
             }
             "codemode.run_scope.open" => {
                 let request: Open = serde_json::from_value(params).unwrap();
-                self.host.set_scope_description(Principal::Reserved { module_id:"prefrontal-core".into() },&request.run_id,Ok(serde_json::from_value(json!({
+                self.host.set_scope_description(Principal::Reserved { module_id:"prefrontal".into() },&request.run_id,Ok(serde_json::from_value(json!({
                     "status":"live","scope_epoch":19,"daemon_incarnation":"mock","owner_synced":true,"owner_configured":true,
-                    "scope":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":request.run_id,"scope_epoch":19,"kind":"ephemeral",
+                    "scope":{"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":request.run_id,"scope_epoch":19,"kind":"ephemeral",
                         "attributes":{"agent_id":request.agent_id,"run_id":request.run_id},"owner_authorized":true}})).unwrap()));
                 self.scopes
                     .open(
@@ -345,14 +345,14 @@ impl Subject {
 fn principals() -> ScopedPrincipals {
     ScopedPrincipals {
         scope: ScopeIdentity {
-            owner: "reserved:prefrontal-core".into(),
+            owner: "reserved:prefrontal".into(),
             scope_ref: "agent-scope".into(),
             scope_epoch: 7,
         },
         carrier: "reserved:broca".into(),
         other_carrier: "reserved:aft".into(),
         other_scope: ScopeIdentity {
-            owner: "reserved:prefrontal-core".into(),
+            owner: "reserved:prefrontal".into(),
             scope_ref: "another-scope".into(),
             scope_epoch: 8,
         },
@@ -935,7 +935,7 @@ async fn real_route_late_cursor_ack_and_custodian_only_serving() {
         .await
         .unwrap();
     let owner = subject
-        .route(&live, &principals().stamp("reserved:prefrontal-core"))
+        .route(&live, &principals().stamp("reserved:prefrontal"))
         .await
         .unwrap();
     let final_result = complete(&carrier, "cursor-round-trip").await;
@@ -981,7 +981,7 @@ async fn real_route_late_retention_and_direct_call_owner_custody() {
     let live = subject.spawn(&root).await.unwrap();
     let direct = content_route(&subject, &live, principals().stamp("direct")).await;
     let owner = subject
-        .route(&live, &principals().stamp("reserved:prefrontal-core"))
+        .route(&live, &principals().stamp("reserved:prefrontal"))
         .await
         .unwrap();
     complete(&direct, "retained").await;
@@ -992,7 +992,7 @@ async fn real_route_late_retention_and_direct_call_owner_custody() {
     );
     let page = response(&owner, request.clone()).await;
     assert_eq!(page["entries"][0]["kind"], "result");
-    assert_eq!(page["entries"][0]["custodian"], "reserved:prefrontal-core");
+    assert_eq!(page["entries"][0]["custodian"], "reserved:prefrontal");
     live.core.clock.advance(24 * 60 * 60 * 1000 - 1);
     assert_eq!(
         response(&owner, request.clone()).await["entries"][0]["kind"],

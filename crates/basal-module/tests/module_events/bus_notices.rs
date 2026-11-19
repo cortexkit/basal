@@ -254,7 +254,7 @@ async fn late_result_wakes_survive_restart_before_publish_and_dedupe_ack_crash()
     let server = Server::start().await;
     let path = server.dir.join("late.db");
     let rt = runtime(&path);
-    for custodian in ["reserved:broca", "reserved:prefrontal-core"] {
+    for custodian in ["reserved:broca", "reserved:prefrontal"] {
         rt.store().write(|tx| {
             tx.execute("INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES(?1,'{}',?1,1000)",[custodian])?;
             basal_core::bus_outbox::enqueue_late_result_wake(tx,custodian,"key","ok",custodian,1000)
@@ -285,7 +285,7 @@ async fn late_result_wakes_survive_restart_before_publish_and_dedupe_ack_crash()
         .await
         .unwrap();
     assert_eq!(messages.len(), 2);
-    for (message, module) in messages.iter().zip(["broca", "prefrontal-core"]) {
+    for (message, module) in messages.iter().zip(["broca", "prefrontal"]) {
         assert_eq!(
             message.subject.as_str(),
             format!("ck.account.event.basal.late_result_ready.v1.{module}")
@@ -454,7 +454,7 @@ async fn install_change_notice_reads_status_once_and_applies_like_hint() {
     });
     publish_control(
         &server,
-        "ck.account.event.prefrontal-core.flow_install_changed.v1",
+        "ck.account.event.prefrontal.flow_install_changed.v1",
         json!({"flow_id":"control-flow","seq":1}),
         "install-change:1",
     )
@@ -474,7 +474,7 @@ async fn install_change_notice_reads_status_once_and_applies_like_hint() {
 
 #[tokio::test]
 async fn malformed_install_change_is_acked_without_status_read() {
-    let subject = "ck.account.event.prefrontal-core.flow_install_changed.v1";
+    let subject = "ck.account.event.prefrontal.flow_install_changed.v1";
     let warnings_before = super::reader::warning_count_for(subject);
     let server = Server::start().await;
     let host = Arc::new(NoticeHost::default());
@@ -482,7 +482,7 @@ async fn malformed_install_change_is_acked_without_status_read() {
     pending_card(&rt, 1);
     publish_control(
         &server,
-        "ck.account.event.prefrontal-core.flow_install_changed.v1",
+        "ck.account.event.prefrontal.flow_install_changed.v1",
         json!({"flow_id":"control-flow","seq":"invalid"}),
         "bad-install:1",
     )
@@ -674,7 +674,7 @@ async fn install_change_checks_pending_versions_oldest_first_and_caps_at_eight()
     }
     publish_control(
         &server,
-        "ck.account.event.prefrontal-core.flow_install_changed.v1",
+        "ck.account.event.prefrontal.flow_install_changed.v1",
         json!({"flow_id":"control-flow","seq":2}),
         "many-installs:1",
     )

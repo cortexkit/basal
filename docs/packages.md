@@ -1,8 +1,8 @@
 # Flow packages and instances
 
-A flow package is a flow version that is registered once, approved once, and run as one instance per agent. prefrontal-core decides which agents run which packages: a persona pins packages by exact version, and core reconciles each agent's instances when its persona changes. basal stores packages, validates them, and runs instances. Flows installed with `flow.install`, including global flows that reach several agents, are unchanged.
+A flow package is a flow version that is registered once, approved once, and run as one instance per agent. prefrontal decides which agents run which packages: a persona pins packages by exact version, and core reconciles each agent's instances when its persona changes. basal stores packages, validates them, and runs instances. Flows installed with `flow.install`, including global flows that reach several agents, are unchanged.
 
-This document is the contract between basal and prefrontal-core. Its test vectors (fixed inputs with the exact outputs they must produce) are pinned in basal's tests, and core may pin them too.
+This document is the contract between basal and prefrontal. Its test vectors (fixed inputs with the exact outputs they must produce) are pinned in basal's tests, and core may pin them too.
 
 Shapes use the notation of [`ops.md`](ops.md).
 
@@ -61,7 +61,7 @@ An instance's owner is its agent's `agent_id`. It acts only as that agent:
 
 ## package.register
 
-Caller: the operator, or prefrontal-core. Agents and local callers are refused with `not_permitted`.
+Caller: the operator, or prefrontal. Agents and local callers are refused with `not_permitted`.
 
 Params:
 ```json
@@ -84,7 +84,7 @@ Registering raises no card. Core owns approval of package versions: it raises a 
 
 ## package.get
 
-Caller: prefrontal-core only.
+Caller: prefrontal only.
 
 Params:
 ```json
@@ -131,7 +131,7 @@ A `flow.instance.remove` for a pair with no instance still records its generatio
 
 ## flow.instance.ensure
 
-Caller: prefrontal-core only, on its own unscoped route.
+Caller: prefrontal only, on its own unscoped route.
 
 Params:
 ```json
@@ -163,7 +163,7 @@ A refused call records no generation.
 
 ## flow.instance.remove
 
-Caller: prefrontal-core only, on its own unscoped route.
+Caller: prefrontal only, on its own unscoped route.
 
 Params:
 ```json

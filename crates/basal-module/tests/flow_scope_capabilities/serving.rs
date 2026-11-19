@@ -301,14 +301,14 @@ fn core_carrier_ops_ignore_even_an_explicit_empty_management_list() {
         .as_array_mut()
         .unwrap()
         .push(json!({
-            "module_id":"prefrontal-core","flow_operations":[],"capabilities":{"provides":[]},
+            "module_id":"prefrontal","flow_operations":[],"capabilities":{"provides":[]},
             "roles":[{"role":"management_surface","operations":[
                 {"name":"board.read","kind":"query"},{"name":"work.unsettled","kind":"query"}],
                 "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]
         }));
     let mut m = manifest("echo");
-    m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"},
-        {"module":"prefrontal-core","op":"work.unsettled"}]);
+    m["ops"] = json!([{"module":"prefrontal","op":"board.read"},
+        {"module":"prefrontal","op":"work.unsettled"}]);
     m["board_read"] = json!(["SYNAPSE"]);
     for method in ["flow.install", "package.register"] {
         let mut package = m.clone();

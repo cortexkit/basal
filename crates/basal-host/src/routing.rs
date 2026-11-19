@@ -91,7 +91,7 @@ impl ModuleOpsHost {
             }));
         }
         let result = (|| {
-            let (decl, flow_capable, routed_module) =
+            let (decl, flow_capable) =
                 self.catalog.resolve_for_dispatch(module, op).map_err(|e| {
                     WireError::NeverSent(format!("catalog lookup before dispatch: {e:?}"))
                 })?;
@@ -141,7 +141,6 @@ impl ModuleOpsHost {
             } else {
                 (request.route_key(), args)
             };
-            let module = routed_module.as_str();
             match decl.surface {
                 Surface::Management if carrier => self.transport.management(module, op, args),
                 Surface::Management => self.transport.management_for_flow(&flow, module, op, args),

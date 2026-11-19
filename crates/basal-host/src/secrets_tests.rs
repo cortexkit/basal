@@ -44,7 +44,7 @@ fn request(args: Value) -> CallRequest {
 fn description() -> crate::ScopeDescription {
     serde_json::from_value(json!({"status":"live","scope_epoch":7,"daemon_incarnation":"d",
         "owner_synced":true,"owner_configured":true,"scope":{
-            "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"flow:scope",
+            "owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"flow:scope",
             "scope_epoch":7,"kind":"head","owner_authorized":true,
             "attributes":{"flow_id":"test-flow","flow_version":2,"flow_code_hash":HASH,"flow_install_id":"install-1"}}})).unwrap()
 }
@@ -272,9 +272,7 @@ impl Transport for InstallVault {
         } else {
             vec![]
         };
-        Ok(
-            json!({"modules":[{"module_id":"prefrontal-core","capabilities":{"provides":provides}}]}),
-        )
+        Ok(json!({"modules":[{"module_id":"prefrontal","capabilities":{"provides":provides}}]}))
     }
     fn management(&self, _: &str, op: &str, params: Value) -> Result<Value, WireError> {
         self.calls.lock().unwrap().push((op.into(), params));

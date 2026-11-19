@@ -184,7 +184,7 @@ async fn overview_watch_open_matches_read_and_admission() {
         (
             4,
             Principal::Reserved {
-                module_id: "prefrontal-core".into(),
+                module_id: "prefrontal".into(),
             },
             "core",
         ),

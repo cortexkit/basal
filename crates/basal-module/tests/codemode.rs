@@ -160,14 +160,14 @@ impl Transport for Core {
                 let scope = self.opens.lock().unwrap()[0]["run_id"].clone();
                 let entries = if ready && self.consent_provider.load(Ordering::SeqCst) {
                     vec![
-                        json!({"kind":"not_started","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,"custodian":"reserved:basal","call_key":key,"event_id":"consent-result","settled_at":100,"reason":"consent","detail":{"consent":"approved"}}),
+                        json!({"kind":"not_started","owner":"reserved:prefrontal","ref":scope,"scope_epoch":19,"custodian":"reserved:basal","call_key":key,"event_id":"consent-result","settled_at":100,"reason":"consent","detail":{"consent":"approved"}}),
                     ]
                 } else if ready {
                     let result = self.tool_result.lock().unwrap().clone().unwrap_or_else(|| {
                         json!({"content":[{"type":"text","text":"Ready"}],"structuredContent":input})
                     });
                     vec![
-                        json!({"kind":"result","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,
+                        json!({"kind":"result","owner":"reserved:prefrontal","ref":scope,"scope_epoch":19,
                     "custodian":"reserved:basal","call_key":key,"event_id":"login-result","settled_at":100,
                     "result":result}),
                     ]
@@ -201,7 +201,7 @@ impl Transport for Core {
         )
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
-        assert_eq!(module, "prefrontal-core");
+        assert_eq!(module, "prefrontal");
         match op {
             "codemode.run_scope.open" => {
                 let id = params["run_id"].as_str().unwrap();
@@ -231,10 +231,10 @@ impl Transport for Core {
                     }
                     None => json!({"on_behalf_of_agent":"agent","run_id":id}),
                 };
-                let mut stamp = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":id,"scope_epoch":19,"kind":"ephemeral",
+                let mut stamp = json!({"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":id,"scope_epoch":19,"kind":"ephemeral",
                         "attributes":attributes,"owner_authorized":true});
                 if params.get("agent_id").is_none() {
-                    stamp["parent"] = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},
+                    stamp["parent"] = json!({"owner":{"kind":"reserved","module_id":"prefrontal"},
                         "ref":params["invoking_scope"]["ref"],"scope_epoch":params["invoking_scope"]["epoch"]});
                 }
                 self.run_stamps.lock().unwrap().insert(
@@ -244,7 +244,7 @@ impl Transport for Core {
                         params["invoking_scope"].clone(),
                     ),
                 );
-                self.host.set_scope_description(Principal::Reserved { module_id:"prefrontal-core".into() },id,Ok(serde_json::from_value(json!({
+                self.host.set_scope_description(Principal::Reserved { module_id:"prefrontal".into() },id,Ok(serde_json::from_value(json!({
                     "status":"live","scope_epoch":19,"daemon_incarnation":"test","owner_synced":true,"owner_configured":true,
                     "scope":stamp})).unwrap()));
                 // A matching daemon stamp from a previously published scope
@@ -311,7 +311,7 @@ impl Transport for Core {
         self.catalog_scopes.lock().unwrap().push(scope.clone());
         // Like cerebellum, the provider admits basal only on a codemode run's
         // own scope: an ephemeral scope with run_id and no flow_id, owned by
-        // an authorized prefrontal-core, whose call mode the daemon derives
+        // an authorized prefrontal, whose call mode the daemon derives
         // as codemode, and whose parent is the live head scope it was opened
         // from.
         let stamps = self.run_stamps.lock().unwrap();
@@ -323,7 +323,7 @@ impl Transport for Core {
                 && stamp.attributes.flow_id.is_none()
                 && stamp.owner
                     == (Principal::Reserved {
-                        module_id: "prefrontal-core".into(),
+                        module_id: "prefrontal".into(),
                     })
                 && stamp.owner_authorized
                 && subc_protocol::call_mode::derive_call_mode(Some(stamp))
@@ -479,7 +479,7 @@ fn rig(tag: &str, missing_worker: bool) -> Rig {
 }
 fn context() -> Context {
     Context { call_mode: cortexkit_role_tool_provider::CallMode::Classic, consumer_capabilities: None, bind_identity: subc_protocol::BindIdentity::new("agent-harness", "agent-session"),principal:Principal::Reserved { module_id:"broca".into() },scope:Some(serde_json::from_value::<ScopeStamp>(json!({
-        "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7,"kind":"head",
+        "owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"agent-scope","scope_epoch":7,"kind":"head",
         "attributes":{"agent_id":"agent"},"owner_authorized":true})).unwrap()) }
 }
 fn call(rig: &Rig, key: &str, code: &str, wait: Duration) -> Value {
@@ -513,71 +513,72 @@ fn held_context() -> Context {
 }
 
 #[test]
-fn prefrontal_rename_late_results_share_the_existing_cursor_without_rewriting_entries() {
-    for first in ["prefrontal-core", "prefrontal"] {
-        let rig = rig("late-core-rename", true);
-        let store = rig.fixture.module.rt.store();
-        store.write(|tx| {
-            tx.execute("INSERT INTO codemode_late_acks VALUES ('reserved:prefrontal-core',1)", [])?;
-            for (seq, custodian) in [(2,"reserved:prefrontal-core"),(3,"reserved:broca"),(4,"reserved:prefrontal")] {
-                let entry = cortexkit_role_tool_provider::late_results::LateEntry::new("result", "reserved:prefrontal-core", "session", 7, custodian, format!("call-{seq}"), format!("event-{seq}"), common::T0 as u64).with_result(json!(seq));
-                tx.execute("INSERT INTO codemode_late_results(seq,custodian,entry,event_id,settled_at) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![seq,custodian,serde_json::to_string(&entry).unwrap(),format!("event-{seq}"),common::T0])?;
-            }
-            Ok(())
-        }).unwrap();
-        let request = |module: &str, op: &str, args: Value| {
-            let ctx = Context {
-                principal: Principal::Reserved {
-                    module_id: module.into(),
-                },
-                scope: None,
-                ..context()
-            };
-            rig.fixture
-                .module
-                .handle_tool(&ctx, ToolCallRequest::new(op, args), Duration::ZERO)
-                .unwrap()
-        };
-        let other = if first == "prefrontal" {
-            "prefrontal-core"
-        } else {
-            "prefrontal"
-        };
-        let page = request(first, "late_results", json!({"since":null,"limit":1}));
-        assert_eq!(page["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(page["entries"][0]["custodian"], "reserved:prefrontal-core");
-        assert_eq!(page["entries"][0]["owner"], "reserved:prefrontal-core");
-        assert_eq!(page["cursor"]["seq"], 2);
-        assert_eq!(page["more"], true);
-        request(other, "late_results.ack", json!({"through":page["cursor"]}));
-        let next = request(other, "late_results", json!({"since":page["cursor"]}));
-        assert_eq!(next["entries"].as_array().unwrap().len(), 1);
-        assert_eq!(next["entries"][0]["custodian"], "reserved:prefrontal");
-        assert_eq!(next["cursor"]["seq"], 4);
-        request(first, "late_results.ack", json!({"through":next["cursor"]}));
-        request(other, "late_results.ack", json!({"through":page["cursor"]}));
-        for module in [first, other] {
-            let empty = request(module, "late_results", json!({"since":next["cursor"]}));
-            assert_eq!(empty["entries"], json!([]));
-            assert_eq!(empty["cursor"], next["cursor"]);
+fn legacy_prefrontal_ack_is_inert_for_the_new_custodian() {
+    let rig = rig("late-core-rename", true);
+    let store = rig.fixture.module.rt.store();
+    store.write(|tx| {
+        tx.execute("INSERT INTO codemode_late_acks VALUES ('reserved:prefrontal-core',12684)", [])?;
+        for (seq, custodian) in [(2,"reserved:prefrontal"),(3,"reserved:broca"),(4,"reserved:prefrontal")] {
+            let entry = cortexkit_role_tool_provider::late_results::LateEntry::new("result", "reserved:prefrontal", "session", 7, custodian, format!("call-{seq}"), format!("event-{seq}"), common::T0 as u64).with_result(json!(seq));
+            tx.execute("INSERT INTO codemode_late_results(seq,custodian,entry,event_id,settled_at) VALUES (?1,?2,?3,?4,?5)", rusqlite::params![seq,custodian,serde_json::to_string(&entry).unwrap(),format!("event-{seq}"),common::T0])?;
         }
-        store
-            .read(|conn| {
-                let acks: (i64, i64) = conn.query_row(
-                    "SELECT COUNT(*),MAX(through_seq) FROM codemode_late_acks",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+        Ok(())
+    }).unwrap();
+    let ctx = Context {
+        principal: Principal::Reserved {
+            module_id: "prefrontal".into(),
+        },
+        scope: None,
+        ..context()
+    };
+    let request = |op: &str, args: Value| {
+        rig.fixture
+            .module
+            .handle_tool(&ctx, ToolCallRequest::new(op, args), Duration::ZERO)
+    };
+    let page = request("late_results", json!({"since":null,"limit":1})).unwrap();
+    assert_eq!(page["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(page["entries"][0]["custodian"], "reserved:prefrontal");
+    assert_eq!(page["cursor"]["seq"], 2);
+    assert_eq!(page["more"], true);
+    let mut legacy_cursor = page["cursor"].clone();
+    legacy_cursor["seq"] = json!(12684);
+    assert!(request("late_results", json!({"since":legacy_cursor})).is_err());
+    request("late_results.ack", json!({"through":page["cursor"]})).unwrap();
+    let next = request("late_results", json!({"since":page["cursor"]})).unwrap();
+    assert_eq!(next["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(next["entries"][0]["custodian"], "reserved:prefrontal");
+    assert_eq!(next["cursor"]["seq"], 4);
+    request("late_results.ack", json!({"through":next["cursor"]})).unwrap();
+    request("late_results.ack", json!({"through":page["cursor"]})).unwrap();
+    let empty = request("late_results", json!({"since":next["cursor"]})).unwrap();
+    assert_eq!(empty["entries"], json!([]));
+    assert_eq!(empty["cursor"], next["cursor"]);
+    assert_eq!(
+        request("late_results", json!({})).unwrap()["entries"],
+        json!([])
+    );
+    store
+        .read(|conn| {
+            for (custodian, expected) in [
+                ("reserved:prefrontal", 4),
+                ("reserved:prefrontal-core", 12684),
+            ] {
+                let seq: i64 = conn.query_row(
+                    "SELECT through_seq FROM codemode_late_acks WHERE custodian=?1",
+                    [custodian],
+                    |r| r.get(0),
                 )?;
-                assert_eq!(acks, (1, 4));
-                let custodian: String =
-                    conn.query_row("SELECT custodian FROM codemode_late_results", [], |r| {
-                        r.get(0)
-                    })?;
-                assert_eq!(custodian, "reserved:broca");
-                Ok(())
-            })
-            .unwrap();
-    }
+                assert_eq!(seq, expected);
+            }
+            let custodian: String =
+                conn.query_row("SELECT custodian FROM codemode_late_results", [], |r| {
+                    r.get(0)
+                })?;
+            assert_eq!(custodian, "reserved:broca");
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
@@ -768,8 +769,8 @@ fn core_scope_shapes_and_stamp_mismatch_prevent_worker_start() {
 fn worker_context(scope_ref: &str) -> Context {
     Context {
         scope: Some(serde_json::from_value::<ScopeStamp>(json!({
-            "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":scope_ref,"scope_epoch":5,"kind":"worker",
-            "parent":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7},
+            "owner":{"kind":"reserved","module_id":"prefrontal"},"ref":scope_ref,"scope_epoch":5,"kind":"worker",
+            "parent":{"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"agent-scope","scope_epoch":7},
             "attributes":{"on_behalf_of_agent":"agent"},"owner_authorized":true})).unwrap()),
         ..context()
     }
@@ -839,7 +840,7 @@ fn a_scope_naming_neither_an_agent_nor_a_worker_is_refused_before_core_is_asked(
         json!({"kind":"worker","attributes":{"on_behalf_of_agent":"agent","run_id":"r"},"owner_authorized":true}),
     ];
     for shape in shapes {
-        let mut stamp = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"task-1","scope_epoch":5});
+        let mut stamp = json!({"owner":{"kind":"reserved","module_id":"prefrontal"},"ref":"task-1","scope_epoch":5});
         stamp
             .as_object_mut()
             .unwrap()
@@ -1478,7 +1479,7 @@ fn admission_reads_catalogs_on_the_run_scope_core_opened() {
         .to_owned();
     let expected = subc_protocol::scope::ScopeSelector::new(
         Principal::Reserved {
-            module_id: "prefrontal-core".into(),
+            module_id: "prefrontal".into(),
         },
         run_id,
         Some(19),

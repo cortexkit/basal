@@ -34,7 +34,7 @@ fn audience_op_requires_verified_unscoped_module_route() {
         &audience_manifest("reach", json!({"kind":"global"})),
     );
     for caller in [
-        reserved("prefrontal-core"),
+        reserved("prefrontal"),
         reserved("plexus"),
         reserved("callosum"),
         reserved("aft"),
@@ -65,7 +65,7 @@ fn audience_op_requires_verified_unscoped_module_route() {
     }
     let scope = subc_protocol::scope::ScopeStamp::new(
         Principal::Reserved {
-            module_id: "prefrontal-core".into(),
+            module_id: "prefrontal".into(),
         },
         "s",
         1,

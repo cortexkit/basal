@@ -324,7 +324,7 @@ fn reconcile_facts_are_plain_text_and_omit_an_absent_step() {
             run_admitted_at_ms: 1_777_593_600_000,
             step,
             call_key: "call-x".into(),
-            op: "prefrontal-core.sink.digest".into(),
+            op: "prefrontal.sink.digest".into(),
             attempts: 2,
             unknown_reason,
         })
@@ -336,7 +336,7 @@ fn reconcile_facts_are_plain_text_and_omit_an_absent_step() {
         absent_step["facts"],
         json!([
             {"label":"Run","value":"2026-05-01 00:00 UTC"},
-            {"label":"Call in doubt","value":"prefrontal-core.sink.digest, attempt 2"},
+            {"label":"Call in doubt","value":"prefrontal.sink.digest, attempt 2"},
             {"label":"Why unknown","value":"The connection closed before a reply came."}
         ])
     );

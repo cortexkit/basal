@@ -891,7 +891,7 @@ fn retired_flow_enable_has_a_typed_retirement_not_permission_denied() {
     let f = fixture("retired-enable", Options::default());
     let owner = agent(OWNER);
     let flow = install_approved(&f, &owner, "return 1;", &events_manifest("retired-flow"));
-    let retirement = json!({"agent_id":OWNER,"agent_reference":OWNER,"provider":"prefrontal-core","action":"sink.status","at_ms":T0});
+    let retirement = json!({"agent_id":OWNER,"agent_reference":OWNER,"provider":"prefrontal","action":"sink.status","at_ms":T0});
     f.module.rt.store().write(|tx| {
         tx.execute("UPDATE flows SET state='disabled',disabled_by='core',disabled_reason='agent_retired',agent_retirement=?2 WHERE flow_id=?1",rusqlite::params![flow,retirement.to_string()])?;
         Ok(())

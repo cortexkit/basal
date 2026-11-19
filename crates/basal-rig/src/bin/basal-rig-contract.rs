@@ -1,5 +1,5 @@
 //! `basal-rig-contract`: basal's live contract suite against the real
-//! prefrontal-core on the ckdev-flows rig (`script/flows-rig.sh` builds and
+//! prefrontal on the ckdev-flows rig (`script/flows-rig.sh` builds and
 //! describes the rig).
 //!
 //! `script/flows-rig.sh test` runs it, in the rig's environment, against a
@@ -62,7 +62,7 @@ mod seeded;
 #[path = "basal-rig-contract/windows.rs"]
 mod windows;
 
-const CORE: &str = "prefrontal-core";
+const CORE: &str = "prefrontal";
 const BASAL: &str = "basal";
 /// How long a flow approved now may take to finish its first run: up to a
 /// minute to its cron boundary, plus the run itself.
@@ -1875,8 +1875,13 @@ fn check_model_scope(rig: &Rig, case: &mut Case, flow: &Flow, run: &Run, snapsho
         route["session"] == format!("basal:flow-{}:{}:0", flow.id, run.run_id),
         detail.clone(),
     );
-    case.check(&format!("{prefix}: scope owner is reserved:prefrontal-core and ref/epoch match core's registration"),
-        scope_matches(&owner, &scope), detail.clone());
+    case.check(
+        &format!(
+            "{prefix}: scope owner is reserved:prefrontal and ref/epoch match core's registration"
+        ),
+        scope_matches(&owner, &scope),
+        detail.clone(),
+    );
     case.check(
         &format!("{prefix}: attested first principal is reserved:basal"),
         basal_first_principal(&owner),
@@ -1909,7 +1914,7 @@ async fn non_carrier(rig: &Rig, flow: &Flow, run: &Run) -> Result<Case, String> 
     // This proves a non-carrier is refused; it can't read the carrier list,
     // which no store exposes. That the list is exactly [reserved:basal] is
     // tested in the prefrontal repository at cba528a11, in
-    // crates/prefrontal-core-module/src/scope_owner.rs:
+    // crates/prefrontal-module/src/scope_owner.rs:
     // flow_scope_registration_is_basal_only,
     // registered_flow_scope_wire_vector_pins_attributes_and_the_entire_carrier_list,
     // registered_global_flow_scope_wire_vector_pins_no_agent_and_the_entire_carrier_list.

@@ -483,7 +483,7 @@ impl Module {
         if *caller != Caller::Core {
             return Err(OpError::new(
                 "not_permitted",
-                "only prefrontal-core may list live instances",
+                "only prefrontal may list live instances",
             ));
         }
         if !params.as_object().is_some_and(|p| p.is_empty()) {
@@ -709,30 +709,33 @@ impl Module {
 
     // ---- flow.install --------------------------------------------------
 
-    fn parse_install_manifest(&self, text: &str) -> Result<Manifest, OpError> {
-        Manifest::parse_ordinary(text).map_err(|e| match e {
-            e @ (ManifestError::ParamsRequirePackage { .. }
-            | ManifestError::TriggerKinds { .. }
-            | ManifestError::CombinedTriggerAt
-            | ManifestError::ExplanationRequired
-            | ManifestError::ChangesRequired
-            | ManifestError::ChangesOnFirstVersion
-            | ManifestError::Notice { .. }
-            | ManifestError::Pack { .. }
-            | ManifestError::AudienceSinkNamed
-            | ManifestError::AudienceFactsRequiresGlobal
-            | ManifestError::AudienceFactsPrivateText
-            | ManifestError::AudienceFactsMixedTargets
-            | ManifestError::AudiencePlaceholderWithoutAudience
-            | ManifestError::ForTargetRequiresAudience
-            | ManifestError::RunBoundExceedsAudienceLimit) => {
-                self.install_error(InstallError::Manifest(e))
-            }
-            other => OpError::new(
-                "install_refused",
-                format!("the manifest is invalid: {other}"),
-            ),
-        })
+    fn parse_install_manifest(&self, script: &str, text: &str) -> Result<Manifest, OpError> {
+        self.rt
+            .parse_install_manifest(script, text)
+            .map_err(|e| match e {
+                InstallError::Manifest(
+                    e @ (ManifestError::ParamsRequirePackage { .. }
+                    | ManifestError::TriggerKinds { .. }
+                    | ManifestError::CombinedTriggerAt
+                    | ManifestError::ExplanationRequired
+                    | ManifestError::ChangesRequired
+                    | ManifestError::ChangesOnFirstVersion
+                    | ManifestError::Notice { .. }
+                    | ManifestError::Pack { .. }
+                    | ManifestError::AudienceSinkNamed
+                    | ManifestError::AudienceFactsRequiresGlobal
+                    | ManifestError::AudienceFactsPrivateText
+                    | ManifestError::AudienceFactsMixedTargets
+                    | ManifestError::AudiencePlaceholderWithoutAudience
+                    | ManifestError::ForTargetRequiresAudience
+                    | ManifestError::RunBoundExceedsAudienceLimit),
+                ) => self.install_error(InstallError::Manifest(e)),
+                InstallError::Manifest(other) => OpError::new(
+                    "install_refused",
+                    format!("the manifest is invalid: {other}"),
+                ),
+                other => self.install_error(other),
+            })
     }
 
     fn op_install(&self, caller: &Caller, params: Value) -> OpResult {
@@ -748,7 +751,7 @@ impl Module {
             loop_override: bool,
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
-        let manifest = self.parse_install_manifest(&p.manifest)?;
+        let manifest = self.parse_install_manifest(&p.script, &p.manifest)?;
         // Package instances derive their ids from the package and agent.
         // Plain installs must not occupy that namespace before an instance exists.
         if manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| {
@@ -1606,7 +1609,7 @@ impl Module {
 
     // ---- flow.health ---------------------------------------------------
 
-    /// `flow.health`. prefrontal-core polls it on its own route to decide
+    /// `flow.health`. prefrontal polls it on its own route to decide
     /// whether a flow's claim on a source still holds, and treats any reply
     /// it cannot decode as unhealthy. So the fields of that contract are
     /// always present with fixed types: `as_of` (RFC 3339, UTC) and, per

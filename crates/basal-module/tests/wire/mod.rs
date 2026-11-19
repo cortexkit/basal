@@ -12,7 +12,6 @@ pub struct Fake {
     pub replies: Mutex<BTreeMap<String, VecDeque<Result<Value, WireError>>>>,
     pub catalog: Mutex<Value>,
     /// Core routing identity observed by the fake catalog watch, if any.
-    pub cached_core_module: Mutex<Option<&'static str>>,
     /// Core's own records of agent session scopes, by scope ref.
     pub scopes: Mutex<BTreeMap<String, CoreScope>>,
     /// Core's `flow_install` rows by (flow, version): the approved code
@@ -314,7 +313,7 @@ fn flow_install_request(
         })
     };
     let invalid = "elicitation_invalid_request";
-    // Core decodes the nested payload strictly (prefrontal-core-store
+    // Core decodes the nested payload strictly (prefrontal-store
     // `FlowInstallCard`): these fields must be strings and the version an
     // integer. `placement` is optional: absent (or null) is "not stated",
     // and an empty string is refused.
@@ -401,8 +400,8 @@ fn flow_install_request(
 /// The only requester the provider lets raise `flow_decision` cards.
 pub const BASAL: &str = "reserved:basal";
 
-/// The keys of the `flow_decision` request contract, as prefrontal-core's
-/// `ConsentRequest` decoded them (prefrontal-core-store `elicitation.rs` at
+/// The keys of the `flow_decision` request contract, as prefrontal's
+/// `ConsentRequest` decoded them (prefrontal-store `elicitation.rs` at
 /// tag `flow-decision-card-v2`); the fake provider refuses any other.
 const REQUEST_KEYS: &[&str] = &[
     "flow_install",
@@ -430,7 +429,7 @@ const REQUEST_KEYS: &[&str] = &[
 ];
 
 /// The keys of core's `flow_decision` body, tagged by `decision`
-/// (prefrontal-core-store `FlowDecisionCard` at tag `flow-decision-card-v2`):
+/// (prefrontal-store `FlowDecisionCard` at tag `flow-decision-card-v2`):
 /// every key but `step` is required, and any other key is refused, so a v1
 /// body, which lacks the typed context, is refused too.
 const RECONCILE_KEYS: &[&str] = &[
@@ -564,7 +563,7 @@ fn text<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
 }
 
 /// The checks of a `flow_decision` request, written from the contract's rules
-/// (prefrontal-core's `ConsentRequest::decode` and `validate`) rather than
+/// (prefrontal's `ConsentRequest::decode` and `validate`) rather than
 /// from basal's encoder. A refusal is `(code, message)`.
 fn check_flow_decision(params: &Value) -> Result<(), (&'static str, String)> {
     let invalid = |m: String| ("elicitation_invalid_request", m);
@@ -843,12 +842,6 @@ impl Fake {
     }
 }
 impl Transport for Fake {
-    fn core_module(&self) -> &'static str {
-        self.cached_core_module
-            .lock()
-            .unwrap()
-            .unwrap_or(basal_host::core_identity::LEGACY_CORE_MODULE)
-    }
     fn catalog(&self) -> Result<Value, WireError> {
         Ok(self.catalog.lock().unwrap().clone())
     }

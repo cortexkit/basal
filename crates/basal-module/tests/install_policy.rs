@@ -204,10 +204,7 @@ fn install_id_capability(fake: &Fake, supported: bool) {
     let mut catalog = fake.catalog.lock().unwrap();
     let modules = catalog["modules"].as_array_mut().unwrap();
     let capability = basal_host::core_consent::FLOW_INSTALL_ID_V1;
-    if let Some(core) = modules
-        .iter_mut()
-        .find(|m| m["module_id"] == "prefrontal-core")
-    {
+    if let Some(core) = modules.iter_mut().find(|m| m["module_id"] == "prefrontal") {
         let provides = core["capabilities"]["provides"].as_array_mut().unwrap();
         provides.retain(|c| c != capability);
         if supported {
@@ -215,7 +212,7 @@ fn install_id_capability(fake: &Fake, supported: bool) {
         }
     } else {
         modules.push(
-            json!({"module_id":"prefrontal-core","roles":[],"capabilities":{"provides":
+            json!({"module_id":"prefrontal","roles":[],"capabilities":{"provides":
             if supported { vec![capability] } else { vec![] }}}),
         );
     }
@@ -727,11 +724,7 @@ fn install_cards_only_use_core_install_request_and_never_wake_answer_polling() {
         );
         install_version(&f, 1).unwrap();
         assert_eq!(fake.calls("flow.install_request").len(), 1);
-        assert_eq!(
-            fake.calls_to("prefrontal-core", "flow.install_request")
-                .len(),
-            1
-        );
+        assert_eq!(fake.calls_to("prefrontal", "flow.install_request").len(), 1);
         assert!(fake.calls("consent.request").is_empty());
         assert!(!f.module.rt.has_open_cards().unwrap());
         assert!(

@@ -41,7 +41,7 @@ fn agentless_audience_non_query_ops_warn_in_install_and_dry_run() {
     // Mark board.read as a mutation so the test proves it is skipped because
     // core dispatches it through basal's management route, not because it is a query.
     f.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "board.read",
         basal_host::OpDecl {
             kind: Some(basal_host::OpKind::Mutate),
@@ -55,7 +55,7 @@ fn agentless_audience_non_query_ops_warn_in_install_and_dry_run() {
     global["board_read"] = json!(["$audience"]);
     global["ops"] = json!([
         {"module":"mock", "op":"send"},
-        {"module":"prefrontal-core", "op":"board.read"}
+        {"module":"prefrontal", "op":"board.read"}
     ]);
     let installed = install(&f, &Caller::Operator, "return 1;", &global);
     assert_eq!(
@@ -310,7 +310,7 @@ fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
         .as_array_mut()
         .unwrap()
         .push(json!({
-            "module_id":"prefrontal-core",
+            "module_id":"prefrontal",
             "capabilities":{"provides":[basal_host::core_host::FLOW_DIGEST_WITHDRAW_V1]}
         }));
     let mock = Arc::new(basal_host::mock::MockHost::new());

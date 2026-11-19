@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 fn manifest() -> Value {
     json!({"id":"boards","version":1,"explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"Read boards",
         "trigger":{"schedule":{"cron":"* * * * *"}},
-        "ops":[{"module":"prefrontal-core","op":"board.read"}],
+        "ops":[{"module":"prefrontal","op":"board.read"}],
         "board_read":["SYNAPSE"]})
 }
 
@@ -118,7 +118,7 @@ fn board_read_grants_require_the_exact_core_op() {
     for ops in [
         json!([]),
         json!([{"module":"other","op":"board.read"}]),
-        json!([{"module":"prefrontal-core","op":"board.write"}]),
+        json!([{"module":"prefrontal","op":"board.write"}]),
     ] {
         let mut value = manifest();
         value["ops"] = ops;
@@ -185,7 +185,7 @@ fn board_read_agents_resolve_names_and_ids_and_refuse_unknown_targets() {
     let catalog = MockCatalog::standard();
     catalog.add_named_agent("agent_owner", "SYNAPSE");
     catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "board.read",
         OpDecl {
             kind: Some(OpKind::Query),

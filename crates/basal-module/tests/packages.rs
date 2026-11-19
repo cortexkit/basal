@@ -77,7 +77,7 @@ fn packages_require_self_in_every_agent_field() {
             "claims" => m["claims"][0]["agent"] = json!("SYNAPSE"),
             "board_read" => {
                 m["board_read"] = json!(["SYNAPSE"]);
-                m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+                m["ops"] = json!([{"module":"prefrontal","op":"board.read"}]);
             }
             _ => m["facts"]["targets"] = json!(["SYNAPSE"]),
         }
@@ -106,7 +106,7 @@ fn ordinary_installs_refuse_self_in_every_agent_field() {
             "claims" => m["claims"] = json!([{"agent":"$self","source_kind":"idleness"}]),
             "board_read" => {
                 m["board_read"] = json!(["$self"]);
-                m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+                m["ops"] = json!([{"module":"prefrontal","op":"board.read"}]);
             }
             _ => m["facts"] = json!({"targets":["$self"]}),
         }
@@ -129,7 +129,7 @@ fn ordinary_installs_refuse_self_in_every_agent_field() {
 fn board_read_package_and_template_preserve_self_grants() {
     let f = setup("pkg-board-read");
     f.catalog.set_op(
-        "prefrontal-core",
+        "prefrontal",
         "board.read",
         basal_host::OpDecl {
             kind: Some(basal_host::OpKind::Query),
@@ -145,7 +145,7 @@ fn board_read_package_and_template_preserve_self_grants() {
             "board-package"
         });
         m["board_read"] = json!(["$self"]);
-        m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+        m["ops"] = json!([{"module":"prefrontal","op":"board.read"}]);
         if template {
             m["params"] = json!({"count":{"type":"integer","min":1,"max":2}});
             m["template"] = json!({"max_per_agent":1,"max_lifetime":"1h"});

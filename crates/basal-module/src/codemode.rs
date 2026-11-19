@@ -177,7 +177,7 @@ impl Codemode {
         }
         let record_scope = serde_json::to_string(&context.identity()).unwrap();
         let custodian = if context.principal == subc_protocol::Principal::Direct {
-            crate::tool::principal(&scope.owner)?
+            basal_host::core_identity::CORE_PRINCIPAL.to_owned()
         } else {
             carrier.clone()
         };
@@ -360,10 +360,9 @@ impl Codemode {
     }
 
     fn head(&self, custodian: &str) -> Result<u64, ErrorBody> {
-        let (custodian, alias) = basal_host::core_identity::custodian_aliases(custodian);
         self.store.read(|conn| Ok(conn.query_row(
-            "SELECT MAX(COALESCE((SELECT MAX(seq) FROM codemode_late_results WHERE custodian IN (?1,?2)),0),COALESCE((SELECT MAX(through_seq) FROM codemode_late_acks WHERE custodian IN (?1,?2)),0))",
-            [custodian, alias],|row| row.get(0))?)).map_err(storage)
+            "SELECT MAX(COALESCE((SELECT MAX(seq) FROM codemode_late_results WHERE custodian=?1),0),COALESCE((SELECT MAX(through_seq) FROM codemode_late_acks WHERE custodian=?1),0))",
+            [custodian],|row| row.get(0))?)).map_err(storage)
     }
 
     fn late(&self, context: &crate::tool::Context, arguments: Value) -> Result<Value, ErrorBody> {
@@ -375,10 +374,9 @@ impl Codemode {
         late_results::check_since(&self.incarnation, head, request.since.as_ref())?;
         let limit = request.limit.unwrap_or(100).clamp(1, 1000) as usize;
         let since = request.since.map_or(0, |cursor| cursor.seq);
-        let (custodian, alias) = basal_host::core_identity::custodian_aliases(&custodian);
         let rows = self.store.read(|conn| {
-            let mut statement = conn.prepare("SELECT seq,entry FROM codemode_late_results WHERE custodian IN (?1,?2) AND seq>?3 ORDER BY seq LIMIT ?4")?;
-            Ok(statement.query_map(rusqlite::params![custodian,alias,since,limit + 1],|row| Ok((row.get::<_,u64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+            let mut statement = conn.prepare("SELECT seq,entry FROM codemode_late_results WHERE custodian=?1 AND seq>?2 ORDER BY seq LIMIT ?3")?;
+            Ok(statement.query_map(rusqlite::params![custodian,since,limit + 1],|row| Ok((row.get::<_,u64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
         }).map_err(storage)?;
         let more = rows.len() > limit;
         let mut cursor = since;
@@ -405,10 +403,9 @@ impl Codemode {
             self.head(&custodian)?,
             Some(&request.through),
         )?;
-        let (custodian, alias) = basal_host::core_identity::custodian_aliases(&custodian);
         self.store.write(|tx| {
             tx.execute("INSERT INTO codemode_late_acks(custodian,through_seq) VALUES (?1,?2) ON CONFLICT(custodian) DO UPDATE SET through_seq=MAX(through_seq,excluded.through_seq)",rusqlite::params![custodian,request.through.seq])?;
-            tx.execute("DELETE FROM codemode_late_results WHERE custodian IN (?1,?2) AND seq<=?3",rusqlite::params![custodian,alias,request.through.seq])?;
+            tx.execute("DELETE FROM codemode_late_results WHERE custodian=?1 AND seq<=?2",rusqlite::params![custodian,request.through.seq])?;
             Ok(())
         }).map_err(storage)?;
         Ok(json!({}))
@@ -1099,7 +1096,7 @@ mod tests {
             for session in ["one","two"] {
                 for n in 0..1002 {
                     let event = format!("{session}:{n}");
-                    let entry = late_results::LateEntry::new("result","reserved:prefrontal-core",session,7,"reserved:broca",event.clone(),event.clone(),100).with_result(json!(42));
+                    let entry = late_results::LateEntry::new("result","reserved:prefrontal",session,7,"reserved:broca",event.clone(),event.clone(),100).with_result(json!(42));
                     tx.execute("INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES ('reserved:broca',?1,?2,100)",rusqlite::params![serde_json::to_string(&entry).unwrap(),event])?;
                 }
             }

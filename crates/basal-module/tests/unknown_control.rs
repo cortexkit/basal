@@ -55,7 +55,7 @@ fn flags() -> Flags {
 fn route_bind_with_future_scope_field() -> Vec<u8> {
     let scope = ScopeStamp::new(
         Principal::Reserved {
-            module_id: "prefrontal-core".into(),
+            module_id: "prefrontal".into(),
         },
         "scope-1",
         1,

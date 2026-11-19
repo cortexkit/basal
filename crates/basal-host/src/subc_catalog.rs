@@ -151,7 +151,7 @@ fn read_tool_catalog_with(
     Ok(answer)
 }
 
-pub use crate::core_identity::LEGACY_CORE_MODULE as CORE;
+pub use crate::core_identity::CORE_MODULE as CORE;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
     Management,
@@ -187,19 +187,17 @@ impl SubcCatalog {
         self
     }
     pub fn resolve(&self, module: &str, op: &str) -> Result<Option<CatalogOp>, WireError> {
-        self.resolve_for_dispatch(module, op)
-            .map(|(decl, _, _)| decl)
+        self.resolve_for_dispatch(module, op).map(|(decl, _)| decl)
     }
-    /// Routing identity, scope capability and operation kind come from the same fresh snapshot.
+    /// Scope capability and operation kind come from the same fresh snapshot.
     /// A missing provider is not evidence that an operation was removed: the
     /// provider may simply be disconnected while the daemon rebuilds its catalog.
     pub fn resolve_for_dispatch(
         &self,
         module: &str,
         op: &str,
-    ) -> Result<(Option<CatalogOp>, bool, String), WireError> {
+    ) -> Result<(Option<CatalogOp>, bool), WireError> {
         let catalog = self.snapshot_for(module)?;
-        let module = crate::core_identity::routed_module(&catalog, module);
         let Some(entry) = catalog.module(module) else {
             return Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
                 crate::flow_refusal::RefusalReason::ProviderNotCatalogued,
@@ -262,7 +260,7 @@ impl SubcCatalog {
             }
         }
         let flow_capable = entry.provides("flow-scopes/v1");
-        Ok((found, flow_capable, module.to_owned()))
+        Ok((found, flow_capable))
     }
     fn snapshot(&self) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
         self.snapshot
@@ -278,7 +276,7 @@ impl SubcCatalog {
         module: &str,
     ) -> Result<Arc<crate::catalog_snapshot::CatalogSnapshot>, WireError> {
         let snapshot = self.snapshot()?;
-        if crate::core_identity::catalog_module(&snapshot, module).is_some() {
+        if snapshot.module(module).is_some() {
             return Ok(snapshot);
         }
         match self.transport.refresh_catalog_snapshot(&snapshot) {
@@ -354,7 +352,7 @@ impl SubcCatalog {
 
     /// Resolves either public agent identifier through core's agent registry.
     pub fn resolve_agent(&self, agent: &str) -> Result<Option<String>, WireError> {
-        let module = crate::core_identity::core_module(self.transport.as_ref());
+        let module = CORE;
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::BTreeSet::new();
         let mut named = std::collections::BTreeSet::new();
@@ -400,13 +398,6 @@ impl SubcCatalog {
     }
 }
 impl Catalog for SubcCatalog {
-    fn core_module(&self) -> &'static str {
-        self.snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.as_ref().ok())
-            .and_then(|catalog| crate::core_identity::resolve(|id| catalog.module(id).is_some()))
-            .unwrap_or_else(|| self.transport.core_module())
-    }
     fn request_snapshot(&self) -> Option<Arc<dyn Catalog>> {
         Some(Arc::new(Self {
             transport: self.transport.clone(),
@@ -476,19 +467,19 @@ impl Catalog for SubcCatalog {
     }
     fn supports_flow_scopes(&self, module: &str) -> bool {
         self.snapshot_for(module).ok().is_some_and(|c| {
-            crate::core_identity::catalog_module(&c, module)
+            c.module(module)
                 .is_some_and(|m| m.provides("flow-scopes/v1"))
         })
     }
     fn supports_flow_calls(&self, module: &str) -> bool {
         self.snapshot_for(module).ok().is_some_and(|c| {
-            crate::core_identity::catalog_module(&c, module)
+            c.module(module)
                 .is_some_and(|m| m.provides("flow-scopes/v1") || m.provides("call-modes/v1"))
         })
     }
     fn flow_operations(&self, module: &str) -> Result<Option<Vec<String>>, WireError> {
         let catalog = self.snapshot_for(module)?;
-        let entry = crate::core_identity::catalog_module(&catalog, module).ok_or_else(|| {
+        let entry = catalog.module(module).ok_or_else(|| {
             WireError::Unreadable(format!("module {module} missing from catalog"))
         })?;
         Ok(entry.flow_operations.clone())
@@ -498,13 +489,7 @@ impl Catalog for SubcCatalog {
             return None;
         }
         let catalog = self.snapshot_for(module).ok()?;
-        declared_event(
-            crate::core_identity::catalog_module(&catalog, module)?
-                .events
-                .as_ref()?,
-            name,
-            version,
-        )
+        declared_event(catalog.module(module)?.events.as_ref()?, name, version)
     }
     fn op(&self, module: &str, op: &str) -> Option<OpDecl> {
         self.lookup_op(module, op).ok().flatten()
@@ -540,7 +525,7 @@ impl Catalog for SubcCatalog {
         self.resolve_agent(agent)
     }
     fn resolve_agents(&self, agents: &[&str]) -> Result<Vec<Option<String>>, WireError> {
-        let module = crate::core_identity::core_module(self.transport.as_ref());
+        let module = CORE;
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::BTreeSet::new();
         let mut entries = Vec::new();

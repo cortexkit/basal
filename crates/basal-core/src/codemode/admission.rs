@@ -860,7 +860,7 @@ pub fn admit_tool(
             .map_err(|e| json!({"code":"storage_unavailable","message":e.to_string()}))?;
         let selector = FlowScope {
             owner: Principal::Reserved {
-                module_id: basal_host::core_identity::core_module(transport).into(),
+                module_id: basal_host::core_identity::CORE_MODULE.into(),
             },
             scope_ref: opened.scope.reference,
             epoch: opened.scope.epoch,

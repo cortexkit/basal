@@ -8,7 +8,7 @@ fn new_late_result_commits_one_wake_per_custodian_and_never_duplicates_it() {
     store.write(|tx| {
         store::insert_run(tx,&NewRun{run_id:"r",agent_id:"agent",program:"return 1;",catalog:"[]",catalog_digest:&"a".repeat(64),description:None,limits:"{}",scope:"{}",deadline_ms:1000,admitted_at:100},None)?;
         store::commit_terminal(tx,"r",&Terminal{status:Status::Completed,value:Some("1".into()),value_head:None,error:None,output:String::new(),warnings:"[]".into()},110)?;
-        for module in ["broca","prefrontal-core"] {
+        for module in ["broca","prefrontal"] {
             let principal=format!("reserved:{module}");
             let scope=serde_json::to_string(&cortexkit_role_tool_provider::scope::ScopeIdentity{owner:principal.clone(),scope_ref:"scope".into(),scope_epoch:1}).unwrap();
             tx.execute("INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian) VALUES(?1,'key','r',?2,?1)",rusqlite::params![principal,scope])?;

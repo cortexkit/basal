@@ -292,7 +292,7 @@ receipt key and frozen request; core returns the original count with
 advertise `flow-wait-resolve/v1`; otherwise the call is refused unsent with
 `wait_resolve_unsupported`. No `flow-scopes/v1` capability is needed. Missing
 grants are refused unsent with `sink_wait_not_granted` at runtime; manifest ops
-listing `prefrontal-core/sink.wait_resolve` without the grant fail install.
+listing `prefrontal/sink.wait_resolve` without the grant fail install.
 
 Core's `sink_store_failed` refusal is retryable with the same receipt until the
 run deadline. Invalid input, receipt conflicts, principal/installation/hash or
@@ -470,7 +470,7 @@ and the script supplies a concrete recipient on every write. For example:
 ```
 
 These are manifest fields, not a complete manifest. Basal checks the requested
-sink kind is declared; prefrontal-core checks whether the recipient is inside
+sink kind is declared; prefrontal checks whether the recipient is inside
 the approved audience at delivery time. A refusal such as
 `sink_target_not_in_audience` reaches the script unchanged, so it can catch the
 rejection. Membership is not cached at install or decided by the script.
@@ -492,7 +492,7 @@ global installs. Basal never accepts a policy approval for global reach, even
 at startup recovery: that audience needs core's card answer.
 
 `sink.digest(agent, item, action, options)` delivers `item` to the agent's digest
-through prefrontal-core, which validates it strictly. `action` is `silent`,
+through prefrontal, which validates it strictly. `action` is `silent`,
 `piggyback` or `wake`; the manifest's `digest_max` is the approved cap. The item has
 these four fields. `data` and `links` may be omitted, and then default to
 empty. Core refuses a missing `title` or `body`, or any field not listed
@@ -502,7 +502,7 @@ The options object may contain `replace_key`. It must be a string of 1 to
 200 UTF-8 bytes with no control characters; otherwise basal refuses the call
 before dispatch with `invalid_arguments`. Basal sends it as the top-level
 `replace_key` field beside `item`, and journals it with the core request. Basal
-only sends the field when the current prefrontal-core catalog advertises
+only sends the field when the current prefrontal catalog advertises
 `flow-digest-replace-key/v1`. If it does not, basal refuses the call before
 dispatch with `digest_replace_key_unsupported`, which a script may catch and
 then retry without the key. Basal never silently drops a supplied key. The

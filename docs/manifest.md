@@ -7,7 +7,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 - The manifest is one JSON object, at most 64 KiB, checked before it is parsed.
 - **Unknown fields are refused** at every level, and so are duplicate keys. A misspelt grant is an error, never a silently missing permission.
 - Lists hold at most 64 entries and no entry twice.
-- Approval binds to the **code hash**: BLAKE3 over the domain tag `basal-code-hash-v1` followed by a NUL byte, then the script's length as a little-endian u64, the script's exact bytes, the manifest's length as a little-endian u64 and the manifest's exact bytes, written as lowercase hex. Bytes cannot move between script and manifest without changing the hash. prefrontal-core recomputes the same hash for the consent card, and both sides pin the same test vectors (`ids::tests::code_hash_matches_the_shared_vectors`). Any edit, whitespace included, is a new version and needs a new approval.
+- Approval binds to the **code hash**: BLAKE3 over the domain tag `basal-code-hash-v1` followed by a NUL byte, then the script's length as a little-endian u64, the script's exact bytes, the manifest's length as a little-endian u64 and the manifest's exact bytes, written as lowercase hex. Bytes cannot move between script and manifest without changing the hash. prefrontal recomputes the same hash for the consent card, and both sides pin the same test vectors (`ids::tests::code_hash_matches_the_shared_vectors`). Any edit, whitespace included, is a new version and needs a new approval.
 
 ## Fields
 
@@ -29,7 +29,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `max_targets` | integer | no | `64` | Maximum distinct agents a run may make `for:` module calls for; 1 to 1024. Shown on the card. Repeated calls for the same stable id use one slot. |
 | `sinks` | list of sink grants | no | `[]` | Agents whose digest the flow may write. |
 | `status` | list of agent names | no | `[]` | Agents whose status line the flow may set. |
-| `board_read` | list of agent references (strings) | no | `[]` | Agents whose boards the flow may read. Requires `prefrontal-core` / `board.read` in `ops`, and that op requires a nonempty `board_read`. |
+| `board_read` | list of agent references (strings) | no | `[]` | Agents whose boards the flow may read. Requires `prefrontal` / `board.read` in `ops`, and that op requires a nonempty `board_read`. |
 | `board` | list of board lane grants | no | `[]` | Agents whose boards the flow may write, each with an approved lane title. Independent of `board_read`. |
 | `claims` | list of claims | no | `[]` | Source kinds the flow takes over from core for an agent. |
 | `ops` | list of op references | no | `[]` | Every module op the flow may call. Anything else is refused at run time. |
@@ -305,8 +305,8 @@ flow's own scope has no agent identity, so a write through an agent's bot
 account will be refused. Existing install validation may still refuse an
 unmarked op. An op with `for_target: "delegate"` is exempt because a targeted call using `for:`
 runs on the target agent's delegated scope. Sinks and status writes use their
-own audience grants, and the core carrier ops `prefrontal-core.board.read` and
-`prefrontal-core.work.unsettled` are routed by basal itself,
+own audience grants, and the core carrier ops `prefrontal.board.read` and
+`prefrontal.work.unsettled` are routed by basal itself,
 so those routes do not produce this warning.
 
 Audience manifests with a run deadline above 12 hours are refused at install
@@ -413,8 +413,8 @@ declared version beyond v1 uses the bare `event_key` header and an exact
 
 Flow-targeted events are admitted only to the flow named by the notice's
 `flow_id` header. Currently the known flow-targeted contract is
-`prefrontal-core`'s `digest_delivered` event, declared in `trigger.events`
-with version `1` and an `ops` grant for `prefrontal-core.events_get`.
+`prefrontal`'s `digest_delivered` event, declared in `trigger.events`
+with version `1` and an `ops` grant for `prefrontal.events_get`.
 Other flows declaring that event are no-match; a missing or empty `flow_id`
 header is malformed. Both are acknowledged without a run for those flows.
 After fetching the body, basal also requires its `flow_id` to equal the run's
@@ -466,7 +466,7 @@ The same `sinks` array may contain a targetless wait grant:
 this flow as met or failed. No other fields are allowed, including `targets`,
 even an empty array. Duplicate wait grants are refused. The grant is independent
 of digest sinks, board lanes and audience targets; it grants none of those
-permissions. A manifest listing `prefrontal-core/sink.wait_resolve` in `ops`
+permissions. A manifest listing `prefrontal/sink.wait_resolve` in `ops`
 without the wait grant is invalid. JavaScript is not statically inspected;
 calling the sink without the grant is refused unsent at runtime.
 
@@ -494,7 +494,7 @@ A room post appears in the room as the flow's own agent, so the grant needs an
 audience of exactly one agent: `{"kind": "agent", "id": "ag_…"}`. A manifest
 with a room grant and no audience, a global one or a workspace one is refused at
 install and dry run, because core would refuse every post the flow makes. A
-manifest listing `prefrontal-core/sink.room.post` in `ops` without a room grant
+manifest listing `prefrontal/sink.room.post` in `ops` without a room grant
 is invalid; a room grant needs no `ops` line, like the wait and board grants.
 Core also checks that the agent is still a member of the room, and posts carry
 core's per-flow, per-room rate limit. JavaScript is not statically inspected;
