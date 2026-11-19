@@ -1,0 +1,23 @@
+{
+  "error": {
+    "code": "agent_moving",
+    "detail": {
+      "agent_id": "agent_0000000000000002",
+      "retryable": true
+    },
+    "message": "agent agent_0000000000000002 is moving to another computer; retry after the move finishes"
+  },
+  "name": "agent_moving",
+  "request": {
+    "method": "flow.instantiate",
+    "params": {
+      "agent_id": "agent_0000000000000002",
+      "expires_in": "30d",
+      "params": {
+        "project_id": "pj-sample"
+      },
+      "template": "docs-proposals",
+      "version": 1
+    }
+  }
+}

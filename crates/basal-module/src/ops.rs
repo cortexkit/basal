@@ -11,6 +11,8 @@
 //! | `flow.drain` | yes | no | no | no | no |
 //! | `flow.disable` | yes | no | yes | no | no |
 //! | `flow.enable` | yes | no | only to undo a disable it made itself | no | no |
+//! | `flow.instantiate` | yes, with `agent_id` | no | for itself only | for itself only | yes, with `agent_id` |
+//! | `flow.instance.end` | any template instance | no | own template instances | no | any template instance |
 //! | `package.register` | yes | no | no | no | yes |
 //! | `package.get`, `flow.instance.ensure`, `flow.instance.remove` | no | no | no | no | yes |
 //! | `attribution.read` | no | no | no | no | no (only attested `reserved:astrocyte`) |
@@ -558,7 +560,10 @@ impl Module {
     }
 
     fn op_instantiate(&self, caller: &Caller, params: Value) -> OpResult {
-        if !matches!(caller, Caller::Operator | Caller::Agent { .. }) {
+        if !matches!(
+            caller,
+            Caller::Operator | Caller::Core | Caller::Agent { .. }
+        ) {
             return Err(OpError::not_permitted("flow.instantiate", caller));
         }
         #[derive(Deserialize)]
@@ -573,7 +578,7 @@ impl Module {
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
         let agent = match caller {
-            Caller::Operator => p
+            Caller::Operator | Caller::Core => p
                 .agent_id
                 .as_deref()
                 .ok_or_else(|| invalid_params("operator must name agent_id"))?,
@@ -594,7 +599,7 @@ impl Module {
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
         match caller {
-            Caller::Operator => {}
+            Caller::Operator | Caller::Core => {}
             Caller::Agent { agent_id, .. } if self.owns(agent_id, &p.flow_id)? => {}
             _ => {
                 return Err(OpError::new(
