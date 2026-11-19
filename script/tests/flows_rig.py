@@ -182,7 +182,7 @@ cargo_build() { printf 'build %s\n' "$*"; }
 cmd_build
 ''', home)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("prefrontal: defe4a72a3ee4bac8ce81645df801c6907a8ce4c", result.stdout)
+            self.assertIn("prefrontal: 1e1d6222653be1a1adbd6ef4082829c206356260", result.stdout)
             self.assertIn("cingulate: c650e9db6e87dbb28fe20dd5fc2815db5deb41e9", result.stdout)
             self.assertIn("--bin ck-callosum-stub --bin ckdev-runscope-probe --bin basal-rig-contract", result.stdout)
 

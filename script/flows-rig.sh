@@ -156,7 +156,7 @@
 # are matched to core's durable install intent before the operator answers.
 # Cingulate's default matches the deployed consent/v1 provider. Explicit
 # revision overrides let a rehearsal test the same bytes a deployment places.
-#   script/flows-rig.sh build --prefrontal-rev defe4a72a3ee4bac8ce81645df801c6907a8ce4c --cingulate-rev c650e9db6e87dbb28fe20dd5fc2815db5deb41e9 --sibling-lock claustrum
+#   script/flows-rig.sh build --prefrontal-rev 1e1d6222653be1a1adbd6ef4082829c206356260 --cingulate-rev c650e9db6e87dbb28fe20dd5fc2815db5deb41e9 --sibling-lock claustrum
 set -eu
 rig_finished=0
 
@@ -529,7 +529,7 @@ daemon_pid() {
 # ---------------------------------------------------------------- build
 
 cmd_build() {
-  prefrontal_rev=defe4a72a3ee4bac8ce81645df801c6907a8ce4c
+  prefrontal_rev=1e1d6222653be1a1adbd6ef4082829c206356260
   subc_rev=HEAD
   broca_rev=HEAD
   credentials_rev=HEAD
