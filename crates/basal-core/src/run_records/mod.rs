@@ -466,6 +466,15 @@ impl Records {
             .iter()
             .filter(|r| r.record.run_id == run_id)
             .collect();
+        Self::recover_selected(run_id, admitted_ms, log, &relevant)
+    }
+
+    pub(crate) fn recover_selected(
+        run_id: String,
+        admitted_ms: i64,
+        log: Arc<dyn RecordLog>,
+        relevant: &[&RecoveredRecord<Record>],
+    ) -> Result<Self> {
         if relevant.windows(2).any(|pair| pair[0].lsn >= pair[1].lsn) {
             return Err(CoreError::Corrupt(
                 "run records are not in LSN order".into(),
