@@ -124,19 +124,11 @@ async fn attribution_outbox_publishes_once_and_vectors_match_real_paths() {
 
 #[derive(Default)]
 struct NoticeHost {
-    calls: Mutex<Vec<Value>>,
     statuses: Mutex<Vec<u32>>,
     status: Mutex<Option<InstallStatus>>,
     timeout: std::sync::atomic::AtomicBool,
 }
 impl Host for NoticeHost {
-    fn supports_core_capability(&self, cap: &str) -> bool {
-        cap == basal_host::core_host::FLOW_OWNER_NOTICE_V1
-    }
-    fn owner_notice(&self, request: Value) -> Result<Value, basal_host::transport::WireError> {
-        self.calls.lock().unwrap().push(request);
-        Ok(json!({"accepted":true}))
-    }
     fn install_status(&self, _: &str, version: u32) -> Result<InstallStatus, TransportError> {
         self.statuses.lock().unwrap().push(version);
         if self.timeout.load(Ordering::SeqCst) {
@@ -182,7 +174,15 @@ fn with_host(path: &std::path::Path, host: Arc<NoticeHost>) -> Runtime {
 
 fn owner(rt: &Runtime) -> Value {
     let body = json!({"notice_id":"f:1:failing","flow_id":"f","version":1,"kind":"failing","consecutive_failures":3,"error_kind":"event_not_visible","phase":"preamble","failing_since_ms":1000,"run_id":"run:1","at_ms":1000});
-    rt.store().write(|tx| { tx.execute("INSERT INTO outbox(at,kind,flow_id,body,retry_at) VALUES(1000,'flow.owner_notice','f',?1,1000)",[body.to_string()])?; Ok(()) }).unwrap();
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO outbox(at,kind,flow_id,body) VALUES(1000,'flow.owner_notice','f',?1)",
+                [body.to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     body
 }
 
@@ -191,21 +191,31 @@ fn header<'a>(m: &'a async_nats::jetstream::Message, key: &str) -> &'a str {
 }
 
 #[tokio::test]
-async fn owner_notice_bus_publish_is_once_and_call_delivery_is_independent() {
+async fn owner_notice_bus_publish_completes_delivery_and_dedupes_a_lost_ack_record() {
     let server = Server::start().await;
-    let host = Arc::new(NoticeHost::default());
-    let rt = with_host(&server.dir.join("owner.db"), host.clone());
+    let rt = runtime(&server.dir.join("owner.db"));
     let body = owner(&rt);
     assert_eq!(
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
         1
     );
-    rt.drain_owner_notices().unwrap();
-    assert_eq!(*host.calls.lock().unwrap(), vec![body.clone()]);
+    assert!(rt.outbox().unwrap().is_empty());
     assert_eq!(
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
         0
     );
+    // The broker may have stored the notice even if basal lost its local ack mark.
+    rt.store()
+        .write(|tx| {
+            tx.execute("UPDATE outbox SET bus_published_at=NULL", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        publish_outbox(&rt, &server.bus, "account").await.unwrap(),
+        1
+    );
+    assert!(rt.outbox().unwrap().is_empty());
     let messages = pull(&bind(&server.bus, STREAM).await.unwrap())
         .await
         .unwrap();
@@ -222,17 +232,26 @@ async fn owner_notice_bus_publish_is_once_and_call_delivery_is_independent() {
 }
 
 #[tokio::test]
-async fn owner_notice_bus_failure_retries_without_touching_call_delivery() {
+async fn owner_notice_bus_failure_leaves_delivery_pending_until_retry_succeeds() {
     let server = Server::start().await;
-    let host = Arc::new(NoticeHost::default());
-    let rt = with_host(&server.dir.join("retry-owner.db"), host.clone());
-    let body = owner(&rt);
+    let rt = runtime(&server.dir.join("retry-owner.db"));
+    owner(&rt);
     let js = async_nats::jetstream::new(server.bus.client());
     js.delete_stream(STREAM).await.unwrap();
     assert!(publish_outbox(&rt, &server.bus, "account").await.is_err());
-    assert_eq!(rt.store().read(|c|Ok(c.query_row("SELECT json_array(delivered_at,attempts,retry_at,bus_attempts,bus_retry_at) FROM outbox",[],|r|r.get::<_,String>(0))?)).unwrap(),"[null,0,1000,1,1250]");
-    rt.drain_owner_notices().unwrap();
-    assert_eq!(*host.calls.lock().unwrap(), vec![body]);
+    assert_eq!(rt.outbox().unwrap().len(), 1);
+    assert_eq!(rt.next_bus_event_at().unwrap(), Some(1250));
+    let bus_state: (Option<i64>, i64, i64) = rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT bus_published_at,bus_attempts,bus_retry_at FROM outbox",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(bus_state, (None, 1, 1250));
     rt.config().clock.set(1249);
     assert_eq!(
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
@@ -250,7 +269,8 @@ async fn owner_notice_bus_failure_retries_without_touching_call_delivery() {
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
         1
     );
-    assert_eq!(host.calls.lock().unwrap().len(), 1);
+    assert!(rt.outbox().unwrap().is_empty());
+    assert_eq!(rt.next_bus_event_at().unwrap(), None);
 }
 
 #[tokio::test]

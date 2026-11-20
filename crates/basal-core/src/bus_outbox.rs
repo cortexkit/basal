@@ -49,21 +49,52 @@ pub fn enqueue_late_result_wake(
     Ok(())
 }
 
+// Match the bus-pending partial index to avoid scanning retained history.
+const BUS_KINDS: &str = "('flow.owner_notice','codemode.late_result_ready','attribution.fact')";
+
+// Only the oldest unpublished notice for a flow is eligible, even when it is
+// in backoff. Use the same filter for the wake timer so a blocked sibling does
+// not keep waking the publisher before the head's retry is due.
+fn publishable() -> String {
+    format!(
+        "bus_published_at IS NULL AND kind IN {BUS_KINDS} \
+         AND (kind<>'flow.owner_notice' OR seq IN (\
+             SELECT MIN(seq) FROM outbox WHERE bus_published_at IS NULL \
+             AND kind IN {BUS_KINDS} AND kind='flow.owner_notice' GROUP BY flow_id))"
+    )
+}
+
 impl Runtime {
     /// Earliest durable bus retry, including lifecycle events. No pending rows
     /// means the publisher can remain asleep until an outbox commit signals it.
     pub fn next_bus_event_at(&self) -> Result<Option<i64>> {
         self.store().read(|c| {
-            Ok(c.query_row("SELECT MIN(at) FROM (SELECT MIN(bus_retry_at) AS at FROM outbox WHERE bus_published_at IS NULL AND kind IN ('flow.owner_notice','codemode.late_result_ready','attribution.fact') UNION ALL SELECT MIN(retry_at) AS at FROM template_event_outbox WHERE published_at IS NULL)", [], |r| r.get(0))?)
+            let eligible = publishable();
+            let mut stmt = c.prepare_cached(&format!(
+                "SELECT MIN(at) FROM (SELECT MIN(bus_retry_at) AS at FROM outbox WHERE {eligible} \
+                 UNION ALL SELECT MIN(retry_at) AS at FROM template_event_outbox WHERE published_at IS NULL)"
+            ))?;
+            Ok(stmt.query_row([], |r| r.get(0))?)
         })
     }
 
     pub fn pending_bus_events(&self, limit: usize) -> Result<Vec<BusEvent>> {
         let rows = self.store().read(|c| {
-            let mut stmt = c.prepare("SELECT seq,kind,recipient,body FROM outbox WHERE bus_published_at IS NULL AND kind IN ('flow.owner_notice','codemode.late_result_ready','attribution.fact') AND bus_retry_at<=?1 ORDER BY bus_retry_at,seq LIMIT ?2")?;
-            let rows = stmt.query_map(params![self.config().clock.now_ms(), limit as i64], |r| {
-                Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,Option<String>>(2)?, r.get::<_,String>(3)?))
-            })?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let eligible = publishable();
+            let mut stmt = c.prepare_cached(&format!(
+                "SELECT seq,kind,recipient,body FROM outbox WHERE {eligible} \
+                 AND bus_retry_at<=?1 ORDER BY bus_retry_at,seq LIMIT ?2"
+            ))?;
+            let rows = stmt
+                .query_map(params![self.config().clock.now_ms(), limit as i64], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })?;
         rows.into_iter().filter_map(|(seq,kind,reader,body)| {

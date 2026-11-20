@@ -82,7 +82,6 @@ or enable operation is performed. A failed store read is an error frame.
 | `grant_lost` | `disabled` | warn | Immediately for flows disabled with reason `grant_lost`. Count is disabled flows. |
 | `agent_move_frozen` | `freeze` | warn | An agent frozen for a move for at least 6 hours: its flows run nothing until the move is released or aborted. Samples name the agent and the cut. |
 | `moved_flows_pending` | `approval` | warn | Flows that moved in from another computer approved there and have waited at least 24 hours for this computer's prefrontal to report the same code active. Count is waiting flows; samples name the flow and its agent. |
-| `owner_notices_stuck` | `undelivered` | warn | Owner notices whose fallback call is undelivered for at least 1 hour, independently of bus publication. |
 | `outbox_stuck` | `undelivered` | warn | Owner-notice, late-result wake or attribution-fact bus publications pending for at least 1 hour, plus other undelivered outbox rows, excluding permanent secret-revocation failures. A bus-only event is never a pending call. |
 | `outbox_stuck` | `secret_revocations` | error | Immediately for undelivered secret revocations with `failed_at`: grants may still be live. |
 | `quarantined` | `schedules_and_fires`, `outcomes` | warn | Any `schedule.corrupt` audit events or quarantined call outcomes in the requested window. Counts are audit events or outcome rows. |
@@ -620,15 +619,9 @@ The run finish (or rate disable), episode latch and notice enqueue commit in
 one transaction. Episodes use a persistent, per-flow increasing integer;
 auto-disable gets its own episode without clearing an outstanding failing latch.
 
-The background engine hands notices to `prefrontal.flow.owner_notice` on
-basal's unscoped `reserved:basal` management route, not a script call or flow
-grant. It sends only when core's current daemon catalog provides
-`flow-owner-notice/v1`. Until then rows remain queued. Enqueues, observed catalog
-generation changes, retry deadlines and the engine's existing 30-second fallback
-wake delivery; there is no additional polling loop. A core deploy can therefore
-take up to the fallback interval to become visible without another catalog read.
-
-Requests contain exactly `notice_id` (`<flow_id>:<episode>:<kind>`), `flow_id`,
+The outbox publisher sends notices to prefrontal over the bus on
+`ck.<account>.event.basal.flow_owner_notice.v1`, without a reader token.
+The payload contains exactly `notice_id` (`<flow_id>:<episode>:<kind>`), `flow_id`,
 `version`, `kind` (`failing|auto_disabled|recovered`), `consecutive_failures`,
 `error_kind`, `phase`, `failing_since_ms`, `run_id` and `at_ms`. Times are Unix
 milliseconds. Error kinds contain only an error **code**, never failure
@@ -638,36 +631,21 @@ null for recovery and auto-disable. Recovery has null `error_kind` and zero
 failures, and retains the episode's first-failure time. Auto-disable uses the
 most recently admitted run's id and version, even when that run is not a counted
 failure; without any admitted run, basal warns and skips the notice instead of
-sending an invalid id. Exact JSON request-byte vectors live in
+sending an invalid id. Exact JSON payload vectors live in
 [`test-vectors/owner-notice/vectors.json`](../test-vectors/owner-notice/vectors.json).
 
-The same committed `outbox` row also publishes
-`ck.<account>.event.basal.flow_owner_notice.v1`, without a reader token. Its
-payload is the exact call params above, and `Nats-Msg-Id` is `notice_id`. Bus
-publication uses independent `bus_published_at`, `bus_attempts` and
-`bus_retry_at` state: failures retry from 250 ms up to 30 s without blocking or
-replacing the call. A lost publication acknowledgement can retry the same id
-for JetStream deduplication. Retention waits for both delivery paths. Migration
-51 marks historical owner rows as already bus-published so old failures are
-not replayed. The call remains fallback until prefrontal confirms its reader.
+Only the oldest unpublished notice per flow is eligible, even during backoff.
+Failed publishes retry durably from 250 ms up to 30 s. A retry preserves the
+payload and `Nats-Msg-Id` (`notice_id`) so JetStream can deduplicate a publish
+whose acknowledgement was lost. A broker acknowledgement completes the row
+for basal; it does not mean an owner has read the notice. Unpublished notices
+at least one hour old are reported under `outbox_stuck`.
 
-The existing outbox stores the call's durable backoff metadata. Only
-the oldest undelivered notice per flow is sent. SQLite is unlocked during the
-network call. `{accepted:true}` means core durably owns delivery, not that an
-owner has read it. `flow_not_installed`, `owner_unknown` and
-`flow_owner_notice_invalid` are final refusals: basal warns and marks the row
-done. All other refusals, malformed replies and
-transport errors retry exponentially (1 second up to 256 seconds), preserving
-the exact request and notice id so core can deduplicate after a lost response.
-Failed attempts store only the refusal code, `transport` or `not_accepted` in
-`outbox.failure_code`; a WARN names the sequence, notice id and code only when
-the code first appears or changes. Final refusals still warn. Diagnostics include
-the stored code in `owner_notices_stuck` samples. After 22 failed attempts (about
-an hour of backoff), a head with a newer undelivered notice for the same flow is
-marked delivered with code `superseded`, allowing the newer notice through on
-the next drain. A lone notice is not superseded. Notices older than 24 hours are
-marked delivered with code `stale` and logged once rather than sent, even if
-their retry deadline has not arrived.
+`bus_published_at` is the only completion marker used for owner notices.
+Notices already marked as published are not sent again, including historical
+notices marked that way when bus delivery was introduced to prevent replay.
+Unpublished notices stay queued and use the bus retry deadline only.
+
 Obsolete install/disable owner-outbox rows without a consumer are discarded;
 install card status and operator decision cards remain authoritative.
 
