@@ -151,6 +151,9 @@ fn scope_readiness_cutoff_does_not_erase_a_later_ambiguous_send() {
             f.rt.activate(&id, &mut worker).unwrap(),
             ActivationEnd::Suspended { awaited: vec![0] }
         );
+        // Suspension observes the deferral, but the old dispatch may still be
+        // registered as in flight. Join it before making the retry due.
+        f.rt.quiesce();
         f.clock.advance(10);
     }
     f.clock.advance(60_000);
