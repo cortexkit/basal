@@ -138,13 +138,18 @@ fn wire(watch: bool) -> Wire {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
             let corr = request.header.corr;
             let reply = if request.header.channel != 0 {
+                let result = if body["method"] == "flow.install_status" {
+                    json!({"state":"unknown"})
+                } else {
+                    json!({"ok":true})
+                };
                 Frame::build(
                     FrameType::Response,
                     Flags::new(false, Priority::Interactive, false),
                     request.header.channel,
                     request.header.epoch,
                     corr,
-                    serde_json::to_vec(&json!({"result":{"ok":true}})).unwrap(),
+                    serde_json::to_vec(&json!({"result":result})).unwrap(),
                 )
                 .unwrap()
             } else {
@@ -274,9 +279,12 @@ fn core_route_opens_without_a_catalog_read() {
 
     let wire = wire(false);
     let before = wire.daemon.lists.load(Ordering::SeqCst);
-    crate::core_host::CoreHost::new(wire.transport.clone())
-        .owner_notice(json!({"flow_id":"flow"}))
-        .unwrap();
+    assert_eq!(
+        crate::core_host::CoreHost::new(wire.transport.clone())
+            .install_status("flow", 1)
+            .unwrap(),
+        crate::InstallStatus::Unknown
+    );
     let opens = wire.daemon.opens.lock().unwrap();
     assert_eq!(opens.len(), 1);
     assert_eq!(opens[0]["target"]["module_id"], "prefrontal");

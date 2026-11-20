@@ -15,7 +15,6 @@ mod tests;
 
 pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
 pub const FLOW_DIGEST_WITHDRAW_V1: &str = "flow-digest-withdraw/v1";
-pub const FLOW_OWNER_NOTICE_V1: &str = "flow-owner-notice/v1";
 pub const FLOW_WAIT_RESOLVE_V1: &str = "flow-wait-resolve/v1";
 pub const FLOW_ROOM_POST_V1: &str = "flow-room-post/v1";
 pub const FLOW_NOTICE_V1: &str = "flow-notice/v1";
@@ -341,10 +340,6 @@ pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
 impl Host for CoreHost {
     fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
         self.transport.on_catalog_change(notify);
-    }
-    fn owner_notice(&self, request: Value) -> Result<Value, WireError> {
-        self.transport
-            .management(CORE, "flow.owner_notice", request)
     }
     fn supports_core_capability(&self, capability: &str) -> bool {
         self.supports_capability(capability)

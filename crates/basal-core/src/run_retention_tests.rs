@@ -280,13 +280,15 @@ fn outbox_retention_keeps_each_unfinished_delivery_path() {
         .write(|tx| {
             tx.execute_batch(
                 "INSERT INTO outbox(at,kind,flow_id,body,delivered_at,bus_published_at) VALUES
-            (1,'flow.owner_notice','call-pending','{}',NULL,2),
+             (1,'flow.owner_notice','bus-done-call-pending','{}',NULL,2),
             (1,'flow.owner_notice','bus-pending','{}',2,NULL),
             (1,'flow.owner_notice','done','{}',2,2),
              (1,'codemode.late_result_ready','wake-pending','{}',NULL,NULL),
              (1,'codemode.late_result_ready','wake-done','{}',NULL,2),
              (1,'attribution.fact','fact-pending','{}',NULL,NULL),
-             (1,'attribution.fact','fact-done','{}',NULL,2);",
+              (1,'attribution.fact','fact-done','{}',NULL,2),
+              (1,'secret.revoke_flow_grants','revoke-pending','{}',NULL,NULL),
+              (1,'secret.revoke_flow_grants','revoke-done','{}',2,NULL);",
             )?;
             tx.execute("INSERT INTO flows(flow_id,owner,approved_version,created_at,first_approved_at) VALUES('forever','agent_owner',1,1,1)",[])?;
             crate::attribution::flow_approved(tx,"forever",false,1)?;
@@ -307,8 +309,8 @@ fn outbox_retention_keeps_each_unfinished_delivery_path() {
         kept,
         [
             "bus-pending",
-            "call-pending",
             "fact-pending",
+            "revoke-pending",
             "wake-pending"
         ]
     );

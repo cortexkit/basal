@@ -74,7 +74,7 @@ Retention (`retention.rs`, `run_retention.rs`, `codemode/retention.rs`): run pay
 
 Local calls (`kv`, clock, random) are served in the parent and recorded in the run log; values past the durable prefix may differ when a crashed run re-executes. Rate, dispatch and token limits are checked per flow (`rate.rs`, `tokens.rs`); dollar caps per run (`classify_cost.rs`).
 
-**The end.** The terminal committer writes the run's history, settles its accounting, and closes the actor (`run_store/committer.rs`, `run_driver/terminal.rs`). Repeated failures latch an owner notice to the flow's author (`owner_notice.rs`). Sustained saturation auto-disables a flow until the operator re-enables it (`rate.rs`).
+**The end.** The terminal committer writes the run's history, settles its accounting, and closes the actor (`run_store/committer.rs`, `run_driver/terminal.rs`). Repeated failures latch an owner notice to the flow's author (`owner_notice.rs`). Sustained saturation auto-disables a flow until the operator re-enables it (`rate.rs`). Owner notices publish in order per flow on `flow_owner_notice.v1`; the broker's acknowledgement completes each outbox row (`bus_outbox.rs`).
 
 **Crash and restart.** Startup opens the store, runs migrations, and recovers before anything else can read or drive a run (`module.rs`). Recovery rebuilds every live run's actor from the run log and puts it back in line. A call with an intent but no arrival is resolved by its class: a query can be asked again, a keyed mutation is resent under the same idempotency key, and anything else becomes an unknown outcome for the operator. If the log looks restored from an older copy (`run_log/restore.rs`), affected runs are marked history-lost and wait for the operator; they are never resumed.
 
@@ -98,8 +98,8 @@ A codemode call is never replayed. A worker crash, deadline or cancel ends the r
 | Peer | What basal uses it for |
 |---|---|
 | subc daemon | HELLO and route binding, the catalog, scope stamps and `scope.describe`, supervision. |
-| ck-bus (NATS JetStream) | The `m_basal` consumer for module events, and publishing basal's own template lifecycle events. |
-| prefrontal | Install cards and status, revocation hints, flow and run scopes, sinks, `board.read`, `work.unsettled`, agent lookup, owner notices. |
+| ck-bus (NATS JetStream) | The `m_basal` consumer for module events, and publication of basal events including template lifecycle events and owner notices for prefrontal. |
+| prefrontal | Install cards and status, revocation hints, flow and run scopes, sinks, `board.read`, `work.unsettled`, agent lookup. |
 | Cingulate | Decision cards (`consent/v1`). |
 | The routing module (the `routing/v1` provider) | Model choice (`route.select`). |
 | Broca | Model calls, `run.ended` events, `llm_classify`. |

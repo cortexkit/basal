@@ -2397,34 +2397,44 @@ fn management_envelopes_preserve_frozen_parameter_bytes() {
 }
 
 #[test]
-fn runtime_owner_notice_uses_the_core_management_carrier() {
+fn owner_notice_bus_ack_completes_delivery_without_a_core_call() {
     let fake = Fake::new();
-    let host = CoreHost::new(fake.clone());
-    let capability = basal_host::core_host::FLOW_OWNER_NOTICE_V1;
-    assert!(!host.supports_core_capability(capability));
-    set_core_capability(&fake, capability, true);
-    assert!(host.supports_core_capability(capability));
+    set_core_capability(&fake, "flow-owner-notice/v1", true);
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = fixture(fake.clone(), consent, "owner-notice-bus-only");
+    let rt = &f.module.rt;
     let vectors: Value = serde_json::from_str(include_str!(
         "../../../test-vectors/owner-notice/vectors.json"
     ))
     .unwrap();
-    let request: Value =
-        serde_json::from_str(vectors["cases"][0]["request"].as_str().unwrap()).unwrap();
+    let body = vectors["cases"][0]["request"].as_str().unwrap();
+    let notice: Value = serde_json::from_str(body).unwrap();
+    rt.store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO outbox(at,kind,flow_id,body,retry_at) VALUES(?1,'flow.owner_notice',?2,?3,?1)",
+                rusqlite::params![common::T0, notice["flow_id"].as_str().unwrap(), body],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let events = rt.pending_bus_events(10).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].message_id, notice["notice_id"]);
+    rt.bus_event_published(&events[0]).unwrap();
     fake.enqueue("flow.owner_notice", vec![Ok(json!({"accepted":true}))]);
-    assert_eq!(
-        host.owner_notice(request.clone()).unwrap(),
-        json!({"accepted":true})
+    f.module.engine.run_until_idle(50).unwrap();
+    let calls = fake.calls("flow.owner_notice");
+    assert!(
+        calls.is_empty(),
+        "bus acknowledgement must not trigger a direct core call: {calls:?}"
     );
-    assert_eq!(
-        fake.calls("flow.owner_notice"),
-        vec![json!({"method":"flow.owner_notice","params":request})]
-    );
+    assert!(rt.outbox().unwrap().is_empty());
+    assert!(rt.pending_bus_events(10).unwrap().is_empty());
     assert!(
         !basal_host::core_host::is_core_carrier_op("prefrontal", "flow.owner_notice"),
         "runtime notices must not become manifest-declared script carrier calls"
     );
-    set_core_capability(&fake, capability, false);
-    assert!(!host.supports_core_capability(capability));
 }
 
 // Transport retries now return to the actor between sends. Advance only their
