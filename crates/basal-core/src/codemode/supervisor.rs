@@ -101,6 +101,32 @@ struct DispatchStarts {
     changed: Condvar,
 }
 
+/// Serializes provider-entry permission with terminal revocation. The store
+/// writer is acquired first so a wait for it cannot hide an expired deadline.
+struct EntryFence(Mutex<Option<i64>>);
+
+impl EntryFence {
+    fn write(
+        &self,
+        store: &Store,
+        clock: &Clock,
+        enter: impl FnOnce(&rusqlite::Transaction<'_>, i64) -> Result<bool>,
+    ) -> Result<bool> {
+        let mut permit = None;
+        store.write(|tx| {
+            let deadline = self.0.lock().unwrap();
+            let now = clock.now_ms();
+            if deadline.is_none_or(|at| now >= at) {
+                return Ok(false);
+            }
+            // Keep permission until the entry record commits, but never hold
+            // it across transport I/O.
+            permit = Some(deadline);
+            enter(tx, now)
+        })
+    }
+}
+
 struct DispatchStore {
     store: Option<Arc<Store>>,
     starts: Arc<DispatchStarts>,
@@ -672,6 +698,7 @@ struct Driver {
     run: RunRecord,
     start: Start,
     worker: Option<Box<dyn WorkerChannel>>,
+    entry: Arc<EntryFence>,
     events: mpsc::Receiver<Event>,
     event_tx: mpsc::Sender<Event>,
     /// Lets the reader thread read the worker's next frame. One frame at a
@@ -734,11 +761,13 @@ impl Driver {
         events: mpsc::Receiver<Event>,
     ) -> Self {
         let last_tick_ms = run.admitted_at;
+        let entry = Arc::new(EntryFence(Mutex::new(Some(start.wall_deadline_ms))));
         Self {
             shared,
             run,
             start,
             worker: None,
+            entry,
             events,
             event_tx,
             credit: None,
@@ -1595,6 +1624,16 @@ impl Driver {
             self.person_wait_ms = self.person_time.total();
         }
         self.last_tick_ms = now;
+        self.update_entry_deadline();
+    }
+
+    fn update_entry_deadline(&self) {
+        if let Some(deadline) = self.entry.0.lock().unwrap().as_mut() {
+            *deadline = self
+                .start
+                .wall_deadline_ms
+                .saturating_add(self.person_wait_ms);
+        }
     }
 
     fn wall(&mut self) -> Result<bool> {
@@ -2119,10 +2158,7 @@ impl Driver {
         );
         let id = self.run.run_id.clone();
         let clock = self.shared.clock.clone();
-        let deadline = self
-            .start
-            .wall_deadline_ms
-            .saturating_add(self.person_wait_ms);
+        let entry = self.entry.clone();
         let key = store::call_key(&self.run.run_id, call.position);
         let route = self.key();
         let transport = self.shared.transport.clone();
@@ -2172,19 +2208,18 @@ impl Driver {
                 // than when the supervisor schedules it. Cancellation settles rows
                 // without that permission as cancelled; the conditional write then
                 // prevents a thread scheduled too late from invoking the provider.
-                let now = clock.now_ms();
-                if now >= deadline {
-                    return;
-                }
-                let prepared = store.write(|tx| store::prepare_queued(tx, &id, call.position, now));
+                let prepared = entry.write(&store, &clock, |tx, now| {
+                    store::prepare_queued(tx, &id, call.position, now)
+                });
                 let result = match prepared {
                     Ok(true) => {
                         #[cfg(test)]
                         if let Some(hook) = before_entry {
                             hook();
                         }
-                        let entered = store
-                            .write(|tx| store::enter_call(tx, &id, call.position, clock.now_ms()));
+                        let entered = entry.write(&store, &clock, |tx, now| {
+                            store::enter_call(tx, &id, call.position, now)
+                        });
                         match entered {
                             Ok(true) => {
                                 // A blocked provider must not keep the module's
@@ -2245,23 +2280,19 @@ impl Driver {
         let run = self.run.clone();
         let events = self.event_tx.clone();
         let clock = self.shared.clock.clone();
+        let entry = self.entry.clone();
         thread::Builder::new()
             .name(format!("{}:model", self.key()))
             .spawn(move || {
                 let result = (|| {
                     let request =
                         super::models::prepare(&store, models.selector.as_ref(), &run, &call)?;
-                    let entered = store
-                        .write(|tx| {
-                            if !store::prepare_queued(
-                                tx,
-                                &run.run_id,
-                                call.position,
-                                clock.now_ms(),
-                            )? {
+                    let entered = entry
+                        .write(&store, &clock, |tx, now| {
+                            if !store::prepare_queued(tx, &run.run_id, call.position, now)? {
                                 return Ok(false);
                             }
-                            store::enter_call(tx, &run.run_id, call.position, clock.now_ms())
+                            store::enter_call(tx, &run.run_id, call.position, now)
                         })
                         .map_err(|e| WireError::NeverSent(e.to_string()))?;
                     drop(store);
@@ -2374,6 +2405,7 @@ impl Driver {
     }
 
     fn end(&mut self, mut terminal: Terminal) -> Result<()> {
+        *self.entry.0.lock().unwrap() = None;
         self.shared.custody.end(&self.run.run_id);
         self.shared.holds.lock().unwrap().remove(&self.run.run_id);
         self.account_time();
@@ -2432,6 +2464,13 @@ impl Driver {
         terminal.output = self.run.output.clone();
         terminal.warnings = self.run.warnings.clone();
         let accounting = self.shared.store.write(|tx| {
+            // Entry is revoked, so a prepared intent with no entry is proven
+            // unsent. Recovery without the live fence remains conservative.
+            tx.execute(
+                "UPDATE codemode_calls SET intent_at=NULL
+                 WHERE run_id=?1 AND outcome='pending' AND entered_at IS NULL AND intent_at IS NOT NULL",
+                [&self.run.run_id],
+            )?;
             tx.execute(
                 "UPDATE codemode_runs SET person_wait_ms=?2 WHERE run_id=?1 AND status='running'",
                 rusqlite::params![self.run.run_id, self.person_wait_ms],

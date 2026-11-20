@@ -3705,6 +3705,50 @@ fn late_final_counts_person_time_only_through_provider_settlement() {
 }
 
 #[test]
+fn tool_entry_rechecks_wall_after_preparing_intent() {
+    let f = Fixture::new();
+    let (prepared, at_entry) = mpsc::channel();
+    let (enter, may_enter) = mpsc::channel();
+    let may_enter = Mutex::new(may_enter);
+    *f.supervisor.0.before_entry.lock().unwrap() = Some(Arc::new(move || {
+        prepared.send(()).unwrap();
+        let _ = may_enter.lock().unwrap().recv_timeout(TIMEOUT);
+    }));
+    let (parking, parked) = mpsc::channel();
+    let (resume, may_resume) = mpsc::channel();
+    let may_resume = Mutex::new(may_resume);
+    let shared = Arc::downgrade(&f.supervisor.0);
+    *f.supervisor.0.before_wait.lock().unwrap() = Some(Arc::new(move |_| {
+        let starts = &shared.upgrade().unwrap().dispatch_starts;
+        if *starts.pending.lock().unwrap() != 0 {
+            parking.send(()).unwrap();
+            let _ = may_resume.lock().unwrap().recv_timeout(TIMEOUT);
+        }
+    }));
+    f.standard();
+    f.issue(0, "read", json!(null));
+    at_entry.recv_timeout(TIMEOUT).unwrap();
+    parked.recv_timeout(TIMEOUT).unwrap();
+    f.clock.set(10_000);
+    enter.send(()).unwrap();
+    let starts = &f.supervisor.0.dispatch_starts;
+    let (pending, _) = starts
+        .changed
+        .wait_timeout_while(starts.pending.lock().unwrap(), TIMEOUT, |n| *n != 0)
+        .unwrap();
+    assert_eq!(*pending, 0, "the provider-entry decision did not finish");
+    drop(pending);
+    let call = f.calls().remove(0);
+    resume.send(()).unwrap();
+    assert_eq!(f.terminal()["status"], "budget_exhausted:wall");
+    assert!(
+        call.entered_at.is_none(),
+        "provider entry was recorded after the deadline"
+    );
+    assert_eq!(f.calls()[0].outcome, Outcome::Cancelled);
+}
+
+#[test]
 fn failed_held_cleanup_releases_the_worker_and_unblocks_its_reader() {
     let f = Fixture::new();
     let (exited, reader_exit) = mpsc::channel();
