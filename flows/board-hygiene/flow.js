@@ -18,6 +18,7 @@ const UNSETTLED_REF_BYTES = 256;
 const UNSETTLED_BLOCKS_SHOWN = 16;
 const UNREVIEWED_BLOCKS_SHOWN = 3;
 let boardOwners = new Set();
+let boardOwnerNames = new Map();
 
 function utf8Bytes(value) {
   // Native regexp scanning skips ASCII without running JavaScript per character.
@@ -153,9 +154,11 @@ function itemCondition(rule, agent, item, since, now) {
     return `wait on ${shortText(item.wait?.ref ?? item.wait?.on ?? 'its wait')} ended ${age(now, since)}`;
   }
   if (rule === 'eta_passed') {
-    return peerWait(item.wait) ?
-      `${shortText(agent)} waits on you, ETA passed ${etaTime(now, since)}` :
-      `ETA passed ${etaTime(now, since)}`;
+    const time = etaTime(now, since);
+    if (!peerWait(item.wait)) return `ETA passed ${time}`;
+    const waiter = boardOwnerNames.get(agent) ?? agent;
+    return `${waiter} waits on you (item on ${waiter}'s board), ETA passed ${time}. ` +
+      `Commit with an item of your own, or decline with ref item:${agent}/${item.id}.`;
   }
   if (rule === 'stale_pending') return `planned, idle ${span(now, since)}, no ETA`;
   if (rule === 'stale_wait') {
@@ -172,7 +175,7 @@ function digestInstruction(rule, entries) {
   if (rule === 'wait_ended') return 'Update each item to done.';
   if (rule === 'eta_passed') {
     return entries.some(({item}) => peerWait(item?.wait)) ?
-      'For your items, mark each done or set a new ETA; for peer waits, commit with an item on your own board with an ETA, or decline to the waiting owner.' :
+      'For your items, mark each done or set a new ETA; for peer waits, commit with an item on your own board with an ETA, or decline with the ref shown.' :
       'Mark each done, or set a new ETA.';
   }
   if (rule === 'stale_pending') {
@@ -394,6 +397,8 @@ async function run() {
   } while (cursor != null);
 
   boardOwners = new Set(boards.map(board => board.agent_id));
+  boardOwnerNames = new Map(boards.filter(({name}) => typeof name === 'string' && name !== '')
+    .map(({agent_id, name}) => [agent_id, name]));
   const skipped = {lane_blocks: 0, lane_items: 0};
   const owners = boards.map(({agent_id, board}) => ({
     agent_id, lanes: boardLanes(board, skipped),

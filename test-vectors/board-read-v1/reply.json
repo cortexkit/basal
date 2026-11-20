@@ -1,0 +1,121 @@
+{
+  "boards": [
+    {
+      "agent_id": "ag_a",
+      "board": {
+        "blocks": [
+          {
+            "blockId": "status.main",
+            "digest": {
+              "title": "Working"
+            },
+            "kind": "status",
+            "lane": "status",
+            "props": {
+              "text": "Working"
+            },
+            "rev": 1,
+            "updatedAtMs": 10
+          }
+        ],
+        "health": {
+          "kind": "health",
+          "props": {
+            "cleanup": {
+              "lastArtifactRetired": 0,
+              "lastBoardsExamined": 0,
+              "lastChatMatched": 0,
+              "lastRefusal": "zero boards examined",
+              "lastTotalLiveBlocks": 0,
+              "nullTimestampSkips": 0,
+              "refusals": 1
+            },
+            "rung2Counters": {
+              "turnFinalQuestionsWithoutAsk": 0
+            },
+            "rung3Counters": {
+              "nudges": 0,
+              "staleChipShown": false
+            },
+            "statusTruncations": 0
+          }
+        },
+        "laneBlocks": [],
+        "lanes": [
+          "asks",
+          "status",
+          "artifacts",
+          "work"
+        ],
+        "roomId": "rm_board_ag_a",
+        "servedBlocks": 1,
+        "servedSeq": 3,
+        "sessionId": "ag_a",
+        "totalBlocks": 1,
+        "version": "bv2-c67c830138148a8093141c1d2f3f0063",
+        "vocabulary": "board-wire-v1"
+      },
+      "name": "ALPHA"
+    },
+    {
+      "agent_id": "ag_b",
+      "board": {
+        "blocks": [
+          {
+            "blockId": "status.main",
+            "digest": {
+              "title": "Working"
+            },
+            "kind": "status",
+            "lane": "status",
+            "props": {
+              "text": "Working"
+            },
+            "rev": 1,
+            "updatedAtMs": 10
+          }
+        ],
+        "health": {
+          "kind": "health",
+          "props": {
+            "cleanup": {
+              "lastArtifactRetired": 0,
+              "lastBoardsExamined": 0,
+              "lastChatMatched": 0,
+              "lastRefusal": "zero boards examined",
+              "lastTotalLiveBlocks": 0,
+              "nullTimestampSkips": 0,
+              "refusals": 1
+            },
+            "rung2Counters": {
+              "turnFinalQuestionsWithoutAsk": 0
+            },
+            "rung3Counters": {
+              "nudges": 0,
+              "staleChipShown": false
+            },
+            "statusTruncations": 0
+          }
+        },
+        "laneBlocks": [],
+        "lanes": [
+          "asks",
+          "status",
+          "artifacts",
+          "work"
+        ],
+        "roomId": "rm_board_ag_b",
+        "servedBlocks": 1,
+        "servedSeq": 3,
+        "sessionId": "ag_b",
+        "totalBlocks": 1,
+        "version": "bv2-c7858c7e32cf9b3db560e45399e8ac70",
+        "vocabulary": "board-wire-v1"
+      },
+      "name": "BETA"
+    }
+  ],
+  "next_cursor": null,
+  "page_cap": 16,
+  "seq": 3
+}
