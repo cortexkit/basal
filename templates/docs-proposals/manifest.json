@@ -1,10 +1,11 @@
 {
   "format": 1,
   "id": "docs-proposals",
-  "version": 1,
+  "version": 2,
   "title": "Docs proposals for one project",
   "purpose": "Wake the creating agent when Magic Context proposes edits to its project's ARCHITECTURE.md or STRUCTURE.md.",
   "explanation": "Magic Context reads a project's work and proposes edits to its ARCHITECTURE.md and STRUCTURE.md, but never writes them. This template delivers each proposal to the agent that created the instance, which decides whether to apply it. It reads only proposals for the one project it was created for, skips any that are no longer pending, and sends one digest per proposal. A newer proposal replaces an older one that has not been delivered yet. It writes no files and calls nothing else.",
+  "changes": "Fixes the pending check. Version 1 read the proposal state from the wrong place in Magic Context's reply, so it treated every proposal as no longer pending and delivered none.",
   "trigger": {
     "events": [
       { "module": "magic-context", "name": "docs_proposal", "version": 1, "match": { "project_id": "$params.project_id" }, "max_age": "24h" }

@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const MANIFEST: &str = include_str!("../../../templates/docs-proposals/manifest.json");
+const VERSION: u32 = 2;
 const SCRIPT: &str = include_str!("../../../templates/docs-proposals/flow.js");
 const OWNER: &str = "agent_47120287c700722b";
 const PROJECT: &str = "pj-docs";
@@ -92,7 +93,9 @@ impl DocsHost {
             if response.get("error").is_some() || response.get("code").is_some() {
                 HostOutcome::rejected(text(response))
             } else {
-                HostOutcome::fulfilled(text(response))
+                // The production transport hands a script the management reply's
+                // `result` member, not the envelope around it.
+                HostOutcome::fulfilled(text(response["result"].clone()))
             },
         )
     }
@@ -190,6 +193,18 @@ impl Test {
                 ..Options::with_worker()
             },
         );
+        // The shipped manifest describes an upgrade, so register the version
+        // before it first, as core did.
+        let mut previous: Value = serde_json::from_str(MANIFEST).unwrap();
+        previous["version"] = json!(VERSION - 1);
+        previous.as_object_mut().unwrap().remove("changes");
+        f.module
+            .handle(
+                &Caller::Operator,
+                "package.register",
+                json!({"manifest":previous.to_string(),"script":SCRIPT}),
+            )
+            .unwrap();
         let registered = f
             .module
             .handle(
@@ -199,7 +214,7 @@ impl Test {
             )
             .unwrap();
         assert_eq!(registered["package"], "docs-proposals");
-        let stored = f.module.rt.get_package("docs-proposals", 1).unwrap();
+        let stored = f.module.rt.get_package("docs-proposals", VERSION).unwrap();
         assert_eq!(stored["manifest"], MANIFEST);
         assert_eq!(stored["script"], SCRIPT);
         Self { f, host }
@@ -211,7 +226,7 @@ impl Test {
             .handle(
                 &agent(OWNER),
                 "flow.instantiate",
-                json!({"template":"docs-proposals","version":1,
+                json!({"template":"docs-proposals","version":VERSION,
                     "params":{"project_id":PROJECT},"expires_in":"365d"}),
             )
             .unwrap()
@@ -342,7 +357,8 @@ fn manifest_passes_new_version_intake_and_instantiates_project() {
             .as_str()
             .is_some_and(|s| !s.is_empty())
     );
-    assert!(manifest.get("changes").is_none());
+    assert_eq!(manifest["version"], VERSION);
+    assert!(manifest["changes"].as_str().is_some_and(|s| !s.is_empty()));
     let t = Test::new("pending");
     assert_eq!(t.instance()["params"], json!({"project_id":"pj-docs"}));
 }

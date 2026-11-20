@@ -19,9 +19,9 @@ if (!proposal || proposal.project_id !== params.project_id || !validId) return;
 
 let state;
 try {
+  // Basal hands the script the reply's `result` member; a refusal rejects.
   const answer = await ops.call('magic-context', 'docs_proposals.state', { proposal_id: proposal.id });
-  if (answer?.error) throw { data: answer.error };
-  state = answer?.result?.state;
+  state = answer?.state;
 } catch (error) {
   // A capture-only dry run answers no query; treat the proposal as pending
   // there so the preview shows the digest a real run would send.
