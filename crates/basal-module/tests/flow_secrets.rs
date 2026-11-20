@@ -75,6 +75,11 @@ fn install(f: &common::Fixture, version: u32) -> Result<Value, basal_module::ops
     )
 }
 
+fn check_install_change(f: &common::Fixture) {
+    f.module.rt.install_changed(FLOW).unwrap();
+    f.module.rt.check_due_install_cards().unwrap();
+}
+
 fn approval(fake: &Fake) {
     fake.enqueue(
         "secret.request_flow_approval",
@@ -183,7 +188,7 @@ fn flow_secrets_policy_and_missing_provenance_are_refused_live_and_recovered() {
             if recovery {
                 f.module.rt.recover_cardless_installs().unwrap();
             } else {
-                f.module.rt.install_changed(FLOW).unwrap();
+                check_install_change(&f);
             }
             let (state, reason) = f.module.rt.store().read(|c| Ok(c.query_row("SELECT state,install_check_error FROM installs WHERE flow_id=?1 AND version=1", [FLOW], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?)).unwrap();
             assert_eq!(state, "validated");
@@ -193,7 +198,7 @@ fn flow_secrets_policy_and_missing_provenance_are_refused_live_and_recovered() {
                 basal_core::cards::CardState::Pending
             );
             status(&fake, &hash(&f, 1), Some(json!({"kind":"card"})));
-            f.module.rt.install_changed(FLOW).unwrap();
+            check_install_change(&f);
             assert_eq!(
                 f.module.rt.cards(FLOW).unwrap()[0].state,
                 basal_core::cards::CardState::Approved
@@ -234,7 +239,7 @@ fn flow_secrets_declined_expired_and_rejected_cards_revoke_their_version() {
             reply["code_hash"] = json!(hash(&f, 1));
         }
         fake.enqueue("flow.install_status", vec![Ok(reply)]);
-        f.module.rt.install_changed(FLOW).unwrap();
+        check_install_change(&f);
         assert_ne!(
             f.module.rt.cards(FLOW).unwrap()[0].state,
             basal_core::cards::CardState::Pending
@@ -296,7 +301,7 @@ fn flow_secrets_replacement_waits_for_the_old_versions_last_run() {
     approval(&fake);
     install(&f, 1).unwrap();
     status(&fake, &hash(&f, 1), Some(json!({"kind":"card"})));
-    f.module.rt.install_changed(FLOW).unwrap();
+    check_install_change(&f);
     let old_id = f.module.rt.cards(FLOW).unwrap()[0]
         .install_id
         .clone()
@@ -305,7 +310,7 @@ fn flow_secrets_replacement_waits_for_the_old_versions_last_run() {
     approval(&fake);
     install(&f, 2).unwrap();
     status(&fake, &hash(&f, 2), Some(json!({"kind":"card"})));
-    f.module.rt.install_changed(FLOW).unwrap();
+    check_install_change(&f);
     f.module.rt.drain_secret_revocations().unwrap();
     assert!(fake.calls("secret.revoke_flow_grants").is_empty());
     f.module.rt.cancel(&run, "test").unwrap();
@@ -333,7 +338,7 @@ fn flow_secrets_reapproval_after_pending_uninstall_requires_another_revoke() {
     for approved in [false, true] {
         if approved {
             status(&fake, &hash(&f, 1), Some(json!({"kind":"card"})));
-            f.module.rt.install_changed(FLOW).unwrap();
+            check_install_change(&f);
         }
         f.module
             .handle(&Caller::Operator, "flow.uninstall", json!({"flow_id":FLOW}))
@@ -426,15 +431,15 @@ fn review_superseded_pending_secret_cards_queue_version_cleanup() {
         .unwrap();
     approval(&fake);
     install(&f, 2).unwrap();
-    // The event checks the older pending card before the newly approved one.
+    // The newest approval supersedes the older card without a second read.
     fake.enqueue(
         "flow.install_status",
-        vec![
-            Ok(json!({"state":"pending","code_hash":hash(&f, 1),"attempt":1})),
-            Ok(json!({"state":"active","code_hash":hash(&f, 2),"attempt":1,"approval":{"kind":"card"}})),
-        ],
+        vec![Ok(
+            json!({"state":"active","code_hash":hash(&f, 2),"attempt":1,"approval":{"kind":"card"}}),
+        )],
     );
-    f.module.rt.install_changed(FLOW).unwrap();
+    check_install_change(&f);
+    assert_eq!(fake.calls("flow.install_status").len(), 1);
     assert_eq!(
         f.module.rt.cards(FLOW).unwrap()[0].state,
         basal_core::cards::CardState::Stale
@@ -582,7 +587,7 @@ fn review_unreadable_historical_manifests_do_not_block_cleanup_or_card_settlemen
                         json!({"state":"declined","code_hash":hash(&f, 1),"attempt":1}),
                     )],
                 );
-                f.module.rt.install_changed(FLOW).unwrap();
+                check_install_change(&f);
                 assert_eq!(
                     f.module.rt.cards(FLOW).unwrap()[0].state,
                     basal_core::cards::CardState::Declined
@@ -769,7 +774,7 @@ fn review_delayed_refusal_cleanup_cannot_revoke_a_fresh_retry_install() {
     vault.pending.lock().unwrap().remove(&new);
     vault.grants.lock().unwrap().insert(new.clone());
     status(&fake, &hash(&f, 1), Some(json!({"kind":"card"})));
-    f.module.rt.install_changed(FLOW).unwrap();
+    check_install_change(&f);
     f.clock.advance(1000);
     f.module.rt.drain_secret_revocations().unwrap();
     assert!(!vault.pending.lock().unwrap().contains(&old));

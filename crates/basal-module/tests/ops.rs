@@ -33,6 +33,98 @@ fn v2() -> Value {
     common::events_v2(FLOW)
 }
 
+#[test]
+fn install_rechecks_ownership_after_catalog_validation() {
+    use basal_host::catalog::{Catalog, EventDecl, MockCatalog, OpDecl};
+    use basal_host::transport::WireError;
+    use basal_module::module::Hosts;
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
+
+    struct PausedCatalog {
+        catalog: MockCatalog,
+        pause: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+
+    impl Catalog for PausedCatalog {
+        fn request_snapshot(&self) -> Option<Arc<dyn Catalog>> {
+            let pause = self.pause.lock().unwrap().take();
+            if let Some((entered, resume)) = pause {
+                entered.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            Some(Arc::new(self.catalog.clone()))
+        }
+
+        fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {
+            self.catalog.event(module, name, version)
+        }
+
+        fn op(&self, module: &str, op: &str) -> Option<OpDecl> {
+            self.catalog.op(module, op)
+        }
+
+        fn agent_known(&self, agent: &str) -> Result<bool, WireError> {
+            self.catalog.agent_known(agent)
+        }
+
+        fn agent_id(&self, agent: &str) -> Result<Option<String>, WireError> {
+            self.catalog.agent_id(agent)
+        }
+
+        fn resolve_agents(&self, agents: &[&str]) -> Result<Vec<Option<String>>, WireError> {
+            self.catalog.resolve_agents(agents)
+        }
+    }
+
+    let catalog = Arc::new(PausedCatalog {
+        catalog: MockCatalog::standard(),
+        pause: Mutex::new(None),
+    });
+    let f = fixture(
+        "ops-install-ownership-race",
+        Options {
+            hosts: Some(Hosts {
+                transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
+                host: Arc::new(basal_host::mock::MockHost::new()),
+                catalog: catalog.clone(),
+                consent: Arc::new(basal_host::MockConsent::new()),
+                hooks: Arc::new(basal_core::NoHooks),
+            }),
+            dry_run_max_fires: Some(0),
+            ..Options::default()
+        },
+    );
+    let params = |version| {
+        let manifest = json!({"id":FLOW,"version":version,"explanation":"Record a version while another install is in validation.","purpose":"Check flow ownership","trigger":{"schedule":{"interval":"1h"}}});
+        json!({"script":"return 1;","manifest":manifest.to_string()})
+    };
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    *catalog.pause.lock().unwrap() = Some((entered_tx, resume_rx));
+    std::thread::scope(|threads| {
+        let racing = threads.spawn(|| f.module.handle(&agent("ALF"), "flow.install", params(1)));
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        // A new flow may start at v2. Recording it first leaves v1 valid but
+        // establishes a different author before v1 reaches the write lock.
+        let winner = f.module.handle(&agent(OWNER), "flow.install", params(2));
+        resume_tx.send(()).unwrap();
+        assert_eq!(winner.unwrap()["state"], "pending");
+        let error = racing
+            .join()
+            .unwrap()
+            .expect_err("the first author owns the flow id");
+        assert_eq!(error.code, "not_permitted");
+        assert_eq!(
+            error.message,
+            format!("flow {FLOW} belongs to someone else")
+        );
+    });
+    let cards = f.module.rt.cards(FLOW).unwrap();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].author, OWNER);
+}
+
 /// A successful op, an exact permission refusal, or a request for operator attestation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Seen {
@@ -155,7 +247,9 @@ fn authorization_matrix() {
     // another agent, core, another module]: Yes ran, No refused
     // (not_permitted), Attest refused as needing the attested operator
     // (operator_attestation_required).
-    let install_v2 = json!({ "script": SCRIPT, "manifest": v2().to_string() });
+    // The operator submits for the same author so this tests caller admission
+    // rather than introducing an author that the owner cannot replace.
+    let install_v2 = json!({ "script": SCRIPT, "manifest": v2().to_string(), "author": OWNER });
     let cases: Vec<(&str, Value, [Seen; 6])> = vec![
         // A local caller may install, but not replace a flow someone else
         // wrote: that is the operator's (see

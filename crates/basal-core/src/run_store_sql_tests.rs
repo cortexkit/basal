@@ -50,6 +50,74 @@ fn legacy() -> Connection {
     conn
 }
 
+#[test]
+fn install_card_retry_migration_preserves_populated_store() {
+    use cortexkit_store_types::{Isolation, StorageBackend, StorageDescriptor};
+
+    let migration = MIGRATIONS
+        .iter()
+        .position(|m| m.statements.contains("install_cards ADD COLUMN retry_at"))
+        .expect("install card retry migration");
+    let dir = crate::test_support::timestamp_scratch("run-store-sql", "install-card-upgrade");
+    let path = dir.join("core.db");
+    let old = cortexkit_store::open_sqlite(&StorageDescriptor {
+        module_id: "basal".into(),
+        storage_namespace: "core".into(),
+        isolation: Isolation::Module,
+        backend: StorageBackend::Sqlite {
+            path: path.to_string_lossy().into_owned(),
+        },
+    })
+    .unwrap();
+    old.migrate(crate::schema::NAMESPACE, &MIGRATIONS[..migration])
+        .unwrap();
+    let root_page = |c: &Connection| {
+        c.query_row(
+            "SELECT rootpage FROM sqlite_schema WHERE name='install_cards'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+    };
+    let page = old
+        .with_conn(|c| {
+            c.execute_batch(
+                "INSERT INTO flows(flow_id,state,created_at) VALUES ('flow','enabled',5);
+                 INSERT INTO installs(flow_id,version,code_hash,manifest,script,author,state,installed_at)
+                 VALUES ('flow',1,zeroblob(32),'{}','return 1;','agent','validated',9),
+                        ('flow',2,zeroblob(32),'{}','return 2;','agent','validated',10);
+                 INSERT INTO install_cards(card_id,flow_id,version,code_hash,author,card,state,created_at,attempt,install_id)
+                 VALUES ('c1','flow',1,zeroblob(32),'agent','{}','pending',12,7,'request-1');
+                 INSERT INTO install_cards(card_id,flow_id,version,code_hash,author,card,state,created_at,attempt,install_id,decided_by,decided_at)
+                 VALUES ('c2','flow',2,zeroblob(32),'agent','{}','declined',13,8,'request-2','core:card',20);",
+            )?;
+            root_page(c)
+        })
+        .unwrap();
+    drop(old);
+
+    let store = Store::open(&path, Durability::throwaway()).unwrap();
+    store
+        .read(|c| {
+            assert_eq!(root_page(c)?, page);
+            let rows = c.prepare(
+                "SELECT json_array(card_id,version,state,created_at,attempt,install_id,decided_at,
+                                   retry_at,retry_failures,checked_at)
+                 FROM install_cards ORDER BY version",
+            )?.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                rows,
+                [
+                    r#"["c1",1,"pending",12,7,"request-1",null,null,null,null]"#,
+                    r#"["c2",2,"declined",13,8,"request-2",20,null,null,null]"#,
+                ]
+            );
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn fixture() -> Connection {
     let mut conn = legacy();
     let tx = conn.transaction().unwrap();
@@ -228,7 +296,7 @@ fn production_open_keeps_the_legacy_schema_and_meta() {
         })
         .unwrap();
     assert!(!dir.join("run-log").exists());
-    assert_eq!(MIGRATIONS.last().unwrap().version, 53);
+    assert_eq!(MIGRATIONS.last().unwrap().version, 54);
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -288,7 +288,22 @@ impl RunAdmission {
         wakes: &dyn EventWakes,
         acknowledge: impl FnOnce() -> Result<()>,
     ) -> Result<events::Report> {
+        self.admit_events_with(notices, ctx, wakes, |_| Ok(()), acknowledge)
+    }
+
+    pub(crate) fn admit_events_with(
+        &self,
+        notices: &[Notice],
+        ctx: &AdmitContext,
+        wakes: &dyn EventWakes,
+        before_admission: impl FnOnce(&Transaction<'_>) -> Result<()>,
+        acknowledge: impl FnOnce() -> Result<()>,
+    ) -> Result<events::Report> {
         let report = self.batch(|tx| {
+            before_admission(tx)?;
+            if notices.is_empty() {
+                return Ok(events::Report::default());
+            }
             let flows: Vec<(String, Option<i64>)> = tx.prepare(
                 "SELECT flow_id,first_approved_at FROM flows WHERE state='enabled' ORDER BY flow_id"
             )?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;

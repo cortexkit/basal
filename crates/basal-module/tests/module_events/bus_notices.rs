@@ -127,6 +127,7 @@ struct NoticeHost {
     calls: Mutex<Vec<Value>>,
     statuses: Mutex<Vec<u32>>,
     status: Mutex<Option<InstallStatus>>,
+    timeout: std::sync::atomic::AtomicBool,
 }
 impl Host for NoticeHost {
     fn supports_core_capability(&self, cap: &str) -> bool {
@@ -138,6 +139,9 @@ impl Host for NoticeHost {
     }
     fn install_status(&self, _: &str, version: u32) -> Result<InstallStatus, TransportError> {
         self.statuses.lock().unwrap().push(version);
+        if self.timeout.load(Ordering::SeqCst) {
+            return Err(TransportError::unsent("flow.install_status timed out"));
+        }
         Ok(self
             .status
             .lock()
@@ -443,11 +447,262 @@ fn pending_card(rt: &Runtime, version: u32) -> basal_core::cards::CardRecord {
     .unwrap()
 }
 
+fn install_engine(rt: &Runtime) -> basal_module::engine::Engine {
+    use basal_module::pool::{Pool, PoolConfig, ProcessSpawner};
+    use basal_module::process::WorkerLaunch;
+    let mut config = PoolConfig::new("unused", WorkerLaunch::Plain);
+    config.warm_spares = 0;
+    let spawner = Arc::new(ProcessSpawner::new(&config));
+    basal_module::engine::Engine::new(
+        rt.clone(),
+        Pool::new(
+            config,
+            spawner,
+            rt.config().clock.clone(),
+            Default::default(),
+        ),
+        Arc::new(basal_host::MockConsent::new()),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    )
+    .unwrap()
+}
+
+async fn install_notices(server: &Server, rt: &Runtime, seqs: std::ops::RangeInclusive<u64>) {
+    let len = seqs.clone().count();
+    for seq in seqs {
+        publish_control(
+            server,
+            "ck.account.event.prefrontal.flow_install_changed.v1",
+            json!({"flow_id":"control-flow","seq":seq}),
+            &format!("install-change:{seq}"),
+        )
+        .await;
+    }
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let messages = pull(&consumer).await.unwrap();
+    assert_eq!(messages.len(), len);
+    commit_batch(rt.clone(), &messages, true).await.unwrap();
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+}
+
 #[tokio::test]
-async fn install_change_notice_reads_status_once_and_skips_settled_cards() {
+async fn audit_install_timeout_retries_after_ack_without_a_second_notice() {
+    use basal_core::cards::CardState;
+    let server = Server::start().await;
+    let host = Arc::new(NoticeHost::default());
+    let path = server.dir.join("install-timeout.db");
+    let rt = with_host(&path, host.clone());
+    let engine = install_engine(&rt);
+    let card = pending_card(&rt, 1);
+    host.timeout.store(true, Ordering::SeqCst);
+    install_notices(&server, &rt, 1..=1).await;
+    engine.pass().unwrap();
+    assert_eq!(*host.statuses.lock().unwrap(), [1]);
+    assert_eq!(
+        rt.card(&card.card_id).unwrap().unwrap().state,
+        CardState::Pending
+    );
+    assert_eq!(rt.next_wake_at(None).unwrap(), Some(31_000));
+
+    host.timeout.store(false, Ordering::SeqCst);
+    *host.status.lock().unwrap() = Some(InstallStatus::Active {
+        code_hash: basal_core::ids::hex(&card.code_hash),
+        scope: None,
+    });
+    drop(engine);
+    drop(rt);
+
+    let rt = with_host(&path, host.clone());
+    rt.recover_cardless_installs().unwrap();
+    let engine = install_engine(&rt);
+    rt.config().clock.set(30_999);
+    engine.pass().unwrap();
+    assert_eq!(*host.statuses.lock().unwrap(), [1]);
+    rt.config().clock.set(31_000);
+    engine.pass().unwrap();
+    assert_eq!(*host.statuses.lock().unwrap(), [1, 1]);
+    assert_eq!(
+        rt.card(&card.card_id).unwrap().unwrap().state,
+        CardState::Approved
+    );
+}
+
+#[tokio::test]
+async fn audit_install_notice_batch_acks_without_core_reads() {
+    let server = Server::start().await;
+    let host = Arc::new(NoticeHost::default());
+    let rt = with_host(&server.dir.join("install-notice-batch.db"), host.clone());
+    pending_card(&rt, 1);
+    pending_card(&rt, 2);
+    install_notices(&server, &rt, 1..=4).await;
+    assert!(host.statuses.lock().unwrap().is_empty());
+    install_engine(&rt).pass().unwrap();
+    assert_eq!(*host.statuses.lock().unwrap(), [2, 1]);
+}
+
+#[tokio::test]
+async fn audit_install_notice_approves_the_ninth_version_and_supersedes_older_cards() {
+    use basal_core::cards::CardState;
+    let server = Server::start().await;
+    let host = Arc::new(NoticeHost::default());
+    let rt = with_host(&server.dir.join("install-newest.db"), host.clone());
+    let cards: Vec<_> = (1..=9).map(|v| pending_card(&rt, v)).collect();
+    *host.status.lock().unwrap() = Some(InstallStatus::Active {
+        code_hash: basal_core::ids::hex(&cards[8].code_hash),
+        scope: None,
+    });
+    install_notices(&server, &rt, 1..=1).await;
+    install_engine(&rt).pass().unwrap();
+    assert_eq!(
+        rt.flow("control-flow").unwrap().unwrap().approved_version,
+        Some(9)
+    );
+    assert_eq!(*host.statuses.lock().unwrap(), [9]);
+    for card in &cards[..8] {
+        assert_eq!(
+            rt.card(&card.card_id).unwrap().unwrap().state,
+            CardState::Stale
+        );
+    }
+}
+
+#[test]
+fn audit_install_startup_timeout_backs_off_and_retries_on_engine_pass() {
+    use basal_core::cards::CardState;
+    let dir = common::scratch("startup-install-retry");
+    let host = Arc::new(NoticeHost::default());
+    let rt = with_host(&dir.join("startup.db"), host.clone());
+    let card = pending_card(&rt, 1);
+    host.timeout.store(true, Ordering::SeqCst);
+    rt.recover_cardless_installs().unwrap();
+    let engine = install_engine(&rt);
+    engine.pass().unwrap();
+    let mut now = 1000;
+    for delay in [30_000, 60_000, 120_000, 240_000, 480_000, 900_000, 900_000] {
+        now += delay;
+        assert_eq!(rt.next_wake_at(None).unwrap(), Some(now));
+        rt.config().clock.set(now);
+        engine.pass().unwrap();
+    }
+    host.timeout.store(false, Ordering::SeqCst);
+    *host.status.lock().unwrap() = Some(InstallStatus::Active {
+        code_hash: basal_core::ids::hex(&card.code_hash),
+        scope: None,
+    });
+    rt.config().clock.set(now + 900_000);
+    engine.pass().unwrap();
+    assert_eq!(*host.statuses.lock().unwrap(), [1; 9]);
+    assert_eq!(
+        rt.card(&card.card_id).unwrap().unwrap().state,
+        CardState::Approved
+    );
+    drop(engine);
+    drop(rt);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn audit_install_startup_held_approves_matching_hash() {
+    use basal_core::cards::CardState;
+    let dir = common::scratch("startup-install-status");
+    let host = Arc::new(NoticeHost::default());
+    let rt = with_host(&dir.join("startup.db"), host.clone());
+    let held = pending_card(&rt, 1);
+    *host.status.lock().unwrap() = Some(InstallStatus::Held {
+        code_hash: basal_core::ids::hex(&held.code_hash),
+        reason: "scope_stale".into(),
+        stale_since_ms: Some(1),
+    });
+    rt.recover_cardless_installs().unwrap();
+    assert_eq!(
+        rt.card(&held.card_id).unwrap().unwrap().state,
+        CardState::Approved
+    );
+    assert_eq!(
+        rt.flow("control-flow").unwrap().unwrap().approved_version,
+        Some(1)
+    );
+    drop(rt);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn audit_install_startup_revoked_settles_without_approval() {
+    use basal_core::cards::CardState;
+    let dir = common::scratch("startup-install-revoked");
+    let host = Arc::new(NoticeHost::default());
+    let rt = with_host(&dir.join("startup.db"), host.clone());
+    let revoked = pending_card(&rt, 1);
+    *host.status.lock().unwrap() = Some(InstallStatus::Revoked {
+        code_hash: Some(basal_core::ids::hex(&revoked.code_hash)),
+    });
+    rt.recover_cardless_installs().unwrap();
+    let revoked = rt.card(&revoked.card_id).unwrap().unwrap();
+    assert_eq!(revoked.state, CardState::Declined);
+    assert_eq!(revoked.rejected_reason.as_deref(), Some("revoked"));
+    assert_eq!(
+        rt.flow("control-flow").unwrap().unwrap().approved_version,
+        None
+    );
+    drop(rt);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn audit_install_notice_rotates_the_eight_card_window() {
+    let server = Server::start().await;
+    let host = Arc::new(NoticeHost::default());
+    let rt = with_host(&server.dir.join("install-rotation.db"), host.clone());
+    let engine = install_engine(&rt);
+    for version in 1..=10 {
+        pending_card(&rt, version);
+    }
+    install_notices(&server, &rt, 1..=1).await;
+    engine.pass().unwrap();
+    assert_eq!(host.statuses.lock().unwrap().len(), 8);
+    host.statuses.lock().unwrap().clear();
+
+    rt.config().clock.set(1001);
+    install_notices(&server, &rt, 2..=2).await;
+    engine.pass().unwrap();
+    assert_eq!(*host.statuses.lock().unwrap(), [10, 8, 9, 1, 2, 3, 4, 5]);
+}
+
+#[tokio::test]
+async fn audit_install_unknown_card_expires_only_after_twenty_four_hours() {
+    use basal_core::cards::CardState;
+    let server = Server::start().await;
+    let host = Arc::new(NoticeHost::default());
+    let rt = with_host(&server.dir.join("install-expiry.db"), host.clone());
+    let card = pending_card(&rt, 1);
+    let engine = install_engine(&rt);
+    let day = 24 * 60 * 60 * 1000;
+    rt.config().clock.set(1000 + day);
+    install_notices(&server, &rt, 1..=1).await;
+    engine.pass().unwrap();
+    assert_eq!(
+        rt.card(&card.card_id).unwrap().unwrap().state,
+        CardState::Pending
+    );
+
+    rt.config().clock.set(1001 + day);
+    install_notices(&server, &rt, 2..=2).await;
+    engine.pass().unwrap();
+    assert_eq!(
+        rt.card(&card.card_id).unwrap().unwrap().state,
+        CardState::Expired
+    );
+    assert_eq!(*host.statuses.lock().unwrap(), [1, 1]);
+}
+
+#[tokio::test]
+async fn install_change_notice_checks_status_on_engine_and_skips_settled_cards() {
     let server = Server::start().await;
     let host = Arc::new(NoticeHost::default());
     let rt = with_host(&server.dir.join("install.db"), host.clone());
+    let engine = install_engine(&rt);
     let card = pending_card(&rt, 1);
     *host.status.lock().unwrap() = Some(InstallStatus::Declined {
         code_hash: basal_core::ids::hex(&card.code_hash),
@@ -463,6 +718,7 @@ async fn install_change_notice_reads_status_once_and_skips_settled_cards() {
     let mut consumer = bind(&server.bus, STREAM).await.unwrap();
     let messages = pull(&consumer).await.unwrap();
     commit_batch(rt.clone(), &messages, true).await.unwrap();
+    engine.pass().unwrap();
     assert_eq!(*host.statuses.lock().unwrap(), vec![1]);
     assert_eq!(
         rt.card(&card.card_id).unwrap().unwrap().state,
@@ -478,6 +734,7 @@ async fn install_change_notice_reads_status_once_and_skips_settled_cards() {
     .await;
     let messages = pull(&consumer).await.unwrap();
     commit_batch(rt, &messages, true).await.unwrap();
+    engine.pass().unwrap();
     assert_eq!(host.statuses.lock().unwrap().len(), 1);
     assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
 }
@@ -675,23 +932,14 @@ async fn a_wake_with_extra_fields_still_reaches_custody() {
 }
 
 #[tokio::test]
-async fn install_change_checks_pending_versions_oldest_first_and_caps_at_eight() {
+async fn install_change_checks_newest_first_and_caps_at_eight_per_pass() {
     let server = Server::start().await;
     let host = Arc::new(NoticeHost::default());
     let rt = with_host(&server.dir.join("many-installs.db"), host.clone());
     for version in 1..=9 {
         pending_card(&rt, version);
     }
-    publish_control(
-        &server,
-        "ck.account.event.prefrontal.flow_install_changed.v1",
-        json!({"flow_id":"control-flow","seq":2}),
-        "many-installs:1",
-    )
-    .await;
-    let messages = pull(&bind(&server.bus, STREAM).await.unwrap())
-        .await
-        .unwrap();
-    commit_batch(rt, &messages, true).await.unwrap();
-    assert_eq!(*host.statuses.lock().unwrap(), (1..=8).collect::<Vec<_>>());
+    install_notices(&server, &rt, 1..=1).await;
+    install_engine(&rt).pass().unwrap();
+    assert_eq!(*host.statuses.lock().unwrap(), [9, 1, 2, 3, 4, 5, 6, 7]);
 }
