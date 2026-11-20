@@ -49,12 +49,17 @@ fn setup(core: &Caller) -> Fixture {
         },
     );
     // Approval lives in core; basal registers the exact version core has selected.
+    // The samples instantiate version 1, so register a first version built from
+    // the shipped manifest (which describes a later upgrade).
+    let mut first: Value = serde_json::from_str(MANIFEST).unwrap();
+    first["version"] = json!(1);
+    first.as_object_mut().unwrap().remove("changes");
     let registered = f
         .module
         .handle(
             core,
             "package.register",
-            json!({"manifest":MANIFEST,"script":SCRIPT}),
+            json!({"manifest":first.to_string(),"script":SCRIPT}),
         )
         .unwrap();
     assert_eq!(registered["package"], "docs-proposals");
