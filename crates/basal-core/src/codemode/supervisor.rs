@@ -1303,6 +1303,17 @@ impl Driver {
             Some(held::Update::Malformed(message)) => self.record_malformed_entry(&message)?,
             Some(held::Update::Final(mapped)) => {
                 self.mark_held(call.position, true)?;
+                self.account_time();
+                if self.waits_on_person(call.position)
+                    && let Some(previous) = self.hold_reasons.get_mut(&call.position)
+                {
+                    // Once the provider settled, any delay reaching this driver
+                    // belongs to the wall budget, just as for a running update.
+                    let end = settled_at.min(self.last_tick_ms).max(previous.since_ms);
+                    self.person_time.revise(call.position, end, false);
+                    self.person_wait_ms = self.person_time.total();
+                    previous.reason = None;
+                }
                 self.mark_held(call.position, false)?;
                 self.settle_answer(
                     Answer {

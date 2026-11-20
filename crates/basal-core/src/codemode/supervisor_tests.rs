@@ -2990,7 +2990,15 @@ fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
         true
     );
     f.clock.set(1_100);
-    pull.reply.send(Ok(late_page("i1", 1, vec![late_entry(&call.key, "e1", json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}))]))).unwrap();
+    let mut entry = late_entry(
+        &call.key,
+        "e1",
+        json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}),
+    );
+    entry["settled_at"] = json!(1_100);
+    pull.reply
+        .send(Ok(late_page("i1", 1, vec![entry])))
+        .unwrap();
     let delivery = f.delivery();
     assert_eq!(delivery.settlement, Settlement::Fulfilled);
     assert_eq!(delivery.value, JsonText::new(r#"{"answer":42}"#).unwrap());
@@ -3062,7 +3070,15 @@ fn consent_hold_pauses_the_wall_clock_and_spends_the_person_allowance() {
     // The person's wait carries the clock past the run's wall deadline while
     // the call is held.
     f.clock.set(20_100);
-    pull.reply.send(Ok(late_page("i1", 1, vec![late_entry(&call.key, "e1", json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}))]))).unwrap();
+    let mut entry = late_entry(
+        &call.key,
+        "e1",
+        json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}),
+    );
+    entry["settled_at"] = json!(20_100);
+    pull.reply
+        .send(Ok(late_page("i1", 1, vec![entry])))
+        .unwrap();
     assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
     f.custody_attempt("late_results.ack")
         .reply
@@ -3661,4 +3677,29 @@ fn starting_a_supervisor_reaps_finished_drivers() {
     assert_eq!(f.supervisor.0.drivers.lock().unwrap().threads.len(), 1);
     f.finish("1");
     f.terminal();
+}
+
+#[test]
+fn late_final_counts_person_time_only_through_provider_settlement() {
+    let f = Fixture::new();
+    let (call, pull) = f.provider_held();
+    f.clock.set(1_100);
+    let mut entry = late_entry(
+        &call.key,
+        "finished",
+        json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}),
+    );
+    entry["settled_at"] = json!(400);
+    pull.reply
+        .send(Ok(late_page("i1", 1, vec![entry])))
+        .unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
+    f.custody_attempt("late_results.ack")
+        .reply
+        .send(Ok(json!({})))
+        .unwrap();
+    f.finish("42");
+    let result = f.terminal();
+    assert_eq!(result["person_wait_ms"], 300);
+    assert_eq!(result["calls"][0]["waited_on_person"], true);
 }
