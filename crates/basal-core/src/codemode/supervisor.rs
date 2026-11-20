@@ -378,6 +378,12 @@ impl Supervisor {
                     let terminal = failed("engine_error", error.to_string());
                     if let Err(error) = driver.end(terminal) {
                         tracing::error!(%error, "codemode termination could not commit");
+                        // A cleanup write can fail before termination reaches the
+                        // kill. Closing the signal to read the next frame does
+                        // not unblock a reader already waiting in the pipe.
+                        if let Some(mut worker) = driver.worker.take() {
+                            worker.kill();
+                        }
                     }
                 }
                 shared.active.lock().unwrap().remove(&driver.run.run_id);

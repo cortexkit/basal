@@ -3703,3 +3703,50 @@ fn late_final_counts_person_time_only_through_provider_settlement() {
     assert_eq!(result["person_wait_ms"], 300);
     assert_eq!(result["calls"][0]["waited_on_person"], true);
 }
+
+#[test]
+fn failed_held_cleanup_releases_the_worker_and_unblocks_its_reader() {
+    let f = Fixture::new();
+    let (exited, reader_exit) = mpsc::channel();
+    *f.supervisor.0.before_reader_exit.lock().unwrap() = Some(Arc::new(move || {
+        let _ = exited.send(());
+    }));
+    let (_, pull) = f.provider_held();
+    f.host.store.write(|tx| {
+        tx.execute_batch("CREATE TRIGGER test_fail_withdraw BEFORE UPDATE ON codemode_calls
+            WHEN NEW.outcome='withdrawn' BEGIN SELECT RAISE(ABORT, 'withdrawal write failed'); END;")?;
+        Ok(())
+    }).unwrap();
+    let supervisor = f.supervisor.clone();
+    let cancel = thread::spawn(move || supervisor.cancel("r"));
+    for _ in 0..2 {
+        f.custody_attempt("tool.withdraw")
+            .reply
+            .send(Ok(json!({"answer":"withdrawn"})))
+            .unwrap();
+    }
+    let error = cancel.join().unwrap().unwrap_err();
+    assert!(
+        error.to_string().contains("withdrawal write failed"),
+        "{error}"
+    );
+    drop(pull);
+    let reader_unblocked = reader_exit.recv_timeout(TIMEOUT).is_ok();
+    assert!(
+        reader_unblocked,
+        "cleanup write failed and the worker reader stayed blocked"
+    );
+    f.supervisor.shutdown().unwrap();
+    assert!(
+        f.host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "kill")
+    );
+    assert!(
+        matches!(f.parent.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
+        "driver still owns the worker channel"
+    );
+}
