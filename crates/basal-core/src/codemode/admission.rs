@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use basal_host::flow_scope::{FlowScope, RegisteredScope};
 use basal_host::{Host, ScopeStatus};
 use basal_proto::{MAX_NAME_BYTES, MAX_SCRIPT_BYTES};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use subc_protocol::Principal;
@@ -119,6 +119,7 @@ pub struct Start {
 pub struct Refusal {
     pub code: &'static str,
     pub message: String,
+    pub field: Option<&'static str>,
 }
 
 impl Refusal {
@@ -126,6 +127,7 @@ impl Refusal {
         Self {
             code,
             message: message.into(),
+            field: None,
         }
     }
 }
@@ -735,6 +737,45 @@ pub enum RunCaller<'a> {
     Worker,
 }
 
+fn carrier_run(conn: &Connection, invocation: &ToolInvocation<'_>) -> Result<Option<String>> {
+    let Some(key) = invocation.call_key else {
+        return Ok(None);
+    };
+    Ok(conn
+        .query_row(
+            "SELECT run_id FROM codemode_tool_calls WHERE carrier=?1 AND call_key=?2",
+            rusqlite::params![invocation.carrier, key],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+fn key_collision() -> Admission {
+    Admission::Refused(Refusal {
+        code: "invalid_request",
+        message: "this carrier already used the key for another agent".into(),
+        field: Some("call_key"),
+    })
+}
+
+fn attach_carrier(tx: &rusqlite::Transaction<'_>, invocation: &ToolInvocation<'_>) -> Result<()> {
+    if let Some(key) = invocation.call_key {
+        // A new record owes nothing until the foreground wait returns held.
+        tx.execute(
+            "INSERT OR IGNORE INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian,published)
+             VALUES (?1,?2,?3,?4,?5,1)",
+            rusqlite::params![
+                invocation.carrier,
+                key,
+                invocation.run_id,
+                invocation.record_scope,
+                invocation.custodian
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn admit_tool(
     store: &Store,
     host: &dyn Host,
@@ -746,8 +787,32 @@ pub fn admit_tool(
 ) -> Result<Admission> {
     use basal_host::run_scope;
     use serde_json::json;
-    if let Some(known) = store.read(|conn| known(conn, invocation.run_id))? {
-        return Ok(known);
+    let (record, existing) = store.read(|conn| {
+        Ok((
+            carrier_run(conn, invocation)?,
+            known(conn, invocation.run_id)?,
+        ))
+    })?;
+    if record.as_ref().is_some_and(|id| id != invocation.run_id) {
+        return Ok(key_collision());
+    }
+    if let Some(existing) = existing {
+        if matches!(existing, Admission::Existing(_))
+            && invocation.call_key.is_some()
+            && record.is_none()
+        {
+            return store.write(|tx| {
+                if carrier_run(tx, invocation)?.is_some_and(|id| id != invocation.run_id) {
+                    return Ok(key_collision());
+                }
+                let existing = known(tx, invocation.run_id)?.unwrap_or(existing);
+                if matches!(existing, Admission::Existing(_)) {
+                    attach_carrier(tx, invocation)?;
+                }
+                Ok(existing)
+            });
+        }
+        return Ok(existing);
     }
     let Some(fields_in) = arguments.as_object() else {
         return Ok(Admission::Refused(Refusal::new(
@@ -804,7 +869,15 @@ pub fn admit_tool(
     let limits_text = serde_json::to_string(&limits).unwrap();
     let empty_digest = catalog_digest(&json!([])).unwrap();
     let won = store.write(|tx| {
-        if let Some(known) = known(tx, invocation.run_id)? { return Ok(Err(known)); }
+        if carrier_run(tx, invocation)?.is_some_and(|id| id != invocation.run_id) {
+            return Ok(Err(key_collision()));
+        }
+        if let Some(known) = known(tx, invocation.run_id)? {
+            if matches!(known, Admission::Existing(_)) {
+                attach_carrier(tx, invocation)?;
+            }
+            return Ok(Err(known));
+        }
         let (own,total) = store::running_counts(tx,owner)?;
         if own >= MAX_AGENT_RUNS || total >= MAX_BASAL_RUNS {
             return Ok(Err(Admission::Refused(Refusal::new("busy","codemode concurrency limit reached"))));
@@ -816,10 +889,7 @@ pub fn admit_tool(
         },None)?;
         tx.execute("UPDATE codemode_runs SET keyless=?2,program_digest=?3,bind_identity=?4,worker_scope=?5 WHERE run_id=?1",rusqlite::params![invocation.run_id,invocation.call_key.is_none(),blake3::hash(fields.program.as_bytes()).to_hex().to_string(),serde_json::to_string(invocation.bind_identity).unwrap(),worker_scope])?;
         tx.execute("INSERT INTO codemode_scopes(run_id,request) VALUES (?1,?2)",rusqlite::params![invocation.run_id,serde_json::to_string(&open).unwrap()])?;
-        if let Some(key) = invocation.call_key {
-            tx.execute("INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian) VALUES (?1,?2,?3,?4,?5)",
-                rusqlite::params![invocation.carrier,key,invocation.run_id,invocation.record_scope,invocation.custodian])?;
-        }
+        attach_carrier(tx, invocation)?;
         Ok(Ok(()))
     })?;
     if let Err(known) = won {

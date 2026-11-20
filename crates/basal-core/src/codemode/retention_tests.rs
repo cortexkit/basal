@@ -368,3 +368,51 @@ fn flow_paths_never_see_codemode_rows() {
     assert_eq!(count(&f, "SELECT COUNT(*) FROM run_identities"), 0);
     assert_eq!(count(&f, "SELECT COUNT(*) FROM run_calls"), 0);
 }
+
+#[test]
+fn run_retention_removes_model_and_withdrawal_bodies_but_keeps_metadata() {
+    let f = fixture(ENDED_AT);
+    ended_run(&f, "r1");
+    let store = f.rt.store();
+    store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO classify_costs(kind,run_id,position,created_at,reserved,charged,args)
+                 VALUES ('program','r1',0,100,0.5,0.25,'{\"prompt\":\"private model input\"}')",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian,published,withdrawal)
+                 VALUES ('direct','key','r1','null','reserved:prefrontal',1,?1)",
+                [serde_json::json!({"answer":"completed","result_retained":true,
+                    "result":{"structuredContent":{"value":"private program output"}}}).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    sweep(store, ENDED_AT + DAY_MS + 1).unwrap();
+    let (args, charged, cached) = store
+        .read(|c| {
+            let (args, charged) = c.query_row(
+                "SELECT args,charged FROM classify_costs WHERE kind='program' AND run_id='r1'",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
+            )?;
+            let cached = c.query_row(
+                "SELECT withdrawal FROM codemode_tool_calls WHERE carrier='direct' AND call_key='key'",
+                [],
+                |r| r.get::<_, String>(0),
+            )?;
+            Ok((args, charged, cached))
+        })
+        .unwrap();
+    assert!(
+        !args.contains("private model input"),
+        "retained model args: {args}"
+    );
+    assert_eq!(charged, 0.25);
+    let cached: serde_json::Value = serde_json::from_str(&cached).unwrap();
+    assert_eq!(cached["answer"], "completed");
+    assert_eq!(cached["result_retained"], false);
+    assert!(cached.get("result").is_none());
+}

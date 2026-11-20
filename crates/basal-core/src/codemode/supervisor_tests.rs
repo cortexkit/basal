@@ -2990,7 +2990,15 @@ fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
         true
     );
     f.clock.set(1_100);
-    pull.reply.send(Ok(late_page("i1", 1, vec![late_entry(&call.key, "e1", json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}))]))).unwrap();
+    let mut entry = late_entry(
+        &call.key,
+        "e1",
+        json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}),
+    );
+    entry["settled_at"] = json!(1_100);
+    pull.reply
+        .send(Ok(late_page("i1", 1, vec![entry])))
+        .unwrap();
     let delivery = f.delivery();
     assert_eq!(delivery.settlement, Settlement::Fulfilled);
     assert_eq!(delivery.value, JsonText::new(r#"{"answer":42}"#).unwrap());
@@ -3062,7 +3070,15 @@ fn consent_hold_pauses_the_wall_clock_and_spends_the_person_allowance() {
     // The person's wait carries the clock past the run's wall deadline while
     // the call is held.
     f.clock.set(20_100);
-    pull.reply.send(Ok(late_page("i1", 1, vec![late_entry(&call.key, "e1", json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}))]))).unwrap();
+    let mut entry = late_entry(
+        &call.key,
+        "e1",
+        json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}),
+    );
+    entry["settled_at"] = json!(20_100);
+    pull.reply
+        .send(Ok(late_page("i1", 1, vec![entry])))
+        .unwrap();
     assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
     f.custody_attempt("late_results.ack")
         .reply
@@ -3639,4 +3655,142 @@ fn a_pending_sleep_keeps_held_time_off_the_person_wait_budget() {
     assert_eq!(f.delivery().position, 0);
     f.finish("1");
     assert_eq!(f.terminal()["person_wait_ms"], 0);
+}
+
+#[test]
+fn starting_a_supervisor_reaps_finished_drivers() {
+    let f = Fixture::new();
+    let finished = thread::spawn(|| {});
+    let until = Instant::now() + TIMEOUT;
+    while !finished.is_finished() {
+        assert!(Instant::now() < until, "fixture thread did not finish");
+        thread::yield_now();
+    }
+    f.supervisor
+        .0
+        .drivers
+        .lock()
+        .unwrap()
+        .threads
+        .push(finished);
+    f.standard();
+    assert_eq!(f.supervisor.0.drivers.lock().unwrap().threads.len(), 1);
+    f.finish("1");
+    f.terminal();
+}
+
+#[test]
+fn late_final_counts_person_time_only_through_provider_settlement() {
+    let f = Fixture::new();
+    let (call, pull) = f.provider_held();
+    f.clock.set(1_100);
+    let mut entry = late_entry(
+        &call.key,
+        "finished",
+        json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}),
+    );
+    entry["settled_at"] = json!(400);
+    pull.reply
+        .send(Ok(late_page("i1", 1, vec![entry])))
+        .unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
+    f.custody_attempt("late_results.ack")
+        .reply
+        .send(Ok(json!({})))
+        .unwrap();
+    f.finish("42");
+    let result = f.terminal();
+    assert_eq!(result["person_wait_ms"], 300);
+    assert_eq!(result["calls"][0]["waited_on_person"], true);
+}
+
+#[test]
+fn tool_entry_rechecks_wall_after_preparing_intent() {
+    let f = Fixture::new();
+    let (prepared, at_entry) = mpsc::channel();
+    let (enter, may_enter) = mpsc::channel();
+    let may_enter = Mutex::new(may_enter);
+    *f.supervisor.0.before_entry.lock().unwrap() = Some(Arc::new(move || {
+        prepared.send(()).unwrap();
+        let _ = may_enter.lock().unwrap().recv_timeout(TIMEOUT);
+    }));
+    let (parking, parked) = mpsc::channel();
+    let (resume, may_resume) = mpsc::channel();
+    let may_resume = Mutex::new(may_resume);
+    let shared = Arc::downgrade(&f.supervisor.0);
+    *f.supervisor.0.before_wait.lock().unwrap() = Some(Arc::new(move |_| {
+        let starts = &shared.upgrade().unwrap().dispatch_starts;
+        if *starts.pending.lock().unwrap() != 0 {
+            parking.send(()).unwrap();
+            let _ = may_resume.lock().unwrap().recv_timeout(TIMEOUT);
+        }
+    }));
+    f.standard();
+    f.issue(0, "read", json!(null));
+    at_entry.recv_timeout(TIMEOUT).unwrap();
+    parked.recv_timeout(TIMEOUT).unwrap();
+    f.clock.set(10_000);
+    enter.send(()).unwrap();
+    let starts = &f.supervisor.0.dispatch_starts;
+    let (pending, _) = starts
+        .changed
+        .wait_timeout_while(starts.pending.lock().unwrap(), TIMEOUT, |n| *n != 0)
+        .unwrap();
+    assert_eq!(*pending, 0, "the provider-entry decision did not finish");
+    drop(pending);
+    let call = f.calls().remove(0);
+    resume.send(()).unwrap();
+    assert_eq!(f.terminal()["status"], "budget_exhausted:wall");
+    assert!(
+        call.entered_at.is_none(),
+        "provider entry was recorded after the deadline"
+    );
+    assert_eq!(f.calls()[0].outcome, Outcome::Cancelled);
+}
+
+#[test]
+fn failed_held_cleanup_releases_the_worker_and_unblocks_its_reader() {
+    let f = Fixture::new();
+    let (exited, reader_exit) = mpsc::channel();
+    *f.supervisor.0.before_reader_exit.lock().unwrap() = Some(Arc::new(move || {
+        let _ = exited.send(());
+    }));
+    let (_, pull) = f.provider_held();
+    f.host.store.write(|tx| {
+        tx.execute_batch("CREATE TRIGGER test_fail_withdraw BEFORE UPDATE ON codemode_calls
+            WHEN NEW.outcome='withdrawn' BEGIN SELECT RAISE(ABORT, 'withdrawal write failed'); END;")?;
+        Ok(())
+    }).unwrap();
+    let supervisor = f.supervisor.clone();
+    let cancel = thread::spawn(move || supervisor.cancel("r"));
+    for _ in 0..2 {
+        f.custody_attempt("tool.withdraw")
+            .reply
+            .send(Ok(json!({"answer":"withdrawn"})))
+            .unwrap();
+    }
+    let error = cancel.join().unwrap().unwrap_err();
+    assert!(
+        error.to_string().contains("withdrawal write failed"),
+        "{error}"
+    );
+    drop(pull);
+    let reader_unblocked = reader_exit.recv_timeout(TIMEOUT).is_ok();
+    assert!(
+        reader_unblocked,
+        "cleanup write failed and the worker reader stayed blocked"
+    );
+    f.supervisor.shutdown().unwrap();
+    assert!(
+        f.host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "kill")
+    );
+    assert!(
+        matches!(f.parent.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
+        "driver still owns the worker channel"
+    );
 }

@@ -44,19 +44,14 @@ pub fn add_catalog(catalog: &Value) -> Result<Value, &'static str> {
 }
 
 pub fn provider_ready(transport: &dyn Transport) -> Result<(), WireError> {
-    let catalog = transport.catalog()?;
+    let catalog = transport.catalog_snapshot()?;
     // Broca is gated on the legacy run-scope capability, not on per-tool
     // call modes: a codemode run reaches Broca to open model routes, not to
     // call one of Broca's tools, so there is no tool whose `modes` could say
     // codemode. Broca declares this capability for that purpose.
-    let opted_in = catalog["modules"].as_array().is_some_and(|modules| {
-        modules.iter().any(|m| {
-            m["module_id"] == "broca"
-                && m["capabilities"]["provides"]
-                    .as_array()
-                    .is_some_and(|caps| caps.iter().any(|cap| cap == "agent-run-scopes/v1"))
-        })
-    });
+    let opted_in = catalog
+        .module("broca")
+        .is_some_and(|m| m.provides("agent-run-scopes/v1"));
     if !opted_in {
         return Err(WireError::RefusedDetails {
             code: "tool_unavailable".into(),
@@ -65,6 +60,19 @@ pub fn provider_ready(transport: &dyn Transport) -> Result<(), WireError> {
         });
     }
     Ok(())
+}
+
+fn pending(tx: &Transaction, run_id: &str, position: u64) -> crate::error::Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM codemode_calls c JOIN codemode_runs r USING(run_id)
+         WHERE c.run_id=?1 AND c.position=?2 AND c.outcome='pending' AND r.status='running')",
+        params![run_id, position],
+        |row| row.get(0),
+    )?)
+}
+
+fn no_longer_pending() -> WireError {
+    WireError::NeverSent("model call no longer pending".into())
 }
 
 fn storage(error: CoreError) -> WireError {
@@ -123,6 +131,9 @@ pub fn prepare(
         // Any single charge above the limit already forbids another call. Cap
         // each term of the sum so oversized provider measurements cannot overflow SQLite.
         let reserved = store.write(|tx| {
+            if !pending(tx, &run.run_id, call.position)? {
+                return Ok(Err(no_longer_pending()));
+            }
             let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM codemode_models WHERE run_id=?1 AND position=?2)",params![run.run_id,call.position],|r|r.get(0))?;
             if exists { return Ok(Ok(())); }
             let (count, used): (u64,u64) = tx.query_row("SELECT COUNT(*), COALESCE(SUM(MIN(COALESCE(charged,reserved),?2)),0) FROM codemode_models WHERE run_id=?1",params![run.run_id,TOKENS+1],|r| Ok((r.get(0)?,r.get(1)?)))?;
@@ -186,6 +197,10 @@ pub fn prepare(
         let limits: super::admission::Limits =
             serde_json::from_str(&run.limits).map_err(|e| WireError::NeverSent(e.to_string()))?;
         let saved = store.write(|tx| {
+            // Selection can outlast cancellation; a terminal run must not acquire new debt.
+            if !pending(tx, &run.run_id, call.position)? {
+                return Ok(Err(no_longer_pending()));
+            }
             let used = crate::classify_cost::spent(tx, "program", &run.run_id)?;
             if used + dollars as f64 / 1_000_000.0 > limits.model_cost_usd {
                 settle(tx, &run.run_id, call.position, None, true)?;
@@ -203,14 +218,18 @@ pub fn prepare(
     if reused {
         store
             .write(|tx| {
+                if !pending(tx, &run.run_id, call.position)? {
+                    return Ok(Err(no_longer_pending()));
+                }
                 crate::attribution::program_session(
                     tx,
                     &run.run_id,
                     &basal_host::broca::codemode_session(&run.run_id, call.position),
                     crate::clock::write_time().expect("write transaction clock"),
-                )
+                )?;
+                Ok(Ok(()))
             })
-            .map_err(storage)?;
+            .map_err(storage)??;
     }
     Ok(CallRequest {
         flow_version: None,
@@ -273,3 +292,7 @@ pub fn settle(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "models_tests.rs"]
+mod tests;

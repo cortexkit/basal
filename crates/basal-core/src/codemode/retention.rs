@@ -59,15 +59,48 @@ pub fn sweep(store: &Store, now_ms: i64) -> Result<Vec<String>> {
             pruned.push(id);
         }
     }
+    sweep_pruned_payloads(store)?;
     sweep_late_results(store, now_ms)?;
     Ok(pruned)
+}
+
+fn sweep_pruned_payloads(store: &Store) -> Result<()> {
+    // Include runs pruned by older builds. Their tombstones prove that no
+    // model retry can need the saved request, even if spend is still uncertain.
+    const MODEL: &str =
+        "SELECT c.rowid FROM classify_costs c JOIN codemode_tombstones t USING(run_id)
+                        WHERE c.kind='program' AND c.args <> '{}'";
+    const WITHDRAWAL: &str =
+        "SELECT c.rowid FROM codemode_tool_calls c JOIN codemode_tombstones t USING(run_id)
+                             WHERE json_type(c.withdrawal,'$.result') IS NOT NULL";
+    let due = store.read(|conn| {
+        Ok(conn.query_row(
+            &format!("SELECT EXISTS({MODEL}) OR EXISTS({WITHDRAWAL})"),
+            [],
+            |r| r.get::<_, bool>(0),
+        )?)
+    })?;
+    if due {
+        store.write(|tx| {
+            tx.execute(
+                &format!("UPDATE classify_costs SET args='{{}}' WHERE rowid IN ({MODEL} LIMIT {BATCH})"),
+                [],
+            )?;
+            tx.execute(
+                &format!("UPDATE codemode_tool_calls SET withdrawal=?1 WHERE rowid IN ({WITHDRAWAL} LIMIT {BATCH})"),
+                [r#"{"answer":"completed","outcome":"unknown","result_retained":false}"#],
+            )?;
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 fn sweep_late_results(store: &Store, now_ms: i64) -> Result<()> {
     let cutoff = now_ms.saturating_sub(LATE_RESULT_RETENTION_MS);
     let due = store.read(|conn| {
         Ok(conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM codemode_late_results WHERE settled_at <= ?1)",
+            "SELECT EXISTS (SELECT 1 FROM codemode_late_results WHERE expired IN (0,1) AND settled_at <= ?1)",
             [cutoff],
             |r| r.get::<_, bool>(0),
         )?)
@@ -80,8 +113,8 @@ fn sweep_late_results(store: &Store, now_ms: i64) -> Result<()> {
         let deleted = {
             let mut stmt = tx.prepare(
                 "DELETE FROM codemode_late_results WHERE seq IN (
-                    SELECT seq FROM codemode_late_results WHERE settled_at <= ?1
-                    ORDER BY seq LIMIT ?2
+                    SELECT seq FROM codemode_late_results
+                    WHERE expired IN (0,1) AND settled_at <= ?1 LIMIT ?2
                 ) RETURNING custodian, seq",
             )?;
             stmt.query_map(params![cutoff, BATCH], |r| {
@@ -90,18 +123,24 @@ fn sweep_late_results(store: &Store, now_ms: i64) -> Result<()> {
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
 
-        // The ack row doubles as a floor for the custodian's head after a
-        // sweep: a cursor pointing to a deleted row must still be valid.
-        // Reads still start at the caller's cursor, not at this floor.
-        let mut floor = tx.prepare(
-            "INSERT INTO codemode_late_acks(custodian, through_seq) VALUES (?1, ?2)
-             ON CONFLICT(custodian) DO UPDATE SET through_seq = MAX(through_seq, excluded.through_seq)",
-        )?;
-        for (custodian, seq) in deleted {
-            floor.execute(params![custodian, seq])?;
-        }
-        Ok(())
+        raise_late_cursor_floors(tx, deleted)
     })
+}
+
+/// Preserve cursor validity after deleting rows. Reads still start at the
+/// caller's cursor, not at this floor. Call inside the deletion transaction.
+pub fn raise_late_cursor_floors(
+    tx: &Transaction,
+    deleted: impl IntoIterator<Item = (String, i64)>,
+) -> Result<()> {
+    let mut floor = tx.prepare(
+        "INSERT INTO codemode_late_acks(custodian, through_seq) VALUES (?1, ?2)
+         ON CONFLICT(custodian) DO UPDATE SET through_seq = MAX(through_seq, excluded.through_seq)",
+    )?;
+    for (custodian, seq) in deleted {
+        floor.execute(params![custodian, seq])?;
+    }
+    Ok(())
 }
 
 fn prune(tx: &Transaction, run_id: &str, cutoff: i64, now_ms: i64) -> Result<bool> {

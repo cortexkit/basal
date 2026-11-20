@@ -521,6 +521,11 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
     },
     Migration {
         version: 54,
+        statements: "CREATE INDEX codemode_late_by_custodian ON codemode_late_results(custodian,seq);
+                     CREATE INDEX codemode_late_by_deadline ON codemode_late_results(expired,settled_at);",
+    },
+    Migration {
+        version: 55,
         statements: "ALTER TABLE install_cards ADD COLUMN retry_at INTEGER;
                      ALTER TABLE install_cards ADD COLUMN retry_failures INTEGER;
                      ALTER TABLE install_cards ADD COLUMN checked_at INTEGER;",

@@ -34,18 +34,30 @@ impl WorkerSource for FreshWorkers {
     }
 }
 
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct CallRecord {
+    carrier: String,
+    key: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct Invocation {
+    id: String,
+    record: Option<CallRecord>,
+}
+
 #[derive(Default)]
 struct LateCalls {
-    /// Runs whose foreground wait expired before an inline answer was chosen.
-    /// A keyed retry returning the result inline does not cancel that debt.
-    held: BTreeSet<String>,
-    /// Held runs whose late result is durable, with when it was published.
+    /// The run owed to each carrier record that chose a held answer.
+    /// Returning the result directly to a later request cannot cancel that debt.
+    held: BTreeMap<CallRecord, String>,
+    /// Carrier records whose late result is durable, with publication time.
     /// Remembering them stops a timeout that raced with completion from
     /// reopening publication after the caller acknowledges the late result
     /// through `late_results.ack`. Only a foreground wait that began before the
     /// program ended can race this way, so an entry is kept for
     /// `PUBLISHED_MEMORY_MS` and then dropped, which keeps the map bounded.
-    published: BTreeMap<String, i64>,
+    published: BTreeMap<CallRecord, i64>,
 }
 
 /// How long a published held run is remembered. A racing wait started before
@@ -54,11 +66,51 @@ struct LateCalls {
 const PUBLISHED_MEMORY_MS: i64 = 10 * 60 * 1000;
 
 impl LateCalls {
-    fn mark_published(&mut self, id: &str, now_ms: i64) {
-        self.held.remove(id);
-        self.published.insert(id.to_owned(), now_ms);
+    fn mark_published(&mut self, record: CallRecord, now_ms: i64) {
+        self.held.remove(&record);
+        self.published.insert(record, now_ms);
         self.published
             .retain(|_, at| now_ms.saturating_sub(*at) < PUBLISHED_MEMORY_MS);
+    }
+}
+
+type Admissions = Mutex<BTreeMap<String, Arc<Mutex<()>>>>;
+
+struct AdmissionSlot<'a> {
+    admissions: &'a Admissions,
+    id: &'a str,
+    slot: Option<Arc<Mutex<()>>>,
+}
+
+impl<'a> AdmissionSlot<'a> {
+    fn new(admissions: &'a Admissions, id: &'a str) -> Self {
+        let slot = admissions
+            .lock()
+            .unwrap()
+            .entry(id.to_owned())
+            .or_default()
+            .clone();
+        Self {
+            admissions,
+            id,
+            slot: Some(slot),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.slot.as_ref().unwrap().lock().unwrap()
+    }
+}
+
+impl Drop for AdmissionSlot<'_> {
+    fn drop(&mut self) {
+        let mut admissions = self.admissions.lock().unwrap();
+        // Release our reference under the map lock so simultaneous drops
+        // cannot each mistake the other for a caller still using this slot.
+        drop(self.slot.take());
+        if Arc::strong_count(&admissions[self.id]) == 1 {
+            admissions.remove(self.id);
+        }
     }
 }
 
@@ -69,7 +121,7 @@ pub(crate) struct Codemode {
     host: Arc<dyn Host>,
     clock: Clock,
     transport: Arc<dyn basal_host::transport::Transport>,
-    admission: Arc<Mutex<()>>,
+    admissions: Arc<Admissions>,
     records: Arc<Mutex<()>>,
     late_lock: Arc<Mutex<LateCalls>>,
     incarnation: String,
@@ -105,12 +157,17 @@ impl Codemode {
                 let mut late = serial.lock().unwrap();
                 // An inline wait either claims this result or records a held
                 // answer and publishes it. Only the latter owes a feed entry.
-                if late.held.contains(id) {
-                    publish_result(&store, id, result)
+                let records: Vec<_> = late
+                    .held
+                    .iter()
+                    .filter(|(_, run)| run.as_str() == id)
+                    .map(|(record, _)| record.clone())
+                    .collect();
+                for record in records {
+                    publish_result(&store, id, &result, Some(&record))
                         .map_err(|e| CoreError::Invalid(e.message))?;
-                    late.mark_published(id, clock.now_ms());
+                    late.mark_published(record, clock.now_ms());
                 }
-                maintain_late(&store, &clock).map_err(|e| CoreError::Invalid(e.message))?;
             }
             Ok(())
         }));
@@ -120,7 +177,7 @@ impl Codemode {
             host: hosts.host.clone(),
             clock: config.clock.clone(),
             transport: hosts.transport.clone(),
-            admission: Arc::new(Mutex::new(())),
+            admissions: Arc::default(),
             records: Arc::new(Mutex::new(())),
             late_lock,
             incarnation: random_id().map_err(|e| CoreError::Invalid(e.message))?,
@@ -135,7 +192,7 @@ impl Codemode {
         &self,
         context: &crate::tool::Context,
         request: &ToolCallRequest,
-    ) -> Result<String, ErrorBody> {
+    ) -> Result<Invocation, ErrorBody> {
         self.begin_guarded(context, request, || false)
     }
 
@@ -144,7 +201,7 @@ impl Codemode {
         context: &crate::tool::Context,
         request: &ToolCallRequest,
         cancelled: impl Fn() -> bool,
-    ) -> Result<String, ErrorBody> {
+    ) -> Result<Invocation, ErrorBody> {
         let pin = call::check_call(request)?;
         if let Some(pin) = pin {
             let current = crate::tool::catalog_tool();
@@ -186,29 +243,14 @@ impl Codemode {
             (Some(key), None) => worker_run_id(&scope.scope_ref, key),
             (None, _) => random_id()?,
         };
-        let _admission = self.admission.lock().unwrap();
+        let slot = AdmissionSlot::new(&self.admissions, &id);
+        let _same_run = slot.lock();
         if cancelled() {
             self.supervisor.cancel(&id).map_err(storage)?;
             return Err(ErrorBody::new(
                 "cancelled",
                 "codemode cancelled before admission",
             ));
-        }
-        if let Some(key) = &request.call_key {
-            let recorded: Option<String> = self
-                .store
-                .read(|conn| {
-                    Ok(conn.query_row(
-                "SELECT run_id FROM codemode_tool_calls WHERE carrier=?1 AND call_key=?2",
-                rusqlite::params![carrier,key],|row| row.get(0)).optional()?)
-                })
-                .map_err(storage)?;
-            if recorded.is_some_and(|recorded| recorded != id) {
-                return Err(crate::tool::invalid(
-                    "call_key",
-                    "this carrier already used the key for another agent",
-                ));
-            }
         }
         let record_scope = serde_json::to_string(&context.identity()).unwrap();
         let custodian = if context.principal == subc_protocol::Principal::Direct {
@@ -232,6 +274,13 @@ impl Codemode {
             custodian: &custodian,
             bind_identity: &context.bind_identity,
         };
+        let completed_invocation = || Invocation {
+            id: id.clone(),
+            record: request.call_key.clone().map(|key| CallRecord {
+                carrier: carrier.clone(),
+                key,
+            }),
+        };
         match admission::admit_tool(
             &self.store,
             self.host.as_ref(),
@@ -243,64 +292,51 @@ impl Codemode {
         )
         .map_err(storage)?
         {
-            Admission::Refused(refusal) => Err(ErrorBody::new(refusal.code, refusal.message)),
-            Admission::Existing(_) => {
-                if let Some(key) = &request.call_key {
-                    self.store.write(|tx| {
-                        tx.execute("INSERT OR IGNORE INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian) VALUES (?1,?2,?3,?4,?5)",
-                            rusqlite::params![carrier,key,id,record_scope,custodian])?;
-                        Ok(())
-                    }).map_err(storage)?;
-                }
-                Ok(id)
-            }
+            Admission::Refused(refusal) => Err(if let Some(field) = refusal.field {
+                crate::tool::invalid(field, refusal.message)
+            } else {
+                ErrorBody::new(refusal.code, refusal.message)
+            }),
+            Admission::Existing(_) => Ok(completed_invocation()),
             Admission::Admitted { run, start } => {
                 if cancelled() {
                     self.supervisor.cancel(&id).map_err(storage)?;
                 } else if let Some(start) = start {
                     self.supervisor.start(*run, *start).map_err(storage)?;
                 }
-                Ok(id)
+                Ok(completed_invocation())
             }
         }
     }
 
-    pub(crate) fn wait(&self, id: &str, timeout: Duration) -> Result<Option<Value>, ErrorBody> {
+    pub(crate) fn wait(
+        &self,
+        invocation: &Invocation,
+        timeout: Duration,
+    ) -> Result<Option<Value>, ErrorBody> {
+        let id = &invocation.id;
         let result = self.supervisor.wait(id, timeout).map_err(storage)?;
         let mut late = self.late_lock.lock().unwrap();
         let result = match result {
-            Some(result) => {
-                if !late.held.contains(id) {
-                    self.store
-                        .write(|tx| {
-                            // `published` means "nothing left to publish": either
-                            // the feed entry is durable or the answer is inline.
-                            // A crash before this write can cause a harmless
-                            // recovery copy, but cannot suppress a held answer.
-                            tx.execute(
-                                "UPDATE codemode_tool_calls SET published=1 WHERE run_id=?1",
-                                [id],
-                            )?;
-                            Ok(())
-                        })
-                        .map_err(storage)?;
-                }
-                Some(render(id, result))
-            }
+            Some(result) => Some(render(id, result)),
             None => {
-                if !late.published.contains_key(id) && late.held.insert(id.to_owned()) {
+                if let Some(record) = &invocation.record
+                    && !late.published.contains_key(record)
+                    && !late.held.contains_key(record)
+                {
                     self.store
                         .write(|tx| {
                             // Record the held decision before running() can return
                             // it. A concurrent inline reply does not cancel the late
                             // result owed to this caller.
                             tx.execute(
-                                "UPDATE codemode_tool_calls SET published=0 WHERE run_id=?1",
-                                [id],
+                                "UPDATE codemode_tool_calls SET published=0 WHERE carrier=?1 AND call_key=?2 AND published=1",
+                                rusqlite::params![record.carrier, record.key],
                             )?;
                             Ok(())
                         })
                         .map_err(storage)?;
+                    late.held.insert(record.clone(), id.clone());
                 }
                 None
             }
@@ -311,12 +347,20 @@ impl Codemode {
 
     /// The reply for a keyed call whose program is still running when the
     /// foreground wait ends.
-    pub(crate) fn running(&self, id: &str, consumer_capabilities: Option<&[String]>) -> Value {
-        running(id, &self.supervisor.holds(id), consumer_capabilities)
+    pub(crate) fn running(
+        &self,
+        invocation: &Invocation,
+        consumer_capabilities: Option<&[String]>,
+    ) -> Value {
+        running(
+            &invocation.id,
+            &self.supervisor.holds(&invocation.id),
+            consumer_capabilities,
+        )
     }
 
-    pub(crate) fn cancel(&self, id: &str) -> Result<(), ErrorBody> {
-        self.supervisor.cancel(id).map_err(storage)?;
+    pub(crate) fn cancel(&self, invocation: &Invocation) -> Result<(), ErrorBody> {
+        self.supervisor.cancel(&invocation.id).map_err(storage)?;
         self.publish()
     }
 
@@ -354,11 +398,28 @@ impl Codemode {
             | withdraw::CarrierResolution::OwnerAsCarrier(carrier) => carrier,
         };
         let _records = self.records.lock().unwrap();
-        let record = self.store.read(|conn| Ok(conn.query_row(
-            "SELECT run_id,scope,withdrawal FROM codemode_tool_calls WHERE carrier=?1 AND call_key=?2",
-            rusqlite::params![carrier,arguments.call_key],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))
-        ).optional()?)).map_err(storage)?;
-        let Some((id, record_scope, answer)) = record else {
+        let record = self
+            .store
+            .read(|conn| {
+                Ok(conn
+                    .query_row(
+                        "SELECT c.run_id,c.scope,c.withdrawal, r.run_id IS NOT NULL
+             FROM codemode_tool_calls c LEFT JOIN codemode_runs r USING(run_id)
+             WHERE c.carrier=?1 AND c.call_key=?2",
+                        rusqlite::params![carrier, arguments.call_key],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, bool>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()?)
+            })
+            .map_err(storage)?;
+        let Some((id, record_scope, answer, retained)) = record else {
             return if matches!(resolution, withdraw::CarrierResolution::OwnerAsCarrier(_)) {
                 Err(withdraw::CallerProblem::CarrierRequired.error())
             } else {
@@ -371,8 +432,13 @@ impl Codemode {
         withdraw::check_record_scope(record_scope.as_ref(), scope.as_ref())
             .map_err(|e| e.error())?;
         if let Some(answer) = answer {
-            return serde_json::from_str(&answer)
-                .map_err(|e| crate::tool::invalid("record", e.to_string()));
+            let answer: Value = serde_json::from_str(&answer)
+                .map_err(|e| crate::tool::invalid("record", e.to_string()))?;
+            return Ok(if !retained && answer["result_retained"] == true {
+                pruned_withdrawal()
+            } else {
+                answer
+            });
         }
         let result = self.supervisor.result(&id).map_err(storage)?;
         let answer = if let Some(result) = result {
@@ -398,10 +464,17 @@ impl Codemode {
             json!({"answer":"completed","outcome":"unknown","result_retained":false})
         };
         self.store.write(|tx| {
+            // Retention can prune the run between rendering and saving the reply.
+            let answer = if answer["result_retained"] == true && !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM codemode_runs WHERE run_id=?1)", [&id], |r| r.get::<_, bool>(0),
+            )? {
+                pruned_withdrawal()
+            } else {
+                answer
+            };
             tx.execute("UPDATE codemode_tool_calls SET withdrawal=?3 WHERE carrier=?1 AND call_key=?2 AND withdrawal IS NULL",rusqlite::params![carrier,arguments.call_key,answer.to_string()])?;
-            Ok(())
-        }).map_err(storage)?;
-        Ok(answer)
+            Ok(answer)
+        }).map_err(storage)
     }
 
     fn publish(&self) -> Result<(), ErrorBody> {
@@ -410,16 +483,15 @@ impl Codemode {
     }
 
     fn publish_held(&self, late: &mut LateCalls) -> Result<(), ErrorBody> {
-        let ids = late.held.iter().cloned().collect::<Vec<_>>();
-        for id in ids {
+        for (record, id) in late.held.clone() {
             if let Some(result) = self.supervisor.result(&id).map_err(storage)?
                 && result["status"] != "running"
             {
-                publish_result(&self.store, &id, result)?;
-                late.mark_published(&id, self.clock.now_ms());
+                publish_result(&self.store, &id, &result, Some(&record))?;
+                late.mark_published(record, self.clock.now_ms());
             }
         }
-        maintain_late(&self.store, &self.clock)
+        Ok(())
     }
 
     fn publish_recovered(&self) -> Result<(), ErrorBody> {
@@ -441,7 +513,7 @@ impl Codemode {
             if let Some(result) = self.supervisor.result(&id).map_err(storage)?
                 && result["status"] != "running"
             {
-                publish_result(&self.store, &id, result)?;
+                publish_result(&self.store, &id, &result, None)?;
             }
         }
         maintain_late(&self.store, &self.clock)
@@ -457,14 +529,23 @@ impl Codemode {
         let custodian = crate::tool::principal(&context.principal)?;
         let request: late_results::LateResultsRequest = serde_json::from_value(arguments)
             .map_err(|e| crate::tool::invalid("arguments", e.to_string()))?;
-        self.publish()?;
+        {
+            let mut late = self.late_lock.lock().unwrap();
+            self.publish_held(&mut late)?;
+            maintain_late(&self.store, &self.clock)?;
+        }
         let head = self.head(&custodian)?;
         late_results::check_since(&self.incarnation, head, request.since.as_ref())?;
         let limit = request.limit.unwrap_or(100).clamp(1, 1000) as usize;
         let since = request.since.map_or(0, |cursor| cursor.seq);
         let rows = self.store.read(|conn| {
-            let mut statement = conn.prepare("SELECT seq,entry FROM codemode_late_results WHERE custodian=?1 AND seq>?2 ORDER BY seq LIMIT ?3")?;
-            Ok(statement.query_map(rusqlite::params![custodian,since,limit + 1],|row| Ok((row.get::<_,u64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+            // A backlog may exceed one maintenance batch. Do not return any
+            // overdue bodies even if their rows have not been reduced yet.
+            let mut statement = conn.prepare(&format!(
+                "SELECT seq, CASE WHEN expired=0 AND settled_at<=?4 THEN {EXPIRED_ENTRY} ELSE entry END
+                 FROM codemode_late_results WHERE custodian=?1 AND seq>?2 ORDER BY seq LIMIT ?3",
+            ))?;
+            Ok(statement.query_map(rusqlite::params![custodian,since,limit + 1,late_cutoff(&self.clock)],|row| Ok((row.get::<_,u64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
         }).map_err(storage)?;
         let more = rows.len() > limit;
         let mut cursor = since;
@@ -502,6 +583,10 @@ impl Codemode {
     pub(crate) fn stop(&self) -> Result<(), CoreError> {
         self.supervisor.shutdown()
     }
+}
+
+fn pruned_withdrawal() -> Value {
+    json!({"answer":"completed","outcome":"unknown","result_retained":false})
 }
 
 fn random_id() -> Result<String, ErrorBody> {
@@ -1015,10 +1100,22 @@ fn bounded_result(mut reply: cortexkit_role_tool_provider::result::ToolResult) -
     serde_json::to_value(reply).expect("JSON result")
 }
 
-fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBody> {
+fn publish_result(
+    store: &Store,
+    id: &str,
+    result: &Value,
+    record: Option<&CallRecord>,
+) -> Result<(), ErrorBody> {
     let records = store.read(|conn| {
-        let mut statement = conn.prepare("SELECT carrier,call_key,scope,custodian FROM codemode_tool_calls WHERE run_id=?1 AND published=0")?;
-        Ok(statement.query_map([id],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        let base = "SELECT carrier,call_key,scope,custodian FROM codemode_tool_calls WHERE run_id=?1 AND published=0";
+        let row = |row: &rusqlite::Row<'_>| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?));
+        Ok(if let Some(record) = record {
+            conn.prepare(&format!("{base} AND carrier=?2 AND call_key=?3"))?
+                .query_map(rusqlite::params![id, record.carrier, record.key], row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            conn.prepare(base)?.query_map([id], row)?.collect::<rusqlite::Result<Vec<_>>>()?
+        })
     }).map_err(storage)?;
     for (carrier, key, scope, custodian) in records {
         let scope: cortexkit_role_tool_provider::scope::ScopeIdentity =
@@ -1041,14 +1138,14 @@ fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBod
                 .as_str()
                 .filter(|code| !code.is_empty())
                 .unwrap_or("unknown"),
-            _ if result["status"] == "completed" || cut_return(&result) => "ok",
+            _ if result["status"] == "completed" || cut_return(result) => "ok",
             _ => "unknown",
         }
         .to_owned();
         let entry = late_results::LateEntry::new(
             late_results::kinds::RESULT,
-            scope.owner,
-            scope.scope_ref,
+            &scope.owner,
+            &scope.scope_ref,
             scope.scope_epoch,
             custodian.clone(),
             key.clone(),
@@ -1061,6 +1158,7 @@ fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBod
                 rusqlite::params![custodian,serde_json::to_string(&entry).unwrap(),event_id,settled_at])?;
             if inserted != 0 {
                 basal_core::bus_outbox::enqueue_late_result_wake(tx, &custodian, &key, &outcome, &event_id, settled_at)?;
+                trim_late(tx, &custodian, Some(&scope.owner), Some((&scope.scope_ref, scope.scope_epoch)))?;
             }
             tx.execute("UPDATE codemode_tool_calls SET published=1 WHERE carrier=?1 AND call_key=?2",rusqlite::params![carrier,key])?;
             Ok(())
@@ -1069,13 +1167,78 @@ fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBod
     Ok(())
 }
 
+const LATE_BATCH: usize = 128;
+const EXPIRED_ENTRY: &str = "json_set(json_remove(entry,'$.result'),'$.kind','expired',
+    '$.reduced',json('true'),'$.outcome','expired')";
+
+fn late_cutoff(clock: &Clock) -> i64 {
+    clock
+        .now_ms()
+        .saturating_sub(basal_core::codemode::retention::RETENTION_MS)
+}
+
+fn trim_late(
+    tx: &rusqlite::Transaction<'_>,
+    custodian: &str,
+    owner: Option<&str>,
+    scope: Option<(&str, u64)>,
+) -> Result<(), CoreError> {
+    let expired = scope.is_none();
+    let (reference, epoch) = scope.unzip();
+    // Only this feed's affected partition can have crossed its inventory cap.
+    let mut trim = tx.prepare(
+        "DELETE FROM codemode_late_results WHERE seq IN (
+            SELECT seq FROM codemode_late_results WHERE custodian=?1 AND expired=?2
+              AND json_extract(entry,'$.owner') IS ?3
+              AND (?2 OR (json_extract(entry,'$.ref')=?4 AND json_extract(entry,'$.scope_epoch')=?5))
+            ORDER BY seq DESC LIMIT ?6 OFFSET 1000
+         ) RETURNING custodian,seq",
+    )?;
+    let deleted = trim
+        .query_map(
+            rusqlite::params![custodian, expired, owner, reference, epoch, LATE_BATCH],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    basal_core::codemode::retention::raise_late_cursor_floors(tx, deleted)
+}
+
 fn maintain_late(store: &Store, clock: &Clock) -> Result<(), ErrorBody> {
-    store.write(|tx| {
-        tx.execute("UPDATE codemode_late_results SET entry=json_set(json_remove(entry,'$.result'),'$.kind','expired','$.reduced',json('true'),'$.outcome','expired'), expired=1 WHERE expired=0 AND settled_at<=?1",[clock.now_ms().saturating_sub(24 * 60 * 60 * 1000)])?;
-        tx.execute("DELETE FROM codemode_late_results WHERE seq IN (SELECT seq FROM (SELECT seq,ROW_NUMBER() OVER (PARTITION BY custodian,json_extract(entry,'$.owner'),json_extract(entry,'$.ref'),json_extract(entry,'$.scope_epoch') ORDER BY seq DESC) AS n FROM codemode_late_results WHERE expired=0) WHERE n>1000)",[])?;
-        tx.execute("DELETE FROM codemode_late_results WHERE seq IN (SELECT seq FROM (SELECT seq,ROW_NUMBER() OVER (PARTITION BY json_extract(entry,'$.owner') ORDER BY seq DESC) AS n FROM codemode_late_results WHERE expired=1) WHERE n>1000)",[])?;
-        Ok(())
-    }).map_err(storage)
+    let cutoff = late_cutoff(clock);
+    let due = store
+        .read(|conn| {
+            Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM codemode_late_results WHERE expired=0 AND settled_at<=?1)",
+        [cutoff], |r| r.get::<_, bool>(0),
+    )?)
+        })
+        .map_err(storage)?;
+    if !due {
+        return Ok(());
+    }
+    store
+        .write(|tx| {
+            let affected: BTreeSet<(String, Option<String>)> = {
+                let mut reduce = tx.prepare(&format!(
+                    "UPDATE codemode_late_results SET
+                    entry={EXPIRED_ENTRY},
+                    expired=1 WHERE seq IN (
+                        SELECT seq FROM codemode_late_results WHERE expired=0 AND settled_at<=?1
+                        ORDER BY settled_at,seq LIMIT ?2
+                    ) RETURNING custodian,json_extract(entry,'$.owner')",
+                ))?;
+                reduce
+                    .query_map(rusqlite::params![cutoff, LATE_BATCH], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for (custodian, owner) in affected {
+                trim_late(tx, &custodian, owner.as_deref(), None)?;
+            }
+            Ok(())
+        })
+        .map_err(storage)
 }
 
 #[cfg(test)]
@@ -1092,6 +1255,30 @@ mod late_cursor_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overlapping_admissions_share_and_release_a_run_slot() {
+        let admissions = super::Admissions::default();
+        let barrier = std::sync::Barrier::new(2);
+        let first = super::AdmissionSlot::new(&admissions, "run");
+        let second = super::AdmissionSlot::new(&admissions, "run");
+        let barrier = &barrier;
+        assert!(std::sync::Arc::ptr_eq(
+            first.slot.as_ref().unwrap(),
+            second.slot.as_ref().unwrap()
+        ));
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                barrier.wait();
+                drop(first);
+            });
+            scope.spawn(move || {
+                barrier.wait();
+                drop(second);
+            });
+        });
+        assert!(admissions.lock().unwrap().is_empty());
+    }
+
     use super::*;
 
     #[test]
@@ -1191,6 +1378,7 @@ mod tests {
                     let entry = late_results::LateEntry::new("result","reserved:prefrontal",session,7,"reserved:broca",event.clone(),event.clone(),100).with_result(json!(42));
                     tx.execute("INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES ('reserved:broca',?1,?2,100)",rusqlite::params![serde_json::to_string(&entry).unwrap(),event])?;
                 }
+                trim_late(tx, "reserved:broca", Some("reserved:prefrontal"), Some((session, 7)))?;
             }
             Ok(())
         }).unwrap();
@@ -1213,6 +1401,19 @@ mod tests {
             .unwrap();
         clock.advance(24 * 60 * 60 * 1000);
         maintain_late(&store, &clock).unwrap();
+        let expired = store
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM codemode_late_results WHERE expired=1",
+                    [],
+                    |r| r.get::<_, usize>(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(expired, LATE_BATCH);
+        for _ in 0..(2_000 - LATE_BATCH).div_ceil(LATE_BATCH) {
+            maintain_late(&store, &clock).unwrap();
+        }
         store
             .read(|conn| {
                 let (count, expired): (i64, i64) = conn.query_row(
