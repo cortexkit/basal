@@ -490,7 +490,8 @@ impl Scan {
             return;
         }
         // The run's overlay commits in the same transaction as its summary.
-        if path.ends_with("basal-core/src/run_driver/terminal.rs") && function == "apply" {
+        // `Projection::apply` delegates the run's writes to `apply_run`.
+        if path.ends_with("basal-core/src/run_driver/terminal.rs") && function == "apply_run" {
             self.terminal_overlay_writes += 1;
             return;
         }
@@ -1063,7 +1064,7 @@ fn scan_allows_the_named_run_driver_kv_sites_with_exact_counts() {
             "basal-core/src/run_driver/terminal.rs",
             r#"
             impl Projection {
-                fn apply() {
+                fn apply_run() {
                     execute("DELETE FROM kv WHERE flow_id=?1 AND key=?2");
                     execute("INSERT INTO kv(flow_id,key,value) VALUES(?1,?2,?3)");
                     execute("DELETE FROM kv WHERE flow_id=?1 AND key=?2");
