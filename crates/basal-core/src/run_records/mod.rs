@@ -175,8 +175,8 @@ impl Records {
     pub(crate) fn bind_budgets(&mut self, budgets: crate::run_driver::Budgets) {
         self.budgets = Some(budgets);
     }
-    pub(crate) fn budgets(&self) -> Option<crate::run_driver::Budgets> {
-        self.budgets.clone()
+    pub(crate) fn budgets(&self) -> Option<&crate::run_driver::Budgets> {
+        self.budgets.as_ref()
     }
     pub(crate) fn identity(&self) -> Option<&crate::run_store_sql::RunIdentity> {
         self.identity.as_ref()

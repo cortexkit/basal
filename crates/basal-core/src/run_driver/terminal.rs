@@ -38,7 +38,7 @@ pub struct Terminal {
     pub error_kind: Option<String>,
     pub error_detail: Option<String>,
     pub result: Option<Value>,
-    pub budgets: Budgets,
+    budgets: Option<Budgets>,
     pub effects: Arc<dyn TerminalEffects>,
     pub(crate) isolate_constraint_errors: bool,
     pub(super) receipt: Arc<AtomicU64>,
@@ -50,6 +50,25 @@ impl Terminal {
         state: RunState,
         ended_at: i64,
         budgets: Budgets,
+        effects: Arc<dyn TerminalEffects>,
+    ) -> Self {
+        Self::new_inner(live, state, ended_at, Some(budgets), effects)
+    }
+
+    pub(crate) fn with_record_budgets(
+        live: LiveRun,
+        state: RunState,
+        ended_at: i64,
+        effects: Arc<dyn TerminalEffects>,
+    ) -> Self {
+        Self::new_inner(live, state, ended_at, None, effects)
+    }
+
+    fn new_inner(
+        live: LiveRun,
+        state: RunState,
+        ended_at: i64,
+        budgets: Option<Budgets>,
         effects: Arc<dyn TerminalEffects>,
     ) -> Self {
         Self {
@@ -158,8 +177,16 @@ impl TerminalBuilder<Records> for Terminal {
                 "terminal identity or state is invalid".into(),
             ));
         }
+        // RunStore holds the run's actor mutex until the terminal committer
+        // replies. Read cached budgets only after the exclusive closer guard
+        // is acquired so competing closes return busy without waiting.
+        let budgets = self
+            .budgets
+            .as_ref()
+            .or_else(|| records.budgets())
+            .ok_or_else(|| CoreError::Corrupt(format!("run {run_id} has no accounting budgets")))?;
         let state = records.state().clone();
-        let rows = accounting::rows(&state, &self.budgets)?;
+        let rows = accounting::rows(&state, budgets)?;
         let mut classes = BTreeMap::<String, u64>::new();
         let mut outcomes = BTreeMap::<String, u64>::new();
         let mut writes_sent = 0;
@@ -228,7 +255,7 @@ impl TerminalBuilder<Records> for Terminal {
             summary,
             incarnation: self.live.template_incarnation,
             state,
-            budgets: self.budgets.clone(),
+            budgets: budgets.clone(),
             effects,
             isolate_constraint_errors: self.isolate_constraint_errors,
             receipt: self.receipt.clone(),

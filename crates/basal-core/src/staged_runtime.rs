@@ -1827,11 +1827,10 @@ impl Runtime {
             acknowledgements: Default::default(),
             audit_actor: audit_actor.map(str::to_owned),
         });
-        let mut terminal = Terminal::new(
+        let mut terminal = Terminal::with_record_budgets(
             live,
             state,
             self.config.clock.now_ms(),
-            actor.budgets()?,
             services.clone(),
         );
         terminal.error_kind = kind.map(str::to_owned);

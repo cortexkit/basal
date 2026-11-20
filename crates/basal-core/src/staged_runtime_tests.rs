@@ -1100,6 +1100,54 @@ fn consecutive_runs_each_keep_their_own_dollar_cap() {
 }
 
 #[test]
+fn second_close_returns_while_the_first_is_parked_in_the_committer() {
+    use std::sync::mpsc;
+
+    struct PauseCommit {
+        reached: mpsc::Sender<()>,
+        resume: Mutex<mpsc::Receiver<()>>,
+    }
+    impl crate::Hooks for PauseCommit {
+        fn at(&self, _: &str, boundary: &crate::Boundary) -> crate::Step {
+            if *boundary == crate::Boundary::RunStoreBuilt {
+                self.reached.send(()).unwrap();
+                self.resume.lock().unwrap().recv().unwrap();
+            }
+            crate::Step::Continue
+        }
+    }
+
+    let (reached, at) = mpsc::channel();
+    let (resume, wait) = mpsc::channel();
+    let f = Fixture::with_hooks(
+        false,
+        Arc::new(PauseCommit {
+            reached,
+            resume: Mutex::new(wait),
+        }),
+    );
+    f.install("closing", 1, json!({}));
+    let id = f.admit("closing", "first");
+    let finish = || f.rt.staged_finish(&id, RunState::Failed, None, None);
+    let timeout = Duration::from_secs(10);
+    std::thread::scope(move |scope| {
+        let first = scope.spawn(finish);
+        at.recv_timeout(timeout).unwrap();
+        let (reply, result) = mpsc::channel();
+        let second = scope.spawn(move || reply.send(finish()).unwrap());
+        let while_parked = result.recv_timeout(timeout);
+        resume.send(()).unwrap();
+        drop(resume);
+        first.join().unwrap().unwrap();
+        second.join().unwrap();
+        assert_eq!(
+            while_parked.expect("the second close waited for the terminal committer"),
+            Err(CoreError::Unavailable("another closer is active".into()))
+        );
+    });
+}
+
+#[test]
 fn attribution_flow_session_is_committed_before_model_send() {
     let f = Fixture::new(false);
     f.install("owned", 1, llm("1h"));
