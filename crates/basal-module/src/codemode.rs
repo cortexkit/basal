@@ -1161,9 +1161,22 @@ fn publish_result(
 fn maintain_late(store: &Store, clock: &Clock) -> Result<(), ErrorBody> {
     store.write(|tx| {
         tx.execute("UPDATE codemode_late_results SET entry=json_set(json_remove(entry,'$.result'),'$.kind','expired','$.reduced',json('true'),'$.outcome','expired'), expired=1 WHERE expired=0 AND settled_at<=?1",[clock.now_ms().saturating_sub(24 * 60 * 60 * 1000)])?;
-        tx.execute("DELETE FROM codemode_late_results WHERE seq IN (SELECT seq FROM (SELECT seq,ROW_NUMBER() OVER (PARTITION BY custodian,json_extract(entry,'$.owner'),json_extract(entry,'$.ref'),json_extract(entry,'$.scope_epoch') ORDER BY seq DESC) AS n FROM codemode_late_results WHERE expired=0) WHERE n>1000)",[])?;
-        tx.execute("DELETE FROM codemode_late_results WHERE seq IN (SELECT seq FROM (SELECT seq,ROW_NUMBER() OVER (PARTITION BY json_extract(entry,'$.owner') ORDER BY seq DESC) AS n FROM codemode_late_results WHERE expired=1) WHERE n>1000)",[])?;
-        Ok(())
+        let mut trim = tx.prepare(
+            "DELETE FROM codemode_late_results WHERE seq IN (
+                SELECT seq FROM (
+                    SELECT seq, ROW_NUMBER() OVER (
+                        PARTITION BY custodian, expired, json_extract(entry,'$.owner'),
+                            CASE WHEN expired=0 THEN json_extract(entry,'$.ref') END,
+                            CASE WHEN expired=0 THEN json_extract(entry,'$.scope_epoch') END
+                        ORDER BY seq DESC
+                    ) AS n FROM codemode_late_results
+                ) WHERE n>1000
+             ) RETURNING custodian,seq",
+        )?;
+        let deleted = trim
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        basal_core::codemode::retention::raise_late_cursor_floors(tx, deleted)
     }).map_err(storage)
 }
 

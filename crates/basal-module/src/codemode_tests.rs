@@ -260,3 +260,52 @@ fn held_reply_creates_no_late_debt_for_an_inline_carrier() {
     drop((codemode, store));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn expired_inventory_trim_preserves_each_custodians_cursor() {
+    let (store, _, codemode, context, root) = late_fixture();
+    let seed = |custodian: &str, ids: std::ops::Range<u32>| {
+        store
+            .write(|tx| {
+                for id in ids {
+                    let expired = id != 1001;
+                    let id = id.to_string();
+                    let entry = late_results::LateEntry::new(
+                        "expired", "agent", "scope", 1, custodian, &id, &id, 1,
+                    );
+                    tx.execute(
+                        "INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at,expired)
+                         VALUES (?1,?2,?3,1,?4)",
+                        rusqlite::params![custodian, serde_json::to_string(&entry).unwrap(), id, expired],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    };
+    seed("reserved:broca", 0..1);
+    let first = codemode.late(&context, json!({})).unwrap();
+    seed("reserved:other", 1..1002);
+    let next = codemode
+        .late(&context, json!({"since":first["cursor"]}))
+        .expect("another custodian's overflow must not invalidate the cursor");
+    assert_eq!(next["cursor"], first["cursor"]);
+    assert_eq!(next["entries"], json!([]));
+    assert_eq!(codemode.late(&context, json!({})).unwrap(), first);
+    let (other_rows, other_floor) = store
+        .read(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*),(SELECT through_seq FROM codemode_late_acks WHERE custodian='reserved:other')
+                 FROM codemode_late_results WHERE expired=1 AND custodian='reserved:other'",
+                [],
+                |row| Ok((row.get::<_, usize>(0)?, row.get::<_, i64>(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!((other_rows, other_floor), (1000, 2));
+    codemode
+        .ack(&context, json!({"through":first["cursor"]}))
+        .unwrap();
+    drop((codemode, store));
+    std::fs::remove_dir_all(root).unwrap();
+}

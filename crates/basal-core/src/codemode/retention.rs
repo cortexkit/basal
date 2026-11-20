@@ -123,18 +123,24 @@ fn sweep_late_results(store: &Store, now_ms: i64) -> Result<()> {
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
 
-        // The ack row doubles as a floor for the custodian's head after a
-        // sweep: a cursor pointing to a deleted row must still be valid.
-        // Reads still start at the caller's cursor, not at this floor.
-        let mut floor = tx.prepare(
-            "INSERT INTO codemode_late_acks(custodian, through_seq) VALUES (?1, ?2)
-             ON CONFLICT(custodian) DO UPDATE SET through_seq = MAX(through_seq, excluded.through_seq)",
-        )?;
-        for (custodian, seq) in deleted {
-            floor.execute(params![custodian, seq])?;
-        }
-        Ok(())
+        raise_late_cursor_floors(tx, deleted)
     })
+}
+
+/// Preserve cursor validity after deleting rows. Reads still start at the
+/// caller's cursor, not at this floor. Call inside the deletion transaction.
+pub fn raise_late_cursor_floors(
+    tx: &Transaction,
+    deleted: impl IntoIterator<Item = (String, i64)>,
+) -> Result<()> {
+    let mut floor = tx.prepare(
+        "INSERT INTO codemode_late_acks(custodian, through_seq) VALUES (?1, ?2)
+         ON CONFLICT(custodian) DO UPDATE SET through_seq = MAX(through_seq, excluded.through_seq)",
+    )?;
+    for (custodian, seq) in deleted {
+        floor.execute(params![custodian, seq])?;
+    }
+    Ok(())
 }
 
 fn prune(tx: &Transaction, run_id: &str, cutoff: i64, now_ms: i64) -> Result<bool> {
