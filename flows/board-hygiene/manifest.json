@@ -1,9 +1,9 @@
 {
   "format": 1,
   "id": "board-hygiene",
-  "version": 20,
+  "version": 21,
   "explanation": "Checks each owner's board and unsettled work every five minutes for ended waits, overdue ETAs, stale items, completed lanes and deliveries awaiting review or settlement. Maintains a digest list per owner and rule, waking the owner only when an item joins a list and leaving unchanged lists alone. This keeps forgotten work visible and helps owners unblock dependent campaign slices.",
-  "changes": "Names owned deliveries still not merged after 30 minutes, measured from delivery time, including deliveries with absent or unavailable Git facts. Shows up to three blocked slice titles and asks the owner to review, merge and settle, or reject the delivery. Merged deliveries remain on the existing settlement rule.",
+  "changes": "Overdue peer-wait reminders now name the waiting agent, say the item is on that agent's board, and give the exact reference to use when declining.",
   "purpose": "Maintain one digest per recipient and board rule for ended waits, overdue ETAs, stale active items, completed lanes and merged deliveries left unsettled; wake only when a member joins a list.",
   "trigger": {"schedule": {"cron": "*/5 * * * *", "tz": "UTC", "missed": "skip"}},
   "audience": {"kind": "global"},

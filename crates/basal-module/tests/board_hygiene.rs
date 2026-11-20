@@ -25,6 +25,7 @@ const BASE: u64 = 1_800_000_000_000;
 struct BoardHost {
     mock: MockHost,
     boards: Mutex<Vec<Value>>,
+    board_page: Mutex<Option<JsonText>>,
     activity: Mutex<Value>,
     primary_turn_end: Mutex<Value>,
     facts_calls: AtomicUsize,
@@ -74,6 +75,10 @@ impl BoardHost {
                 assert_eq!(args["limit"], 16);
                 assert!(args.get("agents").is_none());
                 self.reads.lock().unwrap().push(args.clone());
+                if let Some(page) = self.board_page.lock().unwrap().clone() {
+                    assert!(args.get("cursor").is_none());
+                    return Some(HostOutcome::fulfilled(page));
+                }
                 let boards = self.boards.lock().unwrap();
                 let start = args["cursor"].as_str().map_or(0, |cursor| {
                     boards.iter().position(|b| b["agent_id"] == cursor).unwrap() + 1
@@ -260,7 +265,7 @@ impl Test {
         } else {
             // The shipped manifest describes an upgrade, so intake needs an earlier version.
             let mut previous: Value = serde_json::from_str(MANIFEST).unwrap();
-            previous["version"] = json!(19);
+            previous["version"] = json!(20);
             previous.as_object_mut().unwrap().remove("changes");
             basal_core::test_support::seed_stored_version(
                 &f.module.rt,
@@ -339,7 +344,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse_stored(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 20);
+    assert_eq!(value["version"], 21);
     assert!(!value["explanation"].as_str().unwrap().is_empty());
     assert!(!value["changes"].as_str().unwrap().is_empty());
     assert_eq!(value["board_read"], json!(["$audience"]));
@@ -700,6 +705,7 @@ fn plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner() {
         ("PEER", json!("peer:ag_b"), "ag_b"),
         ("ag_b", json!("peer:agent_unknown"), "ag_a"),
         ("ag_b", json!("peer:"), "ag_a"),
+        ("ag_b", json!("peer:PEER"), "ag_a"),
         ("agent_unknown", Value::Null, "ag_a"),
         ("PEER", Value::Null, "ag_a"),
         ("ag_b", json!("work:x"), "ag_a"),
@@ -711,7 +717,9 @@ fn plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner() {
         if !reference.is_null() {
             i["wait"]["ref"] = reference;
         }
-        let mut t = Test::new(vec![board("ag_a", vec![i]), board("ag_b", vec![])]);
+        let mut peer = board("ag_b", vec![]);
+        peer["name"] = json!("PEER");
+        let mut t = Test::new(vec![board("ag_a", vec![i]), peer]);
         let writes = t.run(BASE + 6 * HOUR);
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0]["agent"], recipient);
@@ -1402,6 +1410,65 @@ fn a_peer_ref_with_a_display_name_nudges_only_the_known_peer() {
 }
 
 #[test]
+fn board_read_vector_names_waiters_and_keeps_decline_refs_on_stable_ids() {
+    use sha2::{Digest, Sha256};
+
+    let reply = include_str!("../../../test-vectors/board-read-v1/reply.json");
+    let sums = include_str!("../../../test-vectors/board-read-v1/SHA256SUMS");
+    let readme = include_bytes!("../../../test-vectors/board-read-v1/README.md");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(sums)),
+        "5b80e62b8f3059aba2c51de8147f5648eb8cedecce0b952f9803ea368cca49d6"
+    );
+    assert_eq!(sums, format!("{:x}  reply.json\n", Sha256::digest(reply)));
+    assert_eq!(
+        format!("{:x}", Sha256::digest(readme)),
+        "1bcc38680524437fba7ccb8e7ab5bf7e61c50923afd5b4188c565d7ec4491c25"
+    );
+
+    let mut t = Test::new(vec![]);
+    *t.host.board_page.lock().unwrap() = Some(JsonText::new(reply.to_owned()).unwrap());
+    assert!(t.run(BASE).is_empty());
+    assert_eq!(t.result["boards_scanned"], 2);
+    assert_eq!(t.result["skipped_lane_blocks"], 0);
+
+    // The capture has only status blocks. Add waits to a copy of its two boards.
+    let mut page: Value = serde_json::from_str(reply).unwrap();
+    assert_eq!(
+        page["boards"][1].as_object_mut().unwrap().remove("name"),
+        Some(json!("BETA"))
+    );
+    for (index, owner, peer) in [(0, "ag_a", "ag_b"), (1, "ag_b", "ag_a")] {
+        let mut waiting = item("blocked", BASE);
+        waiting["eta_ms"] = json!(BASE);
+        waiting["wait"] = json!({"ref":format!("peer:{peer}")});
+        page["boards"][index]["board"]["laneBlocks"] =
+            board(owner, vec![waiting])["board"]["laneBlocks"].take();
+    }
+    *t.host.board_page.lock().unwrap() = Some(text(page));
+    let writes = t.run(BASE + MIN);
+    assert_eq!(writes.len(), 2);
+    for (recipient, owner, name) in [("ag_b", "ag_a", "ALPHA"), ("ag_a", "ag_b", "ag_b")] {
+        let write = writes
+            .iter()
+            .find(|write| write["agent"] == recipient)
+            .unwrap();
+        assert_eq!(write["item"]["data"]["entries"][0]["agent_id"], owner);
+        assert_eq!(
+            write["item"]["body"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .nth(1)
+                .unwrap(),
+            format!(
+                "- \"Release\": \"Ship\" (item1): {name} waits on you (item on {name}'s board), ETA passed 08:00Z. Commit with an item of your own, or decline with ref item:{owner}/item1."
+            )
+        );
+    }
+}
+
+#[test]
 fn peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies() {
     for reference in [None, Some("peer:ag_b")] {
         let mut waiting = item("blocked", BASE);
@@ -1434,8 +1501,14 @@ fn peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies() {
         );
         assert!(entries[1].get("own_item_id").is_none());
         let body = first[0]["item"]["body"].as_str().unwrap();
-        assert!(body.contains("ag_a waits on you"));
-        assert!(body.contains("commit with an item on your own board with an ETA, or decline"));
+        assert!(
+            body.lines()
+                .any(|line| line == "- \"Release\": \"Ship\" (own): ETA passed 08:00Z")
+        );
+        assert!(body.lines().any(|line| line == "- \"Release\": \"Ship\" (item1): ag_a waits on you (item on ag_a's board), ETA passed 09:00Z. Commit with an item of your own, or decline with ref item:ag_a/item1."));
+        assert!(body.contains(
+            "commit with an item on your own board with an ETA, or decline with the ref shown"
+        ));
         assert!(rule(&t.run(BASE + 3 * HOUR), "eta_passed").is_empty());
         t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"][0]["state"] =
             json!("done");
