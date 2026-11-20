@@ -228,9 +228,77 @@ fn production_open_keeps_the_legacy_schema_and_meta() {
         })
         .unwrap();
     assert!(!dir.join("run-log").exists());
-    assert_eq!(MIGRATIONS.last().unwrap().version, 53);
+    assert_eq!(MIGRATIONS.last().unwrap().version, 54);
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn migration_54_preserves_v53_late_feeds_and_indexes_due_probes() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    for migration in MIGRATIONS.iter().filter(|migration| migration.version < 54) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch(
+        r#"INSERT INTO codemode_late_results VALUES
+           (4,'reserved:broca','{"kind":"result"}','live',100,0),
+           (7,'reserved:prefrontal','{"kind":"expired"}','expired',10,1);
+         INSERT INTO codemode_late_acks VALUES ('reserved:broca',3);"#,
+    )
+    .unwrap();
+    let rows = |sql: &str| {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let feeds = "SELECT json_array(seq,custodian,entry,event_id,settled_at,expired) FROM codemode_late_results ORDER BY seq";
+    let acks = "SELECT json_array(custodian,through_seq) FROM codemode_late_acks";
+    let before = (rows(feeds), rows(acks));
+    conn.execute_batch(
+        MIGRATIONS
+            .iter()
+            .find(|m| m.version == 54)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    assert_eq!((rows(feeds), rows(acks)), before);
+    let page_plan: String = conn
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT seq,entry FROM codemode_late_results
+             WHERE custodian='reserved:broca' AND seq>3 ORDER BY seq LIMIT 100",
+            [],
+            |r| r.get(3),
+        )
+        .unwrap();
+    assert!(
+        page_plan.contains("codemode_late_by_custodian"),
+        "{page_plan}"
+    );
+    for predicate in [
+        "expired=0 AND settled_at<=100",
+        "expired IN (0,1) AND settled_at<=100",
+    ] {
+        let sql = format!(
+            "EXPLAIN QUERY PLAN SELECT EXISTS (SELECT 1 FROM codemode_late_results WHERE {predicate})"
+        );
+        let plan = conn
+            .prepare(&sql)
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("SEARCH")
+                && step.contains("codemode_late_by_deadline")
+                && step.contains("settled_at<?")),
+            "{plan:?}"
+        );
+    }
 }
 
 #[test]

@@ -519,6 +519,11 @@ INSERT OR IGNORE INTO package_tool_policies(package,version,module,op,policy)
         version: 53,
         statements: include_str!("../schema_agent_move_v53.sql"),
     },
+    Migration {
+        version: 54,
+        statements: "CREATE INDEX codemode_late_by_custodian ON codemode_late_results(custodian,seq);
+                     CREATE INDEX codemode_late_by_deadline ON codemode_late_results(expired,settled_at);",
+    },
 ];
 
 // A worker run (a codemode run asked for by a worker session, such as a mason,

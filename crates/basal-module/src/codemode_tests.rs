@@ -150,33 +150,63 @@ fn published_held_records_are_forgotten_after_the_race_window() {
 }
 
 #[test]
-fn withdrawing_a_pruned_run_does_not_return_its_cached_result() {
-    let (store, _, codemode, broca, root) = late_fixture();
-    store
-        .write(|tx| {
-            tx.execute(
-                "INSERT INTO codemode_tombstones(run_id,pruned_at) VALUES ('pruned',1)",
+fn expired_inventory_trim_preserves_each_custodians_cursor() {
+    let (store, _, codemode, context, root) = late_fixture();
+    let seed = |custodian: &str, ids: std::ops::Range<u32>| {
+        store
+            .write(|tx| {
+                for id in ids {
+                    let expired = id != 1001;
+                    let id = id.to_string();
+                    let entry = late_results::LateEntry::new(
+                        "expired", "agent", "scope", 1, custodian, &id, &id, 1,
+                    );
+                    tx.execute(
+                        "INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at,expired)
+                         VALUES (?1,?2,?3,1,?4)",
+                        rusqlite::params![custodian, serde_json::to_string(&entry).unwrap(), id, expired],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    };
+    seed("reserved:broca", 0..1);
+    let first = codemode.late(&context, json!({})).unwrap();
+    seed("reserved:other", 1..1002);
+    let next = codemode
+        .late(&context, json!({"since":first["cursor"]}))
+        .expect("another custodian's overflow must not invalidate the cursor");
+    assert_eq!(next["cursor"], first["cursor"]);
+    assert_eq!(next["entries"], json!([]));
+    assert_eq!(codemode.late(&context, json!({})).unwrap(), first);
+    let (other_rows, other_floor) = store
+        .read(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*),(SELECT through_seq FROM codemode_late_acks WHERE custodian='reserved:other')
+                 FROM codemode_late_results WHERE expired=1 AND custodian='reserved:other'",
                 [],
-            )?;
-            tx.execute(
-                "INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian,published,withdrawal)
-                 VALUES ('reserved:broca','key','pruned','null','reserved:broca',1,?1)",
-                [json!({"answer":"completed","result_retained":true,
-                    "result":{"structuredContent":{"value":42}}}).to_string()],
-            )?;
-            Ok(())
+                |row| Ok((row.get::<_, usize>(0)?, row.get::<_, i64>(1)?)),
+            )?)
         })
         .unwrap();
-    // An older build could have pruned the run while leaving a cached result behind.
-    let reply = codemode
-        .withdraw(
-            &broca,
-            &ToolCallRequest::new("tool.withdraw", json!({"call_key":"key"})),
-        )
+    assert_eq!((other_rows, other_floor), (1000, 2));
+    codemode
+        .ack(&context, json!({"through":first["cursor"]}))
         .unwrap();
-    assert_eq!(reply["answer"], "completed");
-    assert_eq!(reply["result_retained"], false);
-    assert!(!reply.as_object().unwrap().contains_key("result"));
+    drop((codemode, store));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn an_idle_late_results_poll_does_not_open_a_write_transaction() {
+    let (store, _, codemode, context, root) = late_fixture();
+    let writes = store.write_transactions_for_test();
+    assert_eq!(
+        codemode.late(&context, json!({})).unwrap()["entries"],
+        json!([])
+    );
+    assert_eq!(store.write_transactions_for_test(), writes);
     drop((codemode, store));
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -262,50 +292,33 @@ fn held_reply_creates_no_late_debt_for_an_inline_carrier() {
 }
 
 #[test]
-fn expired_inventory_trim_preserves_each_custodians_cursor() {
-    let (store, _, codemode, context, root) = late_fixture();
-    let seed = |custodian: &str, ids: std::ops::Range<u32>| {
-        store
-            .write(|tx| {
-                for id in ids {
-                    let expired = id != 1001;
-                    let id = id.to_string();
-                    let entry = late_results::LateEntry::new(
-                        "expired", "agent", "scope", 1, custodian, &id, &id, 1,
-                    );
-                    tx.execute(
-                        "INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at,expired)
-                         VALUES (?1,?2,?3,1,?4)",
-                        rusqlite::params![custodian, serde_json::to_string(&entry).unwrap(), id, expired],
-                    )?;
-                }
-                Ok(())
-            })
-            .unwrap();
-    };
-    seed("reserved:broca", 0..1);
-    let first = codemode.late(&context, json!({})).unwrap();
-    seed("reserved:other", 1..1002);
-    let next = codemode
-        .late(&context, json!({"since":first["cursor"]}))
-        .expect("another custodian's overflow must not invalidate the cursor");
-    assert_eq!(next["cursor"], first["cursor"]);
-    assert_eq!(next["entries"], json!([]));
-    assert_eq!(codemode.late(&context, json!({})).unwrap(), first);
-    let (other_rows, other_floor) = store
-        .read(|conn| {
-            Ok(conn.query_row(
-                "SELECT COUNT(*),(SELECT through_seq FROM codemode_late_acks WHERE custodian='reserved:other')
-                 FROM codemode_late_results WHERE expired=1 AND custodian='reserved:other'",
+fn withdrawing_a_pruned_run_does_not_return_its_cached_result() {
+    let (store, _, codemode, broca, root) = late_fixture();
+    store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO codemode_tombstones(run_id,pruned_at) VALUES ('pruned',1)",
                 [],
-                |row| Ok((row.get::<_, usize>(0)?, row.get::<_, i64>(1)?)),
-            )?)
+            )?;
+            tx.execute(
+                "INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian,published,withdrawal)
+                 VALUES ('reserved:broca','key','pruned','null','reserved:broca',1,?1)",
+                [json!({"answer":"completed","result_retained":true,
+                    "result":{"structuredContent":{"value":42}}}).to_string()],
+            )?;
+            Ok(())
         })
         .unwrap();
-    assert_eq!((other_rows, other_floor), (1000, 2));
-    codemode
-        .ack(&context, json!({"through":first["cursor"]}))
+    // An older build could have pruned the run while leaving a cached result behind.
+    let reply = codemode
+        .withdraw(
+            &broca,
+            &ToolCallRequest::new("tool.withdraw", json!({"call_key":"key"})),
+        )
         .unwrap();
+    assert_eq!(reply["answer"], "completed");
+    assert_eq!(reply["result_retained"], false);
+    assert!(!reply.as_object().unwrap().contains_key("result"));
     drop((codemode, store));
     std::fs::remove_dir_all(root).unwrap();
 }

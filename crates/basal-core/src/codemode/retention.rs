@@ -100,7 +100,7 @@ fn sweep_late_results(store: &Store, now_ms: i64) -> Result<()> {
     let cutoff = now_ms.saturating_sub(LATE_RESULT_RETENTION_MS);
     let due = store.read(|conn| {
         Ok(conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM codemode_late_results WHERE settled_at <= ?1)",
+            "SELECT EXISTS (SELECT 1 FROM codemode_late_results WHERE expired IN (0,1) AND settled_at <= ?1)",
             [cutoff],
             |r| r.get::<_, bool>(0),
         )?)
@@ -113,8 +113,8 @@ fn sweep_late_results(store: &Store, now_ms: i64) -> Result<()> {
         let deleted = {
             let mut stmt = tx.prepare(
                 "DELETE FROM codemode_late_results WHERE seq IN (
-                    SELECT seq FROM codemode_late_results WHERE settled_at <= ?1
-                    ORDER BY seq LIMIT ?2
+                    SELECT seq FROM codemode_late_results
+                    WHERE expired IN (0,1) AND settled_at <= ?1 LIMIT ?2
                 ) RETURNING custodian, seq",
             )?;
             stmt.query_map(params![cutoff, BATCH], |r| {

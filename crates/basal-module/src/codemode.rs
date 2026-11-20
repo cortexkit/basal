@@ -168,7 +168,6 @@ impl Codemode {
                         .map_err(|e| CoreError::Invalid(e.message))?;
                     late.mark_published(record, clock.now_ms());
                 }
-                maintain_late(&store, &clock).map_err(|e| CoreError::Invalid(e.message))?;
             }
             Ok(())
         }));
@@ -492,7 +491,7 @@ impl Codemode {
                 late.mark_published(record, self.clock.now_ms());
             }
         }
-        maintain_late(&self.store, &self.clock)
+        Ok(())
     }
 
     fn publish_recovered(&self) -> Result<(), ErrorBody> {
@@ -530,14 +529,23 @@ impl Codemode {
         let custodian = crate::tool::principal(&context.principal)?;
         let request: late_results::LateResultsRequest = serde_json::from_value(arguments)
             .map_err(|e| crate::tool::invalid("arguments", e.to_string()))?;
-        self.publish()?;
+        {
+            let mut late = self.late_lock.lock().unwrap();
+            self.publish_held(&mut late)?;
+            maintain_late(&self.store, &self.clock)?;
+        }
         let head = self.head(&custodian)?;
         late_results::check_since(&self.incarnation, head, request.since.as_ref())?;
         let limit = request.limit.unwrap_or(100).clamp(1, 1000) as usize;
         let since = request.since.map_or(0, |cursor| cursor.seq);
         let rows = self.store.read(|conn| {
-            let mut statement = conn.prepare("SELECT seq,entry FROM codemode_late_results WHERE custodian=?1 AND seq>?2 ORDER BY seq LIMIT ?3")?;
-            Ok(statement.query_map(rusqlite::params![custodian,since,limit + 1],|row| Ok((row.get::<_,u64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+            // A backlog may exceed one maintenance batch. Do not return any
+            // overdue bodies even if their rows have not been reduced yet.
+            let mut statement = conn.prepare(&format!(
+                "SELECT seq, CASE WHEN expired=0 AND settled_at<=?4 THEN {EXPIRED_ENTRY} ELSE entry END
+                 FROM codemode_late_results WHERE custodian=?1 AND seq>?2 ORDER BY seq LIMIT ?3",
+            ))?;
+            Ok(statement.query_map(rusqlite::params![custodian,since,limit + 1,late_cutoff(&self.clock)],|row| Ok((row.get::<_,u64>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
         }).map_err(storage)?;
         let more = rows.len() > limit;
         let mut cursor = since;
@@ -1150,6 +1158,7 @@ fn publish_result(
                 rusqlite::params![custodian,serde_json::to_string(&entry).unwrap(),event_id,settled_at])?;
             if inserted != 0 {
                 basal_core::bus_outbox::enqueue_late_result_wake(tx, &custodian, &key, &outcome, &event_id, settled_at)?;
+                trim_late(tx, &custodian, Some(&scope.owner), Some((&scope.scope_ref, scope.scope_epoch)))?;
             }
             tx.execute("UPDATE codemode_tool_calls SET published=1 WHERE carrier=?1 AND call_key=?2",rusqlite::params![carrier,key])?;
             Ok(())
@@ -1158,26 +1167,78 @@ fn publish_result(
     Ok(())
 }
 
+const LATE_BATCH: usize = 128;
+const EXPIRED_ENTRY: &str = "json_set(json_remove(entry,'$.result'),'$.kind','expired',
+    '$.reduced',json('true'),'$.outcome','expired')";
+
+fn late_cutoff(clock: &Clock) -> i64 {
+    clock
+        .now_ms()
+        .saturating_sub(basal_core::codemode::retention::RETENTION_MS)
+}
+
+fn trim_late(
+    tx: &rusqlite::Transaction<'_>,
+    custodian: &str,
+    owner: Option<&str>,
+    scope: Option<(&str, u64)>,
+) -> Result<(), CoreError> {
+    let expired = scope.is_none();
+    let (reference, epoch) = scope.unzip();
+    // Only this feed's affected partition can have crossed its inventory cap.
+    let mut trim = tx.prepare(
+        "DELETE FROM codemode_late_results WHERE seq IN (
+            SELECT seq FROM codemode_late_results WHERE custodian=?1 AND expired=?2
+              AND json_extract(entry,'$.owner') IS ?3
+              AND (?2 OR (json_extract(entry,'$.ref')=?4 AND json_extract(entry,'$.scope_epoch')=?5))
+            ORDER BY seq DESC LIMIT ?6 OFFSET 1000
+         ) RETURNING custodian,seq",
+    )?;
+    let deleted = trim
+        .query_map(
+            rusqlite::params![custodian, expired, owner, reference, epoch, LATE_BATCH],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    basal_core::codemode::retention::raise_late_cursor_floors(tx, deleted)
+}
+
 fn maintain_late(store: &Store, clock: &Clock) -> Result<(), ErrorBody> {
-    store.write(|tx| {
-        tx.execute("UPDATE codemode_late_results SET entry=json_set(json_remove(entry,'$.result'),'$.kind','expired','$.reduced',json('true'),'$.outcome','expired'), expired=1 WHERE expired=0 AND settled_at<=?1",[clock.now_ms().saturating_sub(24 * 60 * 60 * 1000)])?;
-        let mut trim = tx.prepare(
-            "DELETE FROM codemode_late_results WHERE seq IN (
-                SELECT seq FROM (
-                    SELECT seq, ROW_NUMBER() OVER (
-                        PARTITION BY custodian, expired, json_extract(entry,'$.owner'),
-                            CASE WHEN expired=0 THEN json_extract(entry,'$.ref') END,
-                            CASE WHEN expired=0 THEN json_extract(entry,'$.scope_epoch') END
-                        ORDER BY seq DESC
-                    ) AS n FROM codemode_late_results
-                ) WHERE n>1000
-             ) RETURNING custodian,seq",
-        )?;
-        let deleted = trim
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        basal_core::codemode::retention::raise_late_cursor_floors(tx, deleted)
-    }).map_err(storage)
+    let cutoff = late_cutoff(clock);
+    let due = store
+        .read(|conn| {
+            Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM codemode_late_results WHERE expired=0 AND settled_at<=?1)",
+        [cutoff], |r| r.get::<_, bool>(0),
+    )?)
+        })
+        .map_err(storage)?;
+    if !due {
+        return Ok(());
+    }
+    store
+        .write(|tx| {
+            let affected: BTreeSet<(String, Option<String>)> = {
+                let mut reduce = tx.prepare(&format!(
+                    "UPDATE codemode_late_results SET
+                    entry={EXPIRED_ENTRY},
+                    expired=1 WHERE seq IN (
+                        SELECT seq FROM codemode_late_results WHERE expired=0 AND settled_at<=?1
+                        ORDER BY settled_at,seq LIMIT ?2
+                    ) RETURNING custodian,json_extract(entry,'$.owner')",
+                ))?;
+                reduce
+                    .query_map(rusqlite::params![cutoff, LATE_BATCH], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for (custodian, owner) in affected {
+                trim_late(tx, &custodian, owner.as_deref(), None)?;
+            }
+            Ok(())
+        })
+        .map_err(storage)
 }
 
 #[cfg(test)]
@@ -1317,6 +1378,7 @@ mod tests {
                     let entry = late_results::LateEntry::new("result","reserved:prefrontal",session,7,"reserved:broca",event.clone(),event.clone(),100).with_result(json!(42));
                     tx.execute("INSERT INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES ('reserved:broca',?1,?2,100)",rusqlite::params![serde_json::to_string(&entry).unwrap(),event])?;
                 }
+                trim_late(tx, "reserved:broca", Some("reserved:prefrontal"), Some((session, 7)))?;
             }
             Ok(())
         }).unwrap();
@@ -1339,6 +1401,19 @@ mod tests {
             .unwrap();
         clock.advance(24 * 60 * 60 * 1000);
         maintain_late(&store, &clock).unwrap();
+        let expired = store
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM codemode_late_results WHERE expired=1",
+                    [],
+                    |r| r.get::<_, usize>(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(expired, LATE_BATCH);
+        for _ in 0..(2_000 - LATE_BATCH).div_ceil(LATE_BATCH) {
+            maintain_late(&store, &clock).unwrap();
+        }
         store
             .read(|conn| {
                 let (count, expired): (i64, i64) = conn.query_row(
