@@ -355,7 +355,7 @@ async function readUnsettled() {
   const cursors = new Set();
   let cursor = null;
   do {
-    const page = await ops.call('prefrontal-core', 'work.unsettled', cursor === null ? {} : {cursor});
+    const page = await ops.call('prefrontal', 'work.unsettled', cursor === null ? {} : {cursor});
     if (!Array.isArray(page?.items)) throw new Error('work.unsettled reply has no items list');
     items.push(...page.items);
     cursor = page.next_cursor ?? null;
@@ -389,7 +389,7 @@ async function run() {
   const cursors = new Set();
   let cursor;
   do {
-    const page = await ops.call('prefrontal-core', 'board.read', {limit: 16, ...(cursor ? {cursor} : {})});
+    const page = await ops.call('prefrontal', 'board.read', {limit: 16, ...(cursor ? {cursor} : {})});
     boards.push(...page.boards);
     cursor = page.next_cursor;
     if (cursor && cursors.has(cursor)) throw new Error('board.read repeated a cursor');

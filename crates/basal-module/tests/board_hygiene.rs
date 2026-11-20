@@ -277,8 +277,8 @@ impl Test {
             let reply = common::install(
                 &f,
                 &Caller::Operator,
-                &SCRIPT.replace("prefrontal-core", "prefrontal"),
-                &serde_json::from_str(&MANIFEST.replace("prefrontal-core", "prefrontal")).unwrap(),
+                SCRIPT,
+                &serde_json::from_str(MANIFEST).unwrap(),
             );
             assert!(consent.decide(
                 reply["card_id"].as_str().unwrap(),
