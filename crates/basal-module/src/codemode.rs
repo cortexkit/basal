@@ -62,6 +62,46 @@ impl LateCalls {
     }
 }
 
+type Admissions = Mutex<BTreeMap<String, Arc<Mutex<()>>>>;
+
+struct AdmissionSlot<'a> {
+    admissions: &'a Admissions,
+    id: &'a str,
+    slot: Option<Arc<Mutex<()>>>,
+}
+
+impl<'a> AdmissionSlot<'a> {
+    fn new(admissions: &'a Admissions, id: &'a str) -> Self {
+        let slot = admissions
+            .lock()
+            .unwrap()
+            .entry(id.to_owned())
+            .or_default()
+            .clone();
+        Self {
+            admissions,
+            id,
+            slot: Some(slot),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.slot.as_ref().unwrap().lock().unwrap()
+    }
+}
+
+impl Drop for AdmissionSlot<'_> {
+    fn drop(&mut self) {
+        let mut admissions = self.admissions.lock().unwrap();
+        // Release our reference under the map lock so simultaneous drops
+        // cannot each mistake the other for a caller still using this slot.
+        drop(self.slot.take());
+        if Arc::strong_count(&admissions[self.id]) == 1 {
+            admissions.remove(self.id);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Codemode {
     supervisor: Supervisor,
@@ -69,7 +109,7 @@ pub(crate) struct Codemode {
     host: Arc<dyn Host>,
     clock: Clock,
     transport: Arc<dyn basal_host::transport::Transport>,
-    admission: Arc<Mutex<()>>,
+    admissions: Arc<Admissions>,
     records: Arc<Mutex<()>>,
     late_lock: Arc<Mutex<LateCalls>>,
     incarnation: String,
@@ -120,7 +160,7 @@ impl Codemode {
             host: hosts.host.clone(),
             clock: config.clock.clone(),
             transport: hosts.transport.clone(),
-            admission: Arc::new(Mutex::new(())),
+            admissions: Arc::default(),
             records: Arc::new(Mutex::new(())),
             late_lock,
             incarnation: random_id().map_err(|e| CoreError::Invalid(e.message))?,
@@ -186,29 +226,14 @@ impl Codemode {
             (Some(key), None) => worker_run_id(&scope.scope_ref, key),
             (None, _) => random_id()?,
         };
-        let _admission = self.admission.lock().unwrap();
+        let slot = AdmissionSlot::new(&self.admissions, &id);
+        let _same_run = slot.lock();
         if cancelled() {
             self.supervisor.cancel(&id).map_err(storage)?;
             return Err(ErrorBody::new(
                 "cancelled",
                 "codemode cancelled before admission",
             ));
-        }
-        if let Some(key) = &request.call_key {
-            let recorded: Option<String> = self
-                .store
-                .read(|conn| {
-                    Ok(conn.query_row(
-                "SELECT run_id FROM codemode_tool_calls WHERE carrier=?1 AND call_key=?2",
-                rusqlite::params![carrier,key],|row| row.get(0)).optional()?)
-                })
-                .map_err(storage)?;
-            if recorded.is_some_and(|recorded| recorded != id) {
-                return Err(crate::tool::invalid(
-                    "call_key",
-                    "this carrier already used the key for another agent",
-                ));
-            }
         }
         let record_scope = serde_json::to_string(&context.identity()).unwrap();
         let custodian = if context.principal == subc_protocol::Principal::Direct {
@@ -243,17 +268,12 @@ impl Codemode {
         )
         .map_err(storage)?
         {
-            Admission::Refused(refusal) => Err(ErrorBody::new(refusal.code, refusal.message)),
-            Admission::Existing(_) => {
-                if let Some(key) = &request.call_key {
-                    self.store.write(|tx| {
-                        tx.execute("INSERT OR IGNORE INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian) VALUES (?1,?2,?3,?4,?5)",
-                            rusqlite::params![carrier,key,id,record_scope,custodian])?;
-                        Ok(())
-                    }).map_err(storage)?;
-                }
-                Ok(id)
-            }
+            Admission::Refused(refusal) => Err(if let Some(field) = refusal.field {
+                crate::tool::invalid(field, refusal.message)
+            } else {
+                ErrorBody::new(refusal.code, refusal.message)
+            }),
+            Admission::Existing(_) => Ok(id),
             Admission::Admitted { run, start } => {
                 if cancelled() {
                     self.supervisor.cancel(&id).map_err(storage)?;
@@ -1092,6 +1112,30 @@ mod late_cursor_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overlapping_admissions_share_and_release_a_run_slot() {
+        let admissions = super::Admissions::default();
+        let barrier = std::sync::Barrier::new(2);
+        let first = super::AdmissionSlot::new(&admissions, "run");
+        let second = super::AdmissionSlot::new(&admissions, "run");
+        let barrier = &barrier;
+        assert!(std::sync::Arc::ptr_eq(
+            first.slot.as_ref().unwrap(),
+            second.slot.as_ref().unwrap()
+        ));
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                barrier.wait();
+                drop(first);
+            });
+            scope.spawn(move || {
+                barrier.wait();
+                drop(second);
+            });
+        });
+        assert!(admissions.lock().unwrap().is_empty());
+    }
+
     use super::*;
 
     #[test]

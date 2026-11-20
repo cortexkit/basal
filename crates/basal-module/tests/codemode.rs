@@ -1,7 +1,7 @@
 mod common;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use basal_core::NoHooks;
@@ -14,11 +14,18 @@ use cortexkit_role_tool_provider::call::{ToolCallRequest, ToolCallRequestExt};
 use serde_json::{Value, json};
 use subc_protocol::{Principal, scope::ScopeStamp};
 
+struct ParkedOpen {
+    id: String,
+    entered: mpsc::Sender<()>,
+    resume: mpsc::Receiver<()>,
+}
+
 #[derive(Default)]
 struct Core {
     scopes: basal_testkit::run_scopes::RunScopes,
     host: MockHost,
     opens: Mutex<Vec<Value>>,
+    parked_open: Mutex<Option<ParkedOpen>>,
     closes: Mutex<Vec<Value>>,
     state: Mutex<(usize, bool)>,
     changed: Condvar,
@@ -217,6 +224,18 @@ impl Transport for Core {
                     );
                 }
                 self.opens.lock().unwrap().push(params.clone());
+                let parked = {
+                    let mut pending = self.parked_open.lock().unwrap();
+                    if pending.as_ref().is_some_and(|open| open.id == id) {
+                        pending.take()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(parked) = parked {
+                    parked.entered.send(()).unwrap();
+                    parked.resume.recv_timeout(Duration::from_secs(30)).unwrap();
+                }
                 // A worker run (an open with no agent_id) gets the stamp core
                 // gives one: the head it works for, and the worker's own scope
                 // as parent. An agent run gets the agent's id.
@@ -2011,4 +2030,51 @@ fn a_duplicate_catalog_name_is_unavailable_and_never_sent() {
         text.contains("Warning: Catalog entry \"echo\" was dropped: duplicate tool name."),
         "{text}"
     );
+}
+
+#[test]
+fn parked_scope_open_does_not_block_other_admissions_or_hide_key_collision() {
+    let rig = rig("parallel-admission", true);
+    let (entered, at_open) = mpsc::channel();
+    let (resume, parked) = mpsc::channel();
+    *rig.core.parked_open.lock().unwrap() = Some(ParkedOpen {
+        id: basal_module::codemode::run_id("agent", "parked"),
+        entered,
+        resume: parked,
+    });
+    *rig.core.refusal.lock().unwrap() = Some(WireError::Refused {
+        code: "not_permitted".into(),
+        message: "fixture refuses scope open".into(),
+    });
+    std::thread::scope(|threads| {
+        let rig = &rig;
+        threads.spawn(|| {
+            call(rig, "parked", "return 1;", Duration::ZERO);
+        });
+        at_open.recv_timeout(Duration::from_secs(15)).unwrap();
+        let (done, finished) = mpsc::channel();
+        threads.spawn(move || {
+            let mut other = context();
+            other.scope.as_mut().unwrap().attributes.agent_id = Some("other".into());
+            let module = &rig.fixture.module;
+            let request = |key: &str| {
+                module.handle_tool(
+                    &other,
+                    ToolCallRequest::new("codemode", json!({"code":"return 2;"}))
+                        .with_call_key(key),
+                    Duration::ZERO,
+                )
+            };
+            let conflict = request("parked");
+            let unrelated = request("independent");
+            let _ = done.send((conflict, unrelated));
+        });
+        let result = finished.recv_timeout(Duration::from_secs(3));
+        resume.send(()).unwrap();
+        let (conflict, unrelated) = result.expect("an unrelated admission waited for scope open");
+        let conflict = conflict.unwrap_err();
+        assert_eq!(conflict.code, "invalid_request");
+        assert_eq!(conflict.detail, Some(json!({"field":"call_key"})));
+        assert_eq!(unrelated.unwrap()["errorCode"], "not_permitted");
+    });
 }
