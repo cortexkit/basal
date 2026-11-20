@@ -59,8 +59,41 @@ pub fn sweep(store: &Store, now_ms: i64) -> Result<Vec<String>> {
             pruned.push(id);
         }
     }
+    sweep_pruned_payloads(store)?;
     sweep_late_results(store, now_ms)?;
     Ok(pruned)
+}
+
+fn sweep_pruned_payloads(store: &Store) -> Result<()> {
+    // Include runs pruned by older builds. Their tombstones prove that no
+    // model retry can need the saved request, even if spend is still uncertain.
+    const MODEL: &str =
+        "SELECT c.rowid FROM classify_costs c JOIN codemode_tombstones t USING(run_id)
+                        WHERE c.kind='program' AND c.args <> '{}'";
+    const WITHDRAWAL: &str =
+        "SELECT c.rowid FROM codemode_tool_calls c JOIN codemode_tombstones t USING(run_id)
+                             WHERE json_type(c.withdrawal,'$.result') IS NOT NULL";
+    let due = store.read(|conn| {
+        Ok(conn.query_row(
+            &format!("SELECT EXISTS({MODEL}) OR EXISTS({WITHDRAWAL})"),
+            [],
+            |r| r.get::<_, bool>(0),
+        )?)
+    })?;
+    if due {
+        store.write(|tx| {
+            tx.execute(
+                &format!("UPDATE classify_costs SET args='{{}}' WHERE rowid IN ({MODEL} LIMIT {BATCH})"),
+                [],
+            )?;
+            tx.execute(
+                &format!("UPDATE codemode_tool_calls SET withdrawal=?1 WHERE rowid IN ({WITHDRAWAL} LIMIT {BATCH})"),
+                [r#"{"answer":"completed","outcome":"unknown","result_retained":false}"#],
+            )?;
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 fn sweep_late_results(store: &Store, now_ms: i64) -> Result<()> {

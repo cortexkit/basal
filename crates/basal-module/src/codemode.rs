@@ -374,11 +374,28 @@ impl Codemode {
             | withdraw::CarrierResolution::OwnerAsCarrier(carrier) => carrier,
         };
         let _records = self.records.lock().unwrap();
-        let record = self.store.read(|conn| Ok(conn.query_row(
-            "SELECT run_id,scope,withdrawal FROM codemode_tool_calls WHERE carrier=?1 AND call_key=?2",
-            rusqlite::params![carrier,arguments.call_key],|row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<String>>(2)?))
-        ).optional()?)).map_err(storage)?;
-        let Some((id, record_scope, answer)) = record else {
+        let record = self
+            .store
+            .read(|conn| {
+                Ok(conn
+                    .query_row(
+                        "SELECT c.run_id,c.scope,c.withdrawal, r.run_id IS NOT NULL
+             FROM codemode_tool_calls c LEFT JOIN codemode_runs r USING(run_id)
+             WHERE c.carrier=?1 AND c.call_key=?2",
+                        rusqlite::params![carrier, arguments.call_key],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, bool>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()?)
+            })
+            .map_err(storage)?;
+        let Some((id, record_scope, answer, retained)) = record else {
             return if matches!(resolution, withdraw::CarrierResolution::OwnerAsCarrier(_)) {
                 Err(withdraw::CallerProblem::CarrierRequired.error())
             } else {
@@ -391,8 +408,13 @@ impl Codemode {
         withdraw::check_record_scope(record_scope.as_ref(), scope.as_ref())
             .map_err(|e| e.error())?;
         if let Some(answer) = answer {
-            return serde_json::from_str(&answer)
-                .map_err(|e| crate::tool::invalid("record", e.to_string()));
+            let answer: Value = serde_json::from_str(&answer)
+                .map_err(|e| crate::tool::invalid("record", e.to_string()))?;
+            return Ok(if !retained && answer["result_retained"] == true {
+                pruned_withdrawal()
+            } else {
+                answer
+            });
         }
         let result = self.supervisor.result(&id).map_err(storage)?;
         let answer = if let Some(result) = result {
@@ -418,10 +440,17 @@ impl Codemode {
             json!({"answer":"completed","outcome":"unknown","result_retained":false})
         };
         self.store.write(|tx| {
+            // Retention can prune the run between rendering and saving the reply.
+            let answer = if answer["result_retained"] == true && !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM codemode_runs WHERE run_id=?1)", [&id], |r| r.get::<_, bool>(0),
+            )? {
+                pruned_withdrawal()
+            } else {
+                answer
+            };
             tx.execute("UPDATE codemode_tool_calls SET withdrawal=?3 WHERE carrier=?1 AND call_key=?2 AND withdrawal IS NULL",rusqlite::params![carrier,arguments.call_key,answer.to_string()])?;
-            Ok(())
-        }).map_err(storage)?;
-        Ok(answer)
+            Ok(answer)
+        }).map_err(storage)
     }
 
     fn publish(&self) -> Result<(), ErrorBody> {
@@ -522,6 +551,10 @@ impl Codemode {
     pub(crate) fn stop(&self) -> Result<(), CoreError> {
         self.supervisor.shutdown()
     }
+}
+
+fn pruned_withdrawal() -> Value {
+    json!({"answer":"completed","outcome":"unknown","result_retained":false})
 }
 
 fn random_id() -> Result<String, ErrorBody> {

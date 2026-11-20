@@ -8,9 +8,9 @@ use basal_host::{catalog::MockCatalog, consent::MockConsent, mock::MockHost};
 use cortexkit_role_tool_provider::CallMode;
 use subc_protocol::{BindIdentity, Principal};
 
-#[test]
-fn late_cursor_survives_a_sweep_without_skipping_kept_rows() {
-    const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+fn late_fixture() -> (Arc<Store>, Clock, Codemode, Context, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!("basal-late-cursor-{}", random_id().unwrap()));
     let store =
         Arc::new(Store::open(root.join("store.db"), basal_core::Durability::throwaway()).unwrap());
@@ -45,6 +45,12 @@ fn late_cursor_survives_a_sweep_without_skipping_kept_rows() {
         consumer_capabilities: None,
     };
 
+    (store, clock, codemode, context, root)
+}
+
+#[test]
+fn late_cursor_survives_a_sweep_without_skipping_kept_rows() {
+    let (store, clock, codemode, context, root) = late_fixture();
     // Settlement can precede publication, so a later sequence can be older.
     store
         .write(|tx| {
@@ -134,4 +140,36 @@ fn published_held_runs_are_forgotten_after_the_race_window() {
         late.published.keys().cloned().collect::<Vec<_>>(),
         ["newer", "recent"]
     );
+}
+
+#[test]
+fn withdrawing_a_pruned_run_does_not_return_its_cached_result() {
+    let (store, _, codemode, broca, root) = late_fixture();
+    store
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO codemode_tombstones(run_id,pruned_at) VALUES ('pruned',1)",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian,published,withdrawal)
+                 VALUES ('reserved:broca','key','pruned','null','reserved:broca',1,?1)",
+                [json!({"answer":"completed","result_retained":true,
+                    "result":{"structuredContent":{"value":42}}}).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    // An older build could have pruned the run while leaving a cached result behind.
+    let reply = codemode
+        .withdraw(
+            &broca,
+            &ToolCallRequest::new("tool.withdraw", json!({"call_key":"key"})),
+        )
+        .unwrap();
+    assert_eq!(reply["answer"], "completed");
+    assert_eq!(reply["result_retained"], false);
+    assert!(!reply.as_object().unwrap().contains_key("result"));
+    drop((codemode, store));
+    std::fs::remove_dir_all(root).unwrap();
 }
