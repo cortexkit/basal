@@ -202,7 +202,9 @@ fn flow_health_preserves_streak_and_loads_only_live_runs() {
 fn engine_readers_load_only_live_runs_amid_history() {
     let f = fixture();
     let (wake, loads) = measured(|| f.rt.next_wake_at(None).unwrap());
-    assert_eq!(loads, 4, "wake calculation must not materialize history");
+    // Timer passes read each live run's few timer fields under its actor, so
+    // they load no run at all, live or finished.
+    assert_eq!(loads, 0, "wake calculation must not materialize runs");
     assert_eq!(wake, Some(10_000));
     let (ages, loads) = measured(|| f.rt.run_ages().unwrap());
     assert_eq!(loads, 4, "run ages must not materialize history");
@@ -215,10 +217,7 @@ fn engine_readers_load_only_live_runs_amid_history() {
         }
     );
     let (expired, loads) = measured(|| f.rt.enforce_deadlines().unwrap());
-    assert_eq!(
-        loads, 4,
-        "deadline enforcement must not materialize history"
-    );
+    assert_eq!(loads, 0, "deadline enforcement must not materialize runs");
     assert!(expired.is_empty());
     f.rt.config.clock.set(61_000);
     assert_eq!(f.rt.enforce_deadlines().unwrap(), ["suspended", "running"]);
