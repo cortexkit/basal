@@ -3640,3 +3640,25 @@ fn a_pending_sleep_keeps_held_time_off_the_person_wait_budget() {
     f.finish("1");
     assert_eq!(f.terminal()["person_wait_ms"], 0);
 }
+
+#[test]
+fn starting_a_supervisor_reaps_finished_drivers() {
+    let f = Fixture::new();
+    let finished = thread::spawn(|| {});
+    let until = Instant::now() + TIMEOUT;
+    while !finished.is_finished() {
+        assert!(Instant::now() < until, "fixture thread did not finish");
+        thread::yield_now();
+    }
+    f.supervisor
+        .0
+        .drivers
+        .lock()
+        .unwrap()
+        .threads
+        .push(finished);
+    f.standard();
+    assert_eq!(f.supervisor.0.drivers.lock().unwrap().threads.len(), 1);
+    f.finish("1");
+    f.terminal();
+}

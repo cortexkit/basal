@@ -333,6 +333,19 @@ impl Supervisor {
     /// Consumes the admission winner's token. No worker is acquired on the
     /// caller's thread; even worker startup is performed off the event loop.
     pub fn start(&self, run: RunRecord, start: Start) -> Result<()> {
+        let finished: Vec<_> = self
+            .0
+            .drivers
+            .lock()
+            .unwrap()
+            .threads
+            .extract_if(.., |handle| handle.is_finished())
+            .collect();
+        for handle in finished {
+            if handle.join().is_err() {
+                tracing::error!("codemode driver panicked");
+            }
+        }
         let mut drivers = self.0.drivers.lock().unwrap();
         if drivers.stopped {
             return Err(CoreError::Invalid("codemode supervisor is stopped".into()));
