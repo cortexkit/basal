@@ -146,27 +146,49 @@ fn supervised_binary_exits_cleanly_after_daemon_eof() {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            // The idle engine probes core capabilities through catalog.list.
-            // Leave that RPC unanswered so EOF must release a genuine join
-            // dependency, rather than racing an engine that has not started yet.
+            // The event reader needs a bus credential even with no flows. It
+            // makes the call on a blocking worker that the reader's runtime
+            // joins on shutdown. Open the route but leave the call unanswered.
+            const BUS_CHANNEL: u16 = 11;
             tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let request = read_frame(&mut consumer).await.unwrap().unwrap();
+                    if request.header.ty != FrameType::Request {
+                        continue;
+                    }
                     let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-                    if body["op"] == "catalog.list" {
+                    if request.header.channel == BUS_CHANNEL && body["method"] == "ckbus.credential" {
                         break;
+                    }
+                    if request.header.channel == 0
+                        && body["op"] == "route.open"
+                        && body["target"]["module_id"] == "ckbus"
+                    {
+                        write_frame(
+                            &mut consumer,
+                            &frame(
+                                FrameType::Response,
+                                request.header.corr,
+                                json!({"op":"route.open","route_channel":BUS_CHANNEL,"route_epoch":1}),
+                            ),
+                        )
+                        .await
+                        .unwrap();
                     }
                 }
             })
             .await
-            .expect("engine did not reach its catalog probe");
+            .expect("event reader did not request its bus credential");
+            // EOF on registration must cancel the joined work on the separate
+            // consumer connection. Keep that socket open and silent.
             let eof = Instant::now();
-            drop((stream, consumer, listener));
+            drop(stream);
             loop {
                 if let Some(status) = module.0.try_wait().unwrap() {
                     let elapsed = eof.elapsed();
                     eprintln!("daemon EOF to ck-basal exit: {elapsed:?}; {status}");
                     assert!(status.success(), "EOF must be a clean exit: {status}");
+                    assert!(elapsed < Duration::from_secs(5), "EOF took {elapsed:?}");
                     break;
                 }
                 assert!(
@@ -176,6 +198,7 @@ fn supervised_binary_exits_cleanly_after_daemon_eof() {
                 );
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            drop((consumer, listener));
         })
         .await
         .expect("fake-daemon startup stalled");
