@@ -760,9 +760,10 @@ fn key_collision() -> Admission {
 
 fn attach_carrier(tx: &rusqlite::Transaction<'_>, invocation: &ToolInvocation<'_>) -> Result<()> {
     if let Some(key) = invocation.call_key {
+        // A new record owes nothing until the foreground wait returns held.
         tx.execute(
-            "INSERT OR IGNORE INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian)
-             VALUES (?1,?2,?3,?4,?5)",
+            "INSERT OR IGNORE INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian,published)
+             VALUES (?1,?2,?3,?4,?5,1)",
             rusqlite::params![
                 invocation.carrier,
                 key,

@@ -19,7 +19,7 @@ fn new_late_result_commits_one_wake_per_custodian_and_never_duplicates_it() {
         tx.execute_batch("CREATE TRIGGER refuse_wake BEFORE INSERT ON outbox WHEN NEW.kind='codemode.late_result_ready' BEGIN SELECT RAISE(ABORT,'wake unavailable'); END;")?;
         Ok(())
     }).unwrap();
-    assert!(publish_result(&store, "r", json!({"status":"completed","value":1})).is_err());
+    assert!(publish_result(&store, "r", &json!({"status":"completed","value":1}), None).is_err());
     assert_eq!(
         store
             .read(|c| Ok(c
@@ -44,7 +44,7 @@ fn new_late_result_commits_one_wake_per_custodian_and_never_duplicates_it() {
             Ok(())
         })
         .unwrap();
-    publish_result(&store, "r", json!({"status":"completed","value":1})).unwrap();
+    publish_result(&store, "r", &json!({"status":"completed","value":1}), None).unwrap();
     // Re-enter the producer as after a duplicate completion/recovery pass.
     store
         .write(|tx| {
@@ -52,7 +52,7 @@ fn new_late_result_commits_one_wake_per_custodian_and_never_duplicates_it() {
             Ok(())
         })
         .unwrap();
-    publish_result(&store, "r", json!({"status":"completed","value":1})).unwrap();
+    publish_result(&store, "r", &json!({"status":"completed","value":1}), None).unwrap();
     let rows=store.read(|c| {
         let mut q=c.prepare("SELECT l.event_id,l.custodian,o.recipient,o.body FROM codemode_late_results l JOIN outbox o ON o.kind='codemode.late_result_ready' AND json_extract(o.body,'$.event_id')=l.event_id ORDER BY l.seq")?;
         Ok(q.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -105,7 +105,7 @@ fn late_result_wake_outcomes_match_the_settled_program_reply() {
             tx.execute("INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian) VALUES('reserved:reader',?1,?1,?2,'reserved:reader')",rusqlite::params![id,scope])?;
             Ok(())
         }).unwrap();
-        publish_result(&store, id, result).unwrap();
+        publish_result(&store, id, &result, None).unwrap();
         let (entry, body): (String, String) = store.read(|c| {
             Ok(c.query_row("SELECT l.entry,o.body FROM codemode_late_results l JOIN outbox o ON json_extract(o.body,'$.event_id')=l.event_id WHERE json_extract(l.entry,'$.call_key')=?1", [id], |r| Ok((r.get(0)?,r.get(1)?)))?)
         }).unwrap();
