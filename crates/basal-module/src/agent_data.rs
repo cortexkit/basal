@@ -12,12 +12,12 @@
 //!   transaction, then admits the bytes through Engram's door and checks
 //!   them with `session.cover`. `export` checks the cover again; `release`
 //!   turns the freeze into a tombstone; `abort` lifts it.
-//! - **Receiver:** `import` reads the sealed cut through the door into
-//!   staging and checks its digest, format and contents, writing no live
-//!   row. `activate` writes the flows in one transaction. A flow approved on
-//!   the source waits disabled until this computer's prefrontal reports the
-//!   same code active, which the engine checks outside the store's write
-//!   lock (`basal_core::agent_move`).
+//! - **Receiver:** `import` reads Basal's stream for the cut through the
+//!   door into staging and checks its digest, format and contents, writing
+//!   no live row. `activate` writes the flows in one transaction. A flow
+//!   approved on the source waits disabled until this computer's prefrontal
+//!   reports the same code active, which the engine checks outside the
+//!   store's write lock (`basal_core::agent_move`).
 //!
 //! Every state-changing op records its first reply in the store with the
 //! step it reached, so a repeat of the same request gets the same reply and
@@ -64,6 +64,47 @@ pub const STREAM: &str = "reserved:basal";
 
 type Refusal = ErrorBody;
 
+struct Downloaded {
+    bytes: Vec<u8>,
+    end: u64,
+    digest: String,
+}
+
+enum DoorReadFailure<'a> {
+    Pending,
+    MissingItem,
+    Final(&'a str),
+    Other,
+}
+
+fn door_read_failure(error: &WireError) -> DoorReadFailure<'_> {
+    match error.refusal_code() {
+        // Older doors use not_found for cuts they cannot read yet.
+        Some("cut_import_pending" | "not_found") => DoorReadFailure::Pending,
+        Some("cut_item_missing") => DoorReadFailure::MissingItem,
+        Some(
+            code @ ("cut_not_published"
+            | "cut_takeover_closed"
+            | "cut_range_not_local"
+            | "verify_failed"),
+        ) => DoorReadFailure::Final(code),
+        _ => DoorReadFailure::Other,
+    }
+}
+
+fn read_cut_page(
+    door: &dyn Door,
+    cut_id: &str,
+    session: &str,
+    offset: u64,
+    limit: u64,
+) -> Result<Value, WireError> {
+    door.call(
+        "session.read",
+        json!({"sessionRef": session, "stream": STREAM, "cutId": cut_id, "fromOffset": offset, "limit": limit}),
+    )
+}
+
 fn refuse(code: RefusalCode, message: impl Into<String>) -> Refusal {
     ErrorBody::new(code, message)
 }
@@ -74,6 +115,29 @@ fn typed(detail: Detail, message: impl Into<String>) -> Refusal {
 
 fn unavailable(message: impl std::fmt::Display) -> Refusal {
     refuse(RefusalCode::Unavailable, message.to_string())
+}
+
+fn import_read_refusal(error: WireError) -> Refusal {
+    let message = format!("reading the cut: {error:?}");
+    match door_read_failure(&error) {
+        DoorReadFailure::Pending => refuse(RefusalCode::CutNotReady, message),
+        DoorReadFailure::Final("verify_failed") => refuse(RefusalCode::DigestMismatch, message),
+        DoorReadFailure::Final(code) => {
+            ErrorBody::with_participant_failed_detail(ParticipantFailedDetail::new(code), message)
+        }
+        _ => unavailable(message),
+    }
+}
+
+fn source_door_refusal(action: &str, error: WireError) -> Refusal {
+    let message = format!("{action}: {error:?}");
+    // Prepare and export cannot refuse with cut_not_ready or digest_mismatch.
+    match door_read_failure(&error) {
+        DoorReadFailure::Final(code) => {
+            ErrorBody::with_participant_failed_detail(ParticipantFailedDetail::new(code), message)
+        }
+        _ => unavailable(message),
+    }
 }
 
 fn store_error(error: CoreError) -> Refusal {
@@ -271,42 +335,37 @@ impl AgentData {
         // without one (the source had nothing for the agent) would leave
         // them here beside the agent's copy elsewhere, so they are a fork.
         // The cut is read only in that case, the rare one.
-        let mut items = None;
         let mut entries = Vec::with_capacity(refs.len());
         for (r, local) in refs.iter().zip(locals) {
-            let state = match local {
-                None => DivergedState::Unknown,
-                Some((Local::Advanced, _)) => DivergedState::Advanced,
-                Some((Local::AtCut, false)) => DivergedState::AtCut,
-                Some((Local::AtCut, true)) => {
-                    if items.is_none() {
-                        items = Some(self.cut_items(cut_id)?);
-                    }
-                    let items = items.as_deref().unwrap_or_default();
-                    if basal_item(items, &r.r#ref, cut_id).is_some() {
-                        DivergedState::AtCut
-                    } else {
-                        DivergedState::Advanced
-                    }
-                }
+            let entry = match local {
+                None => DivergedEntry::new(DivergedState::Unknown),
+                Some((Local::Advanced, _)) => DivergedEntry::new(DivergedState::Advanced),
+                Some((Local::AtCut, false)) => DivergedEntry::new(DivergedState::AtCut),
+                Some((Local::AtCut, true)) => self.probe_cut_item(cut_id, &r.r#ref)?,
             };
-            entries.push(DivergedEntry::new(state));
+            entries.push(entry);
         }
         Ok(to_value(DivergedReply::new(entries)))
     }
 
-    /// The items of a sealed cut, as the door lists them.
-    fn cut_items(&self, cut_id: &str) -> Result<Vec<Value>, Refusal> {
-        let read = self
-            .door()
-            .call("cut.read", json!({"cutId": cut_id}))
-            .map_err(|e| {
-                refuse(
+    fn probe_cut_item(&self, cut_id: &str, agent: &str) -> Result<DivergedEntry, Refusal> {
+        let session = session_ref(agent, cut_id);
+        // One byte is enough to distinguish a listed item from a missing one.
+        match read_cut_page(self.door().as_ref(), cut_id, &session, 0, 1) {
+            Ok(_) => Ok(DivergedEntry::new(DivergedState::AtCut)),
+            Err(error) => match door_read_failure(&error) {
+                DoorReadFailure::MissingItem => Ok(DivergedEntry::new(DivergedState::Advanced)),
+                DoorReadFailure::Pending => Err(refuse(
                     RefusalCode::CutNotReady,
-                    format!("the cut is not readable through the door yet: {e:?}"),
-                )
-            })?;
-        Ok(read["items"].as_array().cloned().unwrap_or_default())
+                    format!("reading the cut: {error:?}"),
+                )),
+                DoorReadFailure::Final(code) => {
+                    Ok(DivergedEntry::with_reason(DivergedState::Unknown, code)
+                        .expect("a known door code is a valid reason"))
+                }
+                DoorReadFailure::Other => Err(unavailable(format!("reading the cut: {error:?}"))),
+            },
+        }
     }
 
     /// A state-changing op: a repeat first, then the step machine and the
@@ -586,7 +645,7 @@ impl AgentData {
                             "session.read",
                             json!({"sessionRef": session, "fromOffset": offset, "limit": chunk.len()}),
                         )
-                        .map_err(|e| unavailable(format!("reading back an admitted chunk: {e:?}")))?;
+                        .map_err(|e| source_door_refusal("reading back an admitted chunk", e))?;
                     if read["bytes"].as_str() != Some(hex(chunk).as_str()) {
                         return Err(refuse(
                             RefusalCode::ParticipantFailed,
@@ -594,9 +653,10 @@ impl AgentData {
                         ));
                     }
                 }
-                other => {
+                Err(error) => return Err(source_door_refusal("admitting the cut", error)),
+                Ok(reply) => {
                     return Err(unavailable(format!(
-                        "admitting the cut through the door: {other:?}"
+                        "admitting the cut through the door: unexpected reply {reply:?}"
                     )));
                 }
             }
@@ -609,7 +669,7 @@ impl AgentData {
         let cover = self
             .door()
             .call("session.cover", json!({"sessionRef": session}))
-            .map_err(|e| unavailable(format!("checking the cut's cover: {e:?}")))?;
+            .map_err(|e| source_door_refusal("checking the cut's cover", e))?;
         if cover["durableOffset"].as_u64() != Some(end)
             || cover["cloudOffset"].as_u64().unwrap_or(0) < end
         {
@@ -659,27 +719,9 @@ impl AgentData {
     ) -> Result<Value, Refusal> {
         let agent = receiver_agent(refs)?;
         let session = session_ref(&agent, cut_id);
-        let items = self.cut_items(cut_id)?;
-        let Some(item) = basal_item(&items, &agent, cut_id).cloned() else {
-            if items.iter().any(|i| i["stream"] == STREAM) {
-                return Err(refuse(
-                    RefusalCode::DigestMismatch,
-                    "the cut's basal stream names another agent or cut",
-                ));
-            }
+        let Some(Downloaded { bytes, end, digest }) = self.download(cut_id, &session)? else {
             return self.import_nothing(rt, cut_id, refs, &agent, params);
         };
-        let end = item["endOffset"]
-            .as_u64()
-            .ok_or_else(|| refuse(RefusalCode::DigestMismatch, "the cut's item has no length"))?;
-        let digest = item["digest"].as_str().unwrap_or_default().to_owned();
-        if end > STREAM_CAP {
-            return Err(refuse(
-                RefusalCode::DigestMismatch,
-                "the cut's stream is larger than a move carries",
-            ));
-        }
-        let bytes = self.download(cut_id, &session, end, &digest)?;
         let dir = self.staging(cut_id);
         let staged = match agent_move::stream::decode(&bytes) {
             Ok(staged) => staged,
@@ -784,31 +826,36 @@ impl AgentData {
         Ok(reply)
     }
 
-    /// Reads one item of a sealed cut through the door and checks it hashes
-    /// to the digest the cut was sealed with.
-    fn download(
-        &self,
-        cut_id: &str,
-        session: &str,
-        end: u64,
-        digest: &str,
-    ) -> Result<Vec<u8>, Refusal> {
+    /// Reads the known stream and checks it against the sealed length and
+    /// digest from its first page. Only an absent item has no download.
+    fn download(&self, cut_id: &str, session: &str) -> Result<Option<Downloaded>, Refusal> {
         let door = self.door();
-        let mut bytes = Vec::with_capacity(usize::try_from(end).unwrap_or(0));
+        let mut reply = match read_cut_page(door.as_ref(), cut_id, session, 0, CHUNK as u64) {
+            Ok(reply) => reply,
+            Err(error) if matches!(door_read_failure(&error), DoorReadFailure::MissingItem) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(import_read_refusal(error)),
+        };
         let damaged = |message: &str| refuse(RefusalCode::DigestMismatch, message.to_owned());
-        while (bytes.len() as u64) < end {
+        let end = reply["streamEnd"]
+            .as_u64()
+            .ok_or_else(|| damaged("the cut's item has no length"))?;
+        if end > STREAM_CAP {
+            return Err(damaged("the cut's stream is larger than a move carries"));
+        }
+        let digest = reply["digest"]
+            .as_str()
+            .ok_or_else(|| damaged("the cut's item has no digest"))?
+            .to_owned();
+        let mut bytes = Vec::with_capacity(usize::try_from(end).unwrap_or(0));
+        loop {
             let offset = bytes.len() as u64;
             let limit = (end - offset).min(CHUNK as u64);
-            let reply = door
-                .call(
-                    "session.read",
-                    json!({"sessionRef": session, "fromOffset": offset, "limit": limit, "cutId": cut_id}),
-                )
-                .map_err(|e| refuse(RefusalCode::CutNotReady, format!("reading the cut: {e:?}")))?;
             if reply["fromOffset"].as_u64() != Some(offset)
                 || reply["endOffset"].as_u64() != Some(offset + limit)
                 || reply["streamEnd"].as_u64() != Some(end)
-                || reply["digest"].as_str() != Some(digest)
+                || reply["digest"].as_str() != Some(digest.as_str())
             {
                 return Err(damaged(
                     "the door's read of the cut doesn't match the sealed item",
@@ -822,6 +869,18 @@ impl AgentData {
                 return Err(damaged("a short read of the cut"));
             }
             bytes.extend(chunk);
+            let offset = bytes.len() as u64;
+            if offset == end {
+                break;
+            }
+            reply = read_cut_page(
+                door.as_ref(),
+                cut_id,
+                session,
+                offset,
+                (end - offset).min(CHUNK as u64),
+            )
+            .map_err(import_read_refusal)?;
         }
         if hex(&Sha256::digest(&bytes)) != digest {
             return Err(ErrorBody::with_digest_mismatch_detail(
@@ -829,7 +888,7 @@ impl AgentData {
                 "the cut's bytes don't hash to its sealed digest",
             ));
         }
-        Ok(bytes)
+        Ok(Some(Downloaded { bytes, end, digest }))
     }
 
     fn activate(
@@ -1062,14 +1121,6 @@ impl AgentData {
             })
             .map_err(store_error)
     }
-}
-
-/// The cut's item for the agent's basal stream, if the source shipped one.
-fn basal_item<'a>(items: &'a [Value], agent: &str, cut_id: &str) -> Option<&'a Value> {
-    let session = session_ref(agent, cut_id);
-    items
-        .iter()
-        .find(|i| i["sessionRef"] == session.as_str() && i["stream"] == STREAM)
 }
 
 /// Whether an encoded stream holds no record at all: no flow, instance,

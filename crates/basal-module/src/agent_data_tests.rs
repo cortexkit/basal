@@ -247,6 +247,254 @@ fn code(result: Result<Value, ErrorBody>) -> RefusalCode {
     result.unwrap_err().code
 }
 
+fn allowed_refusal(result: Result<Value, ErrorBody>, op: Op, expected: RefusalCode) -> ErrorBody {
+    let error = result.unwrap_err();
+    assert!(
+        allowed_refusals(op).contains(&error.code),
+        "{op:?}: {error:?}"
+    );
+    assert_eq!(error.code, expected, "{op:?}: {error:?}");
+    error
+}
+
+const FINAL_CUT_CODES: [&str; 3] = [
+    "cut_not_published",
+    "cut_takeover_closed",
+    "cut_range_not_local",
+];
+
+#[test]
+fn import_reads_the_sealed_session_without_listing_the_cut() {
+    let door = FakeDoor::new();
+    let a = Computer::new("session-import-source", &door);
+    let b = Computer::new("session-import-receiver", &door);
+    a.flow("f-alpha");
+    let prepared = a.sample("source", "agent_data.prepare", CUT).unwrap();
+    a.sample("source", "agent_data.export", CUT).unwrap();
+    seal(&door, CUT, &prepared);
+    let refused = door.call("cut.read", json!({"cutId": CUT})).unwrap_err();
+    assert_eq!(refused.refusal_code(), Some("caller_forbidden"));
+
+    let before = door.calls().len();
+    let imported = b.sample("receiver", "agent_data.import", CUT).unwrap();
+    let item = &prepared["items"][0];
+    assert_eq!(
+        imported,
+        json!({"items": [{"sessionRef": item["sessionRef"],
+            "endOffset": item["endOffset"], "digest": item["digest"]}]})
+    );
+    assert_eq!(door.calls()[before..], ["session.read"]);
+}
+
+#[test]
+fn import_retries_a_pending_cut_then_accepts_a_verified_missing_item() {
+    let door = FakeDoor::new();
+    let b = Computer::new("session-import-pending", &door);
+    allowed_refusal(
+        b.sample("receiver", "agent_data.import", CUT),
+        Op::Import,
+        RefusalCode::CutNotReady,
+    );
+    door.refuse_next("session.read", "not_found");
+    allowed_refusal(
+        b.sample("receiver", "agent_data.import", CUT),
+        Op::Import,
+        RefusalCode::CutNotReady,
+    );
+    assert_eq!(
+        b.sample("receiver", "agent_data.status", CUT).unwrap(),
+        json!({"step": "none"})
+    );
+    // An item for this session in another stream is not Basal's item.
+    door.seal(
+        CUT,
+        vec![
+            json!({"sessionRef": session_ref(AGENT, CUT), "stream": "reserved:other",
+            "endOffset": 0, "digest": hex(&Sha256::digest([]))}),
+        ],
+    );
+    assert_eq!(
+        b.sample("receiver", "agent_data.import", CUT).unwrap(),
+        json!({"items": []})
+    );
+    assert_eq!(
+        door.calls(),
+        ["session.read", "session.read", "session.read"]
+    );
+    assert!(!b.dir.join("agent-move").join(CUT).join("incoming").exists());
+}
+
+#[test]
+fn import_reports_final_door_errors_without_staging_anything() {
+    let door = FakeDoor::new();
+    let b = Computer::new("session-import-final", &door);
+    for wire_code in FINAL_CUT_CODES {
+        if wire_code == "cut_range_not_local" {
+            // The manifest lists the item, but the door no longer has its bytes.
+            door.seal(
+                CUT,
+                vec![
+                    json!({"sessionRef": session_ref(AGENT, CUT), "stream": STREAM,
+                    "endOffset": 1, "digest": hex(&Sha256::digest(b"x"))}),
+                ],
+            );
+        } else {
+            door.refuse_next("session.read", wire_code);
+        }
+        let error = allowed_refusal(
+            b.sample("receiver", "agent_data.import", CUT),
+            Op::Import,
+            RefusalCode::ParticipantFailed,
+        );
+        assert_eq!(error.detail, Some(json!({"reason": wire_code})));
+    }
+    for (wire_code, expected) in [
+        ("verify_failed", RefusalCode::DigestMismatch),
+        ("caller_forbidden", RefusalCode::Unavailable),
+    ] {
+        door.refuse_next("session.read", wire_code);
+        allowed_refusal(
+            b.sample("receiver", "agent_data.import", CUT),
+            Op::Import,
+            expected,
+        );
+    }
+    assert_eq!(
+        b.sample("receiver", "agent_data.status", CUT).unwrap(),
+        json!({"step": "none"})
+    );
+}
+
+#[test]
+fn import_does_not_treat_a_listed_empty_stream_as_absent() {
+    let door = FakeDoor::new();
+    let b = Computer::new("session-import-empty", &door);
+    door.seal(
+        CUT,
+        vec![
+            json!({"sessionRef": session_ref(AGENT, CUT), "stream": STREAM,
+            "endOffset": 0, "digest": hex(&Sha256::digest([]))}),
+        ],
+    );
+    // The door read succeeds and the empty digest matches, but a basal-flows/1
+    // stream needs a header even if it carries no records.
+    let error = allowed_refusal(
+        b.sample("receiver", "agent_data.import", CUT),
+        Op::Import,
+        RefusalCode::DigestMismatch,
+    );
+    assert_eq!(error.message, "the stream has no header");
+    assert_eq!(door.calls(), ["session.read"]);
+}
+
+#[test]
+fn download_reads_past_the_first_page_and_checks_the_sealed_digest() {
+    let door = FakeDoor::new();
+    let b = Computer::new("session-import-multipage", &door);
+    let session = session_ref(AGENT, CUT);
+    let mut bytes = vec![b'x'; CHUNK + 1];
+    let digest = hex(&Sha256::digest(&bytes));
+    door.replace(&session, bytes.clone());
+    door.seal(
+        CUT,
+        vec![json!({"sessionRef": session, "stream": STREAM,
+            "endOffset": bytes.len(), "digest": digest})],
+    );
+    let download = b
+        .module
+        .agent_data
+        .download(CUT, &session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(download.bytes, bytes);
+    assert_eq!(download.digest, digest);
+    assert_eq!(download.end, bytes.len() as u64);
+    assert_eq!(door.calls(), ["session.read", "session.read"]);
+
+    bytes[CHUNK] = b'y';
+    door.replace(&session, bytes);
+    let error = b.module.agent_data.download(CUT, &session).err().unwrap();
+    assert_eq!(error.code, RefusalCode::DigestMismatch);
+    assert_eq!(
+        error.message,
+        "the cut's bytes don't hash to its sealed digest"
+    );
+}
+
+#[test]
+fn diverged_probes_the_sealed_session_when_live_flows_match_the_last_cut() {
+    let door = FakeDoor::new();
+    let a = Computer::new("session-probe-source", &door);
+    let b = Computer::new("session-probe-receiver", &door);
+    a.flow("f-alpha");
+    move_agent(&door, &a, &b, CUT);
+
+    let diverged = |cut| b.sample("receiver", "agent_data.diverged", cut);
+    let before = door.calls().len();
+    assert_eq!(
+        diverged(CUT).unwrap(),
+        json!({"refs": [{"state": "at_cut"}]})
+    );
+    for wire_code in ["cut_import_pending", "not_found"] {
+        door.refuse_next("session.read", wire_code);
+        allowed_refusal(diverged(BACK), Op::Diverged, RefusalCode::CutNotReady);
+    }
+    for wire_code in FINAL_CUT_CODES.into_iter().chain(["verify_failed"]) {
+        door.refuse_next("session.read", wire_code);
+        assert_eq!(
+            diverged(BACK).unwrap(),
+            json!({"refs": [{"state": "unknown", "reason": wire_code}]}),
+        );
+    }
+    door.refuse_next("session.read", "caller_forbidden");
+    allowed_refusal(diverged(BACK), Op::Diverged, RefusalCode::Unavailable);
+    door.seal(BACK, vec![]);
+    assert_eq!(
+        diverged(BACK).unwrap(),
+        json!({"refs": [{"state": "advanced"}]})
+    );
+    let calls = door.calls();
+    assert_eq!(calls[before..], ["session.read"; 9]);
+}
+
+#[test]
+fn prepare_and_export_map_door_failures_to_their_allowed_codes() {
+    let door = FakeDoor::new();
+    let a = Computer::new("session-source-errors", &door);
+    a.flow("f-alpha");
+    door.fail_next("session.cover");
+    allowed_refusal(
+        a.sample("source", "agent_data.prepare", CUT),
+        Op::Prepare,
+        RefusalCode::Unavailable,
+    );
+    // Admission succeeded before cover failed. Prepare retries now read back
+    // the admitted chunk to verify it before checking cover again.
+    for (op, method, read) in [
+        (Op::Prepare, "agent_data.prepare", "session.read"),
+        (Op::Export, "agent_data.export", "session.cover"),
+    ] {
+        for wire_code in ["cut_import_pending", "not_found"] {
+            door.refuse_next(read, wire_code);
+            allowed_refusal(
+                a.sample("source", method, CUT),
+                op,
+                RefusalCode::Unavailable,
+            );
+        }
+        for wire_code in FINAL_CUT_CODES.into_iter().chain(["verify_failed"]) {
+            door.refuse_next(read, wire_code);
+            let error = allowed_refusal(
+                a.sample("source", method, CUT),
+                op,
+                RefusalCode::ParticipantFailed,
+            );
+            assert_eq!(error.detail, Some(json!({"reason": wire_code})));
+        }
+        a.sample("source", method, CUT).unwrap();
+    }
+}
+
 #[test]
 fn describe_names_one_agent_ref_and_one_agent_store() {
     let door = FakeDoor::new();
