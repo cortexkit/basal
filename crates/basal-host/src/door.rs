@@ -1,10 +1,10 @@
 //! Engram's session door, as basal uses it to move an agent's flows.
 //!
 //! The door (`session-door`, an internal service of the `engram` module) is
-//! the only path an agent's data takes between computers. Basal uses four
+//! the only path an agent's data takes between computers. Basal uses three
 //! of its ops: `session.admit` hands it a stream's bytes, `session.cover`
-//! checks they are recorded, `cut.read` lists a sealed cut's items, and
-//! `session.read` reads an item's bytes back on the receiving computer.
+//! checks they are recorded, and `session.read` reads an item's bytes back
+//! with its sealed length and digest on the receiving computer.
 //! Requests and replies are JSON; bytes travel as lowercase hex.
 
 use std::sync::Arc;
@@ -75,10 +75,10 @@ mod fake {
     #[derive(Default)]
     struct State {
         streams: BTreeMap<String, Vec<u8>>,
-        /// Sealed cuts: their items as `cut.read` lists them.
+        /// The items listed in each sealed cut.
         cuts: BTreeMap<String, Vec<Value>>,
-        /// Ops refused with `unavailable` the next time each is called.
-        fail_next: Vec<String>,
+        /// Op and code for one-shot refusals.
+        refusals: Vec<(String, String)>,
         calls: Vec<String>,
     }
 
@@ -122,7 +122,16 @@ mod fake {
 
         /// Refuses the next call of `op` with `unavailable`.
         pub fn fail_next(&self, op: &str) {
-            self.state.lock().unwrap().fail_next.push(op.into());
+            self.refuse_next(op, "unavailable");
+        }
+
+        /// Refuses the next call of `op` with `code`.
+        pub fn refuse_next(&self, op: &str, code: &str) {
+            self.state
+                .lock()
+                .unwrap()
+                .refusals
+                .push((op.into(), code.into()));
         }
 
         /// The ops called so far, in order.
@@ -135,9 +144,14 @@ mod fake {
         fn call(&self, op: &str, params: Value) -> Result<Value, WireError> {
             let mut state = self.state.lock().unwrap();
             state.calls.push(op.into());
-            if let Some(at) = state.fail_next.iter().position(|o| o == op) {
-                state.fail_next.remove(at);
-                return Err(refused("unavailable", None));
+            // Calls through this stand-in come from Basal. Only Entorhinal
+            // may list a cut; tests seal cuts directly on its behalf.
+            if op == "cut.read" {
+                return Err(refused("caller_forbidden", None));
+            }
+            if let Some(at) = state.refusals.iter().position(|(o, _)| o == op) {
+                let (_, code) = state.refusals.remove(at);
+                return Err(refused(&code, None));
             }
             let session = params["sessionRef"].as_str().unwrap_or_default().to_owned();
             match op {
@@ -159,36 +173,40 @@ mod fake {
                     let end = state.streams.get(&session).map_or(0, Vec::len);
                     Ok(json!({"durableOffset": end, "cloudOffset": end}))
                 }
-                "cut.read" => {
-                    let cut = params["cutId"].as_str().unwrap_or_default();
-                    let items = state
-                        .cuts
-                        .get(cut)
-                        .cloned()
-                        .ok_or_else(|| refused("not_found", None))?;
-                    Ok(json!({"items": items, "author": "fake"}))
-                }
                 "session.read" => {
-                    let stream = state.streams.get(&session).cloned().unwrap_or_default();
+                    let bytes = state.streams.get(&session).map_or(&[][..], Vec::as_slice);
+                    let (stream_end, digest) = if let Some(cut) = params["cutId"].as_str() {
+                        let items = state
+                            .cuts
+                            .get(cut)
+                            .ok_or_else(|| refused("cut_import_pending", None))?;
+                        let stream = params["stream"]
+                            .as_str()
+                            .ok_or_else(|| refused("invalid_request", None))?;
+                        let item = items
+                            .iter()
+                            .find(|i| i["sessionRef"] == session.as_str() && i["stream"] == stream)
+                            .ok_or_else(|| refused("cut_item_missing", None))?;
+                        let end = item["endOffset"]
+                            .as_u64()
+                            .and_then(|n| usize::try_from(n).ok())
+                            .ok_or_else(|| refused("verify_failed", None))?;
+                        (end, item["digest"].clone())
+                    } else {
+                        (bytes.len(), json!(hex(&Sha256::digest(bytes))))
+                    };
                     let from = params["fromOffset"].as_u64().unwrap_or(0) as usize;
                     let limit = params["limit"].as_u64().unwrap_or(0) as usize;
-                    let end = (from + limit).min(stream.len());
-                    let digest = params["cutId"]
-                        .as_str()
-                        .and_then(|cut| state.cuts.get(cut))
-                        .and_then(|items| {
-                            items
-                                .iter()
-                                .find(|i| i["sessionRef"] == session.as_str())
-                                .map(|i| i["digest"].clone())
-                        })
-                        .unwrap_or_else(|| json!(hex(&Sha256::digest(&stream))));
+                    let end = from.saturating_add(limit).min(stream_end);
+                    let page = bytes
+                        .get(from..end)
+                        .ok_or_else(|| refused("cut_range_not_local", None))?;
                     Ok(json!({
                         "fromOffset": from,
                         "endOffset": end,
-                        "streamEnd": stream.len(),
+                        "streamEnd": stream_end,
                         "digest": digest,
-                        "bytes": hex(stream.get(from..end).unwrap_or_default()),
+                        "bytes": hex(page),
                     }))
                 }
                 other => Err(refused("unknown_op", Some(json!({"op": other})))),
