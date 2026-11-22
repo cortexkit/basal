@@ -89,7 +89,7 @@ async-trait = "0.1"
 async-nats = { version = "0.50", default-features = false, features = ["jetstream", "kv", "nkeys", "nuid", "ring", "server_2_10"] }
 cortexkit-bus-naming = "=0.4.6"
 cortexkit-bus-trait = "=0.3.1"
-cortexkit-bus-nats = "=0.5.3"
+cortexkit-bus-nats = "=0.5.6"
 base64 = "0.22"
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
