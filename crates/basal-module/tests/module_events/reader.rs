@@ -308,6 +308,67 @@ async fn reader_admits_v2_with_blocking_catalog_and_stays_alive() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_acks_and_skips_another_accounts_events() {
+    assert_reader_drops_outside_subscription("ck.account2.event.plexus.pull_request_review.v2")
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_acks_and_skips_subjects_outside_the_event_filter() {
+    assert_reader_drops_outside_subscription("ck.account.events.plexus.pull_request_review.v2")
+        .await;
+}
+
+async fn assert_reader_drops_outside_subscription(subject: &str) {
+    let logs = captured_logs();
+    // Give the test consumer a broader filter so basal has to reject the deliveries itself.
+    let server = Server::with_subject(Duration::from_secs(30), "ck.>").await;
+    let (rt, transport) = fixture(&server).await;
+    let own: u64 = rt
+        .store()
+        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM attribution_facts", [], |r| r.get(0))?))
+        .unwrap();
+    let reader = Reader::start(rt.clone(), transport.clone());
+    for n in 1..=2 {
+        let key = format!("{n:064x}");
+        super::v2::publish(&server, subject, &format!("{key}.v2"), Some(&key)).await;
+    }
+
+    let health = wait_health(&reader, |h| {
+        h.malformed + h.admitted >= 2 && h.notices >= own
+    })
+    .await;
+    assert_eq!(run_count(&rt), 0, "off-subscription events must not admit");
+    assert_eq!(health.malformed, 2);
+    assert_eq!(
+        health.notices, own,
+        "only basal's own in-scope deliveries are notices"
+    );
+    assert_eq!(transport.catalog_calls.load(Ordering::SeqCst), 0);
+    transport.assert_no_reader_provider_calls();
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let info = consumer.info().await.unwrap();
+    assert_eq!(info.num_ack_pending, 0);
+    assert_eq!(info.ack_floor.stream_sequence, own + 2);
+    let log_count = logs
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, fields)| fields.starts_with("events;") && fields.contains(subject))
+        .count();
+    assert_eq!(
+        log_count, 1,
+        "log only the first off-subscription subject of this kind"
+    );
+
+    publish(&server, 3, 2).await;
+    let health = wait_health(&reader, |h| h.admitted == 1).await;
+    assert_eq!(health.notices, own + 1);
+    assert_eq!(run_count(&rt), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_reader_parks_and_outbox_commit_wakes_publisher() {
     let server = Server::start().await;
     let (rt, transport) = fixture(&server).await;

@@ -52,6 +52,7 @@ pub struct Health {
     /// estimate; arrivals between polls can make it stale. Not a liveness probe.
     pub backlog: u64,
     pub batches: u64,
+    /// Deliveries on the reader's account event filter.
     pub notices: u64,
     pub admitted: u64,
     pub queued: u64,
@@ -60,6 +61,7 @@ pub struct Health {
     /// model calls run means Broca's run events are not reaching basal, and
     /// calls settle only at their scheduled checks.
     pub model_wakes: u64,
+    /// Malformed notices and rejected off-subscription deliveries.
     pub malformed: u64,
     pub first_batch_notices: Option<usize>,
     /// Processing time after the first notices arrive, including the backlog
@@ -186,6 +188,7 @@ impl Reader {
                 .enable_all()
                 .build()
                 .expect("event reader runtime");
+            let mut rejection_logs = RejectionLogs::default();
             supervise(thread_health.clone(), thread_stop.clone(), || {
                 runtime.block_on(until_cancelled(
                     &thread_cancel,
@@ -196,6 +199,7 @@ impl Reader {
                         transport.clone(),
                         thread_health.clone(),
                         thread_stop.clone(),
+                        &mut rejection_logs,
                     ),
                 ));
             });
@@ -896,6 +900,34 @@ async fn outbox_loop(
     }
 }
 
+#[derive(Default)]
+struct RejectionLogs {
+    foreign_account: bool,
+    outside_filter: bool,
+}
+
+impl RejectionLogs {
+    fn accepts(&mut self, subject: &str, account: &str, event_prefix: &str) -> bool {
+        let (logged, reason) = if subject.split('.').nth(1) != Some(account) {
+            (
+                &mut self.foreign_account,
+                "subject account differs from reader account",
+            )
+        } else if subject.strip_prefix(event_prefix).is_none_or(str::is_empty) {
+            (
+                &mut self.outside_filter,
+                "subject is outside the event filter",
+            )
+        } else {
+            return true;
+        };
+        if !std::mem::replace(logged, true) {
+            tracing::debug!(target: "events", %subject, %reason, "dropping off-subscription delivery");
+        }
+        false
+    }
+}
+
 async fn reader_loop(
     rt: Runtime,
     custody: Option<basal_core::codemode::supervisor::Supervisor>,
@@ -903,6 +935,7 @@ async fn reader_loop(
     transport: Arc<dyn Transport>,
     health: Arc<Mutex<Health>>,
     stop: Arc<AtomicBool>,
+    rejection_logs: &mut RejectionLogs,
 ) {
     let mut prior = None;
     let mut delay = 250u64;
@@ -914,6 +947,8 @@ async fn reader_loop(
             let mut connection_state = connection.connection_state();
             let work = async {
             let names = AccountNames::derive(&credential.acct).map_err(|e| e.to_string())?;
+            let event_filter = names.event_binding();
+            let event_prefix = event_filter.strip_suffix('>').ok_or("invalid account event filter")?;
             let mut consumer = bind(&connection, &names.streams().event).await?;
             {
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
@@ -949,6 +984,25 @@ async fn reader_loop(
                 }).await;
                 refresh_at = tokio::time::Instant::now() + BACKLOG_REFRESH;
                 }
+                if messages.is_empty() { continue; }
+                // Check the expected filter, not the subject's own grammar or the
+                // server's reported filter, before decoding notices or control wakes.
+                let mut subscribed = Vec::with_capacity(messages.len());
+                let mut dropped = 0;
+                for message in messages {
+                    if rejection_logs.accepts(&message.subject, names.account(), event_prefix) {
+                        subscribed.push(message);
+                    } else {
+                        message.double_ack().await.map_err(|e| e.to_string())?;
+                        dropped += 1;
+                    }
+                }
+                if dropped > 0 {
+                    let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
+                    h.malformed += dropped;
+                    h.backlog = h.backlog.saturating_sub(dropped);
+                }
+                let messages = subscribed;
                 if messages.is_empty() { continue; }
                 let oldest = messages.iter().filter_map(|m| m.info().ok()).map(|i| now_ms().saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)).max();
                 let (report, malformed) = commit_batch_report(rt.clone(), custody.clone(), consent.clone(), &messages, true).await?;
