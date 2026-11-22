@@ -1,6 +1,6 @@
 //! Read the JetStream pull consumer `m_basal`, which ck-bus provisions on the
 //! event stream. This reader never creates or modifies the stream or consumer.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{
@@ -52,7 +52,7 @@ pub struct Health {
     /// estimate; arrivals between polls can make it stale. Not a liveness probe.
     pub backlog: u64,
     pub batches: u64,
-    /// Deliveries on the reader's account event filter.
+    /// Deliveries accepted by the bound consumer's subscription check.
     pub notices: u64,
     pub admitted: u64,
     pub queued: u64,
@@ -61,8 +61,15 @@ pub struct Health {
     /// model calls run means Broca's run events are not reaching basal, and
     /// calls settle only at their scheduled checks.
     pub model_wakes: u64,
-    /// Malformed notices and rejected off-subscription deliveries.
+    /// In-subscription notices basal could not decode: for example, ordinary
+    /// notices with inline bodies, invalid subjects or headers, or undeclared
+    /// versions. Also counts invalid control notices: a result from an earlier
+    /// call is ready, a consent card has settled, or a flow install has changed.
+    /// Reader-scoped wakes addressed to other readers are ignored.
     pub malformed: u64,
+    /// Pull deliveries rejected before decoding because their ACK metadata or
+    /// subject did not match the bound consumer. They are never acknowledged.
+    pub off_subscription: u64,
     pub first_batch_notices: Option<usize>,
     /// Processing time after the first notices arrive, including the backlog
     /// poll and durable commit, but not the preceding idle pull wait.
@@ -188,7 +195,7 @@ impl Reader {
                 .enable_all()
                 .build()
                 .expect("event reader runtime");
-            let mut rejection_logs = RejectionLogs::default();
+            let mut warned = BTreeSet::new();
             supervise(thread_health.clone(), thread_stop.clone(), || {
                 runtime.block_on(until_cancelled(
                     &thread_cancel,
@@ -199,7 +206,7 @@ impl Reader {
                         transport.clone(),
                         thread_health.clone(),
                         thread_stop.clone(),
-                        &mut rejection_logs,
+                        &mut warned,
                     ),
                 ));
             });
@@ -900,32 +907,162 @@ async fn outbox_loop(
     }
 }
 
-#[derive(Default)]
-struct RejectionLogs {
-    foreign_account: bool,
-    outside_filter: bool,
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DeliveryRejection {
+    AckOrigin,
+    SubjectFilter,
 }
 
-impl RejectionLogs {
-    fn accepts(&mut self, subject: &str, account: &str, event_prefix: &str) -> bool {
-        let (logged, reason) = if subject.split('.').nth(1) != Some(account) {
-            (
-                &mut self.foreign_account,
-                "subject account differs from reader account",
-            )
-        } else if subject.strip_prefix(event_prefix).is_none_or(str::is_empty) {
-            (
-                &mut self.outside_filter,
-                "subject is outside the event filter",
-            )
-        } else {
-            return true;
-        };
-        if !std::mem::replace(logged, true) {
-            tracing::debug!(target: "events", %subject, %reason, "dropping off-subscription delivery");
+impl DeliveryRejection {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::AckOrigin => "ACK metadata does not name the bound stream and durable",
+            Self::SubjectFilter => "subject does not match the bound consumer filter",
         }
-        false
     }
+}
+
+struct DeliveryGuard<'a> {
+    stream: &'a str,
+    filters: Vec<String>,
+    warned: &'a mut BTreeSet<DeliveryRejection>,
+}
+
+impl<'a> DeliveryGuard<'a> {
+    async fn bind(
+        consumer: &mut PullConsumer,
+        stream: &'a str,
+        warned: &'a mut BTreeSet<DeliveryRejection>,
+    ) -> Result<Self, String> {
+        let config = &consumer.info().await.map_err(|e| e.to_string())?.config;
+        let mut filters = config.filter_subjects.clone();
+        if !config.filter_subject.is_empty() {
+            filters.push(config.filter_subject.clone());
+        }
+        // The event reader's durable is provisioned with a filter. Never
+        // accept arbitrary subjects if it disappears; a rebind reads it again.
+        if filters.is_empty() {
+            return Err(format!("event consumer {DURABLE} has no subject filter"));
+        }
+        Ok(Self {
+            stream,
+            filters,
+            warned,
+        })
+    }
+
+    fn rejection(&self, message: &jetstream::Message) -> Option<DeliveryRejection> {
+        // Use the same checks as cortexkit-bus-nats's pull cursor, which
+        // supports only one in-flight delivery. Basal commits batches.
+        if !message
+            .info()
+            .is_ok_and(|info| info.stream == self.stream && info.consumer == DURABLE)
+        {
+            return Some(DeliveryRejection::AckOrigin);
+        }
+        if !self
+            .filters
+            .iter()
+            .any(|filter| subject_matches(filter, &message.subject))
+        {
+            return Some(DeliveryRejection::SubjectFilter);
+        }
+        None
+    }
+
+    async fn commit_batch(
+        &mut self,
+        rt: Runtime,
+        custody: Option<basal_core::codemode::supervisor::Supervisor>,
+        consent: Option<Arc<dyn Consent>>,
+        health: &Mutex<Health>,
+        mut messages: Vec<jetstream::Message>,
+        start: Instant,
+    ) -> Result<(), String> {
+        let fetched = messages.len();
+        messages.retain(|message| {
+            let Some(rejection) = self.rejection(message) else {
+                return true;
+            };
+            if self.warned.insert(rejection) {
+                tracing::warn!(target: "events", subject=%message.subject, reason=rejection.reason(), "dropping off-subscription delivery");
+            }
+            // Do not use the rejected delivery's reply subject, even for an
+            // ACK: it might belong to a different consumer.
+            false
+        });
+        if messages.len() < fetched {
+            health
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .off_subscription += (fetched - messages.len()) as u64;
+        }
+        if messages.is_empty() {
+            return Ok(());
+        }
+
+        let oldest = messages
+            .iter()
+            .filter_map(|m| m.info().ok())
+            .map(|i| {
+                now_ms()
+                    .saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)
+            })
+            .max();
+        let (report, malformed) =
+            commit_batch_report(rt, custody, consent, &messages, true).await?;
+        let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
+        h.backlog = h.backlog.saturating_sub(messages.len() as u64);
+        if h.first_batch_notices.is_none() {
+            h.first_batch_notices = Some(messages.len());
+            h.first_batch_elapsed_ms = Some(elapsed);
+            h.first_batch_oldest_age_ms = oldest;
+            tracing::info!(target: "events", notices=messages.len(), elapsed_ms=elapsed, oldest_age_ms=oldest, admitted=report.admitted, queued=report.queued, overflow=report.overflow, "first retained event batch committed");
+        }
+        h.batches += 1;
+        h.notices += messages.len() as u64;
+        h.admitted += report.admitted as u64;
+        h.queued += report.queued as u64;
+        h.overflow += report.overflow as u64;
+        h.model_wakes += report.model_wakes as u64;
+        h.malformed += malformed as u64;
+        h.skipped_before_install += report.skipped_before_install as u64;
+        h.filtered_out += report.filtered_out as u64;
+        h.stale_dropped += report.stale_dropped as u64;
+        Ok(())
+    }
+}
+
+// NATS `*` matches exactly one token; a terminal `>` needs at least one.
+fn subject_matches(filter: &str, subject: &str) -> bool {
+    let mut filter = filter.split('.');
+    let mut subject = subject.split('.');
+    loop {
+        match (filter.next(), subject.next()) {
+            (Some(">"), Some(_)) => return true,
+            (Some("*"), Some(_)) => {}
+            (Some(expected), Some(token)) if expected == token => {}
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub async fn commit_fetched_batch_for_test(
+    rt: Runtime,
+    consumer: &mut PullConsumer,
+    stream: &str,
+    messages: Vec<jetstream::Message>,
+) -> Result<Health, String> {
+    let mut warned = BTreeSet::new();
+    let health = Mutex::new(Health::default());
+    let mut guard = DeliveryGuard::bind(consumer, stream, &mut warned).await?;
+    guard
+        .commit_batch(rt, None, None, &health, messages, Instant::now())
+        .await?;
+    Ok(health.into_inner().unwrap_or_else(|p| p.into_inner()))
 }
 
 async fn reader_loop(
@@ -935,7 +1072,7 @@ async fn reader_loop(
     transport: Arc<dyn Transport>,
     health: Arc<Mutex<Health>>,
     stop: Arc<AtomicBool>,
-    rejection_logs: &mut RejectionLogs,
+    warned: &mut BTreeSet<DeliveryRejection>,
 ) {
     let mut prior = None;
     let mut delay = 250u64;
@@ -947,9 +1084,9 @@ async fn reader_loop(
             let mut connection_state = connection.connection_state();
             let work = async {
             let names = AccountNames::derive(&credential.acct).map_err(|e| e.to_string())?;
-            let event_filter = names.event_binding();
-            let event_prefix = event_filter.strip_suffix('>').ok_or("invalid account event filter")?;
-            let mut consumer = bind(&connection, &names.streams().event).await?;
+            let stream = &names.streams().event;
+            let mut consumer = bind(&connection, stream).await?;
+            let mut guard = DeliveryGuard::bind(&mut consumer, stream, warned).await?;
             {
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
                 h.connected = true; h.disconnected_since_ms = None; h.error = None; h.retry_in_ms = 0;
@@ -985,44 +1122,7 @@ async fn reader_loop(
                 refresh_at = tokio::time::Instant::now() + BACKLOG_REFRESH;
                 }
                 if messages.is_empty() { continue; }
-                // Check the expected filter, not the subject's own grammar or the
-                // server's reported filter, before decoding notices or control wakes.
-                let mut subscribed = Vec::with_capacity(messages.len());
-                let mut dropped = 0;
-                for message in messages {
-                    if rejection_logs.accepts(&message.subject, names.account(), event_prefix) {
-                        subscribed.push(message);
-                    } else {
-                        message.double_ack().await.map_err(|e| e.to_string())?;
-                        dropped += 1;
-                    }
-                }
-                if dropped > 0 {
-                    let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
-                    h.malformed += dropped;
-                    h.backlog = h.backlog.saturating_sub(dropped);
-                }
-                let messages = subscribed;
-                if messages.is_empty() { continue; }
-                let oldest = messages.iter().filter_map(|m| m.info().ok()).map(|i| now_ms().saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)).max();
-                let (report, malformed) = commit_batch_report(rt.clone(), custody.clone(), consent.clone(), &messages, true).await?;
-                let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
-                h.backlog = h.backlog.saturating_sub(messages.len() as u64);
-                if h.first_batch_notices.is_none() {
-                    h.first_batch_notices = Some(messages.len()); h.first_batch_elapsed_ms = Some(elapsed); h.first_batch_oldest_age_ms = oldest;
-                    tracing::info!(target: "events", notices=messages.len(), elapsed_ms=elapsed, oldest_age_ms=oldest, admitted=report.admitted, queued=report.queued, overflow=report.overflow, "first retained event batch committed");
-                }
-                h.batches += 1;
-                h.notices += messages.len() as u64;
-                h.admitted += report.admitted as u64;
-                h.queued += report.queued as u64;
-                h.overflow += report.overflow as u64;
-                h.model_wakes += report.model_wakes as u64;
-                h.malformed += malformed as u64;
-                h.skipped_before_install += report.skipped_before_install as u64;
-                h.filtered_out += report.filtered_out as u64;
-                h.stale_dropped += report.stale_dropped as u64;
+                guard.commit_batch(rt.clone(), custody.clone(), consent.clone(), &health, messages, start).await?;
                 }
             }
             Ok::<_, String>(())

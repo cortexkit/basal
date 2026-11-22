@@ -1,7 +1,7 @@
 use super::*;
 use basal_host::subc_catalog::{DaemonCapabilities, SubcCatalog};
 use basal_host::transport::{Transport, WireError};
-use basal_module::events::Reader;
+use basal_module::events::{Reader, commit_fetched_batch_for_test};
 use cortexkit_role_tool_provider::catalog::{CatalogAnswer, CatalogTool, schema_digest};
 use cortexkit_role_tool_provider::describe::{Major, RoleDescribe};
 use serde_json::Value;
@@ -308,64 +308,196 @@ async fn reader_admits_v2_with_blocking_catalog_and_stays_alive() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reader_acks_and_skips_another_accounts_events() {
-    assert_reader_drops_outside_subscription("ck.account2.event.plexus.pull_request_review.v2")
-        .await;
+async fn reader_drops_wrong_ack_origin_without_acking() {
+    use async_nats::jetstream::{self, consumer};
+
+    let server = Server::with_ack_wait(Duration::from_secs(30)).await;
+    let (rt, transport) = fixture(&server).await;
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let mut other = jetstream::new(server.bus.client())
+        .get_stream(STREAM)
+        .await
+        .unwrap()
+        .create_consumer(consumer::pull::Config {
+            durable_name: Some("other_reader".into()),
+            filter_subject: SUBJECT_V2.into(),
+            ack_policy: consumer::AckPolicy::Explicit,
+            ack_wait: Duration::from_secs(30),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    publish(&server, 1, 2).await;
+    let mut other_messages = pull(&other).await.unwrap();
+    assert_eq!(other_messages.len(), 1);
+    assert_reader_drops_off_subscription(
+        &rt,
+        &transport,
+        &mut consumer,
+        other_messages.pop().unwrap(),
+        "ACK metadata does not name the bound stream and durable",
+    )
+    .await;
+    let other_info = other.info().await.unwrap();
+    assert_eq!(other_info.num_ack_pending, 1);
+    assert_eq!(other_info.ack_floor.stream_sequence, 0);
+
+    let genuine = pull(&consumer).await.unwrap();
+    assert_genuine_follow_up(&rt, &mut consumer, genuine).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reader_acks_and_skips_subjects_outside_the_event_filter() {
-    assert_reader_drops_outside_subscription("ck.account.events.plexus.pull_request_review.v2")
-        .await;
+async fn reader_drops_subject_outside_server_filter_without_acking() {
+    let server = Server::with_ack_wait(Duration::from_secs(30)).await;
+    let (rt, transport) = fixture(&server).await;
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    publish(&server, 1, 2).await;
+    let genuine = pull(&consumer).await.unwrap();
+    assert_eq!(genuine.len(), 1);
+    // Change only the subject at the delivery seam. This keeps the real ACK
+    // reply, so accidentally acknowledging the drop would advance the floor.
+    let mut wrong = genuine[0].clone();
+    wrong.message.subject = "ck.account.events.plexus.pull_request_review.v2".into();
+    assert_reader_drops_off_subscription(
+        &rt,
+        &transport,
+        &mut consumer,
+        wrong,
+        "subject does not match the bound consumer filter",
+    )
+    .await;
+    let info = consumer.info().await.unwrap();
+    assert_eq!(info.num_ack_pending, 1);
+    assert_eq!(info.ack_floor.stream_sequence, 0);
+
+    assert_genuine_follow_up(&rt, &mut consumer, genuine).await;
 }
 
-async fn assert_reader_drops_outside_subscription(subject: &str) {
+async fn assert_reader_drops_off_subscription(
+    rt: &Runtime,
+    transport: &BlockingTransport,
+    consumer: &mut async_nats::jetstream::consumer::PullConsumer,
+    delivery: async_nats::jetstream::Message,
+    reason: &str,
+) {
     let logs = captured_logs();
-    // Give the test consumer a broader filter so basal has to reject the deliveries itself.
-    let server = Server::with_subject(Duration::from_secs(30), "ck.>").await;
-    let (rt, transport) = fixture(&server).await;
-    let own: u64 = rt
-        .store()
-        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM attribution_facts", [], |r| r.get(0))?))
-        .unwrap();
-    let reader = Reader::start(rt.clone(), transport.clone());
-    for n in 1..=2 {
-        let key = format!("{n:064x}");
-        super::v2::publish(&server, subject, &format!("{key}.v2"), Some(&key)).await;
-    }
-
-    let health = wait_health(&reader, |h| {
-        h.malformed + h.admitted >= 2 && h.notices >= own
-    })
-    .await;
-    assert_eq!(run_count(&rt), 0, "off-subscription events must not admit");
-    assert_eq!(health.malformed, 2);
-    assert_eq!(
-        health.notices, own,
-        "only basal's own in-scope deliveries are notices"
-    );
+    let subject = delivery.subject.to_string();
+    let health = commit_fetched_batch_for_test(
+        rt.clone(),
+        consumer,
+        STREAM,
+        vec![delivery.clone(), delivery],
+    )
+    .await
+    .unwrap();
+    assert_eq!(health.off_subscription, 2);
+    assert_eq!(health.malformed, 0);
+    assert_eq!(health.notices, 0);
+    assert_eq!(health.admitted, 0);
+    assert_eq!(run_count(rt), 0, "off-subscription events must not admit");
     assert_eq!(transport.catalog_calls.load(Ordering::SeqCst), 0);
     transport.assert_no_reader_provider_calls();
-    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
-    let info = consumer.info().await.unwrap();
-    assert_eq!(info.num_ack_pending, 0);
-    assert_eq!(info.ack_floor.stream_sequence, own + 2);
     let log_count = logs
         .0
         .lock()
         .unwrap()
         .iter()
-        .filter(|(_, fields)| fields.starts_with("events;") && fields.contains(subject))
+        .filter(|(level, fields)| {
+            *level == tracing::Level::WARN
+                && fields.starts_with("events;")
+                && fields.contains(&subject)
+                && fields.contains(reason)
+                && fields.contains("dropping off-subscription delivery")
+        })
         .count();
-    assert_eq!(
-        log_count, 1,
-        "log only the first off-subscription subject of this kind"
-    );
+    assert_eq!(log_count, 1, "warn only on the first drop of each reason");
+}
 
-    publish(&server, 3, 2).await;
-    let health = wait_health(&reader, |h| h.admitted == 1).await;
+async fn assert_genuine_follow_up(
+    rt: &Runtime,
+    consumer: &mut async_nats::jetstream::consumer::PullConsumer,
+    genuine: Vec<async_nats::jetstream::Message>,
+) {
+    assert_eq!(genuine.len(), 1);
+    let health = commit_fetched_batch_for_test(rt.clone(), consumer, STREAM, genuine)
+        .await
+        .unwrap();
+    assert_eq!(health.off_subscription, 0);
+    assert_eq!(health.malformed, 0);
+    assert_eq!(health.notices, 1);
+    assert_eq!(health.admitted, 1);
+    assert_eq!(run_count(rt), 1);
+    let info = consumer.info().await.unwrap();
+    assert_eq!(info.num_ack_pending, 0);
+    assert_eq!(info.ack_floor.stream_sequence, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_uses_broad_server_filter_instead_of_derived_account() {
+    let server = Server::with_subject(Duration::from_secs(30), "ck.>").await;
+    let (rt, transport) = fixture(&server).await;
+    let own = attribution_facts(&rt);
+    let reader = Reader::start(rt.clone(), transport.clone());
+    let subject = "ck.account2.event.plexus.pull_request_review.v2";
+    let key = format!("{:064x}", 1);
+    super::v2::publish(&server, subject, &format!("{key}.v2"), Some(&key)).await;
+    let health = wait_health(&reader, |h| h.notices + h.off_subscription == own + 1).await;
+    assert_eq!(health.off_subscription, 0);
+    assert_eq!(health.malformed, 0);
     assert_eq!(health.notices, own + 1);
+    assert_eq!(health.admitted, 1);
     assert_eq!(run_count(&rt), 1);
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let info = consumer.info().await.unwrap();
+    assert_eq!(info.num_ack_pending, 0);
+    assert_eq!(info.ack_floor.stream_sequence, own + 1);
+    transport.assert_no_reader_provider_calls();
+}
+
+fn attribution_facts(rt: &Runtime) -> u64 {
+    rt.store()
+        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM attribution_facts", [], |r| r.get(0))?))
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reader_accepts_in_filter_subjects_at_several_token_depths() {
+    let server = Server::with_ack_wait(Duration::from_secs(30)).await;
+    let (rt, transport) = fixture(&server).await;
+    let own = attribution_facts(&rt);
+    let reader = Reader::start(rt.clone(), transport.clone());
+    server
+        .publish(1, "ck.account.event.magic-context.docs_proposal.v1")
+        .await;
+    server
+        .publish(2, "ck.account.event.broca.run.task.step.started.v1")
+        .await;
+    publish(&server, 3, 2).await;
+    let js = async_nats::jetstream::new(server.bus.client());
+    let mut headers = async_nats::HeaderMap::new();
+    headers.insert("Nats-Msg-Id", "settlement:1:basal");
+    js.publish_with_headers(
+        "ck.account.event.aft.late_result_ready.v1.basal",
+        headers,
+        serde_json::to_vec(&json!({"call_key":"call:1","outcome":"ok"}))
+            .unwrap()
+            .into(),
+    )
+    .await
+    .unwrap()
+    .await
+    .unwrap();
+
+    let health = wait_health(&reader, |h| h.notices + h.off_subscription == own + 4).await;
+    assert_eq!(health.off_subscription, 0);
+    assert_eq!(health.malformed, 0);
+    assert_eq!(health.notices, own + 4);
+    assert_eq!(health.admitted, 1);
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let info = consumer.info().await.unwrap();
+    assert_eq!(info.num_ack_pending, 0);
+    assert_eq!(info.ack_floor.stream_sequence, own + 4);
+    transport.assert_no_reader_provider_calls();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
