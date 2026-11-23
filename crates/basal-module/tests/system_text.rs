@@ -169,7 +169,8 @@ fn system_text_composition_and_digest_only_match_the_full_answer() {
 #[test]
 fn head_system_text_on_the_default_catalog_matches_the_default() {
     let default = tool::catalog(arguments()).unwrap();
-    let request = json!({"params":arguments()["params"],"system_text":{"preset":"head","params":{}}});
+    let request =
+        json!({"params":arguments()["params"],"system_text":{"preset":"head","params":{}}});
     let named = tool::catalog(request).unwrap();
     assert_eq!(named["tools"], default["tools"]);
     assert_eq!(named["system_text"], default["system_text"]);
@@ -216,7 +217,11 @@ fn legacy_capability_filter_only_narrows_the_selected_preset() {
     assert_eq!(worker["system_text"]["tool_names"], json!([]));
     assert_eq!(worker["system_text"]["text"], "");
 
-    let head = tool::catalog(request("head", json!(["basal:codemode/v1", "basal:flow.manage/v1"]))).unwrap();
+    let head = tool::catalog(request(
+        "head",
+        json!(["basal:codemode/v1", "basal:flow.manage/v1"]),
+    ))
+    .unwrap();
     assert_eq!(head["tools"].as_array().unwrap().len(), 1);
     assert_eq!(head["tools"][0]["name"], "codemode");
     assert_eq!(head["system_text"]["tool_names"], json!(["codemode"]));
