@@ -251,9 +251,8 @@ pub struct ResolvedCatalog {
 }
 
 /// Whether the provider that gave `answer` serves `preset`: its preset-less
-/// catalog answer lists that preset in `presets`. Basal reads these answers
-/// when the run starts and always without a preset, which is the only place
-/// the contract allows the list to appear.
+/// catalog answer lists that preset in `presets`. Only an answer to a
+/// preset-less read can contain this list.
 ///
 /// A provider that lists no presets, or lists other presets, gets no preset
 /// on its tool calls: the call then runs the provider's default variant,
@@ -286,6 +285,7 @@ fn catalog_read_error(error: &WireError) -> String {
 /// Provider metadata indexed and checked once for the whole admission.
 struct IndexedAnswer {
     answer: CatalogAnswer,
+    used_preset: bool,
     tools: BTreeMap<String, usize>,
     invalid: Option<String>,
 }
@@ -296,7 +296,7 @@ thread_local! {
 }
 
 impl IndexedAnswer {
-    fn new(answer: CatalogAnswer) -> Self {
+    fn new(answer: CatalogAnswer, used_preset: bool) -> Self {
         let mut tools = BTreeMap::new();
         let mut invalid = None;
         for (index, tool) in answer.tools.iter().enumerate() {
@@ -315,6 +315,7 @@ impl IndexedAnswer {
         }
         Self {
             answer,
+            used_preset,
             tools,
             invalid,
         }
@@ -325,12 +326,13 @@ impl IndexedAnswer {
 /// provider declaring the legacy capability serves every tool. A provider
 /// declaring `call-modes/v1` serves the tools whose `modes`, in its own
 /// `tool.catalog` answer, include `codemode`. `answers` holds each module's
-/// indexed answer, so both network reads and validation happen once per provider.
+/// indexed answer, so catalog lookup and validation happen once per provider.
 fn codemode_served(
     transport: &dyn Transport,
     read: &CatalogRead<'_>,
     module: &crate::catalog_snapshot::Module,
     entry: &CatalogEntry,
+    preset: Option<&str>,
     answers: &mut BTreeMap<String, Result<IndexedAnswer, WireError>>,
 ) -> Result<
     (
@@ -350,8 +352,8 @@ fn codemode_served(
         ));
     }
     let answer = answers.entry(entry.module.clone()).or_insert_with(|| {
-        read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module)
-            .map(IndexedAnswer::new)
+        read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module, preset)
+            .map(|(answer, used_preset)| IndexedAnswer::new(answer, used_preset))
     });
     let answer = answer.as_ref().map_err(|error| {
         if run_refusal(error).is_some() {
@@ -453,8 +455,9 @@ fn add_gap(
 /// the transport timeout; callers must not hold a store lock across this
 /// function.
 ///
-/// `preset` is core's preset for the run, when it chose one. It is never sent
-/// on these reads; it only decides which providers `preset_modules` names.
+/// `preset` is core's preset for the run, when it chose one. When a provider
+/// lists it in the first catalog answer, Basal reads that preset's catalog
+/// and includes the provider in `preset_modules` if it has usable entries.
 pub fn catalog(
     transport: &dyn Transport,
     read: &CatalogRead<'_>,
@@ -513,7 +516,7 @@ pub fn catalog_from_snapshot(
         if failed.iter().any(|(module, ..)| *module == entry.module) {
             continue;
         }
-        match codemode_served(transport, read, module, entry, &mut answers) {
+        match codemode_served(transport, read, module, entry, preset, &mut answers) {
             Ok((result_format, tags)) => {
                 let mut resolved = serde_json::json!({"name":entry.tool,"module":entry.module,"op":entry.op,"input_schema":schema});
                 if let Some(format) = result_format {
@@ -538,15 +541,9 @@ pub fn catalog_from_snapshot(
     let preset_modules = answers
         .iter()
         .filter(|(module, answer)| {
-            let Some(preset) = preset else {
-                // Core chose no preset, so no tool call names one.
-                return false;
-            };
             !is_failed(module)
                 && usable.iter().any(|(usable, _)| *usable == module.as_str())
-                && answer
-                    .as_ref()
-                    .is_ok_and(|answer| provider_serves_preset(&answer.answer, preset))
+                && answer.as_ref().is_ok_and(|answer| answer.used_preset)
         })
         .map(|(module, _)| module.clone())
         .collect();
@@ -717,7 +714,20 @@ mod call_mode_tests {
                             message: format!("unknown catalog member {member}"),
                         });
                     }
-                    self.catalogs[module].clone()
+                    let mut answer = self.catalogs[module].clone()?;
+                    if let Some(preset) = arguments.get("preset") {
+                        if !answer["presets"]
+                            .as_array()
+                            .is_some_and(|names| names.contains(preset))
+                        {
+                            return Err(WireError::Refused {
+                                code: "invalid_request".into(),
+                                message: format!("unsupported preset {preset}"),
+                            });
+                        }
+                        answer.as_object_mut().unwrap().remove("presets");
+                    }
+                    Ok(answer)
                 }
                 other => panic!("unexpected role op {other}"),
             }
@@ -943,6 +953,7 @@ mod call_mode_tests {
     fn a_provider_listing_other_presets_serves_none() {
         let provider = Provider::answering(Ok(answer_listing(&["head", "worker"])));
         assert!(preset_modules_for(&provider, Some("reader")).is_empty());
+        assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
     }
 
     #[test]
@@ -950,6 +961,7 @@ mod call_mode_tests {
         let provider =
             Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
         assert!(preset_modules_for(&provider, Some("worker")).is_empty());
+        assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
     }
 
     /// A tool tagged `code.read/v1` once marked a provider as serving presets.
@@ -966,16 +978,18 @@ mod call_mode_tests {
     fn a_run_without_a_preset_serves_none_whatever_the_answer_lists() {
         let provider = Provider::answering(Ok(answer_listing(&["head", "worker", "reader"])));
         assert!(preset_modules_for(&provider, None).is_empty());
+        assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
     }
 
-    /// Basal reads catalogs when the run starts, and this is the only request
-    /// whose answer may list presets, so the read never names the run's.
     #[test]
-    fn catalog_reads_name_no_preset_even_when_the_run_has_one() {
+    fn catalog_reads_discover_then_select_the_listed_run_preset() {
         let provider = Provider::answering(Ok(answer_listing(&["worker"])));
         let resolved = preset_modules_for(&provider, Some("worker"));
         assert_eq!(resolved, BTreeSet::from(["mock".to_owned()]));
-        assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
+        assert_eq!(
+            provider.calls(),
+            ["role.describe", "tool.catalog", "tool.catalog"]
+        );
     }
 
     #[test]

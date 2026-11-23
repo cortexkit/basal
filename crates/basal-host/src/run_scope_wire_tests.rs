@@ -250,10 +250,15 @@ impl Daemon {
                 | "tool.withdraw"
         );
         // Each fake provider serves only the presets its preset-less catalog
-        // answer lists, so a tool call naming any other preset is refused the
-        // way a real provider refuses one it does not define.
-        if !role_op
-            && let Some(preset) = preset.as_deref()
+        // answer lists, for both catalog reads and tool calls.
+        let requested_preset = if name == "tool.catalog" {
+            catalog_preset.as_deref()
+        } else if !role_op {
+            preset.as_deref()
+        } else {
+            None
+        };
+        if let Some(preset) = requested_preset
             && !self
                 .served_presets
                 .get(&module)
@@ -337,6 +342,9 @@ impl Daemon {
                     "result_format":"tool-result/v1"}]});
                 if let Some(listed) = listed {
                     answer["presets"] = json!(listed);
+                }
+                if catalog_preset.is_some() {
+                    answer["tools"][0]["capabilities"] = json!(["code.read/v1"]);
                 }
                 answer
             }
@@ -589,14 +597,11 @@ fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
     });
 }
 
-/// Core chose a preset for the run. Only the program's tool call to a provider
-/// whose preset-less catalog answer lists that preset carries it, in its
-/// envelope. The catalog reads name no preset, so providers that serve none
-/// (the fake entorhinal and cerebellum) still serve the run, and AFT answers
-/// with its `head` catalog. Tool calls to the other providers and custody
-/// requests carry none, which a provider without presets refuses.
+/// Only a provider that lists the run's preset gets it in its next catalog
+/// read's arguments and in the program's tool-call envelope. Providers that
+/// don't list it still serve the run without it, and custody reads omit it.
 #[test]
-fn core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets() {
+fn core_selected_preset_reaches_only_providers_that_list_it() {
     // AFT serves `worker`, so the run's `worker` reaches it. A provider that
     // lists only `head` and `worker` serves no `reader`, so a `reader` run
     // sends it none.
@@ -612,14 +617,25 @@ fn core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets() {
             );
             let resolved = read_catalogs(&transport, &run_selector(), Some(preset));
             assert!(resolved.gaps.is_empty(), "{:?}", resolved.gaps);
-            // AFT lists the preset only when the run's preset is among the
-            // presets its preset-less answer declares.
-            let expected: BTreeSet<String> = served
-                .contains(&preset)
-                .then(|| "aft".to_owned())
-                .into_iter()
-                .collect();
+            let uses_preset = served.contains(&preset);
+            let expected: BTreeSet<String> =
+                uses_preset.then(|| "aft".to_owned()).into_iter().collect();
             assert_eq!(resolved.preset_modules, expected, "{resolved:?}");
+            let aft_read = resolved
+                .catalog
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["module"] == "aft")
+                .unwrap();
+            assert_eq!(
+                aft_read["capabilities"],
+                if uses_preset {
+                    json!(["code.read/v1"])
+                } else {
+                    Value::Null
+                }
+            );
 
             let flow = format!("codemode:{RUN}");
             transport.configure_flow(
@@ -672,13 +688,24 @@ fn core_selected_preset_reaches_only_tool_calls_to_providers_serving_presets() {
                 .expect("custody reads without a preset");
 
             let received = received(&state);
-            assert_eq!(received.len(), 10);
+            assert_eq!(received.len(), 10 + usize::from(uses_preset));
+            let aft_catalog_presets: Vec<_> = received
+                .iter()
+                .filter(|request| request.module == "aft" && request.name == "tool.catalog")
+                .map(|request| request.catalog_preset.as_deref())
+                .collect();
+            if uses_preset {
+                assert_eq!(aft_catalog_presets, [None, Some(preset)]);
+            } else {
+                assert_eq!(aft_catalog_presets, [None]);
+            }
             for request in &received {
-                let expected =
-                    (request.module == "aft" && request.name == "read" && served.contains(&preset))
-                        .then_some(preset);
+                let expected = (request.module == "aft" && request.name == "read" && uses_preset)
+                    .then_some(preset);
                 assert_eq!(request.preset.as_deref(), expected, "{request:?}");
-                assert_eq!(request.catalog_preset, None, "{request:?}");
+                if request.module != "aft" || request.name != "tool.catalog" {
+                    assert_eq!(request.catalog_preset, None, "{request:?}");
+                }
             }
         });
     }

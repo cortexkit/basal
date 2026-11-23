@@ -388,20 +388,29 @@ impl Transport for Core {
                     .lock()
                     .unwrap()
                     .push(arguments.clone());
-                // Like a provider that defines no catalog presets, refuse
-                // any catalog member other than `params`, `preset` included.
+                let presets = ["head", "worker", "reader"];
+                let preset = arguments.get("preset");
                 if let Some(member) = arguments
                     .as_object()
                     .into_iter()
                     .flat_map(|members| members.keys())
-                    .find(|member| *member != "params")
+                    .find(|member| *member != "params" && *member != "preset")
                 {
                     return Err(WireError::Refused {
                         code: "invalid_request".into(),
                         message: format!("unsupported catalog member or type: {member}"),
                     });
                 }
-                assert_eq!(arguments, json!({"params":{}}));
+                if let Some(preset) = preset
+                    && (module != "aft"
+                        || !preset.as_str().is_some_and(|name| presets.contains(&name)))
+                {
+                    return Err(WireError::Refused {
+                        code: "invalid_request".into(),
+                        message: format!("unsupported preset {preset}"),
+                    });
+                }
+                assert_eq!(arguments["params"], json!({}));
                 let tool = match module {
                     "aft" => "read",
                     "cerebellum" => "recall",
@@ -415,11 +424,8 @@ impl Transport for Core {
                 }
                 let mut answer =
                     json!({"generation":"test","catalog_digest":"test","tools":[tool]});
-                if module == "aft" {
-                    // The provider lists the presets it serves here, in its
-                    // preset-less answer, and that list alone decides which
-                    // tool calls carry the run's preset.
-                    answer["presets"] = json!(["head", "worker", "reader"]);
+                if module == "aft" && preset.is_none() {
+                    answer["presets"] = json!(presets);
                 }
                 Ok(answer)
             }
@@ -1589,13 +1595,11 @@ fn admission_reads_catalogs_on_the_run_scope_core_opened() {
     );
 }
 
-/// Core chose a preset for the run. The catalog reads name none, and only the
-/// tool call to the provider whose preset-less catalog answer lists that
-/// preset carries it. The cerebellum-like provider lists no presets and
-/// refuses one on a tool call, so the program completes only if its call goes
-/// without one.
+/// Core chose a preset for the run. Only AFT lists it, so only AFT gets a
+/// second catalog read and a tool call with that preset. The cerebellum-like
+/// provider refuses presets on both requests.
 #[test]
-fn core_run_scope_preset_reaches_only_tool_calls_to_providers_serving_presets() {
+fn core_run_scope_preset_reaches_only_providers_that_list_it() {
     let rig = rig("catalog-preset", false);
     *rig.core.preset.lock().unwrap() = Some("worker".into());
     rig.core.two_providers.store(true, Ordering::SeqCst);
@@ -1617,8 +1621,12 @@ fn core_run_scope_preset_reaches_only_tool_calls_to_providers_serving_presets() 
     );
     assert_eq!(
         rig.core.catalog_arguments.lock().unwrap().as_slice(),
-        [json!({"params":{}}), json!({"params":{}})],
-        "neither catalog read names a preset"
+        [
+            json!({"params":{}}),
+            json!({"params":{},"preset":"worker"}),
+            json!({"params":{}}),
+        ],
+        "only AFT gets a second read, with the run's preset"
     );
     assert_eq!(
         rig.core.tool_presets.lock().unwrap().as_slice(),

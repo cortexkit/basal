@@ -3,6 +3,7 @@
 //! is open, so a revocation never outlives the generation that announced it.
 use crate::transport::{Transport, WireError};
 use crate::{Catalog, EventBody, EventDecl, EventOrigin, OpDecl, OpKind};
+use cortexkit_role_tool_provider::catalog::CatalogAnswer;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,73 +83,78 @@ fn role_call_key() -> String {
 }
 
 /// Reads `module`'s own `tool.catalog` answer: `role.describe` first, then
-/// `tool.catalog` asking for every capability tag the provider serves. The
-/// answer carries per-tool declarations the daemon catalog does not, such as
-/// `emits_events` and `modes`. A failed call, a describe that fails the
-/// role's checks, or an answer that does not decode is an error.
+/// a preset-less `tool.catalog`, then the `flow` preset if listed. If the
+/// preset is not listed but the provider still offers capability filtering,
+/// ask for every tag it serves. The answer carries per-tool declarations the
+/// daemon catalog does not, such as `emits_events` and `modes`.
 ///
-/// Each of the two requests is bounded by the transport's call timeout.
+/// Each request is bounded by the transport's call timeout. A failed call,
+/// an invalid description, or an answer that does not decode is an error.
 pub fn read_tool_catalog(
     transport: &dyn Transport,
     module: &str,
-) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    read_tool_catalog_with(&mut |name, arguments| {
+) -> Result<CatalogAnswer, WireError> {
+    read_tool_catalog_with(Some("flow"), |name, arguments| {
         transport.tool(module, name, arguments, &role_call_key())
     })
+    .map(|(answer, _)| answer)
 }
 
-/// `read_tool_catalog` for a codemode run: both requests go on a route
+/// `read_tool_catalog` for a codemode run: the requests go on a route
 /// opened under the run's own scope `scope` and bound with `identity`, so the
 /// provider sees the codemode call mode its run binds will carry, and they
 /// carry no envelope call key. Providers such as AFT refuse a bind whose
 /// harness is not one they recognise, and providers such as cerebellum admit
 /// basal only on a codemode run scope.
 ///
-/// Neither request carries the run's catalog preset, in the `tool.catalog`
-/// arguments or in the request envelope, even when core chose one for the
-/// run. The tool-provider role lets a provider that defines no presets refuse
-/// `CatalogRequest.preset`, and such providers do refuse it, which would drop
-/// all of their tools from the run. The preset-less answer is also the one
-/// place a provider lists the presets it serves, and only that list decides
-/// which providers get the run's preset on their tool calls (see
-/// `run_scope::provider_serves_preset`). A provider that does define presets,
-/// such as AFT, answers a preset-less catalog read with its `head` catalog and
-/// enforces the run's preset when a tool is called, from the preset on the
-/// tool call's own request.
+/// The first `tool.catalog` request names no preset. A provider may refuse a
+/// preset it does not serve, so only a provider that lists the run's preset
+/// gets a second read naming it, in the catalog arguments, not the envelope.
+/// Otherwise use the default catalog or the legacy capability filter. The
+/// boolean records whether the answer was read with the run's preset, so the
+/// program's tool calls can use the same variant.
 pub fn read_tool_catalog_on_run(
     transport: &dyn Transport,
     scope: &subc_protocol::scope::ScopeSelector,
     identity: &subc_protocol::BindIdentity,
     module: &str,
-) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    read_tool_catalog_with(&mut |name, arguments| {
+    preset: Option<&str>,
+) -> Result<(CatalogAnswer, bool), WireError> {
+    read_tool_catalog_with(preset, |name, arguments| {
         transport.role_on_run_scope(scope, identity, module, name, arguments)
     })
 }
 
 fn read_tool_catalog_with(
-    send: &mut dyn FnMut(&str, Value) -> Result<Value, WireError>,
-) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    use cortexkit_role_tool_provider::catalog::{
-        CatalogAnswer, CatalogRequest, params_for_capabilities,
-    };
+    preset: Option<&str>,
+    mut send: impl FnMut(&str, Value) -> Result<Value, WireError>,
+) -> Result<(CatalogAnswer, bool), WireError> {
+    use cortexkit_role_tool_provider::catalog::{CatalogRequest, params_for_capabilities};
     use cortexkit_role_tool_provider::describe::{check_describe, select_tool_capabilities};
     let describe = send("role.describe", json!({}))?;
     let describe = check_describe(&describe)
         .map_err(|problems| WireError::Unreadable(format!("role.describe: {problems:?}")))?;
-    // A provider that filters its catalog by capability tag answers an
-    // empty request with no tools. Ask such a provider for every tag it
-    // serves, so the answer holds every tool that carries any tag.
-    let params = match select_tool_capabilities(&describe, &describe.tool_capabilities) {
-        Some(tags) => params_for_capabilities(tags),
-        None => serde_json::Map::new(),
+    let mut read = |request: &CatalogRequest| -> Result<CatalogAnswer, WireError> {
+        let request =
+            serde_json::to_value(request).map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let answer = send("tool.catalog", request)?;
+        serde_json::from_value(answer)
+            .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))
     };
-    let request = serde_json::to_value(CatalogRequest::new(params))
-        .map_err(|e| WireError::NeverSent(e.to_string()))?;
-    let answer = send("tool.catalog", request)?;
-    let answer: CatalogAnswer = serde_json::from_value(answer)
-        .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))?;
-    Ok(answer)
+    let mut request = CatalogRequest::new(Default::default());
+    let default = read(&request)?;
+    if let Some(preset) =
+        preset.filter(|preset| crate::run_scope::provider_serves_preset(&default, preset))
+    {
+        request.preset = Some(preset.to_owned());
+        return read(&request).map(|answer| (answer, true));
+    }
+    // Providers that still rely on filtering can return no tools by default.
+    if let Some(tags) = select_tool_capabilities(&describe, &describe.tool_capabilities) {
+        request.params = params_for_capabilities(tags);
+        return read(&request).map(|answer| (answer, false));
+    }
+    Ok((default, false))
 }
 
 pub use crate::core_identity::CORE_MODULE as CORE;
@@ -679,27 +685,32 @@ mod op_lookup_tests {
 #[cfg(test)]
 mod emits_events_tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     /// A daemon whose catalog lists plexus with a management mutation
     /// `label` and a mutating tool `react`, and whose plexus answers each
     /// role op with what the test set for it.
-    #[derive(Default)]
     struct Plexus {
-        answers: Mutex<BTreeMap<String, Result<Value, WireError>>>,
+        describe: Value,
+        catalogs: Mutex<VecDeque<Result<Value, WireError>>>,
         /// Each role op call: its name, arguments and call key.
         calls: Mutex<Vec<(String, Value, String)>>,
     }
 
     impl Plexus {
         fn answering(describe: Value, catalog: Result<Value, WireError>) -> Arc<Self> {
-            let plexus = Arc::new(Self::default());
-            let mut answers = plexus.answers.lock().unwrap();
-            answers.insert("role.describe".into(), Ok(describe));
-            answers.insert("tool.catalog".into(), catalog);
-            drop(answers);
-            plexus
+            Self::answering_catalogs(describe, [catalog])
+        }
+        fn answering_catalogs(
+            describe: Value,
+            catalogs: impl IntoIterator<Item = Result<Value, WireError>>,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                describe,
+                catalogs: Mutex::new(catalogs.into_iter().collect()),
+                calls: Mutex::new(Vec::new()),
+            })
         }
         fn calls(&self) -> Vec<(String, Value, String)> {
             self.calls.lock().unwrap().clone()
@@ -732,12 +743,16 @@ mod emits_events_tests {
                 .lock()
                 .unwrap()
                 .push((name.into(), arguments, call_key.into()));
-            self.answers
-                .lock()
-                .unwrap()
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| panic!("unexpected role op {name}"))
+            match name {
+                "role.describe" => Ok(self.describe.clone()),
+                "tool.catalog" => self
+                    .catalogs
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("catalog reply"),
+                _ => panic!("unexpected role op {name}"),
+            }
         }
     }
 
@@ -825,10 +840,16 @@ mod emits_events_tests {
         filtering["capabilities"] =
             json!([cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER]);
         filtering["tool_capabilities"] = json!(["plexus:github.react/v1", "plexus:github.read/v1"]);
-        let plexus = Plexus::answering(filtering, Ok(answer(Some(json!(false)))));
+        let default = json!({"generation":"g","catalog_digest":"default","tools":[]});
+        let plexus =
+            Plexus::answering_catalogs(filtering, [Ok(default), Ok(answer(Some(json!(false))))]);
         assert_eq!(read(&plexus, "react"), Ok(Some(false)));
+        let calls = plexus.calls();
+        let names: Vec<_> = calls.iter().map(|(name, ..)| name.as_str()).collect();
+        assert_eq!(names, ["role.describe", "tool.catalog", "tool.catalog"]);
+        assert_eq!(calls[1].1, json!({"params":{}}));
         assert_eq!(
-            plexus.calls()[1].1,
+            calls[2].1,
             json!({"params":{"capabilities":["plexus:github.react/v1","plexus:github.read/v1"]}})
         );
     }

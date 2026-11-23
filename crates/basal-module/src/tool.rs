@@ -135,13 +135,26 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     )
     .to_hex()
     .to_string();
+    // Validate the filter against every tag basal serves. A known tag for a
+    // tool outside the preset matches nothing rather than becoming invalid.
     let tools = select_by_capabilities(&request.params, &full_tools)?
         .into_iter()
+        .filter(|tool| match request.preset.as_deref() {
+            Some("worker") => tool.name == "codemode",
+            Some("reader") => false,
+            _ => true,
+        })
         .cloned()
         .collect();
     let mut answer = CatalogAnswer::new(generation, "").with_tools(tools);
     if request.preset.is_none() {
-        answer = answer.with_presets(PRESETS);
+        answer = if request.params.contains_key("capabilities") {
+            // Keep the filtered reply byte-identical until prefrontal stops
+            // sending filters. Remove this branch along with the filter.
+            answer.with_presets(["head"])
+        } else {
+            answer.with_presets(PRESETS)
+        };
     }
 
     answer
@@ -177,11 +190,9 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     serde_json::to_value(answer).map_err(|e| invalid("arguments", e.to_string()))
 }
 
-/// Presets basal answers. `head` exists only for runners that can't take a
-/// provider's default system text and so always name a preset. It serves
-/// exactly the default tools and text, because basal's catalog doesn't differ
-/// by caller.
-const PRESETS: [&str; 1] = ["head"];
+/// The session presets basal answers: heads get both tools, workers get only
+/// codemode, and readers get neither. System text accompanies codemode.
+const PRESETS: [&str; 3] = ["head", "worker", "reader"];
 
 fn check_preset(field: &str, preset: Option<&str>) -> Result<(), ErrorBody> {
     match preset {
