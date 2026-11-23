@@ -14,6 +14,34 @@ fn arguments() -> Value {
 }
 
 #[test]
+fn legacy_filtered_catalog_answer_bytes_are_unchanged() {
+    let digests: Vec<_> = [
+        json!([]),
+        json!(["basal:codemode/v1"]),
+        json!(["basal:flow.manage/v1"]),
+        json!(["basal:codemode/v1", "basal:flow.manage/v1"]),
+    ]
+    .into_iter()
+    .map(|tags| {
+        let mut request = arguments();
+        request["params"]["capabilities"] = tags;
+        let answer = tool::catalog(request).unwrap();
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&answer).unwrap()))
+    })
+    .collect();
+    // SHA-256 of complete responses captured before preset discovery changed.
+    assert_eq!(
+        digests,
+        [
+            "386c03aa6d2e7b050ec7e8ab2742f26f6683e84ab4313c0c058549171e7abb23",
+            "79efce238b06407fc814e549cb25d042d7cc3a0727e66dbc90e3517c57404264",
+            "33d5e8a441dd08fb65e08913cbd600678d345f5ec0d5c82c84d387dcd77d1e56",
+            "6efeac1a357e02c5ec7373bd33b4bfb21b6ec2d903a510a73a9b2b7b60538657",
+        ]
+    );
+}
+
+#[test]
 fn default_system_text_is_declared_and_its_exact_bytes_are_pinned() {
     let manifest = serde_json::to_value(manifest::manifest()).unwrap();
     assert!(
@@ -142,6 +170,7 @@ fn system_text_composition_and_digest_only_match_the_full_answer() {
 fn head_preset_serves_the_default_tools_and_text() {
     let default = tool::catalog(arguments()).unwrap();
     for request in [
+        json!({"preset":"head","params":{},"system_text":{"preset":"head","params":{}}}),
         json!({"preset":"head","params":arguments()["params"],"system_text":{"preset":"head","params":{}}}),
         json!({"params":arguments()["params"],"system_text":{"preset":"head","params":{}}}),
     ] {
@@ -155,7 +184,54 @@ fn head_preset_serves_the_default_tools_and_text() {
 }
 
 #[test]
-fn system_text_refuses_named_presets_and_unknown_params() {
+fn preset_discovery_and_selected_system_text_match_the_session() {
+    let default = tool::catalog(json!({"params":{}})).unwrap();
+    assert_eq!(default["presets"], json!(["head", "worker", "reader"]));
+    let guidance = include_str!("../src/codemode_system_text.md");
+    for (preset, names, text, digest) in [
+        ("head", json!(["codemode", "flow"]), guidance, TEXT_DIGEST),
+        ("worker", json!(["codemode"]), guidance, TEXT_DIGEST),
+        ("reader", json!([]), "", EMPTY_TEXT_DIGEST),
+    ] {
+        let answer = tool::catalog(json!({
+            "preset":preset,"params":{},"system_text":{"preset":preset,"params":{}}
+        }))
+        .unwrap();
+        let tools: Vec<_> = answer["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| &tool["name"])
+            .collect();
+        assert_eq!(tools, names.as_array().unwrap().iter().collect::<Vec<_>>());
+        assert!(answer.get("presets").is_none(), "{preset}");
+        assert_eq!(answer["system_text"]["tool_names"], names, "{preset}");
+        assert_eq!(answer["system_text"]["text"], text, "{preset}");
+        assert_eq!(answer["system_text"]["item_digest"], digest, "{preset}");
+        assert_eq!(
+            answer["system_text"]["preflight_digest"], digest,
+            "{preset}"
+        );
+    }
+}
+
+#[test]
+fn legacy_capability_filter_only_narrows_the_selected_preset() {
+    let request = |preset, capabilities| json!({"preset":preset,"params":{"capabilities":capabilities},"system_text":{"params":{}}});
+    let worker = tool::catalog(request("worker", json!(["basal:flow.manage/v1"]))).unwrap();
+    assert_eq!(worker["tools"], json!([]));
+    assert_eq!(worker["system_text"]["tool_names"], json!([]));
+    assert_eq!(worker["system_text"]["text"], "");
+
+    let head = tool::catalog(request("head", json!(["basal:flow.manage/v1"]))).unwrap();
+    assert_eq!(head["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(head["tools"][0]["name"], "flow");
+    assert_eq!(head["system_text"]["tool_names"], json!(["flow"]));
+    assert_eq!(head["system_text"]["text"], "");
+}
+
+#[test]
+fn catalog_refuses_unknown_presets_and_system_text_params() {
     for (item, field) in [
         (
             json!({"preset":"codemode","params":{}}),
@@ -173,7 +249,7 @@ fn system_text_refuses_named_presets_and_unknown_params() {
         assert_eq!(error.detail.unwrap()["field"], field);
     }
     let mut request = arguments();
-    request["preset"] = json!("worker");
+    request["preset"] = json!("codemode");
     let error = tool::catalog(request).unwrap_err();
     assert_eq!(error.detail.unwrap()["field"], "preset");
 }

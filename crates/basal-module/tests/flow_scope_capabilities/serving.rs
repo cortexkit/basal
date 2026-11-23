@@ -218,6 +218,60 @@ fn tool_modes_require_flow_even_when_management_flow_operations_is_empty() {
 }
 
 #[test]
+fn install_and_dry_run_use_a_providers_listed_flow_preset() {
+    let (f, wire) = fixture("flow-preset");
+    {
+        let mut daemon = wire.catalog.lock().unwrap();
+        daemon["modules"][0]["module_id"] = json!("plexus");
+        daemon["modules"][0]["roles"][1]["tools"][0]["name"] = json!("github_react");
+    }
+    let default = json!({"generation":"g","catalog_digest":"default","tools":[],
+        "presets":["head","worker","reader","flow"]});
+    let flow = json!({"generation":"g","catalog_digest":"flow","tools":[{
+        "name":"github_react","schema_digest":"0".repeat(64),"semantics":1,
+        "capabilities":["plexus:github.react/v1"],"input_schema":{"type":"object"},
+        "modes":["flow"],"emits_events":false
+    }]});
+    let mut manifest = manifest("github_react");
+    manifest["ops"][0]["module"] = json!("plexus");
+    // A new install checks the grant and then runs a capture dry run for its card.
+    wire.enqueue(
+        "tool.catalog",
+        vec![
+            Ok(default.clone()),
+            Ok(flow.clone()),
+            Ok(default.clone()),
+            Ok(flow.clone()),
+        ],
+    );
+    f.module
+        .handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({"script":"return 7;","manifest":manifest.to_string()}),
+        )
+        .unwrap();
+
+    wire.enqueue("tool.catalog", vec![Ok(default), Ok(flow)]);
+    dry_run(&f).unwrap();
+    let calls = wire.calls("tool.catalog");
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| &call["arguments"])
+            .collect::<Vec<_>>(),
+        [
+            &json!({"params":{}}),
+            &json!({"params":{},"preset":"flow"}),
+            &json!({"params":{}}),
+            &json!({"params":{},"preset":"flow"}),
+            &json!({"params":{}}),
+            &json!({"params":{},"preset":"flow"}),
+        ]
+    );
+}
+
+#[test]
 fn dry_run_refuses_a_tool_that_stops_serving_flow() {
     let (f, wire) = fixture("tool-dry-serving");
     intake(&f, "flow.install", "send").unwrap();
