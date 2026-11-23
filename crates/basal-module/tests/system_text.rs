@@ -164,23 +164,16 @@ fn system_text_composition_and_digest_only_match_the_full_answer() {
     assert_ne!(without_text["catalog_digest"], preflight["catalog_digest"]);
 }
 
-/// Runners without default system text always name a preset, so `head` must
-/// serve the same tools and text as the default, and must not relist presets.
+/// Naming the `head` preset for the system text alone leaves the catalog's
+/// tools and text as the default's.
 #[test]
-fn head_preset_serves_the_default_tools_and_text() {
+fn head_system_text_on_the_default_catalog_matches_the_default() {
     let default = tool::catalog(arguments()).unwrap();
-    for request in [
-        json!({"preset":"head","params":{},"system_text":{"preset":"head","params":{}}}),
-        json!({"preset":"head","params":arguments()["params"],"system_text":{"preset":"head","params":{}}}),
-        json!({"params":arguments()["params"],"system_text":{"preset":"head","params":{}}}),
-    ] {
-        let named = tool::catalog(request.clone()).unwrap();
-        assert_eq!(named["tools"], default["tools"], "{request}");
-        assert_eq!(named["system_text"], default["system_text"], "{request}");
-        assert_eq!(named["generation"], default["generation"], "{request}");
-    }
-    let named = tool::catalog(json!({"preset":"head","params":arguments()["params"]})).unwrap();
-    assert!(named.get("presets").is_none());
+    let request = json!({"params":arguments()["params"],"system_text":{"preset":"head","params":{}}});
+    let named = tool::catalog(request).unwrap();
+    assert_eq!(named["tools"], default["tools"]);
+    assert_eq!(named["system_text"], default["system_text"]);
+    assert_eq!(named["generation"], default["generation"]);
 }
 
 #[test]
@@ -189,9 +182,9 @@ fn preset_discovery_and_selected_system_text_match_the_session() {
     assert_eq!(default["presets"], json!(["head", "worker", "reader"]));
     let guidance = include_str!("../src/codemode_system_text.md");
     for (preset, names, text, digest) in [
-        ("head", json!(["codemode", "flow"]), guidance, TEXT_DIGEST),
+        ("head", json!(["codemode"]), guidance, TEXT_DIGEST),
         ("worker", json!(["codemode"]), guidance, TEXT_DIGEST),
-        ("reader", json!([]), "", EMPTY_TEXT_DIGEST),
+        ("reader", json!(["codemode"]), guidance, TEXT_DIGEST),
     ] {
         let answer = tool::catalog(json!({
             "preset":preset,"params":{},"system_text":{"preset":preset,"params":{}}
@@ -223,11 +216,10 @@ fn legacy_capability_filter_only_narrows_the_selected_preset() {
     assert_eq!(worker["system_text"]["tool_names"], json!([]));
     assert_eq!(worker["system_text"]["text"], "");
 
-    let head = tool::catalog(request("head", json!(["basal:flow.manage/v1"]))).unwrap();
+    let head = tool::catalog(request("head", json!(["basal:codemode/v1", "basal:flow.manage/v1"]))).unwrap();
     assert_eq!(head["tools"].as_array().unwrap().len(), 1);
-    assert_eq!(head["tools"][0]["name"], "flow");
-    assert_eq!(head["system_text"]["tool_names"], json!(["flow"]));
-    assert_eq!(head["system_text"]["text"], "");
+    assert_eq!(head["tools"][0]["name"], "codemode");
+    assert_eq!(head["system_text"]["tool_names"], json!(["codemode"]));
 }
 
 #[test]

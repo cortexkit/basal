@@ -139,11 +139,7 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     // tool outside the preset matches nothing rather than becoming invalid.
     let tools = select_by_capabilities(&request.params, &full_tools)?
         .into_iter()
-        .filter(|tool| match request.preset.as_deref() {
-            Some("worker") => tool.name == "codemode",
-            Some("reader") => false,
-            _ => true,
-        })
+        .filter(|tool| request.preset.is_none() || tool.name == "codemode")
         .cloned()
         .collect();
     let mut answer = CatalogAnswer::new(generation, "").with_tools(tools);
@@ -190,8 +186,11 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     serde_json::to_value(answer).map_err(|e| invalid("arguments", e.to_string()))
 }
 
-/// The session presets basal answers: heads get both tools, workers get only
-/// codemode, and readers get neither. System text accompanies codemode.
+/// The session presets basal answers. Every session kind gets only codemode,
+/// with its system text: a program can call only its own session's tools, so
+/// a read-only session's programs stay read-only. `flow` is in the preset-less
+/// catalog only, because prefrontal relays it to heads itself and a second
+/// copy from a preset would collide with that one.
 const PRESETS: [&str; 3] = ["head", "worker", "reader"];
 
 fn check_preset(field: &str, preset: Option<&str>) -> Result<(), ErrorBody> {
