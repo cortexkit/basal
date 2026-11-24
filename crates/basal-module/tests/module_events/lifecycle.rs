@@ -202,9 +202,12 @@ async fn unavailable_bus_retries_with_durable_backoff_and_loses_nothing() {
     rt.config().clock.set(1749);
     assert!(rt.pending_template_events(32).unwrap().is_empty());
     rt.config().clock.set(1750);
+    // A fresh name in memory: on Windows the server can't recreate a file
+    // store under the name it just deleted (JetStream error 10049).
     js.create_stream(async_nats::jetstream::stream::Config {
-        name: STREAM.into(),
+        name: format!("{STREAM}_RESTORED"),
         subjects: vec!["ck.account.event.>".into()],
+        storage: async_nats::jetstream::stream::StorageType::Memory,
         ..Default::default()
     })
     .await

@@ -257,9 +257,12 @@ async fn owner_notice_bus_failure_leaves_delivery_pending_until_retry_succeeds()
         publish_outbox(&rt, &server.bus, "account").await.unwrap(),
         0
     );
+    // A fresh name in memory: on Windows the server can't recreate a file
+    // store under the name it just deleted (JetStream error 10049).
     js.create_stream(async_nats::jetstream::stream::Config {
-        name: STREAM.into(),
+        name: format!("{STREAM}_RESTORED"),
         subjects: vec!["ck.account.event.>".into()],
+        storage: async_nats::jetstream::stream::StorageType::Memory,
         ..Default::default()
     })
     .await
