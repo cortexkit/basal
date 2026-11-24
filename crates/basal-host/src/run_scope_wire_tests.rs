@@ -597,9 +597,8 @@ fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
     });
 }
 
-/// Only a provider that lists the run's preset gets it in its next catalog
-/// read's arguments and in the program's tool-call envelope. Providers that
-/// don't list it still serve the run without it, and custody reads omit it.
+/// AFT's preset-less catalog supplies its tools. Only a provider listing the
+/// run's preset gets it in a tool-call envelope. `late_results` omits it.
 #[test]
 fn core_selected_preset_reaches_only_providers_that_list_it() {
     // AFT serves `worker`, so the run's `worker` reaches it. A provider that
@@ -628,14 +627,7 @@ fn core_selected_preset_reaches_only_providers_that_list_it() {
                 .iter()
                 .find(|tool| tool["module"] == "aft")
                 .unwrap();
-            assert_eq!(
-                aft_read["capabilities"],
-                if uses_preset {
-                    json!(["code.read/v1"])
-                } else {
-                    Value::Null
-                }
-            );
+            assert!(aft_read.get("capabilities").is_none(), "{aft_read}");
 
             let flow = format!("codemode:{RUN}");
             transport.configure_flow(
@@ -688,17 +680,13 @@ fn core_selected_preset_reaches_only_providers_that_list_it() {
                 .expect("custody reads without a preset");
 
             let received = received(&state);
-            assert_eq!(received.len(), 10 + usize::from(uses_preset));
+            assert_eq!(received.len(), 10);
             let aft_catalog_presets: Vec<_> = received
                 .iter()
                 .filter(|request| request.module == "aft" && request.name == "tool.catalog")
                 .map(|request| request.catalog_preset.as_deref())
                 .collect();
-            if uses_preset {
-                assert_eq!(aft_catalog_presets, [None, Some(preset)]);
-            } else {
-                assert_eq!(aft_catalog_presets, [None]);
-            }
+            assert_eq!(aft_catalog_presets, [None]);
             for request in &received {
                 let expected = (request.module == "aft" && request.name == "read" && uses_preset)
                     .then_some(preset);

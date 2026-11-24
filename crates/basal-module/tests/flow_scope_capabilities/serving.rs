@@ -218,7 +218,28 @@ fn tool_modes_require_flow_even_when_management_flow_operations_is_empty() {
 }
 
 #[test]
-fn install_and_dry_run_use_a_providers_listed_flow_preset() {
+fn install_and_dry_run_keep_a_nonempty_presetless_catalog() {
+    let (f, wire) = fixture("flow-presetless");
+    let mut default = tool_answer(Some(json!(["flow"])));
+    default["presets"] = json!(["flow"]);
+    wire.enqueue("tool.catalog", vec![Ok(default); 3]);
+    intake(&f, "flow.install", "send").unwrap();
+    dry_run(&f).unwrap();
+    assert_eq!(
+        wire.calls("tool.catalog")
+            .iter()
+            .map(|call| call["arguments"].clone())
+            .collect::<Vec<_>>(),
+        [
+            json!({"params":{}}),
+            json!({"params":{}}),
+            json!({"params":{}})
+        ]
+    );
+}
+
+#[test]
+fn install_and_dry_run_use_the_listed_flow_preset_when_the_default_is_empty() {
     let (f, wire) = fixture("flow-preset");
     {
         let mut daemon = wire.catalog.lock().unwrap();
