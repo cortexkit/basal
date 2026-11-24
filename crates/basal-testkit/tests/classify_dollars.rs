@@ -86,6 +86,10 @@ fn fixture(cap: f64) -> (World, Runtime, Arc<Provider>, Value, Clock) {
         json!({"modes":["flow"],"capabilities":[cortexkit_llm_tools::classify::TAG],
         "input_schema":cortexkit_llm_tools::classify::input_schema()}),
     );
+    runtime_fixture(world, cap)
+}
+
+fn runtime_fixture(world: World, cap: f64) -> (World, Runtime, Arc<Provider>, Value, Clock) {
     let store = Arc::new(Store::open(world.store_path(), Durability::throwaway()).unwrap());
     let provider = Arc::new(Provider {
         synced: Default::default(),
@@ -273,6 +277,77 @@ fn flow_classify_install_requires_dollar_cap() {
         "{error:?}"
     );
     assert!(world.spec_with(&rt, "return 1", &m).is_err());
+}
+
+#[test]
+fn flow_complete_requires_a_dollar_cap_and_applies_it_at_dispatch() {
+    let catalog: Value = serde_json::from_str(include_str!(
+        "../../../test-vectors/llm-complete-v1/tool-result-v1/catalog.ok.json"
+    ))
+    .unwrap();
+    let entry = catalog["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "llm_complete")
+        .unwrap();
+    let world = World::new("complete-dollars");
+    world.catalog.set_op(
+        "broca",
+        "llm_complete",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    world
+        .catalog
+        .set_tool_contract("broca", "llm_complete", entry.clone());
+    let (world, rt, provider, mut manifest, _) = runtime_fixture(world, 0.25);
+    manifest["ops"] = json!([{"module":"broca","op":"llm_complete"}]);
+    let caps = manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("model_cost_usd")
+        .unwrap();
+    let script = r#"return await ops.call('broca', 'llm_complete', {
+        demand: {iq: 50}, prompt: 'Name a color.', max_output_tokens: 500, max_cost_usd: 1
+    });"#;
+    let error = rt
+        .install(&InstallRequest {
+            manifest: manifest.to_string(),
+            script: script.into(),
+            author: "alice".into(),
+            loop_override: false,
+        })
+        .unwrap_err();
+    assert_eq!(
+        error,
+        InstallError::ModelCostCapRequired {
+            module: "broca".into(),
+            op: "llm_complete".into(),
+        }
+    );
+
+    manifest["model_cost_usd"] = caps;
+    *provider.outcome.lock().unwrap() = HostOutcome::fulfilled(
+        JsonText::new(include_str!(
+            "../../../test-vectors/llm-complete-v1/tool-result-v1/text-answer.ok.json"
+        ))
+        .unwrap(),
+    );
+    let spec = world.spec_with(&rt, script, &manifest).unwrap();
+    let id = rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+    assert_eq!(
+        finish(&rt, &world, &id).state,
+        basal_core::RunState::Succeeded
+    );
+    let calls = provider.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    let input: Value = serde_json::from_str(calls[0].args.as_str()).unwrap();
+    assert_eq!(input["max_cost_usd"], 0.25);
+    assert_eq!(spent(&rt, &id), 0.0105);
 }
 
 #[test]

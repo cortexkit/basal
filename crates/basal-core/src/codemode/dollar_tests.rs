@@ -228,3 +228,119 @@ fn program_classify_refusal_charges_by_the_spend_marker_in_its_detail() {
     assert_eq!(spent(&f), 0.003);
     f.cleanup(true);
 }
+
+fn complete_fixture() -> Fixture {
+    let f = Fixture::new();
+    let catalog = parse(include_str!(
+        "../../../../test-vectors/llm-complete-v1/tool-result-v1/catalog.ok.json"
+    ))
+    .unwrap();
+    let entry = catalog["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "llm_complete")
+        .unwrap();
+    f.catalog.set_op(
+        "broca",
+        "llm_complete",
+        OpDecl {
+            kind: Some(OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    f.catalog
+        .set_tool_contract("broca", "llm_complete", entry.clone());
+    assert_eq!(entry["result_format"], "tool-result/v1");
+    f.host.content_results.store(true, Ordering::SeqCst);
+    f.start(
+        &[(
+            "llm_complete",
+            "broca",
+            "llm_complete",
+            entry["input_schema"].clone(),
+        )],
+        Limits {
+            model_cost_usd: 0.25,
+            ..Limits::default()
+        },
+        100_000,
+    );
+    assert!(matches!(
+        f.parent.recv_timeout(TIMEOUT).unwrap(),
+        ParentMessage::Activate(_)
+    ));
+    f
+}
+
+fn complete_input(ceiling: f64) -> Value {
+    json!({"demand":{"iq":50},"prompt":"Name a color.","max_output_tokens":500,"max_cost_usd":ceiling})
+}
+
+#[test]
+fn program_complete_caps_dispatch_and_charges_the_reported_cost() {
+    let f = complete_fixture();
+    f.issue(0, "llm_complete", complete_input(1.0));
+    let attempt = f.attempt();
+    assert_eq!(attempt.input["max_cost_usd"], 0.25);
+    assert_eq!(spent(&f), 0.25, "before the provider settles");
+    let reply = parse(include_str!(
+        "../../../../test-vectors/llm-complete-v1/tool-result-v1/text-answer.ok.json"
+    ))
+    .unwrap();
+    attempt.reply.send(Ok(reply)).unwrap();
+    let delivery = f.delivery();
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(parse(delivery.value.as_str()).unwrap()["text"], "Teal.");
+    f.finish("null");
+    assert_eq!(f.terminal()["budgets"]["model_cost_usd"]["spent"], 0.0105);
+    f.cleanup(false);
+}
+
+#[test]
+fn program_complete_charges_refusals_by_the_spend_marker() {
+    let f = complete_fixture();
+    let no_spend = parse(include_str!(
+        "../../../../test-vectors/llm-complete-v1/tool-result-v1/refused-cost-exceeded.refused.json"
+    ))
+    .unwrap();
+    let unknown = parse(include_str!(
+        "../../../../test-vectors/llm-complete-v1/tool-result-v1/refused-provider-error.refused.json"
+    ))
+    .unwrap();
+    let mut malformed = no_spend.clone();
+    malformed["detail"]["no_spend"] = json!("true");
+    for (position, (reply, code, ceiling, cumulative_spend)) in [
+        (no_spend, "cost_exceeded", 0.005, 0.0),
+        (unknown, "provider_error", 0.0625, 0.0625),
+        (
+            json!({"code":"cost_unmeasured","message":"usage missing","detail":{"class":"permanent"}}),
+            "cost_unmeasured",
+            0.0625,
+            0.125,
+        ),
+        (malformed, "cost_exceeded", 0.0625, 0.1875),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(reply["code"], code);
+        f.issue(position as u64, "llm_complete", complete_input(ceiling));
+        let attempt = f.attempt();
+        assert_eq!(attempt.input["max_cost_usd"], ceiling);
+        attempt
+            .reply
+            .send(Err(WireError::RefusedDetails {
+                code: code.into(),
+                message: reply["message"].as_str().unwrap().into(),
+                detail: reply["detail"].clone(),
+            }))
+            .unwrap();
+        let delivery = f.delivery();
+        assert_eq!(delivery.settlement, Settlement::Rejected);
+        assert_eq!(parse(delivery.value.as_str()).unwrap()["code"], code);
+        assert_eq!(spent(&f), cumulative_spend, "{code}");
+    }
+    f.cleanup(true);
+}

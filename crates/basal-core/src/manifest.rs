@@ -154,7 +154,7 @@ pub struct Manifest {
     pub facts: Option<FactsGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmGrant>,
-    /// Shared dollar caps for direct model calls and tagged classifier op grants.
+    /// Shared dollar caps for direct model calls and tagged model tool grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_cost_usd: Option<ModelCostCap>,
     /// Roots the `fs` built-ins may read and write under.

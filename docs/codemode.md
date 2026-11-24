@@ -4,30 +4,32 @@ Basal provides one agent-facing tool, `codemode({code, description?, limits?})`,
 
 ## Model dollar budget
 
-`tools.model` and tools carrying the shared contract's `llm.classify/v1` tag
-share **$0.50 per program run**, in addition to the direct model call/token limits.
+`tools.model` and tools carrying the shared contract's `llm.classify/v1` or
+`llm.complete/v1` tag share **$0.50 per program run**, in addition to the direct
+model call/token limits.
 `limits: {model_cost_usd: 0.30}` may lower that budget (including to zero), never raise it.
-The caller supplies `{model, questions, item, max_cost_usd?}`; `model` is its chosen
-`provider/model` id. Basal supplies an omitted ceiling from the remaining budget,
-or clamps a supplied ceiling to that remainder before sending it to Broca.
+For a tagged tool such as `tools.llm_classify` or `tools.llm_complete`, Basal
+supplies an omitted `max_cost_usd` from the remaining budget, or clamps a supplied
+ceiling to that remainder before sending it to Broca.
 Concurrent calls reserve their whole ceilings, so they cannot spend the same remainder.
 With nothing left, the promise rejects before sending with `budget_exhausted` and
 `budget: "model_cost_usd"` in its structured error.
 
-A successful `{answers, usage, cost_usd}` charges the reported `cost_usd`, including
-zero-rated calls. If Broca omits a field from `usage`, Basal leaves it absent in
-the result. `cost_unmeasured` charges the
-reserved ceiling; known refusals before any model call charge nothing. Unknown
-outcomes retain their reservation and are never automatically retried. Broca's
+A successful tagged tool call charges the reported `cost_usd`, including zero.
+If Broca omits a field from `usage`, Basal leaves it absent in the result.
+A refusal marked `no_spend` is free, and a measured refusal charges its
+`cost_usd`. `cost_unknown`, `cost_unmeasured` and malformed spend markers charge
+the reserved ceiling. Without a marker, known pre-model refusals are still free.
+Unknown outcomes retain their reservation and are never automatically retried. Broca's
 ceiling bounds its estimate, **not its actual bill**: reported cost can exceed the
 ceiling and run budget, and Basal records that overrun rather than clipping it.
 Result text lists dollars spent and remaining; structured results carry
 `budgets.model_cost_usd: {limit, spent, remaining}` (remaining may be negative).
 
-Identification uses the contract tag only, never a provider or tool-name guess.
-Until Broca advertises the tag, an untagged `llm_classify` remains an ordinary
-program tool call **without Basal's dollar accounting or ceiling injection**;
-Broca still requires and enforces the caller's `max_cost_usd` on each call.
+Identification uses the contract tags only, never a provider or tool-name guess.
+A program tool without a recognized tag remains an ordinary call **without
+Basal's dollar accounting or ceiling injection**; Broca still requires and
+enforces the caller's `max_cost_usd` on each such model call.
 Flows instead refuse installation of untagged tools whose schema requires that
 ceiling; see [manifest dollar caps](manifest.md#model-dollar-caps).
 
@@ -162,7 +164,7 @@ result body:
 Consumers build model input from ordered `content` parts only, never from
 `structuredContent`. Codemode emits one text part. For a run that fits the
 size bound it holds, in order: the status/duration/call-count/person-wait line,
-the classifier dollar budget line,
+the model dollar budget line,
 the error if present (`Error (<code>): <message>`, plus an `Error detail:` line
 with the provider detail as JSON when there is one), the return value if
 present, console output verbatim under `Output:` when there is any, the

@@ -306,7 +306,7 @@ impl CallPreparation<'_> {
                 if manifest.model_cost_usd.is_none() {
                     return Err(Refusal::new(
                         "model_cost_cap_required",
-                        "the manifest grants no classifier dollar cap",
+                        "the manifest grants no model tool dollar cap",
                     ));
                 }
                 Ok(Prepared {

@@ -35,7 +35,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `ops` | list of op references | no | `[]` | Every module op the flow may call. Anything else is refused at run time. |
 | `facts` | facts grant | no | none | Whose facts the flow may read. Without it, `facts()` is refused. |
 | `llm` | model grant | no | none | Without it, `llm()` and `classify()` are refused. |
-| `model_cost_usd` | `{per_run, usd, window}` | for tagged classifier ops | none | Dollar caps for `llm.classify/v1` op grants; see classifier dollar caps below. |
+| `model_cost_usd` | `{per_run, usd, window}` | for tagged model tool ops | none | Dollar caps for `llm.classify/v1` and `llm.complete/v1` op grants; see [model dollar caps](#model-dollar-caps). |
 | `fs` | `{read?, write?}` lists of roots | no | none | Directories the file built-ins may read under (`fs.read`, `fs.list`, `fs.stat`) or write under (`fs.write`). Each root is absolute after `~` expansion and must exist at install. See `docs/builtins.md`. |
 | `git` | `{read}` list of repositories | no | none | Repositories the git built-ins may read. Each is absolute after `~` expansion and must exist at install. |
 | `net` | `{fetch}` list of `{host, methods?}` | no | none | Hosts `net.fetch` may reach over HTTPS on port 443 only, including redirect hops. `methods` defaults to `GET` and `HEAD`; others must be listed. Wildcard and IP-literal hosts are refused. |
@@ -595,9 +595,10 @@ Model calls get no tools: an `llm` request with a `tools` field is refused. Scri
 
 ### Model dollar caps
 
-Broca's `llm_classify` is called through an ordinary `ops` grant, for example
+Broca's `llm_classify` and `llm_complete` are called through `ops` grants, for example
 `ops.call("broca", "llm_classify", {model, questions, item, max_cost_usd})`.
-An op carrying the shared `llm.classify/v1` tag additionally requires:
+An op carrying either shared tag (`llm.classify/v1` or `llm.complete/v1`)
+additionally requires:
 
 ```json
 "model_cost_usd": {"per_run": 0.50, "usd": 5.00, "window": "1d"}
@@ -606,11 +607,11 @@ An op carrying the shared `llm.classify/v1` tag additionally requires:
 Both amounts are finite non-negative US dollars. `per_run` bounds each run;
 `usd` bounds the flow across all versions in a **rolling** lookback of `window`
 (`"1m"` through `"31d"`, unlike the legacy token grant's fixed windows).
-These caps are shared by direct `llm`/`classify` calls and tagged classifier
+These caps are shared by direct `llm`/`classify` calls and tagged model tool
 ops. An existing approved flow with both an `llm` grant and these caps now
 charges its direct model calls against the same limits. A flow with no dollar
 cap still records direct model costs, without gaining a new dollar ceiling.
-The install card shows a dollar line with both caps. A tagged classifier grant
+The install card shows a dollar line with both caps. A tagged model tool grant
 without these caps is refused with `model_cost_cap_required`. While providers
 are enabling tags, an untagged tool whose input schema requires `max_cost_usd`
 is refused at install with `model_tool_untagged`; flows cannot install an
@@ -629,8 +630,11 @@ Basal journals the call and reserves dollars atomically before sending. An
 omitted `max_cost_usd` becomes the smaller remaining run/window budget; a supplied
 ceiling is clamped to it. Exhaustion refuses before sending with
 `budget_exhausted`, identifying `model_cost_usd`. Success charges the actual
-`cost_usd` (even zero); `cost_unmeasured` charges the ceiling; pre-model refusals
-are free. A reported overrun can exceed the caps: Broca bounds its estimate,
+`cost_usd` (even zero). A refusal marked `no_spend` is free, and a measured
+refusal charges its `cost_usd`. `cost_unknown`, `cost_unmeasured` and malformed
+spend markers charge the reserved ceiling. Without a marker, known pre-model
+refusals are still free.
+A reported overrun can exceed the caps: Broca bounds its estimate,
 not the actual bill. Unknown calls keep their reservations and are not
 automatically resent. Broca does not bill twice if the same call is retried
 with its durable call key.

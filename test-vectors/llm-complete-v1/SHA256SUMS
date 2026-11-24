@@ -1,0 +1,4 @@
+28dcb0e9b60bf36aa1fb322cfa55d678ac77c97b64552b4876ebe7eda4ec03ad  tool-result-v1/catalog.ok.json
+5d4da5d5fd3ff13c2886cd4b4672ee6e0bdf305823a183d7290b68b4bac5c95a  tool-result-v1/refused-cost-exceeded.refused.json
+b3801b703227ef455ef9033397f9aa047b42d0e3fee856fe3990619d72421a7f  tool-result-v1/refused-provider-error.refused.json
+f5dbd459aa73ef7882ca4d1bb3a7f76e551cd877ff19587fb8b412aae2bc637a  tool-result-v1/text-answer.ok.json

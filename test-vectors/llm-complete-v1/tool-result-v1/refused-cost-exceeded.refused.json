@@ -1,0 +1,1 @@
+{"code":"cost_exceeded","message":"anthropic/claude-sonnet may cost up to $0.009105 for this call, over max_cost_usd","detail":{"class":"permanent","estimate_usd":0.009105,"no_spend":true}}
