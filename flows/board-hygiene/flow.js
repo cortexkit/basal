@@ -17,6 +17,10 @@ const UNSETTLED_REF_BYTES = 256;
 // Dependents listed per delivery; the rest are counted.
 const UNSETTLED_BLOCKS_SHOWN = 16;
 const UNREVIEWED_BLOCKS_SHOWN = 3;
+// Boards per board.read page. Basal refuses any single module result over
+// 512 KiB, and sixteen boards of 20-60 KB each crossed it on 24 Nov 2026.
+// Six keeps a page near 200 KB with room for boards to grow.
+const BOARD_PAGE_LIMIT = 6;
 let boardOwners = new Set();
 let boardOwnerNames = new Map();
 
@@ -386,18 +390,30 @@ async function run() {
     if (refusals.length < 128) refusals.push({message, ...detail});
   }
   const boards = [];
+  const unreadable = [];
   const cursors = new Set();
   let cursor;
   do {
-    const page = await ops.call('prefrontal', 'board.read', {limit: 16, ...(cursor ? {cursor} : {})});
-    boards.push(...page.boards);
+    const page = await ops.call('prefrontal', 'board.read', {limit: BOARD_PAGE_LIMIT, ...(cursor ? {cursor} : {})});
+    for (const entry of page.boards) {
+      // prefrontal answers a board too large to send with an error entry in
+      // that agent's place. The agent still owns a board, so waits naming it
+      // keep resolving, but its lanes can't be checked this run.
+      if (entry.board == null && entry.error != null) {
+        log('board too large to read', {agent: entry.agent_id, code: entry.error.code,
+          size_bytes: entry.error.size_bytes});
+        unreadable.push(entry);
+      } else {
+        boards.push(entry);
+      }
+    }
     cursor = page.next_cursor;
     if (cursor && cursors.has(cursor)) throw new Error('board.read repeated a cursor');
     cursors.add(cursor);
   } while (cursor != null);
 
-  boardOwners = new Set(boards.map(board => board.agent_id));
-  boardOwnerNames = new Map(boards.filter(({name}) => typeof name === 'string' && name !== '')
+  boardOwners = new Set([...boards, ...unreadable].map(board => board.agent_id));
+  boardOwnerNames = new Map([...boards, ...unreadable].filter(({name}) => typeof name === 'string' && name !== '')
     .map(({agent_id, name}) => [agent_id, name]));
   const skipped = {lane_blocks: 0, lane_items: 0};
   const owners = boards.map(({agent_id, board}) => ({

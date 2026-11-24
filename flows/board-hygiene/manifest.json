@@ -1,9 +1,9 @@
 {
   "format": 1,
   "id": "board-hygiene",
-  "version": 21,
+  "version": 22,
   "explanation": "Checks each owner's board and unsettled work every five minutes for ended waits, overdue ETAs, stale items, completed lanes and deliveries awaiting review or settlement. Maintains a digest list per owner and rule, waking the owner only when an item joins a list and leaving unchanged lists alone. This keeps forgotten work visible and helps owners unblock dependent campaign slices.",
-  "changes": "Overdue peer-wait reminders now name the waiting agent, say the item is on that agent's board, and give the exact reference to use when declining. Board and work reads now name the module by its current name, prefrontal.",
+  "changes": "Reads boards six at a time instead of sixteen, because a page of sixteen boards grew past the largest reply basal accepts and every run failed. A board too large for prefrontal to send is now skipped and logged, while the other boards are still checked.",
   "purpose": "Maintain one digest per recipient and board rule for ended waits, overdue ETAs, stale active items, completed lanes and merged deliveries left unsettled; wake only when a member joins a list.",
   "trigger": {"schedule": {"cron": "*/5 * * * *", "tz": "UTC", "missed": "skip"}},
   "audience": {"kind": "global"},

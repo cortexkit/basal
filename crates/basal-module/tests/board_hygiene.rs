@@ -72,7 +72,7 @@ impl BoardHost {
         let value = match &request.kind {
             CallKind::Op { module, op } if module == "prefrontal" && op == "board.read" => {
                 assert!(args.get("for").is_none());
-                assert_eq!(args["limit"], 16);
+                assert_eq!(args["limit"], 6);
                 assert!(args.get("agents").is_none());
                 self.reads.lock().unwrap().push(args.clone());
                 if let Some(page) = self.board_page.lock().unwrap().clone() {
@@ -83,10 +83,10 @@ impl BoardHost {
                 let start = args["cursor"].as_str().map_or(0, |cursor| {
                     boards.iter().position(|b| b["agent_id"] == cursor).unwrap() + 1
                 });
-                let end = (start + 16).min(boards.len());
+                let end = (start + 6).min(boards.len());
                 json!({"boards": &boards[start..end], "next_cursor": if end < boards.len() {
                     boards[end-1]["agent_id"].clone()
-                } else { Value::Null }, "page_cap": 16})
+                } else { Value::Null }, "page_cap": 6})
             }
             CallKind::Op { module, op } if module == "prefrontal" && op == "work.unsettled" => {
                 // Basal adds the approved stamp; the script sends only a cursor.
@@ -344,7 +344,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse_stored(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 21);
+    assert_eq!(value["version"], 22);
     assert!(!value["explanation"].as_str().unwrap().is_empty());
     assert!(!value["changes"].as_str().unwrap().is_empty());
     assert_eq!(value["board_read"], json!(["$audience"]));
@@ -827,8 +827,9 @@ fn paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditi
     }
     let mut t = Test::new(boards);
     assert_eq!(t.run(BASE).len(), 33);
-    assert_eq!(t.host.reads.lock().unwrap().len(), 3);
-    assert_eq!(t.host.reads.lock().unwrap()[1]["cursor"], "ag_15");
+    // 33 boards at six per page.
+    assert_eq!(t.host.reads.lock().unwrap().len(), 6);
+    assert_eq!(t.host.reads.lock().unwrap()[1]["cursor"], "ag_05");
     {
         let mut boards = t.host.boards.lock().unwrap();
         boards.remove(0);
@@ -1407,6 +1408,40 @@ fn a_peer_ref_with_a_display_name_nudges_only_the_known_peer() {
         );
         assert!(t.run(BASE + 2 * HOUR).is_empty());
     }
+}
+
+#[test]
+fn an_oversize_board_entry_is_skipped_and_its_agent_still_owns_a_board() {
+    // prefrontal's shape for a board too large to send: an error in the
+    // agent's place, with no `board` member.
+    let mut waiting = item("blocked", BASE);
+    waiting["eta_ms"] = json!(BASE);
+    waiting["wait"] = json!({"ref":"peer:ag_big"});
+    let mut readable = board("ag_a", vec![waiting]);
+    readable["name"] = json!("ALPHA");
+    let page = json!({"boards": [
+        readable,
+        {"agent_id":"ag_big","name":"BIG","error":{"code":"board_read_too_large",
+            "message":"board is 300000 bytes","size_bytes":300000}},
+    ], "next_cursor": null, "page_cap": 6});
+    let mut t = Test::new(vec![]);
+    *t.host.board_page.lock().unwrap() = Some(text(page));
+    let writes = t.run(BASE + MIN);
+    assert_eq!(t.result["boards_scanned"], 1);
+    assert_eq!(
+        t.result["refusals"],
+        json!([{"message":"board too large to read","agent":"ag_big",
+            "code":"board_read_too_large","size_bytes":300000}])
+    );
+    // The peer wait on the unreadable agent still reaches it, by name.
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["agent"], "ag_big");
+    assert!(
+        writes[0]["item"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("ALPHA waits on you")
+    );
 }
 
 #[test]
