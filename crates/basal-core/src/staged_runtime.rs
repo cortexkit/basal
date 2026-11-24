@@ -643,7 +643,7 @@ impl run_driver::Services for Services {
             if remaining <= 0.0 {
                 return Ok(Prepared::Refused {
                     class,
-                    value: JsonText::new(serde_json::json!({"code":"budget_exhausted","message":"classifier dollar cap exhausted","budget":"model_cost_usd","reason":"model_cost_usd"}).to_string()).expect("bounded classifier refusal"),
+                    value: JsonText::new(serde_json::json!({"code":"budget_exhausted","message":"model tool dollar cap exhausted","budget":"model_cost_usd","reason":"model_cost_usd"}).to_string()).expect("bounded model tool refusal"),
                     notify: false,
                 });
             }
@@ -653,7 +653,7 @@ impl run_driver::Services for Services {
                     class,
                     value: crate::kv::rejection(
                         "invalid_params",
-                        "classifier arguments must be an object",
+                        "model tool arguments must be an object",
                     )
                     .value,
                     notify: false,

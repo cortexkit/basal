@@ -1,4 +1,4 @@
-//! Dollar accounting shared by program and flow calls to the classifier tool.
+//! Dollar accounting shared by program and flow calls to model tools.
 
 use basal_host::transport::WireError;
 use cortexkit_llm_tools::errors::{Refusal, RefusalDetail};
@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolPolicy {
     Ordinary,
+    /// Dollar-accounted model tool. Existing installs and packages store this policy as `classify`.
     Classify,
     LegacyOrdinary,
 }
@@ -61,7 +62,7 @@ pub(crate) fn policy_for_entry(
     op: &str,
     entry: Option<&Value>,
 ) -> Result<ToolPolicy, crate::InstallError> {
-    if entry.is_some_and(matches) {
+    if entry.is_some_and(is_model_tool) {
         if manifest.model_cost_usd.is_none() {
             return Err(crate::InstallError::ModelCostCapRequired {
                 module: module.into(),
@@ -137,14 +138,17 @@ pub fn load(conn: &Connection, flow: &str, version: u32) -> crate::Result<ToolPo
     Ok(policies)
 }
 
+const MODEL_TOOL_TAGS: &[&str] = &[
+    cortexkit_llm_tools::classify::TAG,
+    cortexkit_llm_tools::complete::TAG,
+];
+
 /// Recognizes the contract rather than a particular provider or tool alias.
-pub fn matches(entry: &Value) -> bool {
-    // The contract fixes only the tag, not a tool name. Untagged program tools remain
-    // ordinary calls with no Basal dollar accounting; Broca still enforces their
-    // required per-call max_cost_usd until its catalog advertises this tag.
+pub(crate) fn is_model_tool(entry: &Value) -> bool {
     entry["capabilities"].as_array().is_some_and(|tags| {
         tags.iter()
-            .any(|tag| tag == cortexkit_llm_tools::classify::TAG)
+            .filter_map(Value::as_str)
+            .any(|tag| MODEL_TOOL_TAGS.contains(&tag))
     })
 }
 
@@ -194,7 +198,7 @@ pub fn reserve(
     if !input.is_object() {
         return Ok(Err(WireError::Refused {
             code: "invalid_params".into(),
-            message: "classifier arguments must be an object".into(),
+            message: "model tool arguments must be an object".into(),
         }));
     }
     let saved: Option<String> = tx
@@ -261,17 +265,25 @@ const FREE_REFUSAL_CODES: &[&str] = &[
     "unknown_method",
 ];
 
-/// Basal builds the shared refusal shape from the reply, so the spend rule has
-/// one implementation rather than one here. A `detail` that does not decode is
-/// dropped: whatever it says is not a well-formed spend marker.
-fn refusal_from_reply(code: &str, detail: Option<&Value>) -> Refusal {
+/// Rebuilds the refusal from its code and optional detail. A present but
+/// unreadable spend field must not look like a legacy refusal with no marker.
+fn refusal_from_reply(code: &str, detail: Option<&Value>) -> Option<Refusal> {
     let refusal =
         cortexkit_llm_tools::errors::refusal(code, "").unwrap_or_else(|| Refusal::new(code, ""));
-    let detail =
-        detail.and_then(|detail| serde_json::from_value::<RefusalDetail>(detail.clone()).ok());
-    match detail {
-        Some(detail) => refusal.with_detail(detail),
-        None => refusal,
+    let Some(detail) = detail else {
+        return Some(refusal);
+    };
+    let markers = ["cost_usd", "cost_unknown", "no_spend"];
+    if markers
+        .iter()
+        .any(|field| detail.get(field).is_some_and(Value::is_null))
+    {
+        return None;
+    }
+    match serde_json::from_value::<RefusalDetail>(detail.clone()) {
+        Ok(detail) => Some(refusal.with_detail(detail)),
+        Err(_) if markers.iter().any(|field| detail.get(field).is_some()) => None,
+        Err(_) => Some(refusal),
     }
 }
 
@@ -281,7 +293,10 @@ fn refusal_from_reply(code: &str, detail: Option<&Value>) -> Refusal {
 fn refused_charge(code: &str, detail: Option<&Value>, reserved: f64) -> f64 {
     use cortexkit_llm_tools::errors::{RefusalSpend, refusal_spend};
 
-    match refusal_spend(&refusal_from_reply(code, detail)) {
+    let spend = refusal_from_reply(code, detail)
+        .ok_or_else(|| "could not decode refusal spend fields".to_owned())
+        .and_then(|refusal| refusal_spend(&refusal).map_err(|error| error.to_string()));
+    match spend {
         Ok(RefusalSpend::Measured(cost)) => cost,
         Ok(RefusalSpend::ChargeCeiling) => reserved,
         Ok(RefusalSpend::NoSpend) => 0.0,
@@ -299,7 +314,7 @@ fn refused_charge(code: &str, detail: Option<&Value>, reserved: f64) -> f64 {
                 code,
                 %violation,
                 reserved,
-                "classify refusal carries a malformed spend marker; charging the reservation"
+                "model tool refusal carries a malformed spend marker; charging the reservation"
             );
             reserved
         }

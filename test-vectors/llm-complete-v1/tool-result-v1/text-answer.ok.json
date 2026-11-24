@@ -1,0 +1,1 @@
+{"content":[{"text":"{\"text\":\"Teal.\",\"model\":{\"provider\":\"anthropic\",\"model\":\"claude-sonnet\"},\"usage\":{\"input_tokens\":1000,\"output_tokens\":500},\"cost_usd\":0.0105}","type":"text"}],"structuredContent":{"cost_usd":0.0105,"model":{"model":"claude-sonnet","provider":"anthropic"},"text":"Teal.","usage":{"input_tokens":1000,"output_tokens":500}}}

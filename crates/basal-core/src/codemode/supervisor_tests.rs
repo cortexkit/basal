@@ -561,7 +561,7 @@ impl Fixture {
                             .tool_contract(module, op)
                             .unwrap()
                             .as_ref()
-                            .is_some_and(crate::classify_cost::matches),
+                            .is_some_and(crate::classify_cost::is_model_tool),
                         module: module.to_string(),
                         op: op.to_string(),
                         input_schema: compile_input_schema(schema).unwrap(),

@@ -632,7 +632,7 @@ fn catalog(value: &Value, gaps: &[basal_host::run_scope::CatalogGap]) -> Checked
                 op: op.to_owned(),
                 input_schema,
                 result_format,
-                classify_cost: crate::classify_cost::matches(entry),
+                classify_cost: crate::classify_cost::is_model_tool(entry),
             })
         })();
         match checked {
