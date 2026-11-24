@@ -285,7 +285,7 @@ fn catalog_read_error(error: &WireError) -> String {
 /// Provider metadata indexed and checked once for the whole admission.
 struct IndexedAnswer {
     answer: CatalogAnswer,
-    used_preset: bool,
+    serves_preset: bool,
     tools: BTreeMap<String, usize>,
     invalid: Option<String>,
 }
@@ -296,7 +296,7 @@ thread_local! {
 }
 
 impl IndexedAnswer {
-    fn new(answer: CatalogAnswer, used_preset: bool) -> Self {
+    fn new(answer: CatalogAnswer, serves_preset: bool) -> Self {
         let mut tools = BTreeMap::new();
         let mut invalid = None;
         for (index, tool) in answer.tools.iter().enumerate() {
@@ -315,7 +315,7 @@ impl IndexedAnswer {
         }
         Self {
             answer,
-            used_preset,
+            serves_preset,
             tools,
             invalid,
         }
@@ -353,7 +353,7 @@ fn codemode_served(
     }
     let answer = answers.entry(entry.module.clone()).or_insert_with(|| {
         read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module, preset)
-            .map(|(answer, used_preset)| IndexedAnswer::new(answer, used_preset))
+            .map(|(answer, serves_preset)| IndexedAnswer::new(answer, serves_preset))
     });
     let answer = answer.as_ref().map_err(|error| {
         if run_refusal(error).is_some() {
@@ -455,9 +455,10 @@ fn add_gap(
 /// the transport timeout; callers must not hold a store lock across this
 /// function.
 ///
-/// `preset` is core's preset for the run, when it chose one. When a provider
-/// lists it in the first catalog answer, Basal reads that preset's catalog
-/// and includes the provider in `preset_modules` if it has usable entries.
+/// `preset` is core's preset for the run, when it chose one. Basal reads that
+/// preset's catalog only if the first answer is empty and lists it. A provider
+/// with usable entries goes in `preset_modules` if its first answer lists the
+/// preset, regardless of which catalog supplied the entries.
 pub fn catalog(
     transport: &dyn Transport,
     read: &CatalogRead<'_>,
@@ -543,7 +544,7 @@ pub fn catalog_from_snapshot(
         .filter(|(module, answer)| {
             !is_failed(module)
                 && usable.iter().any(|(usable, _)| *usable == module.as_str())
-                && answer.as_ref().is_ok_and(|answer| answer.used_preset)
+                && answer.as_ref().is_ok_and(|answer| answer.serves_preset)
         })
         .map(|(module, _)| module.clone())
         .collect();
@@ -658,7 +659,8 @@ mod call_mode_tests {
     /// carrying a member the role does not define.
     struct Provider {
         catalogs: BTreeMap<String, Result<Value, WireError>>,
-        calls: Mutex<Vec<(String, String)>>,
+        preset_catalogs: BTreeMap<(String, String), Value>,
+        calls: Mutex<Vec<(String, String, Value)>>,
         identities: Mutex<Vec<BindIdentity>>,
         scopes: Mutex<Vec<ScopeSelector>>,
     }
@@ -673,26 +675,44 @@ mod call_mode_tests {
                     .into_iter()
                     .map(|(module, catalog)| (module.to_owned(), catalog))
                     .collect(),
+                preset_catalogs: BTreeMap::new(),
                 calls: Mutex::new(Vec::new()),
                 identities: Mutex::new(Vec::new()),
                 scopes: Mutex::new(Vec::new()),
             }
         }
+        fn with_preset_catalog(mut self, module: &str, preset: &str, answer: Value) -> Self {
+            self.preset_catalogs
+                .insert((module.into(), preset.into()), answer);
+            self
+        }
         /// The role ops sent to `mock`, in order.
         fn calls(&self) -> Vec<String> {
+            self.calls_to("mock")
+        }
+        fn calls_to(&self, provider: &str) -> Vec<String> {
             self.calls
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|(module, _)| module == "mock")
-                .map(|(_, name)| name.clone())
+                .filter(|(module, ..)| module == provider)
+                .map(|(_, name, _)| name.clone())
+                .collect()
+        }
+        fn catalog_arguments(&self, provider: &str) -> Vec<Value> {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(module, name, _)| module == provider && name == "tool.catalog")
+                .map(|(_, _, arguments)| arguments.clone())
                 .collect()
         }
         fn answer(&self, module: &str, name: &str, arguments: &Value) -> Result<Value, WireError> {
             self.calls
                 .lock()
                 .unwrap()
-                .push((module.into(), name.into()));
+                .push((module.into(), name.into(), arguments.clone()));
             match name {
                 "role.describe" => Ok(
                     json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],
@@ -724,6 +744,10 @@ mod call_mode_tests {
                                 code: "invalid_request".into(),
                                 message: format!("unsupported preset {preset}"),
                             });
+                        }
+                        let key = (module.to_owned(), preset.as_str().unwrap().to_owned());
+                        if let Some(named) = self.preset_catalogs.get(&key) {
+                            return Ok(named.clone());
                         }
                         answer.as_object_mut().unwrap().remove("presets");
                     }
@@ -810,6 +834,17 @@ mod call_mode_tests {
         json!({"modules":[provider_module("mock", provides)]})
     }
 
+    fn daemon_with_tools(module: &str, tools: &[&str]) -> Value {
+        let mut provider = provider_module(module, &[CALL_MODES_CAPABILITY]);
+        provider["roles"][0]["tools"] = Value::Array(
+            tools
+                .iter()
+                .map(|name| json!({"name":name,"execution_mode":"pure","schema":{"type":"object"}}))
+                .collect(),
+        );
+        json!({"modules":[provider]})
+    }
+
     /// One `tool.catalog` tool entry named `name`, with `modes` set to
     /// `modes`, or without the member when `modes` is `None`.
     fn tool(name: &str, modes: Option<Value>) -> Value {
@@ -846,12 +881,21 @@ mod call_mode_tests {
         daemon: &Value,
         entries: &[CatalogEntry],
     ) -> Result<ResolvedCatalog, WireError> {
+        read_catalog_with_preset(provider, daemon, entries, None)
+    }
+
+    fn read_catalog_with_preset(
+        provider: &Provider,
+        daemon: &Value,
+        entries: &[CatalogEntry],
+        preset: Option<&str>,
+    ) -> Result<ResolvedCatalog, WireError> {
         let (scope, identity) = (run_selector(), identity());
         let read = CatalogRead {
             scope: &scope,
             identity: &identity,
         };
-        catalog(provider, &read, daemon, entries, None)
+        catalog(provider, &read, daemon, entries, preset)
     }
 
     /// A provider answer whose one tool serves codemode and whose answer
@@ -865,14 +909,8 @@ mod call_mode_tests {
     /// Resolve the catalog of `provider` for a run whose core preset is
     /// `preset`.
     fn preset_modules_for(provider: &Provider, preset: Option<&str>) -> BTreeSet<String> {
-        let (scope, identity) = (run_selector(), identity());
-        let read = CatalogRead {
-            scope: &scope,
-            identity: &identity,
-        };
-        catalog(
+        read_catalog_with_preset(
             provider,
-            &read,
             &daemon(&[CALL_MODES_CAPABILITY]),
             &[entry("read")],
             preset,
@@ -957,11 +995,29 @@ mod call_mode_tests {
     }
 
     #[test]
-    fn a_provider_listing_no_presets_serves_none() {
-        let provider =
-            Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
-        assert!(preset_modules_for(&provider, Some("worker")).is_empty());
-        assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
+    fn callosum_resolves_without_a_preset_and_is_not_a_preset_module() {
+        let provider = Provider::answering_each([(
+            "callosum",
+            Ok(answer(vec![tool("read", Some(json!(["codemode"])))])),
+        )]);
+        let resolved = read_catalog_with_preset(
+            &provider,
+            &daemon_with_tools("callosum", &["read"]),
+            &[module_entry("callosum", "read")],
+            Some("head"),
+        )
+        .unwrap();
+        assert_eq!(names(&resolved), ["callosum_read"]);
+        assert!(resolved.gaps.is_empty());
+        assert!(resolved.preset_modules.is_empty());
+        assert_eq!(
+            provider.calls_to("callosum"),
+            ["role.describe", "tool.catalog"]
+        );
+        assert_eq!(
+            provider.catalog_arguments("callosum"),
+            [json!({"params":{}})]
+        );
     }
 
     /// A tool tagged `code.read/v1` once marked a provider as serving presets.
@@ -982,14 +1038,94 @@ mod call_mode_tests {
     }
 
     #[test]
-    fn catalog_reads_discover_then_select_the_listed_run_preset() {
-        let provider = Provider::answering(Ok(answer_listing(&["worker"])));
-        let resolved = preset_modules_for(&provider, Some("worker"));
-        assert_eq!(resolved, BTreeSet::from(["mock".to_owned()]));
+    fn catalog_reads_select_the_listed_run_preset_when_the_default_is_empty() {
+        let mut default = answer(vec![]);
+        default["presets"] = json!(["head", "flow"]);
+        let head = answer(vec![
+            tool("web_search", Some(json!(["codemode"]))),
+            tool("web_fetch", Some(json!(["codemode"]))),
+        ]);
+        let provider = Provider::answering_each([("plexus", Ok(default))])
+            .with_preset_catalog("plexus", "head", head);
+        let resolved = read_catalog_with_preset(
+            &provider,
+            &daemon_with_tools("plexus", &["web_search", "web_fetch"]),
+            &[
+                module_entry("plexus", "web_search"),
+                module_entry("plexus", "web_fetch"),
+            ],
+            Some("head"),
+        )
+        .unwrap();
+        assert_eq!(names(&resolved), ["plexus_web_search", "plexus_web_fetch"]);
+        assert!(resolved.gaps.is_empty());
         assert_eq!(
-            provider.calls(),
+            resolved.preset_modules,
+            BTreeSet::from(["plexus".to_owned()])
+        );
+        assert_eq!(
+            provider.calls_to("plexus"),
             ["role.describe", "tool.catalog", "tool.catalog"]
         );
+        assert_eq!(
+            provider.catalog_arguments("plexus"),
+            [json!({"params":{}}), json!({"params":{},"preset":"head"})]
+        );
+    }
+
+    #[test]
+    fn prefrontal_board_resolves_from_the_presetless_catalog() {
+        let mut default = answer(vec![tool("board", Some(json!(["codemode"])))]);
+        default["presets"] = json!(["head"]);
+        let head = answer(vec![tool("read", Some(json!(["classic"])))]);
+        let provider = Provider::answering_each([("prefrontal", Ok(default))]).with_preset_catalog(
+            "prefrontal",
+            "head",
+            head,
+        );
+        let resolved = read_catalog_with_preset(
+            &provider,
+            &daemon_with_tools("prefrontal", &["board"]),
+            &[CatalogEntry {
+                tool: "board".into(),
+                module: "prefrontal".into(),
+                op: "board".into(),
+            }],
+            Some("head"),
+        )
+        .unwrap();
+        assert!(resolved.gaps.is_empty(), "{:?}", resolved.gaps);
+        assert_eq!(names(&resolved), ["board"]);
+        assert_eq!(
+            resolved.preset_modules,
+            BTreeSet::from(["prefrontal".to_owned()])
+        );
+        assert_eq!(
+            provider.catalog_arguments("prefrontal"),
+            [json!({"params":{}})]
+        );
+    }
+
+    #[test]
+    fn a_missing_tool_in_a_nonempty_catalog_does_not_trigger_a_preset_read() {
+        let provider = Provider::answering(Ok(answer_listing(&["head"]))).with_preset_catalog(
+            "mock",
+            "head",
+            answer(vec![tool("write", Some(json!(["codemode"])))]),
+        );
+        let resolved = read_catalog_with_preset(
+            &provider,
+            &daemon(&[CALL_MODES_CAPABILITY]),
+            &[entry("read"), entry("write")],
+            Some("head"),
+        )
+        .unwrap();
+        assert_eq!(names(&resolved), ["mock_read"]);
+        let missing = gap(&resolved);
+        assert_eq!(missing.reason, RefusalReason::ModeNotServed);
+        assert_eq!(missing.tools, ["mock_write"]);
+        assert_eq!(missing.problem, "its tool.catalog does not list write");
+        assert_eq!(provider.catalog_arguments("mock"), [json!({"params":{}})]);
     }
 
     #[test]

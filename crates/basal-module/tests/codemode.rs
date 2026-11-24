@@ -1595,9 +1595,8 @@ fn admission_reads_catalogs_on_the_run_scope_core_opened() {
     );
 }
 
-/// Core chose a preset for the run. Only AFT lists it, so only AFT gets a
-/// second catalog read and a tool call with that preset. The cerebellum-like
-/// provider refuses presets on both requests.
+/// Core chose a preset for the run. Both providers list their tools without a
+/// preset, so only AFT's tool call carries the preset it advertises.
 #[test]
 fn core_run_scope_preset_reaches_only_providers_that_list_it() {
     let rig = rig("catalog-preset", false);
@@ -1621,12 +1620,8 @@ fn core_run_scope_preset_reaches_only_providers_that_list_it() {
     );
     assert_eq!(
         rig.core.catalog_arguments.lock().unwrap().as_slice(),
-        [
-            json!({"params":{}}),
-            json!({"params":{},"preset":"worker"}),
-            json!({"params":{}}),
-        ],
-        "only AFT gets a second read, with the run's preset"
+        [json!({"params":{}}), json!({"params":{}})],
+        "both providers list tools in their first catalog read"
     );
     assert_eq!(
         rig.core.tool_presets.lock().unwrap().as_slice(),

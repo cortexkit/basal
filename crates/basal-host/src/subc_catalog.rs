@@ -83,10 +83,11 @@ fn role_call_key() -> String {
 }
 
 /// Reads `module`'s own `tool.catalog` answer: `role.describe` first, then
-/// a preset-less `tool.catalog`, then the `flow` preset if listed. If the
-/// preset is not listed but the provider still offers capability filtering,
-/// ask for every tag it serves. The answer carries per-tool declarations the
-/// daemon catalog does not, such as `emits_events` and `modes`.
+/// a preset-less `tool.catalog`. Only an empty answer leads to a read of the
+/// `flow` preset, if listed. If the catalog is still empty and the provider
+/// offers legacy capability filtering, ask for every tag it serves. The
+/// answer carries per-tool declarations the daemon catalog does not, such as
+/// `emits_events` and `modes`.
 ///
 /// Each request is bounded by the transport's call timeout. A failed call,
 /// an invalid description, or an answer that does not decode is an error.
@@ -107,12 +108,11 @@ pub fn read_tool_catalog(
 /// harness is not one they recognise, and providers such as cerebellum admit
 /// basal only on a codemode run scope.
 ///
-/// The first `tool.catalog` request names no preset. A provider may refuse a
-/// preset it does not serve, so only a provider that lists the run's preset
-/// gets a second read naming it, in the catalog arguments, not the envelope.
-/// Otherwise use the default catalog or the legacy capability filter. The
-/// boolean records whether the answer was read with the run's preset, so the
-/// program's tool calls can use the same variant.
+/// The first `tool.catalog` request names no preset. Only an empty answer
+/// that lists the run's preset gets a second read naming it, in the catalog
+/// arguments, not the envelope. The boolean records whether the first answer
+/// lists the run's preset, so the program can send it on tool calls even when
+/// the catalog came from a preset-less read.
 pub fn read_tool_catalog_on_run(
     transport: &dyn Transport,
     scope: &subc_protocol::scope::ScopeSelector,
@@ -142,19 +142,27 @@ fn read_tool_catalog_with(
             .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))
     };
     let mut request = CatalogRequest::new(Default::default());
-    let default = read(&request)?;
-    if let Some(preset) =
-        preset.filter(|preset| crate::run_scope::provider_serves_preset(&default, preset))
-    {
+    let mut answer = read(&request)?;
+    let serves_preset =
+        preset.is_some_and(|preset| crate::run_scope::provider_serves_preset(&answer, preset));
+    // A named preset may list only direct-call tools, omitting tools that
+    // the preset-less catalog exposes to programs.
+    if !answer.tools.is_empty() {
+        return Ok((answer, serves_preset));
+    }
+    if let Some(preset) = preset.filter(|_| serves_preset) {
         request.preset = Some(preset.to_owned());
-        return read(&request).map(|answer| (answer, true));
+        answer = read(&request)?;
     }
     // Providers that still rely on filtering can return no tools by default.
-    if let Some(tags) = select_tool_capabilities(&describe, &describe.tool_capabilities) {
+    if answer.tools.is_empty()
+        && let Some(tags) = select_tool_capabilities(&describe, &describe.tool_capabilities)
+    {
+        request.preset = None;
         request.params = params_for_capabilities(tags);
-        return read(&request).map(|answer| (answer, false));
+        answer = read(&request)?;
     }
-    Ok((default, false))
+    Ok((answer, serves_preset))
 }
 
 pub use crate::core_identity::CORE_MODULE as CORE;
@@ -834,15 +842,21 @@ mod emits_events_tests {
         );
     }
 
-    #[test]
-    fn a_capability_filtering_provider_is_asked_for_every_tag_it_serves() {
+    fn filtering_describe() -> Value {
         let mut filtering = describe();
         filtering["capabilities"] =
             json!([cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER]);
         filtering["tool_capabilities"] = json!(["plexus:github.react/v1", "plexus:github.read/v1"]);
+        filtering
+    }
+
+    #[test]
+    fn a_capability_filtering_provider_is_asked_for_every_tag_it_serves() {
         let default = json!({"generation":"g","catalog_digest":"default","tools":[]});
-        let plexus =
-            Plexus::answering_catalogs(filtering, [Ok(default), Ok(answer(Some(json!(false))))]);
+        let plexus = Plexus::answering_catalogs(
+            filtering_describe(),
+            [Ok(default), Ok(answer(Some(json!(false))))],
+        );
         assert_eq!(read(&plexus, "react"), Ok(Some(false)));
         let calls = plexus.calls();
         let names: Vec<_> = calls.iter().map(|(name, ..)| name.as_str()).collect();
@@ -851,6 +865,31 @@ mod emits_events_tests {
         assert_eq!(
             calls[2].1,
             json!({"params":{"capabilities":["plexus:github.react/v1","plexus:github.read/v1"]}})
+        );
+    }
+
+    #[test]
+    fn an_empty_preset_catalog_falls_back_to_the_legacy_filter_without_a_preset() {
+        let mut default = json!({"generation":"g","catalog_digest":"default","tools":[]});
+        default["presets"] = json!(["flow"]);
+        let flow = json!({"generation":"g","catalog_digest":"flow","tools":[]});
+        let plexus = Plexus::answering_catalogs(
+            filtering_describe(),
+            [Ok(default), Ok(flow), Ok(answer(Some(json!(false))))],
+        );
+        assert_eq!(read(&plexus, "react"), Ok(Some(false)));
+        assert_eq!(
+            plexus
+                .calls()
+                .into_iter()
+                .map(|(_, args, _)| args)
+                .collect::<Vec<_>>(),
+            [
+                json!({}),
+                json!({"params":{}}),
+                json!({"params":{},"preset":"flow"}),
+                json!({"params":{"capabilities":["plexus:github.react/v1","plexus:github.read/v1"]}}),
+            ]
         );
     }
 }
