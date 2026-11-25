@@ -15,6 +15,32 @@ use subc_protocol::{ErrorBody, Principal, scope::ScopeStamp};
 
 const SYSTEM_TEXT: &str = include_str!("codemode_system_text.md");
 
+/// Catalog requests that carried a capability filter since this process
+/// started, and when the last one arrived. The filter is being retired from the
+/// tool-provider contract; the contract drops it only after no runner has sent
+/// one for a full day, and these counters in health are how basal shows that.
+static FILTERED_CATALOG_REQUESTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static LAST_FILTERED_CATALOG_REQUEST_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn count_filtered_request(now_ms: u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    FILTERED_CATALOG_REQUESTS.fetch_add(1, Relaxed);
+    LAST_FILTERED_CATALOG_REQUEST_MS.fetch_max(now_ms, Relaxed);
+}
+
+/// The health metrics entry: `{count, last_at_ms}`, `last_at_ms` null until
+/// the first filtered request.
+pub fn filtered_catalog_requests() -> Value {
+    use std::sync::atomic::Ordering::Relaxed;
+    let last = LAST_FILTERED_CATALOG_REQUEST_MS.load(Relaxed);
+    json!({
+        "count": FILTERED_CATALOG_REQUESTS.load(Relaxed),
+        "last_at_ms": (last != 0).then_some(last),
+    })
+}
+
 pub const DESCRIPTION: &str = "Run a short JavaScript program that calls your own tools and returns one result.\n\nUse a program whenever several calls would each pass through your context or repeat the same input:\n- Near-identical calls: when calls share most of their input (one brief to two workers, the same brief per file, one message to several peers), write the shared text once in the program and change only what differs. Writing it out in each call pays for every word again, and your output tokens cost the most.\n- Lists: reads, checks or launches over a list run in one program, so their arguments and outputs never reach your context.\n- Dependent steps: launch, read the returned id, then use it in the same program, so you never write an id that doesn't exist yet.\nReturn only what you need next (ids, counts, failures), never raw tool output. Check each call's result, so a failure inside a loop is reported, not skipped. For a single call, or one whose full output you must read, call the tool directly.\n\n- Call a tool with `await tools.<name>(input)`, using the same name as a direct call. Inside a program, tools take field names from their catalog schema, which can differ from your direct tool's; a refused call names the fields it expects. A program gets the tools whose providers serve codemode, and `Object.keys(tools)` lists them. Not every tool is available yet; calling a missing one throws an error that names it and lists the available ones. The tool decides allow, ask and deny exactly as for a direct call, and an ask waits for its answer.\n- `tools.model({prompt, system?, max_output?})` asks a model for one completion; a run may make 20 such calls, using up to 200,000 tokens. `tools.llm_classify({model, questions, item, max_cost_usd})` classifies an item; its calls share a $0.50 budget per run, which `limits.model_cost_usd` can lower.\n- `console.log(...)` output is captured, up to 64 KiB.\n- `await sleep(ms)` pauses for 0 to 10,000 ms; it uses wall time only, not CPU time or tool calls.\n- `await waitFor(condition, {timeout, interval})` calls `condition` every `interval` ms (default 500, at least 250) until it returns something truthy, and returns that; after `timeout` ms (default and maximum 30,000) it throws with `error.code` `wait_timeout`.\n- The program's last `return value` is the result, as JSON, up to 16 KiB.\n- There is no file, network, shell or other global access except through your tools.\n- Limits: 10 s of JavaScript CPU, 30 min wall time (time spent waiting on a person doesn't count, up to 10 min), 200 tool calls.\n\nA call that waited for consent may come back not run: it rejects with `error.code` `not_started`, and `error.detail.consent` `approved` means consent was granted but the page may have changed. Catch that, take a fresh snapshot, and act again:\n```js\ntry {\n  await tools.browser_use({action: \"type\", ref, text, snapshot_id});\n} catch (e) {\n  if (e.code !== \"not_started\" || e.detail?.consent !== \"approved\") throw e;\n  const fresh = await tools.browser_use({action: \"snapshot\"});\n  // find the element again in `fresh`, then repeat the call with its ref and snapshot_id\n}\n```\n\nThe result lists each call with its outcome. A call whose outcome is unknown was never retried, so check before repeating it.\n\nTo run many steps as one program instead of one call at a time, see knowhow(id=\"codemode-automation\").";
 
 pub fn schema() -> Value {
@@ -108,6 +134,12 @@ fn catalog_content_digest(answer: &CatalogAnswer) -> String {
 pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     let request: CatalogRequest =
         serde_json::from_value(arguments).map_err(|e| invalid("arguments", e.to_string()))?;
+    if request.params.contains_key("capabilities") {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        count_filtered_request(now_ms);
+    }
     check_preset("preset", request.preset.as_deref())?;
     // Basal serves no session notices, so the contract requires it to refuse
     // even `notice_templates: false` rather than ignore the member. Building
@@ -234,5 +266,40 @@ impl Context {
                 scope_ref: scope.scope_ref.clone(),
                 scope_epoch: scope.scope_epoch,
             })
+    }
+}
+
+#[cfg(test)]
+mod filtered_request_tests {
+    use super::*;
+
+    fn count() -> u64 {
+        filtered_catalog_requests()["count"].as_u64().unwrap()
+    }
+
+    // The counters are process-wide and other tests may send catalog requests
+    // in parallel, so assert only on this test's own increments.
+    #[test]
+    fn filtered_catalog_requests_are_counted_even_when_refused() {
+        let before = count();
+        catalog(json!({"params": {"capabilities": ["basal:codemode/v1"]}})).unwrap();
+        // A refused filtered request still shows that a runner sent the filter.
+        let _ = catalog(json!({"preset": "unknown", "params": {"capabilities": []}}));
+        assert!(count() >= before + 2);
+        let last = filtered_catalog_requests()["last_at_ms"].as_u64().unwrap();
+        assert!(
+            last > 1_700_000_000_000,
+            "last_at_ms is wall-clock milliseconds"
+        );
+    }
+
+    #[test]
+    fn an_older_time_never_moves_the_last_time_backwards() {
+        count_filtered_request(u64::MAX - 1);
+        count_filtered_request(5);
+        assert_eq!(
+            filtered_catalog_requests()["last_at_ms"].as_u64(),
+            Some(u64::MAX - 1)
+        );
     }
 }

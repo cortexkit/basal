@@ -866,6 +866,7 @@ impl ModuleHandler for BasalHandler {
                     });
                     let mut metrics = module.metrics.to_json();
                     metrics["events"] = serde_json::to_value(events).unwrap_or(Value::Null);
+                    metrics["filtered_catalog_requests"] = crate::tool::filtered_catalog_requests();
                     HealthReport {
                         status: if pool.spawn_error.is_some() || event_error.is_some() {
                             HealthStatus::Degraded
