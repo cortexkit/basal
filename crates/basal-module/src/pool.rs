@@ -1053,9 +1053,8 @@ pub struct Lease {
     killed: bool,
     channel_lost: Arc<std::sync::atomic::AtomicBool>,
     channel_failure_caused_kill: bool,
-    /// Set once the worker's input pipe moved to a split-off writer. Such a
-    /// worker cannot take frames through the lease again, so it is never
-    /// kept for another activation.
+    /// A worker with its input pipe split off cannot be reused until the
+    /// writer is handed back to this lease.
     writer_split: bool,
 }
 
@@ -1153,6 +1152,21 @@ impl WorkerChannel for Lease {
             inner,
             channel_lost: self.channel_lost.clone(),
         }))
+    }
+
+    fn restore_writer(&mut self, writer: Box<dyn WorkerWriter>) -> Option<()> {
+        let writer: Box<dyn std::any::Any + Send> = writer;
+        let writer = writer.downcast::<TrackedWriter>().ok()?;
+        if !self.writer_split
+            || self.killed
+            || self.channel_lost.load(Ordering::Relaxed)
+            || !Arc::ptr_eq(&writer.channel_lost, &self.channel_lost)
+        {
+            return None;
+        }
+        self.process.as_mut()?.restore_writer(writer.inner)?;
+        self.writer_split = false;
+        Some(())
     }
 
     fn kill(&mut self) {

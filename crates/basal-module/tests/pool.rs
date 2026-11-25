@@ -510,6 +510,59 @@ fn an_activation_uses_a_warm_spare() {
 }
 
 #[test]
+fn one_flow_worker_splits_and_takes_back_its_writer_twice() {
+    use basal_core::WorkerChannel;
+    use basal_proto::{
+        ActivationRequest, ActivationResult, JsonText, ParentMessage, Profile, WorkerMessage,
+    };
+
+    let mut config = pool_config(&Options::with_worker());
+    config.warm_spares = 0;
+    let spawner = Arc::new(ProcessSpawner::new(&config));
+    let pool = Pool::new(
+        config,
+        spawner,
+        basal_core::Clock::manual(T0),
+        Arc::default(),
+    );
+    let flow = "writer-reuse";
+    for activation_id in [1, 2] {
+        let mut lease = pool.acquire(Binding::Flow(flow.into())).unwrap();
+        let mut writer = lease.writer().unwrap();
+        let request = ParentMessage::Activate(Box::new(ActivationRequest {
+            activation_id,
+            profile: Profile::Flow,
+            prelude_hash: lease.welcome().prelude_hash,
+            tools: vec![],
+            script: "return 4;".into(),
+            trigger: JsonText::null(),
+            self_input: JsonText::null(),
+            params_input: JsonText::null(),
+            budgets: Budgets::default(),
+            prefix: vec![],
+        }));
+        let thread = std::thread::spawn(move || {
+            writer.send(&request).unwrap();
+            writer
+        });
+        assert_eq!(
+            lease.recv(WAIT).unwrap(),
+            WorkerMessage::Finished {
+                activation_id,
+                result: ActivationResult::Completed {
+                    value: JsonText::new("4").unwrap()
+                },
+            }
+        );
+        assert_eq!(lease.restore_writer(thread.join().unwrap()), Some(()));
+    }
+    let workers = workers_of(&pool, flow);
+    assert_eq!(workers.len(), 2);
+    assert_eq!(workers[0], workers[1]);
+    pool.stop();
+}
+
+#[test]
 fn a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period() {
     let f = fixture(
         "pool-retire",

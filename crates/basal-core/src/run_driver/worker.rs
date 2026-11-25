@@ -1,5 +1,10 @@
 use std::{
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread::{self, JoinHandle},
     time::Instant,
 };
 
@@ -7,7 +12,7 @@ use basal_proto::{ActivationRequest, ActivationResult, ParentMessage, Profile, W
 
 use super::*;
 use crate::{
-    channel::{ChannelError, WorkerChannel},
+    channel::{ChannelError, WorkerChannel, WorkerWriter},
     ids::Fingerprint,
     model::RunState,
     runtime::ActivationEnd,
@@ -18,9 +23,8 @@ use crate::{
 /// wake the loop through [`Wake::Settled`].
 pub(super) const WORKER_POLL: Duration = Duration::from_millis(100);
 
-/// Everything that can end the activation loop's wait. Worker frames and
-/// finished dispatches share one queue so that a host reply recorded on a
-/// dispatch thread wakes the loop at once instead of after a poll timeout.
+/// The reader, writer and dispatch threads share one wake queue so a worker
+/// frame, failed write or recorded host reply can wake the loop immediately.
 enum Wake {
     Frame(std::result::Result<WorkerMessage, ChannelError>),
     /// A dispatch thread has recorded its reply; an awaited outcome may now be
@@ -29,6 +33,7 @@ enum Wake {
     /// The frame reader thread exited without delivering a final frame, for
     /// example by panicking. The worker channel is treated as closed.
     ReaderEnded,
+    WriteFailed(ChannelError),
 }
 
 /// What one wait of the activation loop produced.
@@ -52,8 +57,7 @@ struct Frames {
     messages: mpsc::Receiver<Wake>,
     permit: mpsc::Sender<()>,
     in_flight: bool,
-    finished: Arc<std::sync::atomic::AtomicBool>,
-    reader: std::thread::JoinHandle<()>,
+    reader: JoinHandle<()>,
 }
 impl Frames {
     /// `wake` and `messages` are the two ends of the loop's wake queue, which
@@ -62,38 +66,35 @@ impl Frames {
         worker: &mut dyn WorkerChannel,
         wake: mpsc::Sender<Wake>,
         messages: mpsc::Receiver<Wake>,
-    ) -> Self {
+    ) -> std::result::Result<Self, ChannelError> {
         let mut receiver = worker.receiver();
         let (permit, receive) = mpsc::channel();
-        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let ended = finished.clone();
-        let reader = std::thread::spawn(move || {
-            let send = wake.clone();
-            let _exit = ReaderExit(wake);
-            loop {
-                if receive.recv().is_err() {
-                    break;
+        let reader = thread::Builder::new()
+            .name("flow-reader".into())
+            .spawn(move || {
+                let send = wake.clone();
+                let _exit = ReaderExit(wake);
+                loop {
+                    if receive.recv().is_err() {
+                        break;
+                    }
+                    let message = receiver.recv();
+                    let done = message
+                        .as_ref()
+                        .is_ok_and(|m| matches!(m, WorkerMessage::Finished { .. }));
+                    let stop = done || message.is_err();
+                    if send.send(Wake::Frame(message)).is_err() || stop {
+                        break;
+                    }
                 }
-                let message = receiver.recv();
-                let done = message
-                    .as_ref()
-                    .is_ok_and(|m| matches!(m, WorkerMessage::Finished { .. }));
-                if done {
-                    ended.store(true, std::sync::atomic::Ordering::Release);
-                }
-                let stop = done || message.is_err();
-                if send.send(Wake::Frame(message)).is_err() || stop {
-                    break;
-                }
-            }
-        });
-        Self {
+            })
+            .map_err(|e| ChannelError::Broken(e.to_string()))?;
+        Ok(Self {
             messages,
             permit,
             in_flight: false,
-            finished,
             reader,
-        }
+        })
     }
     fn recv(&mut self, timeout: Duration) -> std::result::Result<Received, ChannelError> {
         // Read only after the driver finished the previous frame. A timeout
@@ -109,22 +110,201 @@ impl Frames {
                 message.map(Received::Frame)
             }
             Ok(Wake::Settled) => Ok(Received::Recheck),
+            Ok(Wake::WriteFailed(error)) => Err(error),
             Ok(Wake::ReaderEnded) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err(ChannelError::Closed)
             }
             Err(mpsc::RecvTimeoutError::Timeout) => Err(ChannelError::Timeout),
         }
     }
-    fn stop(self, worker: &mut dyn WorkerChannel) -> Result<()> {
+    fn stop(self) -> Result<()> {
         drop(self.messages);
         drop(self.permit);
-        if !self.finished.load(std::sync::atomic::Ordering::Acquire) {
-            worker.kill();
-        }
         self.reader
             .join()
             .map_err(|_| CoreError::Worker("worker receiver panicked".into()))
     }
+}
+
+struct Writer {
+    queue: mpsc::SyncSender<ParentMessage>,
+    outstanding: Arc<AtomicUsize>,
+    failed: Arc<AtomicBool>,
+    thread: JoinHandle<Option<Box<dyn WorkerWriter>>>,
+}
+
+impl Writer {
+    fn start(
+        mut writer: Box<dyn WorkerWriter>,
+        wake: mpsc::Sender<Wake>,
+    ) -> std::result::Result<Self, ChannelError> {
+        // At most 64 queued frames plus one in flight, even if a peer issues
+        // calls without reading. There is one activation (with a capped replay
+        // prefix), at most one delivery and one LongRunning position per call,
+        // and each delivery value is capped by basal_proto::MAX_VALUE_BYTES.
+        let (queue, frames) = mpsc::sync_channel(64);
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let failed = Arc::new(AtomicBool::new(false));
+        let unwritten = outstanding.clone();
+        let write_failed = failed.clone();
+        let thread = thread::Builder::new()
+            .name("flow-writer".into())
+            .spawn(move || {
+                while let Ok(frame) = frames.recv() {
+                    let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        writer.send(&frame)
+                    }));
+                    let error = match sent {
+                        Ok(Ok(())) => {
+                            unwritten.fetch_sub(1, Ordering::Release);
+                            continue;
+                        }
+                        Ok(Err(error)) => error,
+                        Err(_) => ChannelError::Broken("worker writer panicked".into()),
+                    };
+                    write_failed.store(true, Ordering::Release);
+                    let _ = wake.send(Wake::WriteFailed(error));
+                    return None;
+                }
+                Some(writer)
+            })
+            .map_err(|e| ChannelError::Broken(e.to_string()))?;
+        Ok(Self {
+            queue,
+            outstanding,
+            failed,
+            thread,
+        })
+    }
+
+    fn send(&self, frame: ParentMessage) -> std::result::Result<(), ChannelError> {
+        self.outstanding.fetch_add(1, Ordering::Relaxed);
+        self.queue.try_send(frame).map_err(|error| match error {
+            mpsc::TrySendError::Full(_) => {
+                ChannelError::Broken("worker writer queue is full".into())
+            }
+            mpsc::TrySendError::Disconnected(_) => ChannelError::Closed,
+        })
+    }
+
+    fn idle(&self) -> bool {
+        // Only the writer retires a frame, once send has returned successfully.
+        // Zero means there is neither a queued frame nor a write to wait for.
+        self.outstanding.load(Ordering::Acquire) == 0
+    }
+
+    fn stop(self) -> Result<Option<Box<dyn WorkerWriter>>> {
+        drop(self.queue);
+        self.thread
+            .join()
+            .map_err(|_| CoreError::Worker("worker writer panicked".into()))
+    }
+}
+
+struct WorkerIo<'a> {
+    worker: &'a mut dyn WorkerChannel,
+    frames: Option<Frames>,
+    writer: Option<Writer>,
+    idle_at_finished: bool,
+    killed: bool,
+}
+
+impl WorkerIo<'_> {
+    fn start(
+        &mut self,
+        wake: mpsc::Sender<Wake>,
+        woken: mpsc::Receiver<Wake>,
+    ) -> std::result::Result<(), ChannelError> {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.worker.fixture_inline_recv() {
+            return Ok(());
+        }
+        let writer = self.worker.writer().ok_or(ChannelError::Closed)?;
+        self.writer = Some(Writer::start(writer, wake.clone())?);
+        self.frames = Some(Frames::start(self.worker, wake, woken)?);
+        Ok(())
+    }
+
+    fn send(&mut self, frame: ParentMessage) -> std::result::Result<(), ChannelError> {
+        if let Some(writer) = &self.writer {
+            return writer.send(frame);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if self.worker.fixture_inline_recv() {
+            return self.worker.send(&frame);
+        }
+        Err(ChannelError::Closed)
+    }
+
+    fn recv(&mut self, wait: Duration) -> std::result::Result<Received, ChannelError> {
+        if let Some(frames) = &mut self.frames {
+            return frames.recv(wait);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if self.worker.fixture_inline_recv() {
+            return self.worker.recv(wait).map(Received::Frame);
+        }
+        Err(ChannelError::Closed)
+    }
+
+    fn write_failed(&self) -> bool {
+        self.writer
+            .as_ref()
+            .is_some_and(|w| w.failed.load(Ordering::Acquire))
+    }
+
+    fn kill(&mut self) {
+        if !self.killed {
+            self.worker.kill();
+            self.killed = true;
+        }
+    }
+
+    fn stop(&mut self, reusable_end: bool) -> Result<()> {
+        if self.writer.is_none() && self.frames.is_none() {
+            return Ok(());
+        }
+        let keep = reusable_end && self.idle_at_finished && !self.killed;
+        // A worker can claim Finished without reading its input. If any write
+        // was still pending at Finished, joining first could wedge the driver.
+        if !keep {
+            self.kill();
+        }
+        let reader = self.frames.take().map(Frames::stop).transpose();
+        let writer = self.writer.take().map(Writer::stop).transpose();
+        match (reader, writer) {
+            (Ok(_), Ok(writer)) => {
+                if keep
+                    && !writer
+                        .flatten()
+                        .is_some_and(|w| self.worker.restore_writer(w).is_some())
+                {
+                    self.kill();
+                }
+                Ok(())
+            }
+            (Err(error), _) | (_, Err(error)) => {
+                self.kill();
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Drop for WorkerIo<'_> {
+    fn drop(&mut self) {
+        let _ = self.stop(false);
+    }
+}
+
+fn reusable_end(result: &Result<ActivationEnd>) -> bool {
+    matches!(
+        result,
+        Ok(ActivationEnd::Succeeded { .. }
+            | ActivationEnd::Suspended { .. }
+            | ActivationEnd::Failed { .. }
+            | ActivationEnd::EngineMismatch { .. })
+    )
 }
 
 /// Calls whose possible send is unresolved and still need reconciliation.
@@ -175,11 +355,15 @@ impl Activation {
         effects: Arc<dyn TerminalEffects>,
         timeout: Duration,
     ) -> Result<ActivationEnd> {
-        let mut frames = None;
-        let result = self.drive_inner(worker, &mut request, &effects, timeout, &mut frames);
-        if let Some(frames) = frames {
-            frames.stop(worker)?;
-        }
+        let mut io = WorkerIo {
+            worker,
+            frames: None,
+            writer: None,
+            idle_at_finished: false,
+            killed: false,
+        };
+        let result = self.drive_inner(&mut io, &mut request, &effects, timeout);
+        io.stop(reusable_end(&result))?;
         let result = match result {
             Err(error)
                 if !matches!(
@@ -187,7 +371,7 @@ impl Activation {
                     CoreError::Cut | CoreError::Store(_) | CoreError::OwnerLost { .. }
                 ) =>
             {
-                worker.kill();
+                io.kill();
                 let kind = if matches!(&error,CoreError::Worker(detail) if detail.starts_with("run_limit:"))
                 {
                     "limit"
@@ -207,25 +391,18 @@ impl Activation {
             }
             other => other,
         };
-        if !matches!(
-            result,
-            Ok(ActivationEnd::Succeeded { .. }
-                | ActivationEnd::Suspended { .. }
-                | ActivationEnd::Failed { .. }
-                | ActivationEnd::EngineMismatch { .. })
-        ) {
-            worker.kill();
+        if !reusable_end(&result) {
+            io.kill();
         }
         result
     }
 
     fn drive_inner(
         &self,
-        worker: &mut dyn WorkerChannel,
+        io: &mut WorkerIo<'_>,
         request: &mut ActivationRequest,
         effects: &Arc<dyn TerminalEffects>,
         timeout: Duration,
-        frames: &mut Option<Frames>,
     ) -> Result<ActivationEnd> {
         if self.deadline_passed()? {
             return self.fail(
@@ -255,7 +432,7 @@ impl Activation {
             return Ok(ActivationEnd::EngineMismatch { detail });
         }
         request.script = script;
-        if !self.fingerprint(Fingerprint::of_worker(worker.welcome()).canonical())? {
+        if !self.fingerprint(Fingerprint::of_worker(io.worker.welcome()).canonical())? {
             let detail = "runtime fingerprint changed".to_owned();
             let mut terminal = self.terminal(RunState::EngineMismatch, effects);
             terminal.error_detail = Some(detail.clone());
@@ -270,10 +447,8 @@ impl Activation {
         )?;
         let mut pending = Vec::new();
         let mut reported = BTreeSet::new();
-        // Dispatch threads and the frame reader share this queue, so a host
-        // reply wakes the loop below as soon as it is recorded.
+        // A host reply can wake the loop as soon as it is recorded.
         let (wake, woken) = mpsc::channel();
-        let mut woken = Some(woken);
         let spawn = |dispatch: Dispatch| {
             let (tx, rx) = mpsc::sync_channel(1);
             let wake = wake.clone();
@@ -309,29 +484,27 @@ impl Activation {
         request.activation_id = self.generation;
         request.profile = Profile::Flow;
         request.tools.clear();
-        request.prelude_hash = worker.welcome().prelude_hash;
+        request.prelude_hash = io.worker.welcome().prelude_hash;
         request.self_input = crate::model::json(self.live.self_input.to_string(), "self input")?;
         request.params_input =
             crate::model::json(self.live.params_input.to_string(), "params input")?;
         request.prefix = prefix;
         self.script_started()?;
-        if worker
-            .send(&ParentMessage::Activate(Box::new(request.clone())))
+        let until = Instant::now() + timeout;
+        if io
+            .start(wake.clone(), woken)
+            .and_then(|()| io.send(ParentMessage::Activate(Box::new(request.clone()))))
             .is_err()
         {
             self.requeue(true)?;
             return Ok(ActivationEnd::Requeued);
         }
-        let until = Instant::now() + timeout;
-        #[cfg(any(test, feature = "test-support"))]
-        let inline = worker.fixture_inline_recv();
-        #[cfg(not(any(test, feature = "test-support")))]
-        let inline = false;
-        if !inline && let Some(woken) = woken.take() {
-            *frames = Some(Frames::start(worker, wake.clone(), woken));
-        }
         let mut awaiting = Vec::new();
         loop {
+            if io.write_failed() {
+                self.requeue(true)?;
+                return Ok(ActivationEnd::Requeued);
+            }
             // Drop finished dispatches so each pass checks only those still
             // running; the first recorded error ends the activation as before.
             let mut failed = None;
@@ -357,11 +530,11 @@ impl Activation {
                 return Ok(ActivationEnd::NeedsReconcile { positions: unknown });
             }
             if let Some((kind, detail)) = control {
-                worker.kill();
+                io.kill();
                 return self.fail(kind, detail, effects);
             }
             if self.deadline_passed()? || Instant::now() >= until {
-                worker.kill();
+                io.kill();
                 return self.fail(
                     "deadline",
                     "the run passed its wall-clock deadline".into(),
@@ -373,7 +546,7 @@ impl Activation {
                 self.driver.services.before_worker_release();
                 if let Some(outcome) = self.release(&awaiting)? {
                     awaiting.clear();
-                    if worker.send(&ParentMessage::Deliver(outcome)).is_err() {
+                    if io.send(ParentMessage::Deliver(outcome)).is_err() {
                         self.requeue(true)?;
                         return Ok(ActivationEnd::Requeued);
                     }
@@ -391,9 +564,7 @@ impl Activation {
                                 .collect()
                         })?;
                     if !positions.is_empty()
-                        && worker
-                            .send(&ParentMessage::LongRunning { positions })
-                            .is_err()
+                        && io.send(ParentMessage::LongRunning { positions }).is_err()
                     {
                         self.requeue(true)?;
                         return Ok(ActivationEnd::Requeued);
@@ -405,10 +576,7 @@ impl Activation {
             #[cfg(test)]
             let poll = self.driver.services.worker_poll();
             let wait = until.saturating_duration_since(Instant::now()).min(poll);
-            let message = match frames.as_mut().map_or_else(
-                || worker.recv(wait).map(Received::Frame),
-                |frames| frames.recv(wait),
-            ) {
+            let message = match io.recv(wait) {
                 Ok(Received::Frame(message)) => message,
                 Ok(Received::Recheck) | Err(ChannelError::Timeout) => continue,
                 Err(_) => {
@@ -420,7 +588,7 @@ impl Activation {
                 WorkerMessage::HostCall(call) => match self.issue_for_worker(call)? {
                     Issued::Dispatch(dispatch) => pending.push(spawn(*dispatch)?),
                     Issued::Reply(outcome) => {
-                        if worker.send(&ParentMessage::Deliver(outcome)).is_err() {
+                        if io.send(ParentMessage::Deliver(outcome)).is_err() {
                             self.requeue(true)?;
                             return Ok(ActivationEnd::Requeued);
                         }
@@ -436,12 +604,13 @@ impl Activation {
                     activation_id,
                     result,
                 } => {
-                    if activation_id != self.generation {
+                    if activation_id != self.generation || io.write_failed() {
                         self.requeue(true)?;
                         return Ok(ActivationEnd::Requeued);
                     }
+                    io.idle_at_finished = io.writer.as_ref().is_some_and(Writer::idle);
                     if let Some((kind, detail)) = self.with_state(control_failure)? {
-                        worker.kill();
+                        io.kill();
                         return self.fail(kind, detail, effects);
                     }
                     return match result {
@@ -518,13 +687,13 @@ impl Activation {
                             effects,
                         ),
                         ActivationResult::BudgetExhausted(kind) => {
-                            worker.kill();
+                            io.kill();
                             self.fail("budget_exhausted", format!("{kind:?}"), effects)
                         }
                     };
                 }
                 other => {
-                    worker.kill();
+                    io.kill();
                     return self.fail(
                         "profile_violation",
                         format!("unexpected flow frame: {other:?}"),

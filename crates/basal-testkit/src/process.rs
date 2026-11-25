@@ -66,6 +66,22 @@ pub struct WorkerProcess {
     stderr: Arc<Mutex<Vec<u8>>>,
 }
 
+pub(crate) struct ProcessWriter(ChildStdin);
+
+impl ProcessWriter {
+    pub(crate) fn send(&mut self, message: &ParentMessage) -> Result<(), ParentError> {
+        let frame = encode_parent_frame(message).map_err(|e| ParentError::Io(e.to_string()))?;
+        send_raw(&mut self.0, &frame)
+    }
+}
+
+fn send_raw(stdin: &mut ChildStdin, bytes: &[u8]) -> Result<(), ParentError> {
+    stdin
+        .write_all(bytes)
+        .and_then(|_| stdin.flush())
+        .map_err(|e| ParentError::Io(e.to_string()))
+}
+
 impl WorkerProcess {
     /// Spawns the worker with an empty environment and only stdio, the way
     /// basal's parent does: the worker inherits nothing else.
@@ -181,10 +197,19 @@ impl WorkerProcess {
             .stdin
             .as_mut()
             .ok_or_else(|| ParentError::Io("stdin already closed".into()))?;
-        stdin
-            .write_all(bytes)
-            .and_then(|_| stdin.flush())
-            .map_err(|e| ParentError::Io(e.to_string()))
+        send_raw(stdin, bytes)
+    }
+
+    pub(crate) fn writer(&mut self) -> Option<ProcessWriter> {
+        self.stdin.take().map(ProcessWriter)
+    }
+
+    pub(crate) fn restore_writer(&mut self, writer: ProcessWriter) -> Option<()> {
+        if self.stdin.is_some() {
+            return None;
+        }
+        self.stdin = Some(writer.0);
+        Some(())
     }
 
     /// Closes the worker's stdin, which it reads as the end of the channel.

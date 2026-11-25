@@ -200,19 +200,23 @@ fn completion_during_replay_is_released_after_the_prefix() {
     let activations = Arc::new(AtomicUsize::new(0));
     let rt = runtime(&world);
     let run_id = admit(&rt, &world, script);
-    let on_send = |message: &ParentMessage| {
-        if matches!(message, ParentMessage::Activate(_))
-            && activations.fetch_add(1, Ordering::SeqCst) == 1
-        {
-            let handle = mock.handle_for(&run_id, 0).expect("a accepted");
-            assert!(mock.complete(&handle, done_value()));
+    let on_send = {
+        let activations = activations.clone();
+        let run_id = run_id.clone();
+        move |message: &ParentMessage| {
+            if matches!(message, ParentMessage::Activate(_))
+                && activations.fetch_add(1, Ordering::SeqCst) == 1
+            {
+                let handle = mock.handle_for(&run_id, 0).expect("a accepted");
+                assert!(mock.complete(&handle, done_value()));
+            }
         }
     };
     let mut worker = world.source.spawn().expect("worker");
     let first = rt
         .activate(
             &run_id,
-            &mut ObserveWorker::new(&mut worker).sending(on_send),
+            &mut ObserveWorker::new(&mut worker).sending(on_send.clone()),
         )
         .expect("first activation");
     assert!(

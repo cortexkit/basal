@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver, WorkerSource};
+use basal_core::channel::{
+    ChannelError, WorkerChannel, WorkerReceiver, WorkerSource, WorkerWriter,
+};
 use basal_proto::{MessageKind, ParentMessage, Welcome, WorkerMessage};
 
-use crate::process::{ParentError, WorkerProcess};
+use crate::process::{ParentError, ProcessWriter, WorkerProcess};
 
 /// Counters shared by every channel a source hands out.
 #[derive(Debug, Default)]
@@ -19,6 +21,17 @@ pub struct FrameCounts {
     /// The pid of the most recently spawned worker, while it is alive and
     /// owned by a channel (0 once the channel killed or dropped it).
     pub live_pid: AtomicU32,
+}
+
+impl FrameCounts {
+    fn sent(&self, message: &ParentMessage) {
+        let counter = match message.kind() {
+            MessageKind::Activate => &self.activate,
+            MessageKind::Deliver => &self.deliver,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// A greeted worker process as a [`WorkerChannel`].
@@ -58,21 +71,27 @@ impl WorkerReceiver for ProcessReceiver {
     }
 }
 
+struct CountedWriter {
+    writer: ProcessWriter,
+    counts: Arc<FrameCounts>,
+}
+
+impl WorkerWriter for CountedWriter {
+    fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
+        self.writer.send(message).map_err(channel_error)?;
+        self.counts.sent(message);
+        Ok(())
+    }
+}
+
 impl WorkerChannel for ProcessChannel {
     fn welcome(&self) -> &Welcome {
         &self.welcome
     }
 
     fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
-        let counter = match message.kind() {
-            MessageKind::Activate => Some(&self.counts.activate),
-            MessageKind::Deliver => Some(&self.counts.deliver),
-            _ => None,
-        };
         self.process.send(message).map_err(channel_error)?;
-        if let Some(c) = counter {
-            c.fetch_add(1, Ordering::SeqCst);
-        }
+        self.counts.sent(message);
         Ok(())
     }
 
@@ -82,6 +101,19 @@ impl WorkerChannel for ProcessChannel {
 
     fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
         Box::new(ProcessReceiver(Box::new(self.process.receiver())))
+    }
+
+    fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
+        Some(Box::new(CountedWriter {
+            writer: self.process.writer()?,
+            counts: self.counts.clone(),
+        }))
+    }
+
+    fn restore_writer(&mut self, writer: Box<dyn WorkerWriter>) -> Option<()> {
+        let writer: Box<dyn std::any::Any + Send> = writer;
+        self.process
+            .restore_writer(writer.downcast::<CountedWriter>().ok()?.writer)
     }
 
     fn kill(&mut self) {

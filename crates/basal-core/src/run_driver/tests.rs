@@ -14,6 +14,7 @@ use std::{
     sync::{
         Mutex,
         atomic::{AtomicBool, AtomicI64, Ordering},
+        mpsc,
     },
 };
 
@@ -607,35 +608,221 @@ fn expired_run_never_resends_or_starts_worker() {
     );
 }
 
+struct BlockedInput {
+    entered: mpsc::Sender<std::thread::ThreadId>,
+    closed: mpsc::Receiver<()>,
+}
+impl crate::channel::WorkerWriter for BlockedInput {
+    fn send(
+        &mut self,
+        message: &basal_proto::ParentMessage,
+    ) -> std::result::Result<(), crate::ChannelError> {
+        use basal_proto::ParentMessage;
+        match message {
+            ParentMessage::Activate(_) => Ok(()),
+            ParentMessage::Deliver(_) => {
+                self.entered.send(std::thread::current().id()).unwrap();
+                // A full pipe stays blocked until its read end is closed.
+                let _ = self.closed.recv();
+                Err(crate::ChannelError::Closed)
+            }
+            other => panic!("unexpected parent message {other:?}"),
+        }
+    }
+}
+
+struct BufferedOutput(mpsc::Receiver<basal_proto::WorkerMessage>);
+impl crate::channel::WorkerReceiver for BufferedOutput {
+    fn recv(&mut self) -> std::result::Result<basal_proto::WorkerMessage, crate::ChannelError> {
+        self.0.recv().map_err(|_| crate::ChannelError::Closed)
+    }
+}
+
+struct WedgedWorker {
+    welcome: basal_proto::Welcome,
+    input: Option<BlockedInput>,
+    output: Option<BufferedOutput>,
+    close: Option<mpsc::Sender<()>>,
+}
+impl crate::WorkerChannel for WedgedWorker {
+    fn welcome(&self) -> &basal_proto::Welcome {
+        &self.welcome
+    }
+    fn send(
+        &mut self,
+        message: &basal_proto::ParentMessage,
+    ) -> std::result::Result<(), crate::ChannelError> {
+        crate::channel::WorkerWriter::send(self.input.as_mut().unwrap(), message)
+    }
+    fn recv(
+        &mut self,
+        _: Duration,
+    ) -> std::result::Result<basal_proto::WorkerMessage, crate::ChannelError> {
+        panic!("the driver reads the worker through its split receiver")
+    }
+    fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
+        Box::new(self.output.take().unwrap())
+    }
+    fn writer(&mut self) -> Option<Box<dyn crate::channel::WorkerWriter>> {
+        Some(Box::new(self.input.take().unwrap()))
+    }
+    fn restore_writer(&mut self, writer: Box<dyn crate::channel::WorkerWriter>) -> Option<()> {
+        let writer: Box<dyn std::any::Any + Send> = writer;
+        self.input = Some(*writer.downcast::<BlockedInput>().ok()?);
+        Some(())
+    }
+    fn kill(&mut self) {
+        if let Some(close) = self.close.take() {
+            let _ = close.send(());
+        }
+    }
+}
+
+fn drive_with_blocked_delivery(
+    next_frame: impl FnOnce(&Fixture, &Activation) -> basal_proto::WorkerMessage,
+) -> (crate::ActivationEnd, WedgedWorker) {
+    use basal_proto::WorkerMessage;
+
+    let f = Fixture::new();
+    *f.service.poll.lock().unwrap() = Duration::from_secs(600);
+    let a = f.claim(0);
+    let (entered, writing) = mpsc::channel();
+    let (close, closed) = mpsc::channel();
+    let (output, frames) = mpsc::channel();
+    let mut worker = WedgedWorker {
+        welcome: Worker::new(Vec::new()).welcome,
+        input: Some(BlockedInput { entered, closed }),
+        output: Some(BufferedOutput(frames)),
+        close: Some(close.clone()),
+    };
+    output
+        .send(WorkerMessage::HostCall(HostCall {
+            position: 0,
+            kind: CallKind::Primitive(Primitive::Now),
+            args: JsonText::null(),
+        }))
+        .unwrap();
+    let end = std::thread::scope(|scope| {
+        let (done, result) = mpsc::channel();
+        let channel = &mut worker;
+        let activation = &a;
+        let driver = scope.spawn(move || {
+            let end = activation.drive(
+                channel,
+                request(),
+                Arc::new(Effects),
+                Duration::from_secs(600),
+            );
+            let _ = done.send(end);
+        });
+        let safety_limit = Duration::from_secs(20);
+        let send_thread = writing.recv_timeout(safety_limit);
+        // Buffer another frame. The reader cannot take it until the driver
+        // asks for the next frame.
+        let _ = output.send(next_frame(&f, &a));
+        drop(output);
+        if send_thread == Ok(driver.thread().id()) {
+            // An inline write pins the driver even after the clock advances.
+            // Close the fake pipe so the old loop returns instead of hanging the test.
+            assert!(!driver.is_finished());
+            close.send(()).unwrap();
+        }
+        let end = result.recv_timeout(safety_limit);
+        if end.is_err() {
+            // Let the scope join even if the driver incorrectly joins before kill.
+            let _ = close.send(());
+        }
+        driver.join().unwrap();
+        send_thread.unwrap();
+        end.expect("the driver did not end with a delivery blocked")
+            .unwrap()
+    });
+    (end, worker)
+}
+
+#[test]
+fn blocked_worker_input_does_not_hide_the_activation_deadline() {
+    let (end, worker) = drive_with_blocked_delivery(|f, activation| {
+        let deadline_at = activation
+            .with_state(|state| state.claim.as_ref().unwrap().deadline_at)
+            .unwrap();
+        f.service.now.store(deadline_at + 1, Ordering::Release);
+        basal_proto::WorkerMessage::Blocked { awaiting: vec![] }
+    });
+    assert_eq!(
+        end,
+        crate::ActivationEnd::Failed {
+            kind: "deadline".into(),
+            detail: "the run passed its wall-clock deadline".into(),
+        }
+    );
+    assert!(worker.close.is_none(), "the blocked writer must be killed");
+}
+
+#[test]
+fn finished_while_a_write_is_pending_kills_instead_of_restoring_writer() {
+    let (end, worker) =
+        drive_with_blocked_delivery(|_, activation| basal_proto::WorkerMessage::Finished {
+            activation_id: activation.generation,
+            result: basal_proto::ActivationResult::Completed {
+                value: JsonText::null(),
+            },
+        });
+    assert_eq!(
+        end,
+        crate::ActivationEnd::Succeeded {
+            value: "null".into()
+        }
+    );
+    assert!(worker.close.is_none(), "the worker was not killed");
+    assert!(worker.input.is_none(), "the worker's input was restored");
+}
+
 /// A worker read through a split receiver, as the driver reads real workers:
 /// it issues `calls` queries one at a time, blocking on each, and finishes
 /// once the last outcome arrives.
 struct SplitWorker {
     welcome: basal_proto::Welcome,
+    input: Option<SplitInput>,
+    frames: mpsc::Sender<SplitFrame>,
+    receiver: Option<SplitReceiver>,
+    delivered: Arc<Mutex<Vec<basal_proto::Outcome>>>,
+}
+
+type SplitFrame = std::result::Result<basal_proto::WorkerMessage, crate::ChannelError>;
+
+struct SplitInput {
     generation: u64,
     calls: u64,
-    frames: Option<std::sync::mpsc::Sender<basal_proto::WorkerMessage>>,
-    receiver: Option<SplitReceiver>,
+    frames: mpsc::Sender<SplitFrame>,
     log: Arc<MemoryLog>,
-    delivered: Vec<basal_proto::Outcome>,
+    delivered: Arc<Mutex<Vec<basal_proto::Outcome>>>,
 }
 impl SplitWorker {
     fn new(f: &Fixture, generation: u64, calls: u64) -> Self {
-        let (frames, receiver) = std::sync::mpsc::channel();
+        let (frames, receiver) = mpsc::channel();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
         Self {
             welcome: Worker::new(Vec::new()).welcome,
-            generation,
-            calls,
-            frames: Some(frames),
+            input: Some(SplitInput {
+                generation,
+                calls,
+                frames: frames.clone(),
+                log: f.log.clone(),
+                delivered: delivered.clone(),
+            }),
+            frames,
             receiver: Some(SplitReceiver {
                 frames: receiver,
                 service: f.service.clone(),
                 reads: 0,
             }),
-            log: f.log.clone(),
-            delivered: Vec::new(),
+            delivered,
         }
     }
+}
+
+impl SplitInput {
     fn issue(position: u64) -> Vec<basal_proto::WorkerMessage> {
         vec![
             basal_proto::WorkerMessage::HostCall(call(position, "query")),
@@ -646,7 +833,7 @@ impl SplitWorker {
     }
 }
 struct SplitReceiver {
-    frames: std::sync::mpsc::Receiver<basal_proto::WorkerMessage>,
+    frames: mpsc::Receiver<SplitFrame>,
     service: Arc<Service>,
     reads: usize,
 }
@@ -663,13 +850,13 @@ impl crate::channel::WorkerReceiver for SplitReceiver {
                 std::thread::spawn(job);
             }
         }
-        self.frames.recv().map_err(|_| crate::ChannelError::Closed)
+        self.frames
+            .recv()
+            .map_err(|_| crate::ChannelError::Closed)?
     }
 }
-impl crate::channel::WorkerChannel for SplitWorker {
-    fn welcome(&self) -> &basal_proto::Welcome {
-        &self.welcome
-    }
+
+impl crate::channel::WorkerWriter for SplitInput {
     fn send(
         &mut self,
         message: &basal_proto::ParentMessage,
@@ -687,7 +874,7 @@ impl crate::channel::WorkerChannel for SplitWorker {
                     )),
                     "an outcome was delivered before its arrival was synced"
                 );
-                self.delivered.push(outcome.clone());
+                self.delivered.lock().unwrap().push(outcome.clone());
                 if outcome.position + 1 < self.calls {
                     Self::issue(outcome.position + 1)
                 } else {
@@ -702,11 +889,23 @@ impl crate::channel::WorkerChannel for SplitWorker {
             other => panic!("unexpected parent message {other:?}"),
         };
         for frame in reply {
-            if let Some(frames) = &self.frames {
-                frames.send(frame).unwrap();
-            }
+            self.frames
+                .send(Ok(frame))
+                .map_err(|_| crate::ChannelError::Closed)?;
         }
         Ok(())
+    }
+}
+
+impl crate::channel::WorkerChannel for SplitWorker {
+    fn welcome(&self) -> &basal_proto::Welcome {
+        &self.welcome
+    }
+    fn send(
+        &mut self,
+        _: &basal_proto::ParentMessage,
+    ) -> std::result::Result<(), crate::ChannelError> {
+        panic!("the driver writes to split workers through their writer")
     }
     fn recv(
         &mut self,
@@ -717,9 +916,12 @@ impl crate::channel::WorkerChannel for SplitWorker {
     fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
         Box::new(self.receiver.take().expect("one receiver per activation"))
     }
+    fn writer(&mut self) -> Option<Box<dyn crate::channel::WorkerWriter>> {
+        Some(Box::new(self.input.take()?))
+    }
     // Killing ends a blocked receive, as it does for a real worker.
     fn kill(&mut self) {
-        self.frames = None;
+        let _ = self.frames.send(Err(crate::ChannelError::Closed));
     }
 }
 
@@ -745,6 +947,8 @@ fn finished_dispatch_wakes_the_frame_wait_and_keeps_synced_release_order() {
     assert_eq!(
         worker
             .delivered
+            .lock()
+            .unwrap()
             .iter()
             .map(|o| (o.position, o.delivery_order, o.value.as_str()))
             .collect::<Vec<_>>(),
@@ -796,6 +1000,8 @@ fn worker_loop_and_preparation_never_copy_the_whole_run_state() {
     assert_eq!(
         worker
             .delivered
+            .lock()
+            .unwrap()
             .iter()
             .map(|o| (o.position, o.delivery_order))
             .collect::<Vec<_>>(),

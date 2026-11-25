@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
+use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver, WorkerWriter};
 use basal_core::manifest::{DigestAction, Manifest};
 use basal_core::schedule::{self, fire_trigger_id};
 use basal_core::{
@@ -852,32 +852,29 @@ struct Recording<'a> {
     events: Arc<Mutex<Vec<Event>>>,
 }
 
+fn record_send(events: &Mutex<Vec<Event>>, message: &ParentMessage) {
+    let event = match message {
+        ParentMessage::Activate(request) => Event::Prefix(
+            request
+                .prefix
+                .iter()
+                .filter(|c| c.outcome.is_some())
+                .map(|c| c.position)
+                .collect(),
+        ),
+        ParentMessage::Deliver(outcome) => Event::DriverReleased(outcome.position),
+        _ => return,
+    };
+    events.lock().unwrap_or_else(|p| p.into_inner()).push(event);
+}
+
 impl WorkerChannel for Recording<'_> {
     fn welcome(&self) -> &Welcome {
         self.inner.welcome()
     }
 
     fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
-        match message {
-            ParentMessage::Activate(request) => self
-                .events
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(Event::Prefix(
-                    request
-                        .prefix
-                        .iter()
-                        .filter(|c| c.outcome.is_some())
-                        .map(|c| c.position)
-                        .collect(),
-                )),
-            ParentMessage::Deliver(outcome) => self
-                .events
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(Event::DriverReleased(outcome.position)),
-            _ => {}
-        }
+        record_send(&self.events, message);
         self.inner.send(message)
     }
 
@@ -901,8 +898,33 @@ impl WorkerChannel for Recording<'_> {
         })
     }
 
+    fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
+        Some(Box::new(RecordingWriter {
+            inner: self.inner.writer()?,
+            events: self.events.clone(),
+        }))
+    }
+
+    fn restore_writer(&mut self, writer: Box<dyn WorkerWriter>) -> Option<()> {
+        let writer: Box<dyn std::any::Any + Send> = writer;
+        self.inner
+            .restore_writer(writer.downcast::<RecordingWriter>().ok()?.inner)
+    }
+
     fn kill(&mut self) {
         self.inner.kill();
+    }
+}
+
+struct RecordingWriter {
+    inner: Box<dyn WorkerWriter>,
+    events: Arc<Mutex<Vec<Event>>>,
+}
+
+impl WorkerWriter for RecordingWriter {
+    fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
+        record_send(&self.events, message);
+        self.inner.send(message)
     }
 }
 

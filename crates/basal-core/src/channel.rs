@@ -5,8 +5,8 @@
 //! receives frames, and kills the worker when an activation must not
 //! continue.
 
-use std::fmt;
 use std::time::Duration;
+use std::{any::Any, fmt};
 
 use basal_proto::{ParentMessage, Welcome, WorkerMessage};
 
@@ -48,22 +48,29 @@ pub trait WorkerChannel: Send {
     /// kill the worker. A worker that is not reading its input makes a send
     /// wait until the pipe has room, so a caller that must keep draining the
     /// worker or enforcing deadlines writes from another thread. Once split,
-    /// every frame goes through the writer, never through [`Self::send`].
+    /// every frame goes through the writer until [`Self::restore_writer`]
+    /// succeeds.
     ///
-    /// `None` means this channel cannot split its send side. The codemode
-    /// supervisor refuses such a channel rather than write from its event
-    /// loop; flow drivers never split.
+    /// `None` means this channel cannot split its send side. Flow and codemode
+    /// do not write to such a worker from their event loops.
     fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
         None
     }
-    /// Scripted in-process peers may couple recv to send without a split pipe.
-    /// Real workers always use the split receiver so the parent owns deadlines.
+    /// Reclaims the writer split from this channel. The caller must have
+    /// received the matching `Finished` and joined the writer thread after it
+    /// completed every queued write successfully. `Some(())` makes this channel
+    /// eligible for reuse. `None` (the default) means the channel cannot be reused.
+    fn restore_writer(&mut self, _writer: Box<dyn WorkerWriter>) -> Option<()> {
+        None
+    }
+    /// Scripted in-process peers may couple recv to send without split handles.
+    /// Real workers use split I/O so the driver can enforce deadlines.
     #[cfg(any(test, feature = "test-support"))]
     fn fixture_inline_recv(&self) -> bool {
         false
     }
     /// Ends the worker at once. Any frame it had in flight is lost, and a
-    /// receive blocked on a split-off [`WorkerReceiver`] returns an error.
+    /// receive or write blocked on a split-off handle returns an error.
     fn kill(&mut self);
 }
 
@@ -75,8 +82,9 @@ pub trait WorkerReceiver: Send {
     fn recv(&mut self) -> Result<WorkerMessage, ChannelError>;
 }
 
-/// The send side of a [`WorkerChannel`], writable from its own thread.
-pub trait WorkerWriter: Send {
+/// The send side of a [`WorkerChannel`], writable from its own thread. Its
+/// concrete type lets the originating channel reclaim it for reuse.
+pub trait WorkerWriter: Send + Any {
     /// Blocks until the frame is written or the channel fails. There is no
     /// timeout: [`WorkerChannel::kill`] ends the worker, and a write blocked
     /// on it then fails instead of waiting for room that never comes.

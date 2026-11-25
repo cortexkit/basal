@@ -332,14 +332,24 @@ impl WorkerProcess {
     }
 
     /// A send side for another thread. It takes the worker's input pipe, so
-    /// [`WorkerProcess::send`] reports `Closed` from then on. A kill ends the
-    /// process, which closes the pipe's read end, so a write blocked on a
-    /// worker that stopped reading fails with a broken pipe instead of
-    /// waiting forever. `None` once the pipe is gone.
+    /// [`WorkerProcess::send`] reports `Closed` until the writer is restored.
+    /// A kill closes the pipe's read end, so a write blocked on a worker that
+    /// stopped reading fails instead of waiting forever. `None` while the
+    /// pipe is split off or gone.
     pub fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
         self.stdin
             .take()
             .map(|stdin| Box::new(ProcessWriter(stdin)) as Box<dyn WorkerWriter>)
+    }
+
+    /// Takes back the input pipe once its writer thread has joined.
+    pub(crate) fn restore_writer(&mut self, writer: Box<dyn WorkerWriter>) -> Option<()> {
+        if self.stdin.is_some() {
+            return None;
+        }
+        let writer: Box<dyn std::any::Any + Send> = writer;
+        self.stdin = Some(writer.downcast::<ProcessWriter>().ok()?.0);
+        Some(())
     }
 
     pub fn recv(&mut self, timeout: Duration) -> Result<WorkerMessage, ChannelError> {

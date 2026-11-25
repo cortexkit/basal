@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
+use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver, WorkerWriter};
 use basal_core::{Config, Hooks, NoHooks, Run, Runtime};
 use basal_proto::{ParentMessage, Welcome, WorkerMessage};
 use basal_testkit::harness::{World, drive, test_manifest};
@@ -15,7 +15,7 @@ use basal_testkit::harness::{World, drive, test_manifest};
 pub struct ObserveWorker<'a> {
     inner: &'a mut dyn WorkerChannel,
     welcome: Box<dyn Fn() + Send + Sync + 'a>,
-    sent: Box<dyn Fn(&ParentMessage) + Send + Sync + 'a>,
+    sent: Arc<dyn Fn(&ParentMessage) + Send + Sync>,
     received: Arc<dyn Fn(&WorkerMessage) + Send + Sync>,
 }
 
@@ -24,7 +24,7 @@ impl<'a> ObserveWorker<'a> {
         Self {
             inner,
             welcome: Box::new(|| {}),
-            sent: Box::new(|_| {}),
+            sent: Arc::new(|_| {}),
             received: Arc::new(|_| {}),
         }
     }
@@ -32,8 +32,8 @@ impl<'a> ObserveWorker<'a> {
         self.welcome = Box::new(f);
         self
     }
-    pub fn sending(mut self, f: impl Fn(&ParentMessage) + Send + Sync + 'a) -> Self {
-        self.sent = Box::new(f);
+    pub fn sending(mut self, f: impl Fn(&ParentMessage) + Send + Sync + 'static) -> Self {
+        self.sent = Arc::new(f);
         self
     }
     pub fn receiving(mut self, f: impl Fn(&WorkerMessage) + Send + Sync + 'static) -> Self {
@@ -63,8 +63,31 @@ impl WorkerChannel for ObserveWorker<'_> {
             received: self.received.clone(),
         })
     }
+    fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
+        Some(Box::new(ObserveWriter {
+            inner: self.inner.writer()?,
+            sent: self.sent.clone(),
+        }))
+    }
+    fn restore_writer(&mut self, writer: Box<dyn WorkerWriter>) -> Option<()> {
+        let writer: Box<dyn std::any::Any + Send> = writer;
+        self.inner
+            .restore_writer(writer.downcast::<ObserveWriter>().ok()?.inner)
+    }
     fn kill(&mut self) {
         self.inner.kill();
+    }
+}
+
+struct ObserveWriter {
+    inner: Box<dyn WorkerWriter>,
+    sent: Arc<dyn Fn(&ParentMessage) + Send + Sync>,
+}
+impl WorkerWriter for ObserveWriter {
+    fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
+        self.inner.send(message)?;
+        (self.sent)(message);
+        Ok(())
     }
 }
 
