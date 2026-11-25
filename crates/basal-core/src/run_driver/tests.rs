@@ -778,6 +778,78 @@ fn finished_while_a_write_is_pending_kills_instead_of_restoring_writer() {
     assert!(worker.input.is_none(), "the worker's input was restored");
 }
 
+#[test]
+fn blocked_frame_flood_fills_the_writer_queue_and_retires_the_worker() {
+    use basal_proto::WorkerMessage;
+
+    let f = Fixture::new();
+    let a = f.claim(0);
+    let (entered, _writing) = mpsc::channel();
+    let (close, closed) = mpsc::channel();
+    let (output, frames) = mpsc::channel();
+    let mut worker = WedgedWorker {
+        welcome: Worker::new(Vec::new()).welcome,
+        input: Some(BlockedInput { entered, closed }),
+        output: Some(BufferedOutput(frames)),
+        close: Some(close.clone()),
+    };
+    for position in 0..300 {
+        assert!(matches!(
+            a.issue(call(position, "local")).unwrap(),
+            Issued::Pending
+        ));
+        output
+            .send(WorkerMessage::Blocked {
+                awaiting: vec![position],
+            })
+            .unwrap();
+    }
+
+    let end = std::thread::scope(|scope| {
+        let (done, result) = mpsc::channel();
+        let channel = &mut worker;
+        let activation = &a;
+        let driver = scope.spawn(move || {
+            let end = activation.drive(
+                channel,
+                request(),
+                Arc::new(Effects),
+                Duration::from_secs(600),
+            );
+            let _ = done.send(end);
+        });
+        // Keep both pipes open and the manual clock unchanged. Queue overflow,
+        // not EOF or the deadline, must make the activation return.
+        let end = result.recv_timeout(Duration::from_secs(20));
+        drop(output);
+        if end.is_err() {
+            let _ = close.send(());
+        }
+        driver.join().unwrap();
+        end.expect("a full writer queue did not end the activation")
+            .unwrap()
+    });
+    assert_eq!(end, crate::ActivationEnd::Requeued);
+    assert!(worker.close.is_none(), "the worker was not killed");
+    assert!(worker.input.is_none(), "the worker's input was restored");
+
+    let released = f
+        .log
+        .records
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| matches!(r.body, Body::Released { .. }))
+        .count();
+    // The driver records a release before enqueueing it. Depending on whether
+    // Activate or the first delivery has left the queue, the failed enqueue
+    // accounts for release 64, 65 or 66.
+    assert!(
+        (64..=66).contains(&released),
+        "unexpected release count: {released}"
+    );
+}
+
 /// A worker read through a split receiver, as the driver reads real workers:
 /// it issues `calls` queries one at a time, blocking on each, and finishes
 /// once the last outcome arrives.

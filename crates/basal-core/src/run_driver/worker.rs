@@ -138,10 +138,11 @@ impl Writer {
         mut writer: Box<dyn WorkerWriter>,
         wake: mpsc::Sender<Wake>,
     ) -> std::result::Result<Self, ChannelError> {
-        // At most 64 queued frames plus one in flight, even if a peer issues
-        // calls without reading. There is one activation (with a capped replay
-        // prefix), at most one delivery and one LongRunning position per call,
-        // and each delivery value is capped by basal_proto::MAX_VALUE_BYTES.
+        // After Activate, a conforming worker waits for one delivery per
+        // Blocked or synchronous HostCall. LongRunning notifications can also
+        // arrive while it waits, but it reads them and stays well below 64
+        // queued frames. A full queue means the worker stopped reading; end
+        // the activation rather than blocking the driver or growing the queue.
         let (queue, frames) = mpsc::sync_channel(64);
         let outstanding = Arc::new(AtomicUsize::new(0));
         let failed = Arc::new(AtomicBool::new(false));
