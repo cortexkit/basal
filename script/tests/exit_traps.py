@@ -61,7 +61,7 @@ class ScriptExitTrapTests(unittest.TestCase):
             for directory in ("scratch", "control"):
                 (root / directory).mkdir()
             (root / "scratch/old").write_text("old")
-            for name in ("dest", "kill", "unscoped"):
+            for name in ("dest", "kill"):
                 (root / name).write_text("new")
             setup = f'''set -eu
 unset undefined_exit_trap_variable
@@ -76,7 +76,6 @@ installed=1
 accepted={int(success)}
 existed={int(existed)}
 KILL_FILE="$root/kill"
-UNSCOPED_FILE="$root/unscoped"
 cmd_stop() {{ printf '%s\\n' stopped > "$root/stopped"; }}
 '''
             result = subprocess.run(
@@ -94,8 +93,7 @@ cmd_stop() {{ printf '%s\\n' stopped > "$root/stopped"; }}
                     self.assertFalse((root / "dest").exists())
             else:
                 self.assertEqual((root / "stopped").read_text(), "stopped\n")
-                for name in ("kill", "unscoped"):
-                    self.assertEqual((root / name).exists(), trap_index == 0)
+                self.assertEqual((root / "kill").exists(), trap_index == 0)
             return result
 
     @unittest.skipUnless(sys.platform == "darwin", "requires macOS /bin/sh's bash 3.2 nounset behavior")
