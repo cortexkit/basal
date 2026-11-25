@@ -219,6 +219,9 @@ fn new_install_still_requires_board_read_coupling() {
 fn new_intake_refuses_the_retired_prefrontal_name() {
     let f = fixture("retired-name-intake");
     let mut manifest = legacy_manifest();
+    // New intake refuses the retired `llm` grant first; drop it so this test
+    // reaches the retired module name.
+    manifest.as_object_mut().unwrap().remove("llm");
     manifest["board_read"] = json!(["$self"]);
     manifest["explanation"] = json!("Reads boards to report outstanding work.");
     let text = manifest.to_string();
@@ -276,6 +279,7 @@ fn intake_reports_the_field_naming_the_retired_module() {
         ),
     ] {
         let mut manifest = legacy_manifest();
+        manifest.as_object_mut().unwrap().remove("llm");
         manifest["ops"] = json!([]);
         manifest["explanation"] = json!("Exercises the field-specific retired-name refusal.");
         manifest[field] = patch;
