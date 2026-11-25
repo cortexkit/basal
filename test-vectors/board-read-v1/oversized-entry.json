@@ -1,0 +1,16 @@
+{
+  "boards": [
+    {
+      "agent_id": "ag_a",
+      "error": {
+        "code": "board_read_too_large",
+        "message": "This board is larger than one board.read page can hold (256 KiB), so it was left out of the page. Read it alone with a single-agent read.",
+        "size_bytes": 329044
+      },
+      "name": "ALPHA"
+    }
+  ],
+  "next_cursor": "ag_a",
+  "page_cap": 16,
+  "seq": 8
+}

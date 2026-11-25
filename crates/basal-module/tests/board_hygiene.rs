@@ -1412,35 +1412,40 @@ fn a_peer_ref_with_a_display_name_nudges_only_the_known_peer() {
 
 #[test]
 fn an_oversize_board_entry_is_skipped_and_its_agent_still_owns_a_board() {
-    // prefrontal's shape for a board too large to send: an error in the
-    // agent's place, with no `board` member.
+    // prefrontal's captured page with a board too large to send: an error
+    // entry in the agent's place, with no `board` member.
+    let oversized = include_str!("../../../test-vectors/board-read-v1/oversized-entry.json");
+    let reply = include_str!("../../../test-vectors/board-read-v1/reply.json");
+    let mut page: Value = serde_json::from_str(oversized).unwrap();
+    assert_eq!(page["boards"][0]["agent_id"], "ag_a");
+    assert!(page["boards"][0].get("board").is_none());
+    // Put a readable board from the other capture beside it, waiting on the
+    // unreadable agent, and end the paging there.
+    let mut readable = serde_json::from_str::<Value>(reply).unwrap()["boards"][1].take();
+    assert_eq!(readable["agent_id"], "ag_b");
     let mut waiting = item("blocked", BASE);
     waiting["eta_ms"] = json!(BASE);
-    waiting["wait"] = json!({"ref":"peer:ag_big"});
-    let mut readable = board("ag_a", vec![waiting]);
-    readable["name"] = json!("ALPHA");
-    let page = json!({"boards": [
-        readable,
-        {"agent_id":"ag_big","name":"BIG","error":{"code":"board_read_too_large",
-            "message":"board is 300000 bytes","size_bytes":300000}},
-    ], "next_cursor": null, "page_cap": 6});
+    waiting["wait"] = json!({"ref":"peer:ag_a"});
+    readable["board"]["laneBlocks"] = board("ag_b", vec![waiting])["board"]["laneBlocks"].take();
+    page["boards"].as_array_mut().unwrap().push(readable);
+    page["next_cursor"] = Value::Null;
     let mut t = Test::new(vec![]);
     *t.host.board_page.lock().unwrap() = Some(text(page));
     let writes = t.run(BASE + MIN);
     assert_eq!(t.result["boards_scanned"], 1);
     assert_eq!(
         t.result["refusals"],
-        json!([{"message":"board too large to read","agent":"ag_big",
-            "code":"board_read_too_large","size_bytes":300000}])
+        json!([{"message":"board too large to read","agent":"ag_a",
+            "code":"board_read_too_large","size_bytes":329044}])
     );
     // The peer wait on the unreadable agent still reaches it, by name.
     assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0]["agent"], "ag_big");
+    assert_eq!(writes[0]["agent"], "ag_a");
     assert!(
         writes[0]["item"]["body"]
             .as_str()
             .unwrap()
-            .contains("ALPHA waits on you")
+            .contains("BETA waits on you")
     );
 }
 
@@ -1449,16 +1454,25 @@ fn board_read_vector_names_waiters_and_keeps_decline_refs_on_stable_ids() {
     use sha2::{Digest, Sha256};
 
     let reply = include_str!("../../../test-vectors/board-read-v1/reply.json");
+    let oversized = include_str!("../../../test-vectors/board-read-v1/oversized-entry.json");
     let sums = include_str!("../../../test-vectors/board-read-v1/SHA256SUMS");
     let readme = include_bytes!("../../../test-vectors/board-read-v1/README.md");
+    // prefrontal tag board-read-v1.1 (commit 19aa79ee30).
     assert_eq!(
         format!("{:x}", Sha256::digest(sums)),
-        "5b80e62b8f3059aba2c51de8147f5648eb8cedecce0b952f9803ea368cca49d6"
+        "6078b58a0d7572f11b2247c22d8b2c3936d206f59a3bc04b9ab52b73e428451f"
     );
-    assert_eq!(sums, format!("{:x}  reply.json\n", Sha256::digest(reply)));
+    assert_eq!(
+        sums,
+        format!(
+            "{:x}  reply.json\n{:x}  oversized-entry.json\n",
+            Sha256::digest(reply),
+            Sha256::digest(oversized)
+        )
+    );
     assert_eq!(
         format!("{:x}", Sha256::digest(readme)),
-        "1bcc38680524437fba7ccb8e7ab5bf7e61c50923afd5b4188c565d7ec4491c25"
+        "f734e7790cee21ca110529185731318320a67b15af409fec5956ff511d20af2e"
     );
 
     let mut t = Test::new(vec![]);
