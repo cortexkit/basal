@@ -467,7 +467,7 @@ fn a_zero_classifier_ceiling_does_not_hide_measured_spend() {
 #[test]
 fn explicit_null_optional_caps_keep_the_manifest_none_semantics() {
     let f = Fixture::new(false);
-    f.install("null-caps", 1, json!({"llm":null,"model_cost_usd":null}));
+    f.install("null-caps", 1, json!({"model_cost_usd":null}));
     let id = f.admit("null-caps", "first");
     assert!(matches!(
         f.rt.activate(&id, &mut ScriptedWorker::new(vec![finished()]))

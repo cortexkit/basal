@@ -311,17 +311,6 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         Ok(handle)
     }
 
-    /// A settled model call no longer needs a channel or a subscription.
-    pub fn release_identity(
-        &mut self,
-        flow: &str,
-        target: &subc_protocol::RouteTarget,
-        identity: &BindIdentity,
-    ) -> Option<H> {
-        let key = self.prepare(flow, target, Some(identity)).ok()?.key;
-        self.routes.remove(&key).and_then(|(_, handle, _)| handle)
-    }
-
     pub fn closed(&mut self, handle: H, scope_close: bool) {
         self.routes.retain(|_, (_, current, _)| {
             if *current != Some(handle) {

@@ -101,7 +101,6 @@ pub fn canonical(path: &std::path::Path) -> PathBuf {
 pub struct Options {
     pub hosts: Option<Hosts>,
     pub worker_binary: Option<PathBuf>,
-    pub selector: Arc<dyn basal_host::selector::ModelSelector>,
     pub warm_spares: usize,
     pub max_concurrent: usize,
     pub engine_pass_interval: Duration,
@@ -129,7 +128,6 @@ impl Default for Options {
         Self {
             hosts: None,
             worker_binary: None,
-            selector: Arc::new(basal_host::selector::FakeSelector::default()),
             warm_spares: 0,
             max_concurrent: 4,
             engine_pass_interval: EngineConfig::default().pass_interval,
@@ -205,7 +203,6 @@ pub fn fixture_with_recovered(
         .clone()
         .unwrap_or_else(|| Arc::new(ProcessSpawner::new(&pool)));
     let mut runtime = Config {
-        selector: o.selector.clone(),
         clock: clock.clone(),
         activation_deadline: o.activation_deadline,
         budgets: o.budgets,

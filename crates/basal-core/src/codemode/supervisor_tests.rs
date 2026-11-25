@@ -787,9 +787,6 @@ impl Fixture {
 #[path = "restart_tests.rs"]
 mod restart;
 
-#[path = "model_tests.rs"]
-mod models;
-
 #[path = "dollar_tests.rs"]
 mod dollars;
 

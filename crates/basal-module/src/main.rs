@@ -12,7 +12,7 @@
 mod engram_catalog;
 
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use basal_core::{Config, Durability, NoHooks};
 use basal_module::dryrun::DryRunConfig;
@@ -119,22 +119,8 @@ fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Readiness callbacks must not keep a failed attempt's leased store alive.
-    struct Models {
-        store: std::sync::Weak<basal_core::broca::BrocaStore>,
-        host: std::sync::Weak<basal_host::broca::BrocaHost>,
-        wake: Arc<basal_host::broca::subc::PollWake>,
-    }
-    let models = Arc::new(Mutex::new(None::<Models>));
     let scope_connection = basal_module::scope_connection::ScopeConnection::default();
     let host_scope_connection = scope_connection.clone();
-    let selector = Arc::new(basal_host::selector::RoutingSelector::new(
-        transport.clone(),
-    ));
-    let configured_selector = selector.clone();
-    let built_models = models.clone();
-    let initialized_models = models.clone();
-    let ready_models = models;
     let event_transport = transport.clone();
     let attach_transport = transport.clone();
     // Startup hooks and the backup catalog need the resolved store path.
@@ -148,14 +134,7 @@ fn serve() -> ExitCode {
     let handler = BasalHandler::new(
         Box::new(move |store_path| {
             let _ = configured_store.set(store_path.clone());
-            production_config(
-                store_path,
-                Config {
-                    selector: configured_selector.clone(),
-                    ..Config::default()
-                },
-                pool.clone(),
-            )
+            production_config(store_path, Config::default(), pool.clone())
         }),
         Box::new(move || {
             use basal_host::{
@@ -167,35 +146,11 @@ fn serve() -> ExitCode {
                 SubcCatalog::new(transport.clone())
                     .with_daemon_capabilities(catalog_capabilities.clone()),
             );
-            let selector = selector.clone();
-            let store = Arc::new(basal_core::broca::BrocaStore::default());
-            let wake = basal_host::broca::subc::PollWake::new();
-            let broca_transport =
-                basal_host::broca::subc::SubcBrocaTransport::new(transport.clone(), "broca".into());
-            #[cfg(feature = "rig-kill-hook")]
-            if let Some(hook) = basal_module::rig_kill::RigUnscopedSend::from_env() {
-                broca_transport.set_unscoped_send_hook(Arc::new(move |route| {
-                    hook.take(route.flow_id.as_deref())
-                }));
-            }
-            let model_host = Arc::new(basal_host::broca::BrocaHost::new(
-                broca_transport,
-                store.clone(),
-                "/".into(),
-                "basal".into(),
-                selector.clone(),
-            ));
-            *built_models.lock().unwrap_or_else(|p| p.into_inner()) = Some(Models {
-                store: Arc::downgrade(&store),
-                host: Arc::downgrade(&model_host),
-                wake,
-            });
             Hosts {
                 transport: transport.clone(),
                 host: Arc::new(RoutingHost::new(
                     host_scope_connection.module_ops(transport.clone(), catalog.clone()),
                     Arc::new(CoreHost::new(transport.clone())),
-                    model_host,
                 )),
                 catalog,
                 consent: Arc::new(CingulateConsent::new(transport).with_polling()),
@@ -205,7 +160,7 @@ fn serve() -> ExitCode {
     )
     .with_daemon_capabilities(daemon_capabilities)
     .with_startup_hooks(Box::new(move || runtime_hooks(&startup_store_path_cell)))
-    .with_store_initializer(Box::new(move |_shared, recovered| {
+    .with_store_initializer(Box::new(move |_shared, _recovered| {
         // Store::open has created the private data directory by this point. Write the
         // catalog before the handler becomes ready.
         if let Some(store_path) = initialized_store_path.get() {
@@ -216,31 +171,9 @@ fn serve() -> ExitCode {
                 "cannot write basal engram catalog before the daemon resolves the store path"
             );
         }
-        if let Some(models) = initialized_models
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-        {
-            models
-                .store
-                .upgrade()
-                .ok_or_else(|| "model store was dropped before binding".to_owned())?
-                .bind_recovered(&recovered)
-                .map_err(|e| e.to_string())?;
-        }
         Ok(())
     }))
-    .with_event_reader(event_transport)
-    .with_ready_hosts(Box::new(move || {
-        if let Some(models) = ready_models
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            && let Some(host) = models.host.upgrade()
-        {
-            models.wake.start(&host);
-        }
-    }));
+    .with_event_reader(event_transport);
     match run(handler, scope_connection, attach_transport) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

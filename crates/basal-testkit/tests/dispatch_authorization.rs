@@ -338,7 +338,7 @@ fn a_compromised_worker_cannot_send_console() {
 }
 
 #[test]
-fn facts_sinks_and_model_calls_are_checked_against_the_manifest() {
+fn facts_and_sinks_are_checked_against_the_manifest() {
     let world = World::new("auth-primitives");
     let rt = runtime(&world);
     let mut manifest = test_manifest();
@@ -359,7 +359,6 @@ fn facts_sinks_and_model_calls_are_checked_against_the_manifest() {
             await attempt('digest_other', () => sink.digest('SYNAPSE', { title: 't' }, 'silent'));
             await attempt('status', () => sink.status('ALF', 'v'));
             await attempt('status_other', () => sink.status('SYNAPSE', 'v'));
-            await attempt('tools', () => llm({ prompt: 'x', tools: [] }));
             return out;
             "#,
             &manifest,
@@ -383,7 +382,6 @@ fn facts_sinks_and_model_calls_are_checked_against_the_manifest() {
             "digest_other": "denied",
             "status": "ok",
             "status_other": "denied",
-            "tools": "denied",
         }),
         "{run:#?}"
     );

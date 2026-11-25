@@ -171,6 +171,9 @@ impl Module {
                 "secrets_require_flow_install",
                 ManifestError::SecretsRequireFlowInstall.to_string(),
             ),
+            InstallError::Manifest(ref error @ ManifestError::LlmGrantRemoved) => {
+                OpError::new("llm_grant_removed", error.to_string())
+            }
             InstallError::Manifest(
                 ManifestError::Notice { code, ref reason }
                 | ManifestError::Pack { code, ref reason },
@@ -721,6 +724,7 @@ impl Module {
                     e @ (ManifestError::ParamsRequirePackage { .. }
                     | ManifestError::TriggerKinds { .. }
                     | ManifestError::CombinedTriggerAt
+                    | ManifestError::LlmGrantRemoved
                     | ManifestError::ExplanationRequired
                     | ManifestError::ChangesRequired
                     | ManifestError::ChangesOnFirstVersion

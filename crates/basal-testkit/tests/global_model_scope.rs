@@ -1,8 +1,5 @@
-use basal_core::{Clock, Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
-use basal_host::broca::wire::*;
-use basal_host::broca::{BrocaError, BrocaHost, Route, Transport};
-use basal_host::flow_refusal::FlowRefusal;
-use basal_host::flow_scope::{FlowScope, RegisteredScope, ScopedRoutes};
+use basal_core::{Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
+use basal_host::flow_scope::{FlowScope, RegisteredScope};
 use basal_host::routing::RoutingHost;
 use basal_host::{
     CallClass, CallRequest, CompletionSink, Dispatched, Host, InstallStatus, TransportError,
@@ -10,7 +7,7 @@ use basal_host::{
 use basal_proto::{CallKind, JsonText};
 use basal_testkit::harness::{World, test_manifest};
 use std::sync::{Arc, Mutex};
-use subc_protocol::{Principal, RouteTarget};
+use subc_protocol::Principal;
 
 #[derive(Default)]
 struct Gate {
@@ -38,187 +35,12 @@ impl Host for Gate {
         })
     }
 }
-#[derive(Default)]
-struct Models {
-    routes: Mutex<ScopedRoutes<u64>>,
-    sends: Mutex<Vec<u64>>,
-}
-impl Transport for Models {
-    fn configure_flow(&self, flow: &str, scope: Option<RegisteredScope>) {
-        self.routes.lock().unwrap().configure(flow, scope);
-    }
-    fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
-        self.routes
-            .lock()
-            .unwrap()
-            .retain_flow_routes_for(flow_id, live);
-    }
-    fn provider_ready(&self, flow: &str, action: &str) -> Result<(), FlowRefusal> {
-        self.routes.lock().unwrap().ready(flow, "broca", action)
-    }
-    fn send(&self, route: &Route, _: &[u8]) -> Result<SendResult, BrocaError> {
-        let handle = self
-            .routes
-            .lock()
-            .unwrap()
-            .route(
-                &route.route_key().unwrap(),
-                &RouteTarget::ManagementSurface {
-                    module_id: "broca".into(),
-                },
-                |_| Ok(17),
-            )
-            .map_err(|e| BrocaError::Wire(format!("{e:?}")))?
-            .unwrap();
-        self.sends.lock().unwrap().push(handle);
-        Ok(SendResult::Finished {
-            run_id: "model-run".into(),
-            reason: RunFinishReason::Completed,
-        })
-    }
-    fn send_status(
-        &self,
-        _: &Route,
-        _: &SendStatusParams,
-    ) -> Result<serde_json::Value, BrocaError> {
-        Err(BrocaError::Refused {
-            code: UNKNOWN_SEND.into(),
-            detail: "never queued".into(),
-        })
-    }
-    fn event_get(&self, _: &Route, _: &RunEventGetParams) -> Result<RunEventReply, BrocaError> {
-        Ok(RunEventReply {
-            state: "absent".into(),
-            event_key: None,
-            jcs: None,
-        })
-    }
-    fn result(&self, _: &Route, _: &RunResultParams) -> Result<RunResultResponse, BrocaError> {
-        Ok(RunResultResponse {
-            run_id: "model-run".into(),
-            state: "completed".into(),
-            reason: None,
-            error: None,
-            final_message: Some(FinalMessage {
-                ordinal: 0,
-                mid: "m".into(),
-                text: "answer".into(),
-            }),
-        })
-    }
-    fn status(&self, _: &Route, _: &StatusParams) -> Result<RunStatusResponse, BrocaError> {
-        Ok(RunStatusResponse::Completed {
-            metadata: Terminal::default(),
-        })
-    }
-}
-
+/// A flow with no provider routes still gets the parent’s local primitives.
 #[test]
-fn global_model_call_defers_without_scope_then_uses_registered_scope_once() {
-    let world = World::new("global-model-scope");
-    let clock = Clock::manual(1_000);
-    let gate = Arc::new(Gate::default());
-    let models = Arc::new(Models::default());
-    let broca = Arc::new(BrocaHost::new(
-        models.clone(),
-        Arc::new(basal_host::broca::fake::MemoryStore::default()),
-        "/".into(),
-        "basal".into(),
-        world.selector.clone(),
-    ));
-    let host = Arc::new(RoutingHost::new(
-        Arc::new(world.mock.clone()),
-        gate.clone(),
-        broca,
-    ));
-    let rt = {
-        let runtime = Runtime::new(
-            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
-            host,
-            Arc::new(world.catalog.clone()),
-            Arc::new(NoHooks),
-            Some(world.source.clone()),
-            Config {
-                clock: clock.clone(),
-                selector: world.selector.clone(),
-                install_gate: InstallGate::Core,
-                ..Config::default()
-            },
-        )
-        .expect("runtime startup");
-        runtime.retain_detail_for_test().expect("rig inspection");
-        runtime
-    };
-    let installed = rt
-        .install(&InstallRequest {
-            script: "return await llm({prompt:'hello'}).catch(e=>e.data);".into(),
-            manifest: test_manifest().to_string(),
-            author: "operator".into(),
-            loop_override: false,
-        })
-        .unwrap();
-    rt.approve("flow-test", 1, &installed.code_hash, "approval")
-        .unwrap();
-    *gate.hash.lock().unwrap() = basal_core::ids::hex(&installed.code_hash);
-    let first = rt
-        .admit_trigger("flow-test", "first", JsonText::null())
-        .unwrap()
-        .run_id()
-        .unwrap()
-        .to_owned();
-    rt.resume(&first).unwrap();
-    rt.quiesce();
-    assert_eq!(rt.run(&first).unwrap().state, RunState::Suspended);
-    assert!(rt.run(&first).unwrap().result.is_none());
-    assert!(models.sends.lock().unwrap().is_empty());
-    assert!(world.selector.requests.lock().unwrap().is_empty());
-    assert_eq!(
-        rt.calls(&first).unwrap()[0].dispatch,
-        basal_core::DispatchState::Deferred
-    );
-    *gate.scope.lock().unwrap() = Some(RegisteredScope {
-        selector: FlowScope {
-            owner: Principal::Reserved {
-                module_id: "prefrontal".into(),
-            },
-            scope_ref: "global-flow".into(),
-            epoch: 1,
-        },
-        targets: ["broca".into()].into_iter().collect(),
-    });
-    clock.set(31_000);
-    rt.startable().unwrap();
-    rt.resume(&first).unwrap();
-    rt.quiesce();
-    assert_eq!(rt.run(&first).unwrap().state, RunState::Succeeded);
-    assert_eq!(
-        rt.run(&first).unwrap().result.as_deref(),
-        Some("{\"text\":\"answer\"}")
-    );
-    assert_eq!(*models.sends.lock().unwrap(), vec![17]);
-    assert_eq!(world.selector.requests.lock().unwrap().len(), 1);
-    assert_eq!(world.selector.reports.lock().unwrap().len(), 1);
-}
-
-/// kv, now and random never reach a provider, so a flow whose scope has no
-/// Broca, because its manifest grants no model calls, still gets them.
-#[test]
-fn local_primitives_need_no_model_scope() {
+fn local_primitives_need_no_provider_scope() {
     let world = World::new("local-primitives-scope");
     let gate = Arc::new(Gate::default());
-    let models = Arc::new(Models::default());
-    let broca = Arc::new(BrocaHost::new(
-        models.clone(),
-        Arc::new(basal_host::broca::fake::MemoryStore::default()),
-        "/".into(),
-        "basal".into(),
-        world.selector.clone(),
-    ));
-    let host = Arc::new(RoutingHost::new(
-        Arc::new(world.mock.clone()),
-        gate.clone(),
-        broca,
-    ));
+    let host = Arc::new(RoutingHost::new(Arc::new(world.mock.clone()), gate.clone()));
     let rt = {
         let runtime = Runtime::new(
             Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
@@ -227,7 +49,6 @@ fn local_primitives_need_no_model_scope() {
             Arc::new(NoHooks),
             Some(world.source.clone()),
             Config {
-                selector: world.selector.clone(),
                 install_gate: InstallGate::Core,
                 ..Config::default()
             },
@@ -250,7 +71,7 @@ fn local_primitives_need_no_model_scope() {
     rt.approve("flow-test", 1, &installed.code_hash, "approval")
         .unwrap();
     *gate.hash.lock().unwrap() = basal_core::ids::hex(&installed.code_hash);
-    // A registered scope that names no Broca: the flow can reach no model.
+    // No target is registered for this flow.
     *gate.scope.lock().unwrap() = Some(RegisteredScope {
         selector: FlowScope {
             owner: Principal::Reserved {
@@ -275,5 +96,5 @@ fn local_primitives_need_no_model_scope() {
     assert_eq!(result["n"], 1);
     assert_eq!(result["clock"], "number");
     assert_eq!(result["random"], "number");
-    assert!(models.sends.lock().unwrap().is_empty());
+    assert_eq!(world.mock.total_sends(), 0);
 }

@@ -1115,6 +1115,29 @@ fn tool_manifest_description_and_schema_are_pinned_and_old_entries_are_gone() {
 }
 
 #[test]
+fn tools_model_is_reported_as_a_missing_tool() {
+    let rig = rig("missing-model", false);
+    rig.core.release();
+    let result = call(
+        &rig,
+        "missing-model",
+        "return await tools.model({prompt:'hello'});",
+        Duration::from_secs(10),
+    );
+    let run = &result["structuredContent"];
+    assert_eq!(run["status"], "failed");
+    assert_eq!(run["error"]["code"], "script", "{run}");
+    assert_eq!(run["call_count"], 0);
+    let message = run["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("TypeError: tools.model is not available"),
+        "{message}"
+    );
+    assert!(message.contains("Available tools: echo"), "{message}");
+    assert_eq!(rig.core.state.lock().unwrap().0, 0);
+}
+
+#[test]
 fn invalid_input_rejection_renders_the_schema_diagnostic_as_plain_text() {
     let rig = rig("invalid-input-message", false);
     rig.core.release();

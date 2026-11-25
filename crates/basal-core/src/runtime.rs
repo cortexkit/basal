@@ -89,7 +89,6 @@ pub struct Config {
     /// How many times a transient `Unavailable` is retried inside one call,
     /// when retrying is safe.
     pub unavailable_retries: u32,
-    pub selector: Arc<dyn basal_host::selector::ModelSelector>,
     pub retry_backoff: Duration,
     /// Backoff for a provider's known-unsent refusal when it supplies no hint.
     /// These retries replay an activation, rather than retrying a transport send.
@@ -132,7 +131,6 @@ impl Default for Config {
             budgets: Budgets::default(),
             activation_deadline: Duration::from_secs(60),
             unavailable_retries: 3,
-            selector: Arc::new(basal_host::selector::UnconfiguredSelector),
             retry_backoff: Duration::from_millis(5),
             deferral_retry: Duration::from_secs(1),
             deferral_retry_max: Duration::from_secs(60),
@@ -316,20 +314,6 @@ struct Sink {
 }
 
 impl CompletionSink for Sink {
-    fn route_released(&self, run_id: &str) {
-        if let Some(shared) = self.shared.upgrade() {
-            let rt = Runtime {
-                shared,
-                config: self.config.clone(),
-            };
-            if let Ok(run) = rt.run(run_id)
-                && run.state.is_terminal()
-            {
-                let _ = rt.release_unused_flow_routes_for(&run.flow_id);
-            }
-            rt.shared.signal.bump();
-        }
-    }
     fn complete(&self, c: &Completion) -> std::result::Result<CompletionAck, SinkError> {
         let shared = self
             .shared
@@ -526,9 +510,6 @@ impl Runtime {
                 shared.signal.bump();
             }
         }));
-        shared
-            .host
-            .scope_checks(config.install_gate == crate::gate::InstallGate::Core);
         let rt = Self { shared, config };
         {}
         rt

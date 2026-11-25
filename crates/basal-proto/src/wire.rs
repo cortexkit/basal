@@ -128,6 +128,7 @@ fn call_kind(enc: &mut Encoder, kind: &CallKind) {
             enc.name("op", op);
         }
         CallKind::Primitive(p) => enc.u8(p.code()),
+        CallKind::RetiredModel(_) => enc.invalid("call kind", "retired model primitive"),
         CallKind::Tool { name } => {
             enc.u8(CALL_TOOL);
             enc.name("tool", name);

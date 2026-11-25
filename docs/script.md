@@ -81,12 +81,21 @@ not guaranteed to be zeroed.
 
 A flow script runs in `ck-basal-worker`, a separate process that confines
 itself before it reads anything from basal. The script reaches the world only
-through host calls: `sink.*`, `facts`, `ops.call`, `llm`, `classify`, `kv` and
+through host calls: `sink.*`, `facts`, `ops.call`, `kv` and
 the built-ins. basal checks each one against the approved manifest, in the
 parent process, and journals it there. This page documents install and dry-run
 warnings, module-event triggers, module calls for a target agent and the digest
 item shape, then two deliberate limits of the script runtime and public facts
 across a global audience.
+
+For model work, call Broca through `ops.call` after granting the op and a
+[`model_cost_usd` cap](manifest.md#model-dollar-caps). For example:
+
+```js
+const answer = await ops.call("broca", "llm_complete", {
+  demand: {iq: 50}, prompt, max_output_tokens: 200, max_cost_usd: 0.10,
+});
+```
 
 ## Size limits for one run
 
@@ -148,7 +157,7 @@ Core pushes `flow.install_revoked` when it revokes an approved version. Basal
 verifies the hint with one status read before recording it. After that record,
 every later host-call attempt on the run's pinned version is refused with typed
 `version_revoked`, and the run ends even if the script would catch the rejection.
-This includes ops, sinks, facts, llm, classify, built-ins, clock/random reads and
+This includes ops (including model tools), sinks, facts, built-ins, clock/random reads and
 local `kv`: local effects are still effects of the revoked code.
 
 Calls authorized before the revocation was recorded may still be sent and settle;

@@ -13,8 +13,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-#[path = "module_events/broca.rs"]
-mod broca;
 #[path = "module_events/bus_notices.rs"]
 mod bus_notices;
 #[path = "module_events/card_settled.rs"]

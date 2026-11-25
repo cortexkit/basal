@@ -1,7 +1,6 @@
-//! Fixed synthetic identities; facts come from the production write paths.
+//! Fixed synthetic identities for install and historical session facts.
 use super::*;
-use basal_core::codemode::{admission::Limits, models, store};
-use basal_proto::{ActivationResult, CallKind, HostCall, JsonText, Primitive, WorkerMessage};
+use basal_core::codemode::{admission::Limits, store};
 use std::collections::BTreeMap;
 
 pub fn setup(tag: &str) -> Fixture {
@@ -16,7 +15,6 @@ pub fn setup(tag: &str) -> Fixture {
         .add_named_agent("agent_attribution", "Attribution");
     let mut m = events_manifest("attribution-flow");
     m["sinks"][0]["agent"] = json!("Attribution");
-    m["llm"] = json!({"iq":50,"eq":0,"max_output":10,"token_cap":{"tokens":10000,"window":"1h"}});
     let installed = f
         .module
         .rt
@@ -54,37 +52,6 @@ pub fn setup(tag: &str) -> Fixture {
             "1h",
         )
         .unwrap();
-    f.module
-        .rt
-        .fixture_run(
-            "attribution-run",
-            "attribution-flow",
-            1,
-            "return 1;",
-            &m.to_string(),
-            basal_core::run_records::State::new(T0),
-        )
-        .unwrap();
-    let mut worker = basal_core::test_support::ScriptedWorker::new(vec![
-        WorkerMessage::HostCall(HostCall {
-            position: 0,
-            kind: CallKind::Primitive(Primitive::Llm),
-            args: JsonText::new(
-                json!({"prompt":"synthetic private prompt","complete_after_ms":0}).to_string(),
-            )
-            .unwrap(),
-        }),
-        WorkerMessage::Finished {
-            activation_id: 0,
-            result: ActivationResult::Completed {
-                value: JsonText::null(),
-            },
-        },
-    ]);
-    f.module
-        .rt
-        .activate("attribution-run", &mut worker)
-        .unwrap();
     let limits = serde_json::to_string(&Limits::default()).unwrap();
     f.module
         .rt
@@ -114,42 +81,20 @@ pub fn setup(tag: &str) -> Fixture {
                 ))
                 .unwrap()],
             )?;
-            store::insert_call(
+            basal_core::attribution::flow_session(
+                tx,
+                "attribution-flow",
+                "basal:flow-attribution-flow:attribution-run:0",
+                T0,
+            )?;
+            basal_core::attribution::program_session(
                 tx,
                 "attribution-program",
-                0,
-                "model",
-                2,
-                store::CallStart::Intent { at: T0 },
-            )?;
-            Ok(())
+                "basal:codemode-attribution-program:0",
+                T0,
+            )
         })
         .unwrap();
-    let store::Lookup::Found(run) = f
-        .module
-        .rt
-        .store()
-        .read(|c| store::lookup(c, "attribution-program"))
-        .unwrap()
-    else {
-        panic!()
-    };
-    models::prepare(
-        f.module.rt.store(),
-        &basal_host::selector::FakeSelector::default(),
-        &run,
-        &HostCall {
-            position: 0,
-            kind: CallKind::Tool {
-                name: "model".into(),
-            },
-            args: JsonText::new(
-                json!({"prompt":"synthetic private program prompt","max_output":1}).to_string(),
-            )
-            .unwrap(),
-        },
-    )
-    .unwrap();
     f
 }
 

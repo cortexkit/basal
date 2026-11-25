@@ -26,7 +26,6 @@ use basal_module::dryrun::DryRunConfig;
 use basal_module::engine::EngineConfig;
 use basal_module::module::{Hosts, Module, ModuleConfig};
 use basal_module::pool::{PoolConfig, ProcessSpawner};
-use basal_module::unconfigured::UnconfiguredHost;
 use basal_proto::{JsonText, Settlement};
 use basal_testkit::harness::{Point, Probe};
 use serde_json::{Value, json};
@@ -155,7 +154,6 @@ impl Rig {
             host: Arc::new(RoutingHost::new(
                 Arc::new(ModuleOpsHost::new(self.fake.clone(), catalog.clone())),
                 Arc::new(CoreHost::new(self.fake.clone())),
-                Arc::new(UnconfiguredHost::new()),
             )),
             catalog,
             consent: self.consent.clone(),

@@ -179,7 +179,7 @@ fn record(n: usize, worker: &Path) -> Result<(PathBuf, String), String> {
     let rt = runtime(&dir, false, &mock, source)?;
     let script = format!(
         "for (let i = 0; i < {n}; i++) {{ await ops.call('mock', 'echo', {{ i }}); }} \
-         const x = await llm({{ prompt: 'p' }}); return x.done;"
+         const x = await ops.call('mock', 'long', {{ prompt: 'p' }}); return x.done;"
     );
     let run_id = rt
         .admit(&spec(&rt, &script)?)

@@ -109,7 +109,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
             let ops = host_connection.module_ops(transport.clone(), catalog);
             let mock = Arc::new(basal_host::mock::MockHost::new());
             basal_module::module::Hosts {
-                host: Arc::new(RoutingHost::new(ops, mock.clone(), mock)),
+                host: Arc::new(RoutingHost::new(ops, mock)),
                 transport,
                 catalog: Arc::new(basal_host::MockCatalog::standard()),
                 consent: Arc::new(basal_host::MockConsent::new()),

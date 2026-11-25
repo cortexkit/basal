@@ -293,7 +293,7 @@ fn redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined() {
     let run_id = admit(
         &rt,
         &world,
-        "const x = await llm({ prompt: 'p' }); return x.v;",
+        "const x = await ops.call('mock', 'long', { prompt: 'p' }); return x.v;",
     );
     let first = rt.resume(&run_id).expect("activation");
     assert!(

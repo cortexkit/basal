@@ -1,6 +1,6 @@
 //! Postcard adapters for the worker's protocol types, without changing that protocol.
 
-use basal_proto::{ArgsDigest, CallKind, JsonText, Primitive, Settlement};
+use basal_proto::{ArgsDigest, CallKind, JsonText, Settlement};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
 use crate::model::StoredClass;
@@ -40,6 +40,7 @@ pub mod kind {
             CallKind::Op { module, op } => Kind::Op(module.clone(), op.clone()),
             CallKind::OpFor { module, op } => Kind::OpFor(module.clone(), op.clone()),
             CallKind::Primitive(p) => Kind::Primitive(p.code()),
+            CallKind::RetiredModel(model) => Kind::Primitive(model.stored_code()),
             CallKind::Tool { name } => Kind::Tool(name.clone()),
         }
         .serialize(serializer)
@@ -48,9 +49,8 @@ pub mod kind {
         Ok(match Kind::deserialize(deserializer)? {
             Kind::Op(module, op) => CallKind::Op { module, op },
             Kind::OpFor(module, op) => CallKind::OpFor { module, op },
-            Kind::Primitive(code) => CallKind::Primitive(
-                Primitive::from_code(code).ok_or_else(|| D::Error::custom("unknown primitive"))?,
-            ),
+            Kind::Primitive(code) => crate::model::kind_from_stored_primitive(code)
+                .ok_or_else(|| D::Error::custom("unknown primitive"))?,
             Kind::Tool(name) => CallKind::Tool { name },
         })
     }

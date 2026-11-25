@@ -68,7 +68,12 @@ fn pruning_spares_unfinished_runs_and_open_obligations() {
     let world = World::new("prune");
     let rt = runtime(&world);
     let pending = admit_as(&rt, &world, "return 1;", "pending");
-    let suspended = admit_as(&rt, &world, "return (await llm({})).done;", "suspended");
+    let suspended = admit_as(
+        &rt,
+        &world,
+        "return (await ops.call('mock', 'long', {})).done;",
+        "suspended",
+    );
     let ended = rt.resume(&suspended).expect("activation");
     assert!(
         matches!(ended, basal_core::ActivationEnd::Suspended { .. }),
@@ -183,7 +188,12 @@ fn throwaway_store_disables_both_sync_axes() {
 fn drain_stops_admission_and_lists_unfinished_runs() {
     let world = World::new("drain");
     let rt = runtime(&world);
-    let suspended = admit_as(&rt, &world, "return (await llm({})).done;", "a");
+    let suspended = admit_as(
+        &rt,
+        &world,
+        "return (await ops.call('mock', 'long', {})).done;",
+        "a",
+    );
     rt.resume(&suspended).expect("activation");
     let unfinished = rt.drain().expect("drain");
     assert_eq!(unfinished.get("suspended"), Some(&vec![suspended.clone()]));

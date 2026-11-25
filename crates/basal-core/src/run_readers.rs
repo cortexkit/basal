@@ -31,7 +31,6 @@ pub(crate) fn retirement_busy(conn: &Connection, flow: &str, version: u64) -> Re
         EXISTS(SELECT 1 FROM live_runs l WHERE l.run_id=r.run_id)
         OR EXISTS(SELECT 1 FROM token_ledger t WHERE t.run_id=r.run_id AND t.state='reserved')
         OR EXISTS(SELECT 1 FROM classify_costs c WHERE c.kind='flow' AND c.run_id=r.run_id AND c.charged IS NULL)
-        OR EXISTS(SELECT 1 FROM broca_calls b WHERE b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0)
         OR EXISTS(SELECT 1 FROM outbox o WHERE o.kind='refusal_committed' AND CAST(json_extract(o.body,'$.run_id') AS TEXT)=r.run_id)))", rusqlite::params![flow,version], |r| r.get(0))?)
 }
 

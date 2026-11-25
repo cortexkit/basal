@@ -86,10 +86,6 @@ enum Event {
     },
     CustodyChanged,
     CatalogChanged,
-    ModelAnswer {
-        position: u64,
-        result: std::result::Result<basal_host::HostOutcome, WireError>,
-    },
     Cancel(mpsc::SyncSender<Result<()>>),
     Held {
         position: u64,
@@ -174,7 +170,6 @@ impl Drop for DispatchStore {
 struct Shared {
     store: Arc<Store>,
     transport: Arc<dyn Transport>,
-    models: Mutex<Option<Models>>,
     workers: Arc<dyn WorkerSource>,
     clock: Clock,
     prelude_hash: PreludeHash,
@@ -202,9 +197,6 @@ struct Shared {
     /// Called by a driver just before it blocks waiting for its next event.
     #[cfg(test)]
     before_wait: Mutex<Option<ParkedHook>>,
-    /// Reports a model retry only after its recheck deadline is registered.
-    #[cfg(test)]
-    after_model_wait: Mutex<Option<ModelWaitHook>>,
     /// How many times a driver has returned from its wait for an event.
     #[cfg(test)]
     wakes: std::sync::atomic::AtomicUsize,
@@ -226,9 +218,6 @@ pub type TerminalHook = dyn Fn(&str, Value) -> Result<()> + Send + Sync;
 /// A test's callback for a driver about to block; see [`Parked`].
 #[cfg(test)]
 type ParkedHook = Arc<dyn Fn(&Parked) + Send + Sync>;
-
-#[cfg(test)]
-type ModelWaitHook = Arc<dyn Fn(u64, i64) + Send + Sync>;
 
 /// What a driver reports to a test just before it blocks for its next event,
 /// so the test can wait for the driver to go idle instead of sleeping.
@@ -260,44 +249,6 @@ pub struct Hold {
     pub detail: Option<Value>,
 }
 
-#[derive(Clone)]
-struct Models {
-    host: Arc<dyn basal_host::Host>,
-    selector: Arc<dyn basal_host::selector::ModelSelector>,
-}
-
-struct ModelSink(std::sync::Weak<Shared>);
-impl basal_host::CompletionSink for ModelSink {
-    fn complete(
-        &self,
-        completion: &basal_host::Completion,
-    ) -> std::result::Result<basal_host::CompletionAck, basal_host::SinkError> {
-        if let Some(shared) = self.0.upgrade()
-            && let Some(sender) = shared.active.lock().unwrap().get(&completion.run_id)
-        {
-            let _ = sender.send(Event::ModelAnswer {
-                position: completion.position,
-                result: Ok(completion.outcome.clone()),
-            });
-        }
-        Ok(basal_host::CompletionAck::Accepted)
-    }
-    fn unknown(
-        &self,
-        unknown: &basal_host::UnknownOutcome,
-    ) -> std::result::Result<basal_host::CompletionAck, basal_host::SinkError> {
-        if let Some(shared) = self.0.upgrade()
-            && let Some(sender) = shared.active.lock().unwrap().get(&unknown.run_id)
-        {
-            let _ = sender.send(Event::ModelAnswer {
-                position: unknown.position,
-                result: Err(WireError::Unknown(unknown.detail.clone())),
-            });
-        }
-        Ok(basal_host::CompletionAck::Accepted)
-    }
-}
-
 impl Supervisor {
     /// Observe bus wake delivery without relying on intake-thread timing.
     #[cfg(any(test, feature = "test-support"))]
@@ -321,7 +272,6 @@ impl Supervisor {
         let supervisor = Self(Arc::new(Shared {
             store,
             transport,
-            models: Mutex::new(None),
             workers,
             clock,
             prelude_hash,
@@ -345,8 +295,6 @@ impl Supervisor {
             #[cfg(test)]
             before_wait: Mutex::new(None),
             #[cfg(test)]
-            after_model_wait: Mutex::new(None),
-            #[cfg(test)]
             wakes: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             worker_blocked: AtomicBool::new(false),
@@ -363,16 +311,6 @@ impl Supervisor {
         }));
         supervisor.recover()?;
         Ok(supervisor)
-    }
-
-    pub fn with_models(
-        self,
-        host: Arc<dyn basal_host::Host>,
-        selector: Arc<dyn basal_host::selector::ModelSelector>,
-    ) -> Self {
-        host.attach_codemode(Arc::new(ModelSink(Arc::downgrade(&self.0))));
-        *self.0.models.lock().unwrap() = Some(Models { host, selector });
-        self
     }
 
     /// Consumes the admission winner's token. No worker is acquired on the
@@ -702,15 +640,12 @@ fn parse(text: &str) -> Result<Value> {
 struct Answer {
     call: HostCall,
     result: std::result::Result<Value, WireError>,
-    usage: Option<basal_host::TokenUsage>,
-    no_effect: bool,
 }
 
 struct ProviderWait {
     call: HostCall,
     deadline_ms: i64,
     recheck_ms: i64,
-    refusal: Option<basal_host::flow_refusal::FlowRefusal>,
 }
 
 struct Driver {
@@ -740,12 +675,10 @@ struct Driver {
     in_flight: usize,
     flight_positions: BTreeSet<u64>,
     held_positions: BTreeSet<u64>,
-    /// Calls waiting for a provider to reconnect or for an unsent model retry
+    /// Calls waiting for a provider to reconnect
     /// occupy in-flight slots but have no permission-to-send or sent-at
     /// timestamps. They spend wall time, not person time.
     provider_waits: BTreeMap<u64, ProviderWait>,
-    /// Selection can wait before an envelope exists, so retry needs the input.
-    model_args: BTreeMap<u64, JsonText>,
     tool_calls: BTreeMap<u64, (String, HostCall)>,
     /// The tool, provider code and message of each call that rejected, so a
     /// program ending on an uncaught rejection reports them as plain text.
@@ -808,7 +741,6 @@ impl Driver {
             flight_positions: BTreeSet::new(),
             held_positions: BTreeSet::new(),
             provider_waits: BTreeMap::new(),
-            model_args: BTreeMap::new(),
             tool_calls: BTreeMap::new(),
             rejections: BTreeMap::new(),
             hold_reasons: BTreeMap::new(),
@@ -854,11 +786,6 @@ impl Driver {
         self.shared
             .transport
             .configure_flow(&self.key(), Some(self.start.scope.clone()));
-        if let Some(models) = self.shared.models.lock().unwrap().as_ref() {
-            models
-                .host
-                .configure_flow(&self.key(), Some(self.start.scope.clone()));
-        }
         let scope_events = self.event_tx.clone();
         self.shared.transport.watch_run_scope(
             &self.key(),
@@ -945,9 +872,6 @@ impl Driver {
                 }
                 Some(Event::CustodyChanged) => {}
                 Some(Event::CatalogChanged) => self.retry_providers(true)?,
-                Some(Event::ModelAnswer { position, result }) => {
-                    self.model_answer(position, result)?
-                }
                 Some(Event::ScopeEnded(code)) => {
                     self.scope_lost = true;
                     if !self.wall()? {
@@ -1453,8 +1377,6 @@ impl Driver {
                     Answer {
                         call,
                         result: Ok(Value::Null),
-                        usage: None,
-                        no_effect: mapped.outcome == Outcome::Withdrawn,
                     },
                     Some(mapped),
                 )?;
@@ -1557,13 +1479,6 @@ impl Driver {
                 .map(|detail| json!({"detail": detail}))
         });
         if self.shared.store.write(|tx| {
-            super::models::settle(
-                tx,
-                &self.run.run_id,
-                answer.call.position,
-                answer.usage,
-                answer.no_effect,
-            )?;
             crate::classify_cost::settle(
                 tx,
                 "program",
@@ -1594,101 +1509,6 @@ impl Driver {
             self.deliver(&answer.call, mapped)?;
         }
         Ok(())
-    }
-
-    fn model_answer(
-        &mut self,
-        position: u64,
-        result: std::result::Result<basal_host::HostOutcome, WireError>,
-    ) -> Result<()> {
-        if !self.flight_positions.contains(&position) {
-            return Ok(());
-        }
-        let name: String = self.shared.store.read(|c| {
-            Ok(c.query_row(
-                "SELECT tool FROM codemode_calls WHERE run_id=?1 AND position=?2",
-                rusqlite::params![self.run.run_id, position],
-                |r| r.get(0),
-            )?)
-        })?;
-        if let Err(WireError::Typed(refusal)) = &result
-            && refusal.model_send_wait()
-        {
-            self.shared
-                .store
-                .write(|tx| store::defer_unsent_model(tx, &self.run.run_id, position))?;
-            let now = self.shared.clock.now_ms();
-            // Keep the existing model reservation and the same request. Neither
-            // settling this free attempt nor preparing a new position is safe:
-            // settlement would make a later successful retry appear free too.
-            self.provider_waits.insert(
-                position,
-                ProviderWait {
-                    call: HostCall {
-                        position,
-                        kind: CallKind::Tool { name },
-                        args: self
-                            .model_args
-                            .get(&position)
-                            .cloned()
-                            .unwrap_or_else(JsonText::null),
-                    },
-                    deadline_ms: self.run.deadline_ms,
-                    recheck_ms: now
-                        .saturating_add(
-                            PROVIDER_RECHECK_MS.max(
-                                i64::try_from(refusal.retry_delay_ms(now)).unwrap_or(i64::MAX),
-                            ),
-                        )
-                        .min(self.run.deadline_ms)
-                        .min(
-                            self.start
-                                .wall_deadline_ms
-                                .saturating_add(self.person_wait_ms),
-                        ),
-                    refusal: Some(refusal.clone()),
-                },
-            );
-            #[cfg(test)]
-            {
-                let hook = self.shared.after_model_wait.lock().unwrap().clone();
-                if let Some(hook) = hook {
-                    hook(position, self.provider_waits[&position].recheck_ms);
-                }
-            }
-            return Ok(());
-        }
-        let (usage, no_effect, result) = match result {
-            Ok(outcome) => {
-                let value: Value = serde_json::from_str(outcome.value.as_str())
-                    .map_err(|e| CoreError::Invalid(e.to_string()))?;
-                let result = if outcome.settlement == Settlement::Fulfilled {
-                    Ok(value)
-                } else {
-                    Err(WireError::RefusedDetails {
-                        code: value["code"].as_str().unwrap_or("model_error").into(),
-                        message: value["message"]
-                            .as_str()
-                            .unwrap_or("model call failed")
-                            .into(),
-                        detail: value,
-                    })
-                };
-                (outcome.usage, false, result)
-            }
-            Err(error) => (None, error.unknown_reason().is_none(), Err(error)),
-        };
-        self.model_args.remove(&position);
-        self.answer(Answer {
-            call: HostCall {
-                position,
-                kind: CallKind::Tool { name },
-                args: JsonText::null(),
-            },
-            result,
-            usage,
-            no_effect,
-        })
     }
 
     fn cancel(&mut self, ack: mpsc::SyncSender<Result<()>>) -> Result<()> {
@@ -2083,12 +1903,7 @@ impl Driver {
             .provider_waits
             .iter()
             .filter_map(|(position, wait)| {
-                let CallKind::Tool { name } = &wait.call.kind else {
-                    unreachable!()
-                };
-                let tool = &self.start.tools[name];
-                let model = super::models::is_local(&tool.module, &tool.op);
-                ((!model && catalog_changed) || now >= wait.recheck_ms || now >= wait.deadline_ms)
+                (catalog_changed || now >= wait.recheck_ms || now >= wait.deadline_ms)
                     .then_some(*position)
             })
             .collect();
@@ -2124,10 +1939,6 @@ impl Driver {
             unreachable!()
         };
         let tool = &self.start.tools[name];
-        let local_model = super::models::is_local(&tool.module, &tool.op);
-        if local_model {
-            return self.dispatch_model(call, queued);
-        }
         let module = tool.module.clone();
         let op = tool.op.clone();
         let classify_cost = tool.classify_cost;
@@ -2172,7 +1983,6 @@ impl Driver {
                         .clock
                         .now_ms()
                         .saturating_add(PROVIDER_RECHECK_MS),
-                    refusal: None,
                 },
             );
             return Ok(());
@@ -2334,101 +2144,11 @@ impl Driver {
                     Ok(false) => return,
                     Err(error) => Err(WireError::NeverSent(error.to_string())),
                 };
-                let no_effect = result
-                    .as_ref()
-                    .err()
-                    .is_some_and(|e| e.unknown_reason().is_none());
-                let _ = events.send(Event::Answer(Answer {
-                    call,
-                    result,
-                    usage: None,
-                    no_effect,
-                }));
+                let _ = events.send(Event::Answer(Answer { call, result }));
             })
         {
             return self.end(failed("worker_lost", error.to_string()));
         }
-        Ok(())
-    }
-
-    fn dispatch_model(&mut self, call: HostCall, queued: bool) -> Result<()> {
-        self.model_args
-            .entry(call.position)
-            .or_insert_with(|| call.args.clone());
-        self.release_provider_wait(call.position);
-        if !queued {
-            self.insert(&call, CallStart::Queued)?;
-        }
-        self.in_flight += 1;
-        self.flight_positions.insert(call.position);
-        let ready = super::models::provider_ready(self.shared.transport.as_ref());
-        let models = self.shared.models.lock().unwrap().clone();
-        let models = match (ready, models) {
-            (Err(error), _) => return self.model_answer(call.position, Err(error)),
-            (_, None) => {
-                return self.model_answer(
-                    call.position,
-                    Err(WireError::NeverSent("model host unavailable".into())),
-                );
-            }
-            (Ok(()), Some(models)) => models,
-        };
-        let store = DispatchStore::new(
-            self.shared.store.clone(),
-            self.shared.dispatch_starts.clone(),
-        );
-        let run = self.run.clone();
-        let events = self.event_tx.clone();
-        let clock = self.shared.clock.clone();
-        let entry = self.entry.clone();
-        thread::Builder::new()
-            .name(format!("{}:model", self.key()))
-            .spawn(move || {
-                let result = (|| {
-                    let request =
-                        super::models::prepare(&store, models.selector.as_ref(), &run, &call)?;
-                    let entered = entry
-                        .write(&store, &clock, |tx, now| {
-                            if !store::prepare_queued(tx, &run.run_id, call.position, now)? {
-                                return Ok(false);
-                            }
-                            store::enter_call(tx, &run.run_id, call.position, now)
-                        })
-                        .map_err(|e| WireError::NeverSent(e.to_string()))?;
-                    drop(store);
-                    if !entered {
-                        return Ok(None);
-                    }
-                    let result = models.host.dispatch(&request).map_err(|e| match e {
-                        basal_host::TransportError::Refused(refusal) => WireError::Typed(refusal),
-                        basal_host::TransportError::Unavailable {
-                            sent: basal_host::Sent::Never,
-                            detail,
-                        } => WireError::NeverSent(detail),
-                        other => WireError::Unknown(other.to_string()),
-                    })?;
-                    match result {
-                        basal_host::Dispatched::Completed(outcome) => {
-                            models.host.dispatch_committed(&request);
-                            Ok(Some(outcome))
-                        }
-                        basal_host::Dispatched::Accepted { .. } => {
-                            models.host.dispatch_committed(&request);
-                            Ok(None)
-                        }
-                    }
-                })();
-                let result = match result {
-                    Ok(Some(outcome)) => Ok(outcome),
-                    Ok(None) => return,
-                    Err(error) => Err(error),
-                };
-                let _ = events.send(Event::ModelAnswer {
-                    position: call.position,
-                    result,
-                });
-            })
-            .map_err(|e| CoreError::Invalid(e.to_string()))?;
         Ok(())
     }
 
@@ -2504,32 +2224,15 @@ impl Driver {
         self.shared.holds.lock().unwrap().remove(&self.run.run_id);
         self.account_time();
         self.stopping = true;
-        for wait in self.provider_waits.values() {
-            self.shared.store.write(|tx| {
-                super::models::settle(tx, &self.run.run_id, wait.call.position, None, true)
-            })?;
-        }
         if terminal.status == Status::BudgetExhausted(Budget::Wall) {
             for wait in self.provider_waits.values() {
-                let model_wait = wait.refusal.as_ref().filter(|r| {
-                    r.model_selection_wait()
-                        || matches!(
-                            r.reason,
-                            RefusalReason::AccountSelectionRefused
-                                | RefusalReason::AccountLimitExhausted
-                        )
-                });
                 self.shared.store.write(|tx| {
                     store::record_outcome(
                         tx,
                         &self.run.run_id,
                         wait.call.position,
-                        if model_wait.is_some() {
-                            Outcome::Refused
-                        } else {
-                            Outcome::ToolUnavailable
-                        },
-                        Some(model_wait.map_or("tool_unavailable", |r| r.reason.as_str())),
+                        Outcome::ToolUnavailable,
+                        Some("tool_unavailable"),
                         self.shared.clock.now_ms(),
                     )
                 })?;
@@ -2541,13 +2244,6 @@ impl Driver {
                         "; {name} (call {}) was not sent while waiting for {} to reconnect",
                         self.tool_numbers[&wait.call.position], self.start.tools[name].module,
                     ));
-                    if let Some(refusal) = model_wait {
-                        error.message.push_str(&format!(
-                            " ({}: {})",
-                            refusal.reason.as_str(),
-                            refusal.message.as_deref().unwrap_or(refusal.message())
-                        ));
-                    }
                 }
             }
         }

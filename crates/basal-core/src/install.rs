@@ -1848,7 +1848,7 @@ fn decide<T>(
 
 impl Runtime {
     /// Re-sending an exact historical version does not submit new bytes for
-    /// approval. Only the retired-module check can take this path.
+    /// approval. Only retired module names and grants can take this path.
     pub fn parse_install_manifest(
         &self,
         script: &str,
@@ -1865,10 +1865,23 @@ impl Runtime {
     ) -> std::result::Result<(Manifest, Option<[u8; 32]>), InstallError> {
         let error = match Manifest::parse_ordinary(text) {
             Ok(manifest) => return Ok((manifest, None)),
-            Err(error) if crate::manifest::is_prefrontal_name_error(&error) => error,
+            Err(error)
+                if crate::manifest::is_prefrontal_name_error(&error)
+                    || error == crate::manifest::ManifestError::LlmGrantRemoved =>
+            {
+                error
+            }
             Err(error) => return Err(InstallError::Manifest(error)),
         };
-        let manifest = Manifest::parse_stored(text).map_err(InstallError::Manifest)?;
+        let manifest = Manifest::parse_stored(text).map_err(|stored_error| {
+            InstallError::Manifest(
+                if error == crate::manifest::ManifestError::LlmGrantRemoved {
+                    error.clone()
+                } else {
+                    stored_error
+                },
+            )
+        })?;
         let hash = code_hash(script, text);
         let exists = self.store().read(|conn| {
             Ok(conn.query_row(

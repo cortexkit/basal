@@ -69,7 +69,7 @@ Retention (`retention.rs`, `run_retention.rs`, `codemode/retention.rs`): run pay
 
 1. The parent authorizes it against the run's approved manifest, before anything is sent (`authorize.rs`). A refusal is recorded too.
 2. The call's intent is appended to the run log and synced before it is dispatched. Nothing leaves basal without a durable record of it (`driver.rs`).
-3. It is dispatched on its own thread to a host (`basal-host`): module ops over the flow's scope, sinks and facts through core, model calls through Broca, built-ins in the parent itself.
+3. It is dispatched on its own thread to a host (`basal-host`): module ops over the flow's scope, sinks and facts through core, built-ins in the parent itself.
 4. The outcome is recorded as an arrival, and the worker receives outcomes in a recorded delivery order. Arrivals and delivery order may be written lazily, but they are synced before any later effect that depends on them leaves basal. Replay of a crashed activation follows the durable prefix exactly; past it, the script runs again.
 
 Local calls (`kv`, clock, random) are served in the parent and recorded in the run log; values past the durable prefix may differ when a crashed run re-executes. Rate, dispatch and token limits are checked per flow (`rate.rs`, `tokens.rs`); dollar caps per run (`classify_cost.rs`).
@@ -80,7 +80,7 @@ Local calls (`kv`, clock, random) are served in the parent and recorded in the r
 
 ## Model calls
 
-A flow's `llm` call, and codemode's `tools.model`, select under `basal.flow` and `basal.codemode` through the `routing/v1` provider's `route.select`. Basal declares both consumers and the `basal.flow.classify` / `basal.codemode.classify` consumers used for classification, admits Broca as a selector for all four, and records the selected runner and price inside the frozen request JSON before sending, so a resend reuses them (`basal-host/src/selector.rs`). Each call opens its own Broca session (`basal-host/src/broca/`). Completion arrives as Broca's `run.ended` bus event, matched by `run_id`; a polling fallback bounded by the run's deadline covers a missed event. Broca reports usage, which basal prices at routing's metered or subscription-equivalent rates; unpriced selections refuse before sending. Direct model calls and Broca's `llm_classify` tool (tag `llm.classify/v1`) share a dollar budget: $0.50 per codemode run by default, and a manifest-declared cap for flows. A flow without a dollar cap still records the cost. Existing token caps remain additional limits.
+Programs call Broca's `tools.llm_complete`, `tools.llm_classify` or `tools.llm_extract` from the catalog. Flows grant those tools as ops and declare `model_cost_usd`. Broca uses the stamped scope to route and enforce the flow's private-content provider grant; Basal does not select a model, open a session or price tokens. Basal identifies model tools by capability tag, caps their `max_cost_usd` to the remaining budget, and charges the reported `cost_usd` ($0.50 per codemode run by default; manifest-declared caps for flows). Basal still registers `basal.flow`, `basal.codemode` and their `.classify` children, so Broca can select a model on behalf of a flow or program when it classifies an item. Historical direct calls and token ledgers remain readable.
 
 ## Codemode, end to end
 
@@ -101,8 +101,7 @@ A codemode call is never replayed. A worker crash, deadline or cancel ends the r
 | ck-bus (NATS JetStream) | The `m_basal` consumer for module events, and publication of basal events including template lifecycle events and owner notices for prefrontal. |
 | prefrontal | Install cards and status, revocation hints, flow and run scopes, sinks, `board.read`, `work.unsettled`, agent lookup. |
 | Cingulate | Decision cards (`consent/v1`). |
-| The routing module (the `routing/v1` provider) | Model choice (`route.select`). |
-| Broca | Model calls, `run.ended` events, `llm_classify`. |
+| Broca | Catalog tools for completion, classification and extraction. |
 | Plexus, AFT, Cerebellum and other providers | Flow ops and codemode tools, each over the caller's scope. AFT's `file.read_exact` also reads script files for the `flow` tool. |
 | The vault | Secret approval and injection for `net.fetch` (`basal-host/src/secrets.rs`). |
 

@@ -406,7 +406,11 @@ fn held_core_on_resume_preserves_the_existing_deadline() {
     let world = World::new("gate-held-resume");
     let clock = Clock::manual(T0);
     let rt = gated(&world, &clock);
-    let id = admit(&rt, &world, "return await llm({prompt:'p'});");
+    let id = admit(
+        &rt,
+        &world,
+        "return await ops.call('mock', 'long', {prompt:'p'});",
+    );
     let r = run(&rt, &id);
     world.mock.set_install_status(&r.flow_id, 1, active(&r));
     assert!(matches!(
@@ -454,7 +458,7 @@ fn a_resume_after_suspension_is_gated() {
     let run_id = admit(
         &rt,
         &world,
-        "const a = await llm({ prompt: 'p' }); return a;",
+        "const a = await ops.call('mock', 'long', { prompt: 'p' }); return a;",
     );
     let r = run(&rt, &run_id);
     world.mock.set_install_status(&r.flow_id, 1, active(&r));

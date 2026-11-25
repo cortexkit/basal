@@ -2,20 +2,13 @@
 //!
 //! basal's parent process journals every host call before it leaves and
 //! records every outcome when it comes back. What happens in between belongs
-//! to a [`Host`]: module ops, facts, llm and classify, sinks. This crate
+//! to a [`Host`]: module ops, facts, sinks and built-ins. This crate
 //! defines that boundary only as wide as the runtime needs today, and a
 //! deterministic [`mock::MockHost`] that records every effect so tests can
 //! prove a crash never repeats one. [`catalog`] holds what modules declare
 //! (events, ops and their markers, agents), which manifests are validated
 //! against. [`consent`] is where install cards are raised and their
 //! decisions come back from.
-//!
-//! `llm` and `classify` reach Broca. Their request is an envelope basal
-//! builds and journals before the first send: `send_id` (the call's
-//! idempotency key), `work_class`, `session`, the clamped `max_output` and
-//! the script's own `request`. A fulfilled outcome carries the run's token
-//! usage as metadata, in Broca's canonical fields (see [`USAGE_FIELDS`]),
-//! separate from the value delivered to the script.
 //!
 //! A dispatched call ends in one of four ways:
 //! - it completes now, fulfilled or rejected ([`Dispatched::Completed`]);
@@ -28,7 +21,6 @@
 //! - the provider returns a typed unsent refusal ([`TransportError::Refused`]);
 //!   the runtime can defer readiness failures without inventing an outcome.
 
-pub mod broca;
 pub mod builtins;
 pub mod catalog;
 pub mod catalog_snapshot;
@@ -43,12 +35,10 @@ pub mod flow_refusal;
 pub mod flow_scope;
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
-pub mod model_cost;
 pub mod routing;
 pub mod run_scope;
 pub mod scope_describe;
 pub mod secrets;
-pub mod selector;
 pub mod subc_catalog;
 pub mod target_scope;
 #[cfg(any(test, feature = "test-support"))]
@@ -232,9 +222,7 @@ pub enum Dispatched {
 
 /// The op a call goes to, as `module.op`, for an operator to read. A flow's
 /// own ops name their module; primitives name the module and op they are
-/// carried by: core's sinks and facts, and Broca's `session.send` for model
-/// calls, under `broca`, the module id `ck-basal` is configured with for
-/// Broca. Local primitives
+/// carried by, such as core's sinks and facts. Local primitives
 /// (clock, random, `kv`) never leave basal and keep their own name.
 pub fn op_label(kind: &CallKind) -> String {
     use basal_proto::Primitive;
@@ -254,7 +242,7 @@ pub fn op_label(kind: &CallKind) -> String {
         CallKind::Primitive(Primitive::SinkWaitResolve) => {
             format!("{}.sink.wait_resolve", subc_catalog::CORE)
         }
-        CallKind::Primitive(Primitive::Llm | Primitive::Classify) => "broca.session.send".into(),
+        CallKind::RetiredModel(_) => "broca.session.send".into(),
         // Local primitives and the built-ins, which basal carries out itself.
         CallKind::Primitive(p) => p.name().into(),
         CallKind::Tool { name } => format!("unsupported tool ({name})"),
@@ -509,9 +497,6 @@ pub trait CompletionSink: Send + Sync {
     /// a completion, it is redelivered until the runtime records it, and a
     /// redelivery is acknowledged as [`CompletionAck::Duplicate`].
     fn unknown(&self, unknown: &UnknownOutcome) -> Result<CompletionAck, SinkError>;
-    /// The host has durably settled the call and released its route. This
-    /// follows completion acknowledgement, which alone may precede that save.
-    fn route_released(&self, _run_id: &str) {}
 }
 
 /// The hosts a flow reaches. Implementations must be safe to call from
@@ -539,10 +524,6 @@ pub trait Host: Send + Sync {
         Err(secrets::not_ready())
     }
     fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
-    /// Registers where finished codemode model calls are delivered. Codemode
-    /// runs are never retried, so their completions go to the codemode
-    /// supervisor rather than the flow driver's recipient.
-    fn attach_codemode(&self, _sink: Arc<dyn CompletionSink>) {}
     /// Reads the daemon's current scope attestation before admission. The
     /// response keeps the status and optional live stamp together; an absent
     /// daemon must not be mistaken for authority to start a run.
@@ -582,10 +563,6 @@ pub trait Host: Send + Sync {
         false
     }
     fn refusal_committed(&self, _request: &CallRequest, _refusal: &flow_refusal::FlowRefusal) {}
-    /// Require core's registered scope before provider calls and refresh it
-    /// when recovering pending calls. Offline simulations can disable these
-    /// checks when they have no core connection.
-    fn scope_checks(&self, _enabled: bool) {}
     /// Registers authority under a route key (`flow_route_key` for an installed
     /// flow version, or `codemode:<run_id>` for a codemode run).
     /// Passing no scope releases the key, including one never registered.
@@ -613,12 +590,8 @@ pub trait Host: Send + Sync {
     }
 
     /// Invoked after the accepted handle or immediate outcome is durable, so
-    /// a fast model completion cannot arrive before its handle is journaled.
+    /// an asynchronous completion cannot arrive before its handle is journaled.
     fn dispatch_committed(&self, _request: &CallRequest) {}
-    /// Invoked after the event reader commits bus notices that may settle
-    /// pending model calls (Broca's `run.ended` and `run.skipped`), so the
-    /// model host can read those calls now instead of at their next check.
-    fn model_events_committed(&self) {}
     /// The current time in milliseconds since the Unix epoch, for a clock
     /// read. The runtime keeps the value monotonic within a run.
     fn now_ms(&self) -> f64;

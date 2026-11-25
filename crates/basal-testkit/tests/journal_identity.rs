@@ -17,7 +17,7 @@ fn suspended_run(world: &World, rt: &Runtime) -> String {
     let run_id = admit(
         rt,
         world,
-        "const a = await ops.call('mock', 'echo', { n: 1 }); await llm({ prompt: 'p' }); return a.n;",
+        "const a = await ops.call('mock', 'echo', { n: 1 }); await ops.call('mock', 'long', { prompt: 'p' }); return a.n;",
     );
     let first = rt.resume(&run_id).expect("activation");
     assert!(

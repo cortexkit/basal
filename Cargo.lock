@@ -128,8 +128,6 @@ dependencies = [
  "basal-proto",
  "base64",
  "cortexkit-resource-busy",
- "cortexkit-role-llm-runner",
- "cortexkit-role-routing",
  "cortexkit-role-tool-provider",
  "httparse",
  "jiff",
@@ -517,15 +515,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cortexkit-rich-ui-syntax"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98509395f8f7afce4127b6c6e1f1eaf11ee20fba57a86c27a21da67e10a3bc45"
-dependencies = [
- "pulldown-cmark",
-]
-
-[[package]]
 name = "cortexkit-role-agent-data"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -567,20 +556,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54901f6290132d5f70ffbf6bd3e06d31c128cb70566a73fb201866b8394bb8aa"
 dependencies = [
  "async-trait",
-]
-
-[[package]]
-name = "cortexkit-role-llm-runner"
-version = "0.8.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4865f83d24f2264d847faa615ca4552f5c9972434fc36c13243b6ab60e5e5d8"
-dependencies = [
- "cortexkit-rich-ui-syntax",
- "cortexkit-role-tool-provider",
- "serde",
- "serde_jcs",
- "serde_json",
- "sha2",
 ]
 
 [[package]]
@@ -1815,17 +1790,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pulldown-cmark"
-version = "0.13.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
-dependencies = [
- "bitflags 2.13.2",
- "memchr",
- "unicase",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2740,12 +2704,6 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
-
-[[package]]
-name = "unicase"
-version = "2.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-general-category"

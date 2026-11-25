@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Clock, Durability, NoHooks, Store, test_support::ScriptedWorker};
 use basal_host::{
-    Completion, CompletionAck, CompletionSink, Host, TokenUsage,
+    CompletionSink, Host,
     catalog::{MockCatalog, OpDecl, OpKind},
 };
 use basal_proto::{ActivationResult, ParentMessage, WorkerMessage};
@@ -37,8 +37,6 @@ struct TestHost {
     revokes: std::sync::atomic::AtomicUsize,
     accept: AtomicBool,
     class_override: Mutex<Option<CallClass>>,
-    attribution_probe: Mutex<Option<PathBuf>>,
-    facts_at_send: Mutex<Vec<Value>>,
     readiness: Mutex<Option<basal_host::flow_refusal::FlowRefusal>>,
 }
 impl Host for TestHost {
@@ -77,23 +75,6 @@ impl Host for TestHost {
         }
     }
     fn dispatch(&self, request: &CallRequest) -> std::result::Result<Dispatched, TransportError> {
-        if let Some(path) = self.attribution_probe.lock().unwrap().as_ref() {
-            let envelope: Value = serde_json::from_str(request.args.as_str()).unwrap();
-            let independent = rusqlite::Connection::open(path).unwrap();
-            let body = independent.query_row(
-                "SELECT body FROM attribution_facts WHERE fact_id=?1",
-                [format!(
-                    "basal:session:{}",
-                    envelope["session"].as_str().unwrap()
-                )],
-                |r| r.get::<_, String>(0),
-            );
-            self.facts_at_send.lock().unwrap().push(
-                body.ok()
-                    .map(|s| serde_json::from_str(&s).unwrap())
-                    .unwrap_or(Value::Null),
-            );
-        }
         self.sent.lock().unwrap().push(request.clone());
         if let Some(reply) = self.transports.lock().unwrap().pop_front() {
             return reply;
@@ -230,7 +211,6 @@ fn config(clock: &Clock) -> Config {
     Config {
         clock: clock.clone(),
         install_gate: crate::InstallGate::Off,
-        selector: Arc::new(basal_host::selector::FakeSelector::default()),
         deferral_retry: Duration::from_millis(10),
         // Deadline tests advance the manual run clock. The real-time activation
         // watchdog must not turn ordinary worker progress into a speed test.
@@ -269,10 +249,6 @@ fn suspended(awaited: Vec<u64>) -> WorkerMessage {
         result: ActivationResult::Suspended { awaited },
     }
 }
-fn llm(window: &str) -> Value {
-    json!({"llm":{"iq":1,"token_cap":{"tokens":10000,"window":window},"max_output":10}})
-}
-
 #[test]
 fn staged_runtime_admits_executes_and_reads_without_execution_rows() {
     let f = Fixture::new(false);
@@ -515,6 +491,115 @@ fn ordinary_constructor_recovers_run_log_without_rig_projection() {
 }
 
 #[test]
+fn recovery_closes_a_retired_model_call_without_dispatch() {
+    use crate::run_records::{Body, Reservation, State};
+    use basal_proto::RetiredModel;
+
+    let f = Fixture::new(false);
+    f.install("retired", 1, json!({}));
+    let now = f.clock.now_ms();
+    let id = "legacy-model-run";
+    let manifest =
+        json!({"llm":{"iq":50,"max_output":10,"token_cap":{"tokens":1000,"window":"1h"}}});
+    let kind = CallKind::RetiredModel(RetiredModel::Llm);
+    f.rt.fixture_run(
+        id,
+        "retired",
+        1,
+        "return llm({});",
+        &manifest.to_string(),
+        State::new(now),
+    )
+    .unwrap();
+    f.rt.fixture_append(
+        id,
+        Body::Intent(Intent {
+            call: CallIdentity::new(
+                HostCall {
+                    position: 0,
+                    kind: kind.clone(),
+                    args: JsonText::null(),
+                },
+                StoredClass::KeyedMutation,
+            ),
+            idempotency_key: Some(crate::ids::idempotency_key("retired", id, 0)),
+            frozen_request: JsonText::new(r#"{"session":"historical","request":{}}"#).unwrap(),
+            audit_at: now,
+            attempts: 1,
+            dispatch_count_window: None,
+            reservation: Some(Reservation {
+                input_tokens: 20,
+                output_tokens: 10,
+                cost_micros: 2_000,
+                window_start: crate::tokens::window_start(now, 3_600_000),
+            }),
+        }),
+    )
+    .unwrap();
+    f.rt.fixture_append(
+        id,
+        Body::Accepted {
+            position: 0,
+            handle: "old-broca-run".into(),
+        },
+    )
+    .unwrap();
+    let snapshot = r#"{"acknowledged":false,"handle":"old-broca-run","params":"{}"}"#;
+    f.rt.store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO broca_calls VALUES ('old-send',?1,0,?2)",
+                params![id, snapshot],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!f.rt.run(id).unwrap().state.is_terminal());
+    let Fixture {
+        rt,
+        root,
+        host,
+        catalog,
+        clock,
+    } = f;
+    rt.store().cut();
+    drop(rt);
+    let rt = Runtime::new(
+        Arc::new(Store::open(root.join("store.db"), Durability::throwaway()).unwrap()),
+        host.clone(),
+        catalog,
+        Arc::new(NoHooks),
+        None,
+        config(&clock),
+    )
+    .unwrap();
+    assert_eq!(rt.run(id).unwrap().state, RunState::EngineMismatch);
+    assert!(host.sent.lock().unwrap().is_empty());
+    rt.store()
+        .read(|c| {
+            assert_eq!(sql::call(c, id, 0)?.unwrap().kind, kind);
+            assert_eq!(
+                sql::obligation(c, id, 0)?.unwrap().state,
+                sql::ObligationState::Settled
+            );
+            let historical: String = c.query_row(
+                "SELECT snapshot FROM broca_calls WHERE run_id=?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            assert_eq!(historical, snapshot);
+            let charged: u64 = c.query_row(
+                "SELECT unreported_tokens FROM token_ledger WHERE run_id=?1 AND state='settled'",
+                [id],
+                |r| r.get(0),
+            )?;
+            assert_eq!(charged, 30);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn owner_lost_worker_is_reaped_before_close_can_drain() {
     use crate::channel::{ChannelError, WorkerReceiver};
     use std::sync::mpsc;
@@ -621,7 +706,7 @@ fn target(position: u64) -> WorkerMessage {
     })
 }
 fn pending_preparation(f: &Fixture, flow: &str) -> String {
-    let mut extra = llm("1h");
+    let mut extra = json!({"model_cost_usd":{"per_run":0.50,"usd":1.00,"window":"1h"}});
     extra["audience"] = json!({"kind":"global"});
     f.install(flow, 1, extra);
     let id = f.admit(flow, "first");
@@ -705,7 +790,7 @@ fn pending_preparation_survives_restart_and_reprepares_without_duplicate_send() 
     let f = Fixture::new(false);
     let id = pending_preparation(&f, "recovered");
     f.catalog.fail_agent_registry(None);
-    let mut newer = llm("1d");
+    let mut newer = json!({"model_cost_usd":{"per_run":1.00,"usd":2.00,"window":"1d"}});
     newer["audience"] = json!({"kind":"global"});
     f.install("recovered", 2, newer);
     f.rt.store().cut();
@@ -755,8 +840,8 @@ fn pending_preparation_survives_restart_and_reprepares_without_duplicate_send() 
         .unwrap(),
     );
     assert_eq!(
-        hosts.budgets_for(&id).unwrap().token_window_ms,
-        3_600_000,
+        hosts.budgets_for(&id).unwrap().cost_window,
+        Some((3_600_000, 1_000_000)),
         "recovery uses the admitted snapshot, not the newly approved manifest"
     );
     let rt = Runtime::new_staged(
@@ -1148,171 +1233,6 @@ fn second_close_returns_while_the_first_is_parked_in_the_committer() {
 }
 
 #[test]
-fn attribution_flow_session_is_committed_before_model_send() {
-    let f = Fixture::new(false);
-    f.install("owned", 1, llm("1h"));
-    f.rt.store()
-        .write(|tx| {
-            tx.execute(
-                "UPDATE flows SET owner='agent_owner' WHERE flow_id='owned'",
-                [],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    *f.host.attribution_probe.lock().unwrap() = Some(f.root.join("store.db"));
-    f.host.accept.store(true, Ordering::SeqCst);
-    let id = f.admit("owned", "first");
-    let mut worker = ScriptedWorker::new(vec![
-        call(0, Primitive::Llm, json!({"prompt":"not in the fact"})),
-        WorkerMessage::Blocked { awaiting: vec![0] },
-        suspended(vec![0]),
-    ]);
-    assert!(matches!(
-        f.rt.activate(&id, &mut worker).unwrap(),
-        ActivationEnd::Suspended { .. }
-    ));
-    let facts = f.host.facts_at_send.lock().unwrap();
-    assert_eq!(facts.len(), 1);
-    assert_eq!(facts[0]["alfonso"], "agent_owner");
-    assert_eq!(facts[0]["parent"], json!({"kind":"flow","flow_id":"owned"}));
-    assert_eq!(
-        facts[0]["subject"],
-        json!({"kind":"session","runner":"broca","harness":"broca","session":format!("basal:flow-owned:{id}:0")})
-    );
-    assert!(!facts[0].to_string().contains("not in the fact"));
-    assert_eq!(facts[0]["effective_from_ms"], f.clock.now_ms());
-}
-
-#[test]
-fn token_readers_count_live_and_settled_runs_in_each_pinned_window() {
-    let f = Fixture::new(false);
-    f.host.accept.store(true, Ordering::SeqCst);
-    for (flow, window, ms, start) in [
-        ("hour", "1h", 3_600_000, 3_600_000),
-        ("day", "1d", 86_400_000, 0),
-    ] {
-        f.install(flow, 1, llm(window));
-        let id = f.admit(flow, "first");
-        let mut worker = ScriptedWorker::new(vec![
-            call(0, Primitive::Llm, json!({"prompt":"hello"})),
-            WorkerMessage::Blocked { awaiting: vec![0] },
-            suspended(vec![0]),
-        ]);
-        assert_eq!(
-            f.rt.activate(&id, &mut worker).unwrap(),
-            ActivationEnd::Suspended { awaited: vec![0] }
-        );
-        let usage = f.rt.token_usage(flow, f.clock.now_ms()).unwrap().unwrap();
-        assert_eq!((usage.window_ms, usage.window_start), (ms, start));
-        assert!(usage.reserved > 0);
-        assert_eq!(f.rt.open_reservations(&id).unwrap(), 1);
-        let outcome = HostOutcome {
-            settlement: Settlement::Fulfilled,
-            value: JsonText::new("7").unwrap(),
-            usage: Some(TokenUsage {
-                input_tokens: Some(3),
-                cache_write_tokens: Some(0),
-                output_tokens: Some(2),
-                cached_input_tokens: Some(0),
-                ..Default::default()
-            }),
-        };
-        assert_eq!(
-            f.rt.complete(&Completion {
-                run_id: id.clone(),
-                position: 0,
-                handle: format!("handle:{id}"),
-                outcome
-            })
-            .unwrap(),
-            CompletionAck::Accepted
-        );
-        let usage = f.rt.token_usage(flow, f.clock.now_ms()).unwrap().unwrap();
-        assert_eq!(usage.counted(), 5);
-        assert_eq!(f.rt.open_reservations(&id).unwrap(), 0);
-        f.rt.startable().unwrap();
-        let mut worker = ScriptedWorker::new(vec![
-            WorkerMessage::Blocked { awaiting: vec![0] },
-            finished(),
-        ]);
-        assert!(matches!(
-            f.rt.activate(&id, &mut worker).unwrap(),
-            ActivationEnd::Succeeded { .. }
-        ));
-        assert_eq!(
-            f.rt.token_usage(flow, f.clock.now_ms())
-                .unwrap()
-                .unwrap()
-                .counted(),
-            5
-        );
-    }
-    let many =
-        f.rt.token_usage_many(&["hour", "day"], f.clock.now_ms())
-            .unwrap();
-    assert_eq!(many["hour"].window_ms, 3_600_000);
-    assert_eq!(many["day"].window_ms, 86_400_000);
-}
-
-#[test]
-fn late_callback_after_close_settles_the_admitted_versions_window() {
-    let f = Fixture::new(false);
-    f.host.accept.store(true, Ordering::SeqCst);
-    f.install("late", 1, llm("1h"));
-    let id = f.admit("late", "first");
-    let mut worker = ScriptedWorker::new(vec![
-        call(0, Primitive::Llm, json!({"prompt":"hello"})),
-        WorkerMessage::Blocked { awaiting: vec![0] },
-        suspended(vec![0]),
-    ]);
-    assert!(matches!(
-        f.rt.activate(&id, &mut worker).unwrap(),
-        ActivationEnd::Suspended { .. }
-    ));
-    f.install("late", 2, llm("1d"));
-    f.rt.cancel(&id, "operator").unwrap();
-    let outcome = HostOutcome {
-        settlement: Settlement::Fulfilled,
-        value: JsonText::new("7").unwrap(),
-        usage: Some(TokenUsage {
-            input_tokens: Some(3),
-            cache_write_tokens: Some(0),
-            output_tokens: Some(2),
-            cached_input_tokens: Some(0),
-            ..Default::default()
-        }),
-    };
-    assert_eq!(
-        f.rt.complete(&Completion {
-            run_id: id.clone(),
-            position: 0,
-            handle: format!("handle:{id}"),
-            outcome
-        })
-        .unwrap(),
-        CompletionAck::Accepted
-    );
-    assert_eq!(f.rt.open_reservations(&id).unwrap(), 0);
-    f.rt.store()
-        .read(|c| {
-            let usage = crate::tokens::window_usage(c, "late", 3_600_000, 3_600_000)?;
-            assert_eq!(usage.counted(), 5);
-            assert_eq!(usage.reserved, 0);
-            assert_eq!(
-                c.query_row(
-                    "SELECT window_ms FROM token_ledger WHERE run_id=?1",
-                    [&id],
-                    |r| r.get::<_, i64>(0)
-                )?,
-                3_600_000
-            );
-            Ok(())
-        })
-        .unwrap();
-}
-
-#[test]
 fn run_limit_also_bounds_pre_authorization_refusals() {
     let mut f = Fixture::new(true);
     Arc::make_mut(&mut f.rt.config).limits.max_calls = 1;
@@ -1329,35 +1249,6 @@ fn run_limit_also_bounds_pre_authorization_refusals() {
     assert_eq!(f.rt.calls(&id).unwrap().len(), 1);
     assert!(f.host.sent.lock().unwrap().is_empty());
     assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 1);
-}
-
-#[test]
-fn worker_budget_denial_is_a_catchable_typed_outcome_without_dispatch() {
-    let f = Fixture::new(true);
-    f.install(
-        "token-denial",
-        1,
-        json!({"llm":{"iq":1,"token_cap":{"tokens":1,"window":"1h"},"max_output":1}}),
-    );
-    let id = f.admit("token-denial", "first");
-    let mut worker = ScriptedWorker::new(vec![
-        call(0, Primitive::Llm, json!({"prompt":"hello"})),
-        WorkerMessage::Blocked { awaiting: vec![0] },
-        finished(),
-    ]);
-    assert!(matches!(
-        f.rt.activate(&id, &mut worker).unwrap(),
-        ActivationEnd::Succeeded { .. }
-    ));
-    let calls = f.rt.calls(&id).unwrap();
-    let outcome = calls[0].outcome.as_ref().unwrap();
-    assert_eq!(outcome.settlement, Settlement::Rejected);
-    assert_eq!(
-        serde_json::from_str::<Value>(outcome.value.as_str()).unwrap()["code"],
-        "token_cap"
-    );
-    assert!(f.host.sent.lock().unwrap().is_empty());
-    assert_eq!(f.rt.open_reservations(&id).unwrap(), 0);
 }
 
 #[test]
@@ -1477,7 +1368,7 @@ fn recurring_schedule_caps_live_runs_while_core_is_unreachable() {
 #[test]
 fn recurring_schedule_queues_one_run_behind_a_started_run() {
     let f = Fixture::new(false);
-    let mut manifest = llm("1h");
+    let mut manifest = json!({});
     manifest["trigger"] = json!({"schedule":{"interval":"1m"}});
     f.install("scheduled", 1, manifest);
     f.host.accept.store(true, Ordering::SeqCst);
@@ -1486,7 +1377,7 @@ fn recurring_schedule_queues_one_run_behind_a_started_run() {
     let first = scheduler.tick().unwrap();
     let id = first.new_runs()[0];
     let mut worker = ScriptedWorker::new(vec![
-        call(0, Primitive::Llm, json!({"prompt":"hello"})),
+        op(0, "query", json!({})),
         WorkerMessage::Blocked { awaiting: vec![0] },
         suspended(vec![0]),
     ]);

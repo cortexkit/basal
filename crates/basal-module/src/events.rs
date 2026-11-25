@@ -57,9 +57,7 @@ pub struct Health {
     pub admitted: u64,
     pub queued: u64,
     pub overflow: u64,
-    /// Wakes committed for pending Broca model calls. Staying at zero while
-    /// model calls run means Broca's run events are not reaching basal, and
-    /// calls settle only at their scheduled checks.
+    /// Retained for health reply compatibility; always zero.
     pub model_wakes: u64,
     /// In-subscription notices basal could not decode: for example, ordinary
     /// notices with inline bodies, invalid subjects or headers, or undeclared
@@ -520,9 +518,6 @@ fn malformed_notice_could_matter(rt: &Runtime, identity: Option<(&str, &str, u32
     let Some((module, name, _version)) = identity else {
         return false;
     };
-    if module == "broca" && matches!(name, "run.ended" | "run.skipped") {
-        return true;
-    }
     // A failed lookup is treated as potentially relevant so a store problem
     // cannot hide a malformed notice from an installed event consumer.
     rt.has_enabled_event_subscription(module, name)
@@ -1025,7 +1020,6 @@ impl<'a> DeliveryGuard<'a> {
         h.admitted += report.admitted as u64;
         h.queued += report.queued as u64;
         h.overflow += report.overflow as u64;
-        h.model_wakes += report.model_wakes as u64;
         h.malformed += malformed as u64;
         h.skipped_before_install += report.skipped_before_install as u64;
         h.filtered_out += report.filtered_out as u64;

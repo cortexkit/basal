@@ -37,8 +37,8 @@ pub const CUT_PARALLEL: usize = 6;
 /// outstanding long after the winner was released, a synchronous clock read,
 /// a caught rejection, a call the manifest does not allow (refused in the
 /// parent and caught), a local eager effect, two calls completing in
-/// parallel, a random sample, an `llm` call that reserves tokens and
-/// suspends the run, and a resume that reads the local effect back.
+/// parallel, a random sample, a second long-running call that suspends the
+/// run, and a resume that reads the local effect back.
 pub const REPRESENTATIVE: &str = r#"
 const winner = await Promise.race([
     ops.call('mock', 'long', { tag: 'slow' }),
@@ -63,7 +63,7 @@ const [a, b] = await Promise.all([
     ops.call('mock', 'echo', { n: 2 }),
 ]);
 const r = Math.random();
-const answer = await llm({ prompt: 'summarise' });
+const answer = await ops.call('mock', 'long', { prompt: 'summarise' });
 const seen = await kv.get('seen');
 const t2 = Date.now();
 return {
@@ -84,7 +84,7 @@ pub const TEST_FLOW: &str = "flow-test";
 
 /// The manifest harness flows run under unless a test says otherwise: the
 /// mock host's ops except `unlisted`, one digest sink, a status target,
-/// facts and a model grant large enough never to refuse.
+/// and facts.
 pub fn test_manifest() -> Value {
     json!({
         "id": TEST_FLOW,
@@ -100,8 +100,7 @@ pub fn test_manifest() -> Value {
             { "module": "mock", "op": "long" },
             { "module": "mock", "op": "post" }
         ],
-        "facts": { "targets": [ "ALF" ], "text": false },
-        "llm": { "iq": 0, "token_cap": { "tokens": 1_000_000, "window": "1d" }, "max_output": 2000 }
+        "facts": { "targets": ["ALF"], "text": false }
     })
 }
 
@@ -327,9 +326,6 @@ pub struct Summary {
     /// The flow's token ledger: reservations still open and settled
     /// usage summed by field.
     pub tokens: BTreeMap<String, u64>,
-    /// Broca sends whose bytes differ from an earlier send under the same
-    /// `send_id`.
-    pub broca_reuse: usize,
     pub calls: usize,
     pub open_obligations: usize,
 }
@@ -358,7 +354,6 @@ impl Summary {
             "audit_rows": self.audit_rows,
             "kv": self.kv,
             "tokens": self.tokens,
-            "broca_reuse": self.broca_reuse,
             "calls": self.calls,
             "open_obligations": self.open_obligations,
         })
@@ -375,17 +370,8 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
     let mut effects = BTreeMap::new();
     let mut per_call = BTreeMap::new();
     for e in mock.effects() {
-        // A model call's envelope names its send id and run, which differ
-        // between stores; the script's own request inside it does not.
-        let args = match (e.module.as_str(), e.op.as_str()) {
-            ("primitive", "llm" | "classify") => serde_json::from_str::<Value>(&e.args)
-                .ok()
-                .and_then(|v| v.get("request").map(Value::to_string))
-                .unwrap_or_else(|| e.args.clone()),
-            _ => e.args.clone(),
-        };
         *effects
-            .entry(format!("{}.{} {}", e.module, e.op, args))
+            .entry(format!("{}.{} {}", e.module, e.op, e.args))
             .or_insert(0) += 1;
         if let Some(p) = positions.get(&e.key) {
             *per_call.entry(*p).or_insert(0) += 1;
@@ -445,17 +431,6 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
         .collect();
         Ok((rows as usize, kv, tokens))
     })?;
-    let mut first: HashMap<String, String> = HashMap::new();
-    let mut broca_reuse = 0;
-    for (send_id, bytes) in mock.broca_sends() {
-        match first.get(&send_id) {
-            Some(b) if *b != bytes => broca_reuse += 1,
-            Some(_) => {}
-            None => {
-                first.insert(send_id, bytes);
-            }
-        }
-    }
     let open = rt.health()?.open_obligations.len();
     Ok(Summary {
         state: run.state.as_str().to_owned(),
@@ -470,7 +445,6 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
         audit_rows,
         kv,
         tokens,
-        broca_reuse,
         calls: calls.len(),
         open_obligations: open,
     })
@@ -481,7 +455,6 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
 pub struct World {
     pub dir: PathBuf,
     pub mock: MockHost,
-    pub selector: Arc<basal_host::selector::FakeSelector>,
     pub catalog: MockCatalog,
     pub source: Arc<ProcessSource>,
     pub durability: Durability,
@@ -492,7 +465,6 @@ impl World {
         Self {
             dir: scratch(tag),
             mock: MockHost::new(),
-            selector: Arc::new(basal_host::selector::FakeSelector::default()),
             catalog: MockCatalog::standard(),
             source: Arc::new(ProcessSource::new(worker_binary())),
             // The harness checks logic, not power loss; skipping disk syncs
@@ -523,10 +495,7 @@ impl World {
             Arc::new(self.catalog.clone()),
             hooks,
             Some(self.source.clone()),
-            Config {
-                selector: self.selector.clone(),
-                ..config
-            },
+            config,
         )?;
         rt.retain_detail_for_test()?;
         rt.recover()?;

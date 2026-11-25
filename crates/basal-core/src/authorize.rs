@@ -360,6 +360,7 @@ pub fn check(
     args: &Value,
 ) -> Result<(), Refusal> {
     match kind {
+        CallKind::RetiredModel(_) => Err(Refusal::denied("retired model primitive")),
         CallKind::Tool { .. } => Err(Refusal::new(
             "profile_violation",
             "catalog tools are not available to flows",
@@ -740,13 +741,6 @@ pub fn check(
                     Err(Refusal::denied(format!(
                         "{agent} is not among the manifest's status targets"
                     )))
-                }
-            }
-            Primitive::Llm | Primitive::Classify => {
-                if manifest.llm.is_some() {
-                    Ok(())
-                } else {
-                    Err(Refusal::denied("the manifest grants no model calls"))
                 }
             }
             Primitive::FsRead

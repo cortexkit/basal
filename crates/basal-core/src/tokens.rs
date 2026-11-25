@@ -1,47 +1,13 @@
-//! Token reservations for `llm` and `classify`.
+//! Settlement and reporting for historical flow token reservations.
 //!
-//! The cap counts, per flow and window, fresh input plus cache write plus
-//! output tokens (reasoning is already inside output in Broca's usage).
-//! Cached input is recorded and shown but not capped: context re-reads
-//! dominate token volume and would trip a cap long before real work.
-//!
-//! - Before a model call is journaled, its liability is reserved against
-//!   the flow's current window, in the same transaction as its journal row:
-//!   an input estimate that is an upper bound in practice plus the clamped
-//!   maximum output. A call that does not fit is refused as a journaled
-//!   rejection, so two calls of one run cannot both spend the same
-//!   remainder.
-//! - The request sent is built here once (the clamp) and journaled with the
-//!   intent, so a re-issue after a crash sends identical bytes under the
-//!   same `send_id`, which Broca deduplicates on.
-//! - When the call's outcome arrives, its reservation is replaced by the
-//!   reported usage, once per `send_id`, in the window the reservation was
-//!   made in, however long the run was suspended and whatever window is
-//!   current by then.
-//!
-//! Windows are fixed intervals anchored at the Unix epoch in UTC: a call's
-//! window is `floor(now / length)`. That makes "the window a reservation
-//! was made in" one number that survives restarts, and a `"1d"` window a
-//! UTC calendar day. A rolling window would have no single window to
-//! attribute usage to, and windows anchored at approval would reset with
-//! every new version.
+//! Reservations count fresh input, cache writes and output in fixed windows
+//! anchored at the Unix epoch. Cached input is recorded but not counted.
 
+use crate::error::{CoreError, Result};
 use basal_host::HostOutcome;
-use basal_proto::{JsonText, Primitive, Settlement};
+use basal_proto::Settlement;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
-
-use crate::authorize::{Refusal, codes};
-use crate::error::{CoreError, Result};
-use crate::manifest::LlmGrant;
-
-/// Added to every input estimate for what the request's bytes do not show:
-/// the provider's own framing of a request (roles, system wrapping,
-/// message separators).
-const INPUT_OVERHEAD_TOKENS: u64 = 256;
-
-/// The output ceiling of a `classify` call: it answers with one label.
-pub(crate) const CLASSIFY_MAX_OUTPUT: u32 = 64;
 
 /// Token usage as Broca reports it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -57,108 +23,6 @@ pub struct Usage {
 }
 
 use crate::model::to_u64;
-
-/// A model call ready to journal: the exact request to send, and the
-/// tokens to reserve for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Clamped {
-    pub request: JsonText,
-    pub max_output: u32,
-    pub reserve: u64,
-}
-
-/// The input estimate for a request of `bytes` UTF-8 bytes.
-///
-/// Byte-level tokenizers never produce more tokens than the UTF-8 bytes
-/// they encode (each token covers at least one byte), so the byte count is
-/// an upper bound on the text's tokens, and JSON quoting and the envelope's
-/// own fields only add bytes that are not tokens. The fixed overhead covers
-/// the provider's framing.
-pub(crate) fn estimate_input(bytes: usize) -> u64 {
-    (bytes as u64).saturating_add(INPUT_OVERHEAD_TOKENS)
-}
-
-fn json_string(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_owned())
-}
-
-/// Parent-assigned call identity, used for the send key and isolated session.
-pub(crate) struct Identity<'a> {
-    pub flow_id: &'a str,
-    pub run_id: &'a str,
-    pub position: u64,
-    pub send_id: &'a str,
-}
-
-/// Builds the request basal sends for an `llm` or `classify` call: the
-/// script's own argument bytes, unchanged, inside an envelope that carries
-/// the `send_id`, the flow's work class and session, and the clamped
-/// output ceiling. llm steps get no tools, so a request asking for them is
-/// refused.
-pub(crate) fn clamp(
-    primitive: Primitive,
-    args_text: &JsonText,
-    args: &Value,
-    grant: &LlmGrant,
-    identity: Identity<'_>,
-) -> std::result::Result<Clamped, Refusal> {
-    let Identity {
-        flow_id,
-        run_id,
-        position,
-        send_id,
-    } = identity;
-    let invalid = |m: &str| Refusal::new(codes::INVALID_ARGUMENTS, m);
-    let max_output = match primitive {
-        Primitive::Llm => {
-            if !args.is_object() {
-                return Err(invalid("llm(request) needs an object"));
-            }
-            if args.get("tools").is_some_and(|t| !t.is_null()) {
-                return Err(Refusal::denied("model calls from flows get no tools"));
-            }
-            let requested = match args.get("max_output") {
-                None | Some(Value::Null) => grant.max_output,
-                Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
-                    Some(n) if n > 0 => n,
-                    _ => return Err(invalid("max_output must be a positive whole number")),
-                },
-            };
-            requested.min(grant.max_output)
-        }
-        Primitive::Classify => {
-            if !args.get("text").is_some_and(Value::is_string) {
-                return Err(invalid("classify(text, labels) needs text"));
-            }
-            let labels_ok = args
-                .get("labels")
-                .and_then(Value::as_array)
-                .is_some_and(|l| !l.is_empty() && l.iter().all(Value::is_string));
-            if !labels_ok {
-                return Err(invalid("classify(text, labels) needs a list of labels"));
-            }
-            CLASSIFY_MAX_OUTPUT.min(grant.max_output)
-        }
-        _ => return Err(invalid("not a model call")),
-    };
-    let text = format!(
-        "{{\"send_id\":{},\"work_class\":{},\"session\":{},\"op\":{},\"max_output\":{},\"request\":{}}}",
-        json_string(send_id),
-        json_string(&format!("flow:{flow_id}")),
-        json_string(&format!("basal:flow-{flow_id}:{run_id}:{position}")),
-        json_string(primitive.name()),
-        max_output,
-        args_text.as_str(),
-    );
-    let request = JsonText::new(text)
-        .map_err(|e| Refusal::new(codes::TOO_LARGE, format!("the model request: {e}")))?;
-    let reserve = estimate_input(request.len()).saturating_add(u64::from(max_output));
-    Ok(Clamped {
-        request,
-        max_output,
-        reserve,
-    })
-}
 
 /// The start of the window containing `now_ms`.
 pub fn window_start(now_ms: i64, window_ms: i64) -> i64 {

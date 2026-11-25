@@ -71,8 +71,7 @@ fn an_unwired_module_host_fails_closed() {
 fn routing_describe_uses_only_the_ops_host_and_keeps_typed_errors() {
     let ops = Arc::new(MockHost::new());
     let core = Arc::new(MockHost::new());
-    let model = Arc::new(MockHost::new());
-    let routing = RoutingHost::new(ops.clone(), core.clone(), model.clone());
+    let routing = RoutingHost::new(ops.clone(), core.clone());
     ops.set_scope_description(owner(), "scope:run", Ok(description()));
     assert_eq!(
         routing.scope_describe(&owner(), "scope:run"),
@@ -96,7 +95,6 @@ fn routing_describe_uses_only_the_ops_host_and_keeps_typed_errors() {
     }
     assert_eq!(ops.scope_queries().len(), 6);
     assert!(core.scope_queries().is_empty());
-    assert!(model.scope_queries().is_empty());
 }
 
 #[test]

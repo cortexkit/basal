@@ -139,10 +139,7 @@ fn open(world: &World, host: Arc<TempHost>) -> (Runtime, Arc<Store>) {
             Arc::new(world.catalog.clone()),
             Arc::new(NoHooks),
             Some(world.source.clone()),
-            Config {
-                selector: world.selector.clone(),
-                ..config()
-            },
+            Config { ..config() },
         )
         .expect("runtime startup");
         runtime.retain_detail_for_test().expect("rig inspection");

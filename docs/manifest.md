@@ -1,6 +1,6 @@
 # The flow manifest
 
-A flow is a script plus a manifest. The manifest says everything the flow may do: what triggers it, which agents it may write to, which module ops it may call, whose facts it may read, and how many model tokens it may spend. basal checks every call the script makes against the approved manifest in the parent process before anything is dispatched, never in the confined worker that runs the script. This note is the schema; the code is `crates/basal-core/src/manifest.rs` (decoding and the checks that need nothing else) and `crates/basal-core/src/install.rs` (the checks against the catalog).
+A flow is a script plus a manifest. The manifest says everything the flow may do: what triggers it, which agents it may write to, which module ops it may call, whose facts it may read, and how much it may spend on model tools. basal checks every call the script makes against the approved manifest in the parent process before anything is dispatched, never in the confined worker that runs the script. This note is the schema; the code is `crates/basal-core/src/manifest.rs` (decoding and the checks that need nothing else) and `crates/basal-core/src/install.rs` (the checks against the catalog).
 
 ## Rules that apply everywhere
 
@@ -34,7 +34,6 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `claims` | list of claims | no | `[]` | Source kinds the flow takes over from core for an agent. |
 | `ops` | list of op references | no | `[]` | Every module op the flow may call. Anything else is refused at run time. |
 | `facts` | facts grant | no | none | Whose facts the flow may read. Without it, `facts()` is refused. |
-| `llm` | model grant | no | none | Without it, `llm()` and `classify()` are refused. |
 | `model_cost_usd` | `{per_run, usd, window}` | for tagged model tool ops | none | Dollar caps for `llm.classify/v1`, `llm.complete/v1`, and `llm.extract/v1` op grants; see [model dollar caps](#model-dollar-caps). |
 | `fs` | `{read?, write?}` lists of roots | no | none | Directories the file built-ins may read under (`fs.read`, `fs.list`, `fs.stat`) or write under (`fs.write`). Each root is absolute after `~` expansion and must exist at install. See `docs/builtins.md`. |
 | `git` | `{read}` list of repositories | no | none | Repositories the git built-ins may read. Each is absolute after `~` expansion and must exist at install. |
@@ -581,22 +580,13 @@ flow-health penalty, as is `for_target_requires_delegate`.
 | `targets` | list of agent names | yes | | Agents whose `facts()` the flow may read. Named targets must be known. A global audience may instead declare only `"$audience"`, permitting public facts of any agent id; core's unknown-agent error code and message reach the script unchanged. |
 | `text` | boolean | no | `false` | Whether `private-text` fields may be read (`include: ["text"]`). |
 
-### Model grant
-
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `token_cap.tokens` | integer | yes | 1 to 1,000,000,000 tokens per window, counted as fresh input plus cache write plus output. Cached input is recorded, not capped. |
-| `token_cap.window` | duration | yes | `"1m"` to `"31d"`. Windows are fixed intervals anchored at the Unix epoch in UTC, so `"1d"` is a UTC calendar day. |
-| `iq` | integer | yes | 0 to 100. The minimum intelligence demand passed to fleet routing for every `llm` and `classify` call. |
-| `eq` | integer | no | 0 to 100; defaults to 0. The minimum judgment demand passed to fleet routing. |
-| `max_output` | integer | yes | 1 to 200,000, and not above the cap: the ceiling on any one call's output tokens. A call asking for more is clamped to it; `classify` is clamped to at most 64. |
-
-Model calls get no tools: an `llm` request with a `tools` field is refused. Scripts cannot supply a `model` or `provider`, even one previously selected: the call is rejected with `model_not_allowed`. Fleet routing chooses a Broca runner before the intent commits, and its exact selection and decision id are journaled. Retries reuse that selection; there is no default or environment-configured model.
-
 ### Model dollar caps
 
-Broca's `llm_classify`, `llm_complete`, and `llm_extract` are called through `ops` grants, for example
-`ops.call("broca", "llm_classify", {model, questions, item, max_cost_usd})`.
+Grant Broca’s `llm_complete`, `llm_classify` or `llm_extract` through `ops`.
+For example, grant `{"module":"broca","op":"llm_complete"}` and call it with
+`ops.call("broca", "llm_complete", {demand, prompt, max_output_tokens, max_cost_usd})`.
+New versions with a legacy `llm` grant are refused with `llm_grant_removed`.
+Stored approvals and their token ledgers remain readable.
 An op tagged `llm.classify/v1`, `llm.complete/v1`, or `llm.extract/v1`
 additionally requires:
 
@@ -606,11 +596,7 @@ additionally requires:
 
 Both amounts are finite non-negative US dollars. `per_run` bounds each run;
 `usd` bounds the flow across all versions in a **rolling** lookback of `window`
-(`"1m"` through `"31d"`, unlike the legacy token grant's fixed windows).
-These caps are shared by direct `llm`/`classify` calls and tagged model tool
-ops. An existing approved flow with both an `llm` grant and these caps now
-charges its direct model calls against the same limits. A flow with no dollar
-cap still records direct model costs, without gaining a new dollar ceiling.
+(`"1m"` through `"31d"`). These caps are shared by all tagged model tool ops.
 The install card shows a dollar line with both caps. A tagged model tool grant
 without these caps is refused with `model_cost_cap_required`. While providers
 are enabling tags, an untagged tool whose input schema requires `max_cost_usd`
@@ -639,24 +625,14 @@ not the actual bill. Unknown calls keep their reservations and are not
 automatically resent. Broca does not bill twice if the same call is retried
 with its durable call key.
 Calls use the flow-stamped scope, and spend belongs to the flow, not its owner.
-Direct model calls select under `basal.flow` with a Broca runner, no tools,
-the approved intelligence (`iq`) and judgment (`eq`) demands, and the clamped
-output requirement. Routing prefers
-subscriptions according to its settings. Every new send requires routing's
-`price`; an unpriced selection is refused as `price_unknown` before Broca runs.
-The reserve uses `estimated_task_usd`, or estimated input plus maximum output
-at the selected rates. Settlement prices Broca's fresh input, output (including
-reasoning), cached input and cache writes separately. Subscription-equivalent
-rates already include routing's discount and count against these same caps.
-When both cache-write lifetime counters are present, each uses only its exact
-`5m`/`1h` rate; an unmatched lifetime stays unpriced. Without both counters,
-the entire cache-write total uses the plain cache-write rate. Missing usage
-keeps the reservation's liability. Token grants and accounting are unchanged;
-dollar charges are additional, not a replacement for tokens.
+For `llm_complete`, Broca uses the stamped flow scope to select the routing
+profile for flow completions, `broca.complete.basal.flow`. Set `demand: {iq, eq?}`
+on routing’s 0–100 scale. Broca enforces the approved
+[private-content provider grant](#private_content_providers) on that scope.
 
 ## Card fields not in the manifest
 
-The authoring agent comes from the install request, not the manifest, so a flow cannot claim another author. The code hash, the code itself, the warnings (private text together with a `mutate` op; an operator override of the loop rule) and the current window's token usage split by field are computed by basal.
+The authoring agent comes from the install request, not the manifest, so a flow cannot claim another author. Basal computes the code hash and warnings (private text together with a `mutate` op; an operator override allowing a flow to trigger itself).
 
 ## Complete example
 
@@ -677,7 +653,6 @@ This example is parsed, round-tripped and installed by `dispatch_manifest::docum
   "claims": [],
   "ops": [ { "module": "cerebellum", "op": "browser.read_page" } ],
   "facts": { "targets": [ "SYNAPSE" ], "text": false },
-  "llm": { "iq": 65, "eq": 20, "token_cap": { "tokens": 200000, "window": "1d" }, "max_output": 2000 },
   "placement": "machine:studio",
   "concurrency": 1,
   "deadline": "10m"

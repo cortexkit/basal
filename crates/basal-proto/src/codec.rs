@@ -86,6 +86,13 @@ impl Encoder {
         }
     }
 
+    pub(crate) fn invalid(&mut self, field: &'static str, detail: &str) {
+        self.error.get_or_insert(DecodeError::Invalid {
+            field,
+            detail: detail.into(),
+        });
+    }
+
     pub(crate) fn limited_str(&mut self, field: &'static str, value: &str, max: usize) {
         if value.len() > max {
             self.error.get_or_insert(DecodeError::TooLong {

@@ -29,7 +29,7 @@
 //! - `entorhinal` defines no catalog presets, so its `tool.catalog` refuses a
 //!   `preset` argument, and any other member the role does not define, as
 //!   `invalid_request`.
-//! - `broca` serves model management calls and records the bind's mode.
+//! - `broca` is used to check role refusal envelopes.
 
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -211,17 +211,6 @@ impl Daemon {
                 });
             }
             return Err(refusal.clone());
-        }
-        if module == "broca" {
-            self.received.push(Received {
-                module,
-                name: body["method"].as_str().unwrap().into(),
-                call_mode,
-                call_key: false,
-                preset: None,
-                catalog_preset: None,
-            });
-            return Ok(json!({"result":{"state":"active","run_id":"broca-run"}}));
         }
         let name = body["name"].as_str().unwrap().to_owned();
         let call_key = body.get("call_key").is_some();
@@ -524,9 +513,7 @@ fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
                 json!("entorhinal_search")
             ]
         );
-        // The program's calls: one tool call to each provider, a custody
-        // read on cerebellum's route and a model call to Broca, all on the
-        // run's registered scope.
+        // Tool calls and a custody read all use the run’s registered scope.
         let flow = format!("codemode:{RUN}");
         transport.configure_flow(
             &flow,
@@ -536,7 +523,7 @@ fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
                     scope_ref: RUN.into(),
                     epoch: 19,
                 },
-                targets: ["cerebellum", "aft", "broca"].map(String::from).into(),
+                targets: ["cerebellum", "aft"].map(String::from).into(),
             }),
         );
         let options = RunToolOptions {
@@ -560,15 +547,6 @@ fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
         transport
             .role_for_run(&flow, "cerebellum", "late_results", json!({}), &options)
             .expect("late results read");
-        transport
-            .management_for_model(
-                &flow,
-                options.identity.clone(),
-                "broca",
-                "session.send",
-                br#"{"send_id":"s1"}"#,
-            )
-            .expect("model call");
         let received = received(&state);
         let seen: Vec<_> = received
             .iter()
@@ -586,7 +564,6 @@ fn admission_reads_and_run_calls_reach_each_provider_as_codemode() {
                 ("cerebellum", "recall", true),
                 ("aft", "read", true),
                 ("cerebellum", "late_results", false),
-                ("broca", "session.send", false),
             ]
         );
         for request in &received {
@@ -800,13 +777,11 @@ fn the_fake_cerebellum_refuses_envelope_keys_on_role_ops_and_unknown_catalog_mem
 }
 
 /// A codemode program has no flow scope. It must read a provider's
-/// `flow_scope_required` refusal as sent, whether refused at bind or on a
-/// model request after binding.
+/// `flow_scope_required` refusal as sent, whether refused at bind or after.
 #[test]
 fn a_program_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
     for (module, op, bind_refusal) in [
-        ("broca", "session.send", false),
-        ("broca", "session.send", true),
+        ("cerebellum", "recall", false),
         ("cerebellum", "recall", true),
     ] {
         with_daemon("linked", |transport, state| {
@@ -835,17 +810,12 @@ fn a_program_reads_a_providers_flow_refusal_as_the_provider_sent_it() {
                     targets: [module].map(String::from).into(),
                 }),
             );
-            let identity = BindIdentity::new("opencode", "head-session");
-            let reply = if module == "broca" {
-                transport.management_for_model(&flow, identity, module, op, br#"{"send_id":"s1"}"#)
-            } else {
-                let options = RunToolOptions {
-                    identity,
-                    reply_timeout: Duration::from_secs(10),
-                    preset: None,
-                };
-                transport.tool_for_run(&flow, module, op, json!({"q":1}), "bk1", &options)
+            let options = RunToolOptions {
+                identity: BindIdentity::new("opencode", "head-session"),
+                reply_timeout: Duration::from_secs(10),
+                preset: None,
             };
+            let reply = transport.tool_for_run(&flow, module, op, json!({"q":1}), "bk1", &options);
             match reply {
                 Err(WireError::RefusedDetails {
                     code,

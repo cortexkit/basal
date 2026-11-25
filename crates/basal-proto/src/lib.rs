@@ -74,7 +74,7 @@ mod tests {
                 },
                 RecordedCall {
                     position: 1,
-                    kind: CallKind::Primitive(Primitive::Llm),
+                    kind: CallKind::Primitive(Primitive::Facts),
                     args_digest: ArgsDigest::of(&text("{}")),
                     outcome: None,
                 },
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
-        assert_eq!(PROTOCOL_VERSION, 14);
+        assert_eq!(PROTOCOL_VERSION, 15);
         // Checked at run time, not in a const block, so lowering the ceiling
         // fails this test instead of the build.
         let ceiling = std::hint::black_box(CODEMODE_ADDRESS_SPACE_BYTES);
@@ -129,6 +129,28 @@ mod tests {
                 args: text("null"),
             })
         );
+    }
+
+    #[test]
+    fn retired_model_kinds_cannot_cross_worker_wire() {
+        for (model, code) in [(RetiredModel::Classify, 4), (RetiredModel::Llm, 5)] {
+            let mut payload = vec![102];
+            payload.extend_from_slice(&0u64.to_be_bytes());
+            payload.extend_from_slice(&[code, 0, 0, 0, 4]);
+            payload.extend_from_slice(b"null");
+            assert!(matches!(
+                decode_worker_payload(&payload),
+                Err(DecodeError::UnknownTag { field: "call kind", tag }) if tag == code
+            ));
+            assert!(
+                encode_worker_frame(&WorkerMessage::HostCall(HostCall {
+                    position: 0,
+                    kind: CallKind::RetiredModel(model),
+                    args: text("null"),
+                }))
+                .is_err()
+            );
+        }
     }
 
     #[test]

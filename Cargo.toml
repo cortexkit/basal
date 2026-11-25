@@ -43,7 +43,6 @@ cortexkit-store = { version = "=0.2.5", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
 cortexkit-role-tool-provider = "=0.15.10"
 cortexkit-role-routing = "=0.7.37"
-cortexkit-role-llm-runner = "=0.8.41"
 # The agent-data/v1 participant contract Entorhinal drives when it moves an
 # agent between computers. Pinned exactly so its refusal table can't drift.
 cortexkit-role-agent-data = "=0.3.3"

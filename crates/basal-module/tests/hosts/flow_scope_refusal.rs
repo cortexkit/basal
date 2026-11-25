@@ -94,7 +94,6 @@ fn run_refused(tag: &str, script: &str, reply: WireError) -> Rig {
         host: Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(transport.clone(), catalog.clone())),
             Arc::new(CoreHost::new(transport.clone())),
-            Arc::new(UnconfiguredHost::new()),
         )),
         catalog,
         consent: Arc::new(CoreConsent::new(fake.clone())),

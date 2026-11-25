@@ -217,7 +217,7 @@ fn blocked_only_on_long_calls_suspends_and_resumes() {
     parent.deadline = std::time::Duration::from_secs(3);
     let script = r#"
         const a = await ops.call('mock', 'echo', 'before');
-        const [answer, other] = await Promise.all([llm({ prompt: 'hi' }), ops.call('mock', 'long', {})]);
+        const [answer, other] = await Promise.all([ops.call('mock', 'long', { prompt: 'hi' }), ops.call('mock', 'long', {})]);
         return [a, answer, other];
     "#;
     let first = parent.run("t", script);

@@ -146,7 +146,7 @@ fn completion_after_suspended_report_is_not_lost() {
     let run_id = admit(
         &rt,
         &world,
-        "const x = await llm({ prompt: 'p' }); return x.done;",
+        "const x = await ops.call('mock', 'long', { prompt: 'p' }); return x.done;",
     );
     let mut worker = world.source.spawn().expect("worker");
     let observed_run = run_id.clone();
@@ -266,7 +266,7 @@ fn caught_rejection_through_the_parent() {
         let code = null;
         try { await ops.call('mock', 'fail', { message: 'no' }); } catch (e) { code = e.data.code; }
         const after = await ops.call('mock', 'echo', { code });
-        await llm({ prompt: 'p' });
+        await ops.call('mock', 'long', { prompt: 'p' });
         return after.code;
         "#,
         json!("denied"),
@@ -286,7 +286,7 @@ fn all_rejected_any_through_the_parent() {
         } catch (e) {
             messages = e.errors.map((x) => x.data.message);
         }
-        await llm({ prompt: 'p' });
+        await ops.call('mock', 'long', { prompt: 'p' });
         return messages;
         "#,
         json!(["first", "second"]),
@@ -306,7 +306,7 @@ fn early_all_rejection_through_the_parent() {
         } catch (e) {
             seen = e.data.message;
         }
-        await llm({ prompt: 'p' });
+        await ops.call('mock', 'long', { prompt: 'p' });
         return seen;
         "#,
         json!("early"),
@@ -373,7 +373,7 @@ fn clock_stays_monotonic_across_activations() {
     let run_id = admit(
         &rt,
         &world,
-        "const t1 = Date.now(); await llm({ prompt: 'p' }); const t2 = Date.now(); return t2 - t1;",
+        "const t1 = Date.now(); await ops.call('mock', 'long', { prompt: 'p' }); const t2 = Date.now(); return t2 - t1;",
     );
     let first = rt.resume(&run_id).expect("activation");
     assert!(

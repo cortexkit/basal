@@ -153,8 +153,9 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facts: Option<FactsGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Stored approvals and their token accounting still display this grant.
     pub llm: Option<LlmGrant>,
-    /// Shared dollar caps for direct model calls and tagged model tool grants.
+    /// Shared dollar caps for ops whose catalog advertises a model tool tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_cost_usd: Option<ModelCostCap>,
     /// Roots the `fs` built-ins may read and write under.
@@ -586,6 +587,7 @@ pub enum ManifestError {
     ChangesRequired,
     ChangesOnFirstVersion,
     SecretsRequireFlowInstall,
+    LlmGrantRemoved,
     Pack {
         code: &'static str,
         reason: String,
@@ -655,6 +657,9 @@ impl std::fmt::Display for ManifestError {
             Self::SecretsRequireFlowInstall => write!(
                 f,
                 "secrets are supported only on ordinary flow installs for now"
+            ),
+            Self::LlmGrantRemoved => f.write_str(
+                "Grant Broca's `llm_complete` or `llm_classify` op and declare a `model_cost_usd` dollar cap instead of `llm`.",
             ),
             Self::TooLarge { bytes, cap } => {
                 write!(f, "manifest of {bytes} bytes exceeds the cap of {cap}")
@@ -876,7 +881,7 @@ impl Manifest {
 
     /// Decodes a stored manifest without reapplying current intake policy.
     pub fn parse_stored(text: &str) -> Result<Self, ManifestError> {
-        let mut manifest = Self::decode(text)?;
+        let mut manifest = Self::decode_with_legacy_grants(text, true)?;
         manifest.check_stored()?;
         manifest.normalize_stored_modules();
         Ok(manifest)
@@ -984,6 +989,10 @@ impl Manifest {
     /// registration decodes first so it can refuse an over-long package id
     /// with its own code before `check` applies the general flow-id limit.
     pub(crate) fn decode(text: &str) -> Result<Self, ManifestError> {
+        Self::decode_with_legacy_grants(text, false)
+    }
+
+    fn decode_with_legacy_grants(text: &str, stored: bool) -> Result<Self, ManifestError> {
         if text.len() > MAX_MANIFEST_BYTES {
             return Err(ManifestError::TooLarge {
                 bytes: text.len(),
@@ -995,6 +1004,9 @@ impl Manifest {
         // the original bytes afterwards to retain duplicate-key refusals.
         let value: serde_json::Value =
             serde_json::from_str(text).map_err(|e| ManifestError::Decode(e.to_string()))?;
+        if !stored && value.get("llm").is_some() {
+            return Err(ManifestError::LlmGrantRemoved);
+        }
         packs::check_decode_shape(&value)?;
         for sink in value["sinks"].as_array().into_iter().flatten() {
             if sink["kind"] == "notice" {
@@ -1026,6 +1038,9 @@ impl Manifest {
     }
 
     pub(crate) fn check_for_intake(&self, kind: IntakeKind) -> Result<(), ManifestError> {
+        if self.llm.is_some() {
+            return Err(ManifestError::LlmGrantRemoved);
+        }
         // Validate literal provider ids before the template placeholder scan so
         // even template grants get the field-specific invalid-id refusal.
         self.check_private_content_providers()?;
@@ -2303,7 +2318,12 @@ mod tests {
                     }
                     _ => value["trigger"] = serde_json::json!({"schedule":{"interval":text}}),
                 }
-                let error = Manifest::parse(&value.to_string()).unwrap_err();
+                let error = if field == "token_window" {
+                    Manifest::parse_stored(&value.to_string())
+                } else {
+                    Manifest::parse(&value.to_string())
+                }
+                .unwrap_err();
                 match field {
                     "deadline" => assert!(
                         matches!(error, ManifestError::Invalid { field, .. } if field == "deadline")

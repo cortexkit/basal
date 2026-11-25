@@ -38,7 +38,7 @@ fn manual_runtime(world: &World) -> (Runtime, Clock) {
 fn second_run_waits_for_the_first_even_while_suspended() {
     let world = World::new("slot-suspended");
     let rt = common::runtime(&world);
-    let script = "const x = await llm({ prompt: 'p' }); return trigger.kind;";
+    let script = "const x = await ops.call('mock', 'long', { prompt: 'p' }); return trigger.kind;";
     let first = admit_trigger(&rt, &world, script, "t1");
     let second = admit_trigger(&rt, &world, script, "t2");
     assert!(matches!(
@@ -298,7 +298,7 @@ fn deadline_fails_a_suspended_run_and_frees_the_slot() {
     let first = admit_trigger(
         &rt,
         &world,
-        "return (await llm({ prompt: 'p' })).done;",
+        "return (await ops.call('mock', 'long', { prompt: 'p' })).done;",
         "t1",
     );
     let second = admit_trigger(&rt, &world, "return 2;", "t2");

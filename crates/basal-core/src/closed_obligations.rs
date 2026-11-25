@@ -36,6 +36,11 @@ pub(crate) enum Closing {
 const OPERATOR_CANCELLED: &str = "operator_cancelled";
 
 pub(crate) fn closing(call: &CallState) -> Closing {
+    // There is no longer a host to poll even an accepted direct model call.
+    // Keep the reserved tokens and dollars as the charge; no outcome was observed.
+    if matches!(call.identity.kind, basal_proto::CallKind::RetiredModel(_)) {
+        return Closing::Unobserved("model_primitive_retired".into());
+    }
     // A completion is matched to its call by handle. Without one, nothing
     // that arrives later can ever settle the row.
     if call.accepted.is_some() {

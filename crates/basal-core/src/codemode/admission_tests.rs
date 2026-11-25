@@ -409,7 +409,7 @@ fn scope_shape_precedes_attestation_and_needs_no_flow_targets() {
     assert_eq!(run.status, Status::Running);
     let start = start.unwrap();
     assert_eq!(start.scope.targets, ["broca".into()].into_iter().collect());
-    assert!(start.tools.contains_key("model"));
+    assert!(!start.tools.contains_key("model"));
     assert!(!start.tools.contains_key("classify"));
     assert_eq!(start.scope.selector.scope_ref, "scope:run");
     assert_eq!(start.scope.selector.epoch, 19);
@@ -689,7 +689,7 @@ fn dropped_entry(bad: Value, reason: &str) {
             assert_eq!(unavailable.reason, warnings[0]["reason"].as_str().unwrap());
         }
     }
-    let callable = super::super::models::add_catalog(&json!([entry("good")])).unwrap();
+    let callable = json!([entry("good")]);
     assert_eq!(
         serde_json::from_str::<Value>(&run.catalog).unwrap(),
         callable
@@ -767,7 +767,7 @@ fn duplicate_tool_names_drop_every_claim_and_warn_once() {
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0]["tool"], "read");
     assert_eq!(warnings[0]["reason"], "duplicate tool name");
-    let callable = super::super::models::add_catalog(&json!([entry("good")])).unwrap();
+    let callable = json!([entry("good")]);
     assert_eq!(
         serde_json::from_str::<Value>(&run.catalog).unwrap(),
         callable
@@ -784,18 +784,6 @@ fn module_and_op_are_nonempty_strings_with_a_128_byte_cap() {
             dropped_entry(e, &format!("invalid {field}"));
         }
     }
-}
-
-#[test]
-fn model_name_collisions_drop_both_the_provider_and_builtin() {
-    let name = "model";
-    let resolved = super::super::models::add_catalog(&json!([entry(name), entry("good")])).unwrap();
-    let catalog = catalog(&resolved, &[]).unwrap();
-    assert!(!catalog.tools.contains_key(name));
-    assert!(catalog.tools.contains_key("good"));
-    assert_eq!(catalog.unavailable[name].reason, "duplicate tool name");
-    assert_eq!(catalog.warnings.len(), 1);
-    assert_eq!(catalog.warnings[0]["tool"], name);
 }
 
 #[test]

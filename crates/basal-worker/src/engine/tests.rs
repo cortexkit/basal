@@ -392,7 +392,7 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
     let link = Rc::new(RefCell::new(EchoLink::default()));
     let script = r#"
         Date.now(); Math.random();
-        await facts('a', {}); await classify('t', []); await llm({});
+        await facts('a', {});
         await sink.digest('a', {}, 'add'); await sink.status('a', {});
         await kv.get('k'); await kv.set('k', 1); await kv.delete('k');
         await fs.read('p', {}); await fs.list('p');
@@ -419,8 +419,6 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         Primitive::Now,
         Primitive::Random,
         Primitive::Facts,
-        Primitive::Classify,
-        Primitive::Llm,
         Primitive::SinkDigest,
         Primitive::SinkStatus,
         Primitive::KvGet,

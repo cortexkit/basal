@@ -135,6 +135,7 @@ fn call(c: &Connection, row: &Row, admitted: i64) -> Result<CallState> {
             CallKind::Op { op, .. } | CallKind::OpFor { op, .. } => op.clone(),
             CallKind::Primitive(p) => p.name().into(),
             CallKind::Tool { name } => name.clone(),
+            CallKind::RetiredModel(model) => model.name().into(),
         },
         kind,
         class,

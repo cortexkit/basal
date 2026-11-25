@@ -5,8 +5,6 @@ use basal_host::flow_refusal::FlowRefusal;
 use rusqlite::{Transaction, params};
 
 const LIVE_RUN_VERSIONS_SQL: &str = "SELECT DISTINCT flow_version FROM live_runs WHERE flow_id=?1";
-// CROSS JOIN restricts identities to the flow before looking up saved calls.
-const PENDING_MODEL_VERSIONS_SQL: &str = "SELECT DISTINCT r.flow_version FROM run_identities r CROSS JOIN broca_calls b WHERE r.flow_id=?1 AND b.run_id=r.run_id AND json_extract(b.snapshot,'$.acknowledged')=0 AND COALESCE(json_extract(b.snapshot,'$.deferred'),0)=0";
 const OPEN_OBLIGATION_VERSIONS_SQL: &str = "SELECT DISTINCT h.flow_version FROM run_history h JOIN obligations o USING(run_id) WHERE h.flow_id=?1 AND o.state<>'settled'";
 
 impl crate::runtime::Runtime {
@@ -61,11 +59,7 @@ impl crate::runtime::Runtime {
                     approved.version,
                 ));
             }
-            let versions = [
-                LIVE_RUN_VERSIONS_SQL,
-                PENDING_MODEL_VERSIONS_SQL,
-                OPEN_OBLIGATION_VERSIONS_SQL,
-            ];
+            let versions = [LIVE_RUN_VERSIONS_SQL, OPEN_OBLIGATION_VERSIONS_SQL];
             for sql in versions {
                 for version in c.prepare(sql)?.query_map([flow], |r| r.get::<_, u32>(0))? {
                     live.insert(basal_host::flow_scope::flow_route_key(flow, version?));
@@ -75,7 +69,7 @@ impl crate::runtime::Runtime {
         })?;
         // RunStore::close_impl drains every dispatch entrant before the terminal
         // transaction removes live_runs. No entrant can outlive its live row.
-        // After close, obligations and unacknowledged Broca calls retain routes.
+        // After close, outstanding obligations can still retain routes.
         // Route configuration is serialized here; host calls hold no SQLite lock.
         self.shared.host.retain_flow_routes(flow, &live);
         Ok(())

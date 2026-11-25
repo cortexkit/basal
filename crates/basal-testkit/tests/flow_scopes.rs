@@ -311,7 +311,6 @@ impl Fixture {
                 }),
             ),
             Arc::new(CoreHost::new(wire.clone())),
-            Arc::new(world.mock.clone()),
         ));
         let rt = {
             let runtime = Runtime::new(
@@ -382,7 +381,6 @@ impl Fixture {
                 }),
             ),
             Arc::new(CoreHost::new(wire.clone())),
-            Arc::new(world.mock.clone()),
         ));
         let rt = {
             let runtime = Runtime::new(

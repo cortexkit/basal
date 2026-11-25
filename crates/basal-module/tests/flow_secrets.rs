@@ -10,7 +10,7 @@ use basal_host::test_support::logs::CapturedLogs;
 use basal_host::transport::{Transport, WireError};
 use basal_module::caller::Caller;
 use basal_module::module::Hosts;
-use basal_module::unconfigured::{UnconfiguredHost, UnconfiguredTransport};
+use basal_module::unconfigured::UnconfiguredTransport;
 use base64::Engine;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -50,7 +50,6 @@ fn fixture<T: Transport + 'static>(fake: Arc<T>) -> common::Fixture {
         host: Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(fake.clone(), catalog.clone())),
             Arc::new(CoreHost::new(fake.clone())),
-            Arc::new(UnconfiguredHost::new()),
         )),
         catalog,
         consent: Arc::new(CoreConsent::new(fake)),

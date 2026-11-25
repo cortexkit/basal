@@ -1,9 +1,6 @@
 //! The subc manifest, built in Rust so the binary and its declaration cannot
 //! drift: `ck-basal --manifest` prints exactly what `serve` registers.
 
-use basal_host::selector::{
-    CODEMODE_CLASSIFY_CONSUMER, CODEMODE_CONSUMER, FLOW_CLASSIFY_CONSUMER, FLOW_CONSUMER,
-};
 use cortexkit_role_routing::declarations::ConsumerPriority;
 use cortexkit_role_routing::placement::Placement;
 use cortexkit_role_routing::select::ToolsRequirement;
@@ -21,6 +18,11 @@ use subc_protocol::manifest::{
 /// principal in the fleet `reserved:basal`. The daemon also derives the
 /// module's store path from it, so it never changes once deployed.
 pub const MODULE_ID: &str = "basal";
+
+const FLOW_CONSUMER: &str = "basal.flow";
+const CODEMODE_CONSUMER: &str = "basal.codemode";
+const FLOW_CLASSIFY_CONSUMER: &str = "basal.flow.classify";
+const CODEMODE_CLASSIFY_CONSUMER: &str = "basal.codemode.classify";
 
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[

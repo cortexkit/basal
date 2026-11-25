@@ -321,7 +321,6 @@ fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
                 host: Arc::new(basal_host::routing::RoutingHost::new(
                     mock.clone(),
                     Arc::new(basal_host::core_host::CoreHost::new(fake.clone())),
-                    mock.clone(),
                 )),
                 catalog: Arc::new(basal_host::MockCatalog::standard()),
                 transport: fake.clone(),

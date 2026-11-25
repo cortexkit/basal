@@ -125,10 +125,7 @@ fn open(world: &World, host: Arc<Split>, hooks: Arc<dyn basal_core::Hooks>) -> R
             Arc::new(world.catalog.clone()),
             hooks,
             Some(world.source.clone()),
-            Config {
-                selector: world.selector.clone(),
-                ..config()
-            },
+            Config { ..config() },
         )
         .expect("runtime startup");
         runtime.retain_detail_for_test().expect("rig inspection");

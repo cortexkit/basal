@@ -39,21 +39,6 @@ struct Services {
     audit_actor: Option<String>,
 }
 
-struct EventWakes<'a>(&'a Runtime);
-impl crate::run_admission::EventWakes for EventWakes<'_> {
-    fn wake(
-        &self,
-        tx: &rusqlite::Transaction<'_>,
-        notice: &crate::events::Notice,
-        now: i64,
-    ) -> Result<usize> {
-        crate::events::broca_wakes(tx, notice, now)
-    }
-    fn committed(&self) {
-        self.0.shared.host.model_events_committed();
-        self.0.shared.signal.bump();
-    }
-}
 impl Services {
     fn readiness_grace(
         &self,
@@ -313,29 +298,20 @@ fn arrival(
     position: u64,
     outcome: HostOutcome,
     reservation: Option<&crate::run_records::Reservation>,
-    frozen_request: &str,
 ) -> Arrival {
     let value: Option<serde_json::Value> = serde_json::from_str(outcome.value.as_str()).ok();
-    let cost_micros = basal_host::model_cost::recorded_charge(
-        frozen_request,
-        outcome.usage,
-        reservation.map_or(0, |r| r.cost_micros),
-        false,
-    )
-    .or_else(|| {
-        reservation
-            .filter(|r| r.cost_micros > 0 || r.input_tokens.saturating_add(r.output_tokens) == 0)
-            .map(|r| {
-                (crate::classify_cost::charge(
-                    r.cost_micros as f64 / 1_000_000.0,
-                    value.as_ref(),
-                    value
-                        .as_ref()
-                        .and_then(|v| crate::classify_cost::refusal_code(outcome.settlement, v)),
-                ) * 1_000_000.0)
-                    .ceil() as u64
-            })
-    });
+    let cost_micros = reservation
+        .filter(|r| r.input_tokens == 0 && r.output_tokens == 0)
+        .map(|r| {
+            (crate::classify_cost::charge(
+                r.cost_micros as f64 / 1_000_000.0,
+                value.as_ref(),
+                value
+                    .as_ref()
+                    .and_then(|v| crate::classify_cost::refusal_code(outcome.settlement, v)),
+            ) * 1_000_000.0)
+                .ceil() as u64
+        });
     let usage = outcome.usage.map(|u| {
         let input = u
             .input_tokens
@@ -624,7 +600,7 @@ impl run_driver::Services for Services {
                 notify: false,
             });
         }
-        let mut cost_micros = prepared.model_cost_micros;
+        let mut cost_micros = 0;
         if prepared.classify_cost {
             let hosts = rt.shared.staged_hosts.as_ref().unwrap();
             let budgets = hosts.budgets_for(&live.run_id)?;
@@ -752,15 +728,14 @@ impl run_driver::Services for Services {
                     .budgets_for(&live.run_id)?;
                 budgets.dispatch_window_ms = i64::try_from(rt.config.rate.window.as_millis())
                     .map_err(|_| CoreError::Invalid("invalid rate window".into()))?;
-                let reservation =
-                    (prepared.tokens.is_some() || prepared.classify_cost).then(|| {
-                        crate::run_records::Reservation {
-                            input_tokens: prepared.tokens.unwrap_or(0),
-                            output_tokens: 0,
-                            cost_micros,
-                            window_start: now.div_euclid(budgets.token_window_ms)
-                                * budgets.token_window_ms,
-                        }
+                let reservation = prepared
+                    .classify_cost
+                    .then(|| crate::run_records::Reservation {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cost_micros,
+                        window_start: now.div_euclid(budgets.token_window_ms)
+                            * budgets.token_window_ms,
                     });
                 Ok(Prepared::Remote(Box::new(Intent {
                     call: CallIdentity::new(call.clone(), class),
@@ -812,29 +787,10 @@ impl run_driver::Services for Services {
         }
         // One invocation owns exactly one host send. A retry must return to the
         // actor for another checked, counted and synced Intent with the same key.
-        if matches!(
-            request.kind,
-            CallKind::Primitive(Primitive::Llm | Primitive::Classify)
-        ) {
-            let envelope: serde_json::Value = serde_json::from_str(request.args.as_str())
-                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
-            let session = envelope["session"]
-                .as_str()
-                .ok_or_else(|| CoreError::Corrupt("model envelope lacks session".into()))?;
-            // Also cover frozen intents recovered from before attribution was
-            // introduced. The write commits before entering the model host.
-            let exists: bool = rt.store().read(|c| {
-                Ok(c.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM attribution_facts WHERE fact_id=?1)",
-                    [format!("basal:session:{session}")],
-                    |r| r.get(0),
-                )?)
-            })?;
-            if !exists {
-                rt.store().write(|tx| {
-                    crate::attribution::flow_session(tx, &live.flow_id, session, self.now_ms())
-                })?;
-            }
+        if matches!(request.kind, CallKind::RetiredModel(_)) {
+            return Err(CoreError::Corrupt(
+                "a retired model call cannot dispatch".into(),
+            ));
         }
         let response = rt.shared.host.dispatch_classified(&request, class);
         if rt.is_stopping() {
@@ -901,7 +857,6 @@ impl run_driver::Services for Services {
                     intent.call.position,
                     rt.cap_result(&outcome).unwrap_or(outcome),
                     intent.reservation.as_ref(),
-                    intent.frozen_request.as_str(),
                 );
                 if proven_unsent && maybe_sent.is_none() {
                     arrived.usage = Some(crate::run_records::Usage {
@@ -979,7 +934,6 @@ impl run_driver::Services for Services {
                     intent.call.position,
                     rt.cap_result(&outcome).unwrap_or(outcome),
                     intent.reservation.as_ref(),
-                    intent.frozen_request.as_str(),
                 );
                 Ok(if let Some(report) = report {
                     Reply::Measured(arrival, report)
@@ -1202,7 +1156,6 @@ impl Runtime {
         self.staged_admission().admit_events_with(
             notices,
             &ctx,
-            &EventWakes(self),
             |tx| {
                 for flow in install_changes {
                     crate::install_policy::mark_install_cards_due(tx, flow, ctx.now_ms)?;
@@ -1703,6 +1656,19 @@ impl Runtime {
                 continue;
             }
             let (id, _, _, state) = run.reader_snapshot();
+            if state
+                .calls
+                .values()
+                .any(|call| matches!(call.identity.kind, CallKind::RetiredModel(_)))
+            {
+                self.staged_finish(
+                    &id,
+                    RunState::EngineMismatch,
+                    Some("engine"),
+                    Some("the run used a retired model primitive"),
+                )?;
+                continue;
+            }
             // A crash can retain Arrived but lose the following Woken append.
             // Re-evaluate parked readiness even if host redelivery is a duplicate.
             if state.parked && self.staged_driver(&id)?.wake(&id)? {

@@ -26,13 +26,6 @@ pub trait AdmissionLog: Send + Sync {
     fn synced_lsn(&self) -> EpochLsn;
 }
 
-/// Host integration owns model wake matching; admission owns its transaction.
-/// `committed` runs without the SQLite connection, before the reader may ack.
-pub trait EventWakes {
-    fn wake(&self, tx: &Transaction<'_>, notice: &Notice, now: i64) -> Result<usize>;
-    fn committed(&self);
-}
-
 pub struct RunAdmission {
     store: Arc<Store>,
     log: Arc<dyn AdmissionLog>,
@@ -285,17 +278,15 @@ impl RunAdmission {
         &self,
         notices: &[Notice],
         ctx: &AdmitContext,
-        wakes: &dyn EventWakes,
         acknowledge: impl FnOnce() -> Result<()>,
     ) -> Result<events::Report> {
-        self.admit_events_with(notices, ctx, wakes, |_| Ok(()), acknowledge)
+        self.admit_events_with(notices, ctx, |_| Ok(()), acknowledge)
     }
 
     pub(crate) fn admit_events_with(
         &self,
         notices: &[Notice],
         ctx: &AdmitContext,
-        wakes: &dyn EventWakes,
         before_admission: impl FnOnce(&Transaction<'_>) -> Result<()>,
         acknowledge: impl FnOnce() -> Result<()>,
     ) -> Result<events::Report> {
@@ -310,7 +301,6 @@ impl RunAdmission {
             let mut report = events::Report::default();
             for notice in notices {
                 notice.target_flow()?;
-                report.model_wakes += wakes.wake(tx, notice, ctx.now_ms)?;
                 for (flow, first) in &flows {
                     let before = report.clone();
                     if let Err(error) = fire(tx, || {
@@ -333,9 +323,6 @@ impl RunAdmission {
             }
             Ok(report)
         })?;
-        if report.model_wakes > 0 {
-            wakes.committed();
-        }
         acknowledge()?;
         Ok(report)
     }

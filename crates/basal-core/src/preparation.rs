@@ -1,12 +1,10 @@
 //! Policy and frozen-request preparation shared by log-backed activation services.
 use crate::{
     authorize::{self, Refusal, codes},
-    ids::idempotency_key,
     manifest::Manifest,
     model::Run,
     runs::Lease,
     runtime::Runtime,
-    tokens,
 };
 use basal_proto::{CallKind, HostCall, JsonText, Primitive};
 use serde_json::Value;
@@ -17,9 +15,6 @@ pub(crate) struct Prepared {
     /// Prepared dispatch bytes, rather than the script's arguments. Absent
     /// while a board or targeted call's agent registry read is deferred.
     pub(crate) request: Option<JsonText>,
-    /// Tokens to reserve for a model call.
-    pub(crate) tokens: Option<u64>,
-    pub(crate) model_cost_micros: u64,
     pub(crate) classify_cost: bool,
     pub(crate) args: Option<Value>,
     /// A failed agent registry read is retried without dispatching the call.
@@ -48,9 +43,7 @@ pub(crate) fn disabled_refusal() -> Refusal {
 }
 
 impl CallPreparation<'_> {
-    /// Checks a new call's argument size and its grant in the approved
-    /// manifest, then selects a model and builds its clamped request. The
-    /// selector runs before the intent transaction, so refusal sends no model work.
+    /// Checks argument size and the approved grant before preparing a request.
     pub(crate) fn prepare(&self, call: &HostCall) -> std::result::Result<Prepared, Refusal> {
         let cap = self.rt.config.limits.max_arg_bytes;
         if call.args.len() > cap {
@@ -64,16 +57,6 @@ impl CallPreparation<'_> {
         }
         let mut args: Value = serde_json::from_str(call.args.as_str())
             .map_err(|_| Refusal::new(codes::INVALID_ARGUMENTS, "arguments are not JSON"))?;
-        if matches!(
-            call.kind,
-            CallKind::Primitive(Primitive::Llm | Primitive::Classify)
-        ) && (args.get("model").is_some() || args.get("provider").is_some())
-        {
-            return Err(Refusal::new(
-                "model_not_allowed",
-                "scripts cannot select a provider or model",
-            ));
-        }
         let Some(manifest) = self.manifest else {
             return Err(Refusal::denied("the run has no approved manifest"));
         };
@@ -415,97 +398,6 @@ impl CallPreparation<'_> {
                     ..Prepared::default()
                 })
             }
-            CallKind::Primitive(p @ (Primitive::Llm | Primitive::Classify)) => {
-                let Some(grant) = &manifest.llm else {
-                    return Err(Refusal::denied("the manifest grants no model calls"));
-                };
-                let send_id = idempotency_key(&self.run.flow_id, &self.lease.run_id, call.position);
-                let clamped = tokens::clamp(
-                    *p,
-                    &call.args,
-                    &args,
-                    grant,
-                    tokens::Identity {
-                        flow_id: &self.run.flow_id,
-                        run_id: &self.lease.run_id,
-                        send_id: &send_id,
-                        position: call.position,
-                    },
-                )?;
-                let selection_request = basal_host::selector::SelectionRequest {
-                    input_tokens: clamped
-                        .reserve
-                        .saturating_sub(u64::from(clamped.max_output)),
-                    max_output_tokens: u64::from(clamped.max_output),
-                    caller_class: "flow".into(),
-                    iq: grant.iq,
-                    eq: grant.eq,
-                    flow_id: self.run.flow_id.clone(),
-                    run_id: self.lease.run_id.clone(),
-                    send_id,
-                };
-                let mut retries = 0;
-                let selection = loop {
-                    match self.rt.config.selector.select(&selection_request) {
-                        Ok(selection) => break selection,
-                        Err(basal_host::selector::SelectionError::Wait(refusal)) => {
-                            return Ok(Prepared {
-                                deferred: Some(*refusal),
-                                ..Prepared::default()
-                            });
-                        }
-                        Err(basal_host::selector::SelectionError::Refused { code, detail }) => {
-                            return Err(Refusal::new(code, detail));
-                        }
-                        Err(basal_host::selector::SelectionError::Unavailable { detail }) => {
-                            if retries >= self.rt.config.unavailable_retries {
-                                return Err(Refusal::new("route_unavailable", detail));
-                            }
-                            retries += 1;
-                            std::thread::sleep(self.rt.config.retry_backoff);
-                        }
-                    }
-                };
-                let price = selection.price.as_ref().ok_or_else(|| {
-                    Refusal::new("price_unknown", "routing did not price the selected model")
-                })?;
-                let model_cost_micros = basal_host::model_cost::reserve(
-                    price,
-                    clamped
-                        .reserve
-                        .saturating_sub(u64::from(clamped.max_output)),
-                    u64::from(clamped.max_output),
-                )
-                .map_err(|e| Refusal::new("price_unknown", e.to_string()))?;
-                let mut envelope: Value = serde_json::from_str(clamped.request.as_str())
-                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
-                envelope["selection"] = serde_json::to_value(selection)
-                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
-                let request = JsonText::new(envelope.to_string())
-                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
-                // Preparation runs on a detached state snapshot, before the
-                // driver reacquires the actor to authorize its intent.
-                self.rt
-                    .store()
-                    .write(|tx| {
-                        crate::attribution::flow_session(
-                            tx,
-                            &self.run.flow_id,
-                            envelope["session"]
-                                .as_str()
-                                .expect("model envelope session"),
-                            self.rt.config().clock.now_ms(),
-                        )
-                    })
-                    .map_err(|e| Refusal::new("storage_unavailable", e.to_string()))?;
-                Ok(Prepared {
-                    request: Some(request),
-                    tokens: Some(clamped.reserve),
-                    model_cost_micros,
-                    args: None,
-                    ..Prepared::default()
-                })
-            }
             CallKind::Primitive(Primitive::SinkWaitResolve) => {
                 let version = self
                     .run
@@ -630,7 +522,6 @@ impl CallPreparation<'_> {
                     .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
                 Ok(Prepared {
                     request: Some(request),
-                    tokens: None,
                     args: None,
                     ..Prepared::default()
                 })
@@ -651,7 +542,6 @@ impl CallPreparation<'_> {
                     .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
                 Ok(Prepared {
                     request: Some(request),
-                    tokens: None,
                     args: None,
                     ..Prepared::default()
                 })

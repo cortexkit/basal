@@ -384,7 +384,7 @@ basal_identifier ck-basal-worker
     def test_credential_inventory_requires_one_active_openai_binding(self):
         with tempfile.TemporaryDirectory() as home:
             inventory = Path(home) / "inventory"
-            code = 'rig_auth() { /bin/cat "$HOME/inventory"; }; require_model_credential'
+            code = 'rig_auth() { /bin/cat "$HOME/inventory"; }; verify_credential_inventory'
             header = "STATE          VER   CREDENTIAL  CATEGORIES  PROVIDERS\n"
             valid = "active v1 apikey:openai llm-provider openai\n"
             for rows, expected in [(valid, 0), ("", 1), (valid + valid, 1),
@@ -466,16 +466,6 @@ cmd_config
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unexpected grants", result.stderr)
 
-    def test_config_and_contract_share_the_isolated_unscoped_arming_file(self):
-        with tempfile.TemporaryDirectory() as home:
-            result = self.run_shell('guard_all_paths; DRY=1; cmd_config; cmd_test --models', home)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("model_routing.exclude.all = [every served provider, -openai/gpt-6-luna]", result.stdout)
-            self.assertIn("ckdev-prefrontal-routing --check-config", result.stdout)
-            path = f"{home}/Work/Projects/CortexKit-scratch/ckdev-flows/runtime/basal-unscoped-send"
-            self.assertIn(f'"BASAL_RIG_UNSCOPED_FILE": "{path}"', result.stdout)
-            self.assertIn(f"--unscoped-file {path}", result.stdout)
-
     def test_live_contract_receives_the_registered_isolated_project_root(self):
         with tempfile.TemporaryDirectory() as home:
             result = self.run_shell('''
@@ -517,7 +507,7 @@ ensure_project() { printf '%s\\n' pj_fixture; }
 write_manifest() { mkdir -p "$RESULTS/$1"; }
 basal_mode() { printf '%s\\n' rig-build; }
 mkdir -p "$RIG" "$RUNTIME_DIR"
-touch "$KILL_FILE" "$UNSCOPED_FILE"
+touch "$KILL_FILE"
 CONTRACT="$RIG/ckdev-contract"
 printf '#!/bin/sh\\nexit 0\\n' > "$CONTRACT"
 chmod 755 "$CONTRACT"
@@ -532,9 +522,8 @@ cmd_test
             self.assertFalse((Path(home) / "running").exists())
             runtime = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/runtime"
             self.assertFalse((runtime / "basal-kill-at").exists())
-            self.assertFalse((runtime / "basal-unscoped-send").exists())
 
-    def test_package_selector_reaches_the_live_contract_without_model_credentials(self):
+    def test_package_selector_reaches_the_live_contract(self):
         with tempfile.TemporaryDirectory() as home:
             result = self.run_shell('''
 guard_all_paths
@@ -544,7 +533,6 @@ check_daemon_identity() { :; }
 ensure_project() { printf '%s\n' pj_fixture; }
 write_manifest() { mkdir -p "$RESULTS/$1"; }
 basal_mode() { printf '%s\n' rig-build; }
-require_model_credential() { die "packages must not require model credentials"; }
 mkdir -p "$RIG"
 CONTRACT="$RIG/ckdev-contract"
 printf '#!/bin/sh\nexit 0\n' > "$CONTRACT"
@@ -563,8 +551,6 @@ cmd_test --packages
             dry = self.run_shell('DRY=1; cmd_test --packages', home)
             self.assertEqual(dry.returncode, 0, dry.stderr)
             self.assertIn("--packages (only setup, packages and cleanup; other groups not run)", dry.stdout)
-            mixed = self.run_shell('DRY=1; cmd_test --packages --models', home)
-            self.assertNotEqual(mixed.returncode, 0)
 
     def test_core_revision_comes_from_the_manifest_and_must_match(self):
         with tempfile.TemporaryDirectory() as home:

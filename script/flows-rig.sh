@@ -23,7 +23,7 @@
 #   script/flows-rig.sh stop     [--dry-run]
 #   script/flows-rig.sh manifest [--dry-run]
 #   script/flows-rig.sh credential --key-file <path> [--dry-run]
-#   script/flows-rig.sh test     [--models | --packages] [--dry-run]
+#   script/flows-rig.sh test     [--packages] [--dry-run]
 #
 # --dry-run prints every command the subcommand would run and every file it
 # would write, with the file's content, and changes nothing.
@@ -64,7 +64,6 @@
 #             contract suite (basal-rig-contract) against the real
 #             prefrontal, with contract.json and contract.log beside
 #             the manifest. It fails if any check failed.
-#             A full run without --models reports model cases as not run by name.
 #             --packages runs only setup, the package group and its cleanup;
 #             the report marks the other groups as not run, not as a full pass.
 #             Full runs include codemode, using a real core-owned agent scope and a
@@ -77,37 +76,6 @@
 #             Package recovery waits for the stored generation to advance once
 #             and its version to be confirmed. Further-pass call-count checks
 #             are not run: no completed-pass or received-ensure counter exists.
-#             --models requires that credential and agent-owned flows through
-#             core's relay (prefrontal 73c66ff1f or later): minimal call first,
-#             routing/journal, result/usage settlement, classify, token-cap
-#             refusal, crash recovery and no tools. Three tiny calls at most
-#             in normal execution; each manifest caps all its scheduled runs
-#             in a day, for an aggregate allowance of 4,112 tokens per suite
-#             (including the unscoped-send flow described below, if Broca's
-#             enforcement regresses).
-#             A flow scope is the subc daemon's record of one flow's
-#             authority: core registers one per flow, and basal opens every
-#             route it uses for that flow under it. A scope's carrier list
-#             names the only principals the daemon lets open routes under
-#             that scope. Each send's Broca checkpoint must match core's
-#             flow_scope selector, attest reserved:basal as the first sender
-#             and freeze the flow_id. A direct client opening the same selector
-#             must be refused as a non-carrier. That proves an outsider can't
-#             use the scope; it doesn't read the carrier list, which no store
-#             exposes. Tests in the prefrontal repository prove that the
-#             carrier list core registers for every flow scope, agent-owned
-#             or global, is exactly [reserved:basal]. For reference, they are
-#             at commit cba528a11, in
-#             crates/prefrontal-core-module/src/scope_owner.rs:
-#             flow_scope_registration_is_basal_only,
-#             registered_flow_scope_wire_vector_pins_attributes_and_the_entire_carrier_list,
-#             registered_global_flow_scope_wire_vector_pins_no_agent_and_the_entire_carrier_list.
-#             The rig's own ck-basal build (with the unscoped-send switch
-#             described below) also sends once without a scope and requires
-#             Broca's flow_scope_required refusal with no RunStarted or
-#             run_index row.
-#             Any first-call refusal is reported verbatim and stops the model
-#             cases; it is never retried with another provider or model.
 #
 # copy-stage <dir> copies the stage's binaries, SHA-256 sidecars, card.md and
 # revision into stages/<stage-name>/ so a worker can use the copy without
@@ -116,14 +84,9 @@
 # stage directory script/stage.sh wrote, byte for byte and under their
 # production identifiers, instead of the rig's own build of them; every other
 # binary is the rig's build. The stage must be of the commit the rig built basal at.
-# The rig's own ck-basal is built with two rig-only switches: a one-shot kill
-# switch, armed by a file, that kills ck-basal at a named point in a run so the
-# suite can check crash recovery; and an unscoped-send switch, armed by
-# another file, that sends one model call to Broca without the flow's scope so
-# the suite can check that Broca refuses it. A staged ck-basal has neither
-# switch, so test reports the sink crash, pre-send route checkpoint, accepted
-# model crash and unscoped-send cases as not run; a plain place puts the rig's
-# build back.
+# The rig's own ck-basal has a one-shot kill switch for the crash case.
+# A staged build lacks the switch, so test reports that case as not run;
+# a plain place puts the rig's build back.
 #
 # What the rig isolates:
 #   - Everything lives under $RIG: src/ (one clone per repository at the
@@ -206,7 +169,6 @@ CORE_STORE="$DATA_HOME/cortexkit/prefrontal/store.db"
 BASAL_STORE="$DATA_HOME/cortexkit/basal/store.db"
 MACHINE_ID="$DATA_HOME/cortexkit/machine-id"
 KILL_FILE="$RUNTIME_DIR/basal-kill-at"
-UNSCOPED_FILE="$RUNTIME_DIR/basal-unscoped-send"
 # The contract suite: a client of the rig, not a module, so it is run from
 # the build output rather than placed in bin/.
 CONTRACT="$TARGETS/basal/release/basal-rig-contract"
@@ -238,7 +200,7 @@ on_rig_exit() {
 
 # shellcheck disable=SC2329
 cleanup_rig_test() {
-  rm -f "$KILL_FILE" "$UNSCOPED_FILE"
+  rm -f "$KILL_FILE"
   cmd_stop
 }
 
@@ -289,7 +251,7 @@ guard_all_paths() {
   for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$BASAL_SOURCE" "$LOGS" "$RESULTS" "$STAGES" \
       "$CONFIG_HOME" "$DATA_HOME" "$RUNTIME_DIR" "$CONN" "$PIDFILE" \
       "$SUBC_CONFIG" "$ROUTING_CONFIG" "$BROCA_INDEX" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME" "$CORE_STORE" \
-      "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$UNSCOPED_FILE" "$CONTRACT" "$PROJECTS"; do
+      "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$CONTRACT" "$PROJECTS"; do
     guard_path "$path"
   done
 }
@@ -987,12 +949,12 @@ cmd_config() (
       "launch_nonce_env": false
     },
     // Reserved, so its routes carry the principal reserved:basal. The rig's
-    // build reads the two arming files for crash and unscoped-send checks;
+    // build reads the crash case’s one-shot arming file;
     // production ck-basal has neither switch and ignores both variables.
     "basal": {
       "program": "$BIN/ckdev-basal",
       "args": [],
-      "env": { "BASAL_RIG_KILL_FILE": "$KILL_FILE", "BASAL_RIG_UNSCOPED_FILE": "$UNSCOPED_FILE" },
+      "env": { "BASAL_RIG_KILL_FILE": "$KILL_FILE" },
       "enabled": true,
       "reserved": true
     },
@@ -1141,10 +1103,10 @@ cmd_credential() {
   rig_auth put --id apikey:openai --provider-id openai --payload-file "$key_file"
   rm -f "$key_file"
   rig_auth status
-  require_model_credential
+  verify_credential_inventory
 }
 
-require_model_credential() {
+verify_credential_inventory() {
   listing=$(rig_auth list) || { say "cannot read the rig credential inventory" >&2; return 1; }
   printf '%s\n' "$listing" | python3 -c 'import sys
 lines = sys.stdin.read().splitlines()
@@ -1554,11 +1516,9 @@ PY
 # output in contract.log and its results in contract.json beside it, and stop
 # the rig again only if this command started it.
 cmd_test() (
-  models=0
   packages=0
   if [ $# -eq 1 ]; then
     case "$1" in
-      --models) models=1 ;;
       --packages) packages=1 ;;
       *) usage ;;
     esac
@@ -1573,17 +1533,11 @@ cmd_test() (
     say "+ register the run's project in the rig's entorhinal (ensure_project)"
     say "+ rig_env $CONTRACT --rig-root $RIG --core-store $CORE_STORE --basal-store $BASAL_STORE"
     say "    --machine-id $MACHINE_ID --kill-file $KILL_FILE --project-id <the project>"
-    say "    --unscoped-file $UNSCOPED_FILE"
     say "    --project-root $PROJECTS/basal-rig-$(printf '%s' "$stamp" | tr '[:upper:]' '[:lower:]')"
     say "    --results $dir/contract.json"
     say "    --broca-index $BROCA_INDEX"
     if [ "$packages" = 1 ]; then
       say "    --packages (only setup, packages and cleanup; other groups not run)"
-    elif [ "$models" = 1 ]; then
-      rig_auth list
-      say "    --models (after requiring exactly one active OpenAI credential)"
-    else
-      say "    (all nine model cases reported as not run by name)"
     fi
     say "    [--no-kill-hook, only when place --from-stage placed a staged ck-basal]"
     say "  (output into $dir/contract.log)"
@@ -1610,17 +1564,9 @@ cmd_test() (
   # only way the flag is ever passed: a rig build always runs the case.
   if [ "$(basal_mode)" = staged ]; then
     set -- --no-kill-hook
-    say "ck-basal is a staged production build without rig-only switches; sink crash, pre-send route checkpoint, accepted model crash and unscoped-send cases will be reported as not run"
+    say "ck-basal is a staged production build without the rig-only switch; the sink crash case will be reported as not run"
   else
     set --
-  fi
-  if [ "$models" = 1 ]; then
-    # A failed prerequisite must not leave a daemon this command started.
-    if ! require_model_credential; then
-      [ "$started" = 0 ] || cmd_stop
-      die "the rig credential prerequisite failed"
-    fi
-    set -- "$@" --models
   fi
   if [ "$packages" = 1 ]; then
     set -- "$@" --packages
@@ -1628,14 +1574,14 @@ cmd_test() (
   say "running the contract suite (output: $dir/contract.log)"
   set +e
   rig_env "$CONTRACT" --rig-root "$RIG" --core-store "$CORE_STORE" --basal-store "$BASAL_STORE" \
-    --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" --unscoped-file "$UNSCOPED_FILE" --project-id "$project_id" \
+    --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" --project-id "$project_id" \
     --project-root "$project_root" \
     --results "$dir/contract.json" --broca-index "$BROCA_INDEX" "$@" > "$dir/contract.log" 2>&1
   status=$?
   set -e
   cat "$dir/contract.log"
   check_contract_report "$dir/contract.json" || status=1
-  rm -f "$KILL_FILE" "$UNSCOPED_FILE"
+  rm -f "$KILL_FILE"
   if [ "$started" = 1 ]; then
     cmd_stop
   fi

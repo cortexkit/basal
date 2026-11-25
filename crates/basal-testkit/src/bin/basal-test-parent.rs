@@ -97,7 +97,6 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
     )
     .map_err(|e| e.to_string())?;
     let config = Config {
-        selector: Arc::new(basal_host::selector::FakeSelector::default()),
         // This run is healthy, so its deadlines only stop a hang. The kill
         // harness runs several of these processes at once, and on a loaded
         // machine an activation can wait a long time for CPU, so keep them

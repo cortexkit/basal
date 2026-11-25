@@ -2,10 +2,47 @@ use basal_core::run_log::LogRecord;
 use basal_core::run_records::{Body, Deferred, Record};
 
 #[test]
+fn placed_model_codes_decode_in_the_journal_and_log() {
+    use basal_proto::{CallKind, RetiredModel};
+
+    for (code, call, name) in [
+        (4u8, RetiredModel::Classify, "classify"),
+        (5, RetiredModel::Llm, "llm"),
+    ] {
+        // The historical log format used ordinal 5 for Intent and ordinal 2 for
+        // Kind::Primitive, followed by the worker code at the time.
+        let bytes = postcard::to_allocvec(&(
+            "old-model",
+            1u64,
+            5u32,
+            (0u64, (2u32, code), "mutation", name, "null", [0u8; 32]),
+            None::<String>,
+            "null",
+            1u64,
+            None::<(i64, u64)>,
+            1i64,
+            None::<(u64, u64, u64, i64)>,
+        ))
+        .unwrap();
+        let record = Record::decode(8, &bytes).unwrap();
+        let Body::Intent(intent) = &record.body else {
+            panic!("expected a placed intent")
+        };
+        assert_eq!(intent.call.kind, CallKind::RetiredModel(call));
+        assert_eq!(intent.call.op, name);
+        assert_eq!(postcard::to_allocvec(&record).unwrap(), bytes);
+        assert_eq!(
+            basal_core::model::kind_from_columns(i64::from(code), None, None).unwrap(),
+            intent.call.kind
+        );
+    }
+}
+
+#[test]
 fn priced_selection_keeps_the_placed_intent_layout_and_json_reader_compatible() {
     use basal_core::StoredClass;
     use basal_core::run_records::{CallIdentity, Intent, Reservation};
-    use basal_proto::{CallKind, HostCall, JsonText, Primitive};
+    use basal_proto::{CallKind, HostCall, JsonText, RetiredModel};
     use serde::Deserialize;
 
     // Preserve the pre-pricing Intent layout for rollback readers. Its JSON
@@ -30,13 +67,18 @@ fn priced_selection_keeps_the_placed_intent_layout_and_json_reader_compatible() 
         variant: Option<String>,
         #[serde(rename = "decisionID")]
         decision_id: String,
-        runner: basal_host::broca::wire::ModelParams,
+        runner: PlacedRunner,
+    }
+    #[derive(Deserialize)]
+    struct PlacedRunner {
+        provider: String,
+        model: String,
     }
     let frozen = JsonText::new(r#"{"selection":{"providerID":"registry","modelID":"chosen","decisionID":"decision","runner":{"provider":"runner","model":"wire-model"},"harness":"basal","price":{"basis":"metered","rates_per_mtok":{"input":3,"output":15},"estimated_task_usd":0.015}}}"#).unwrap();
     let identity = CallIdentity::new(
         HostCall {
             position: 7,
-            kind: CallKind::Primitive(Primitive::Llm),
+            kind: CallKind::RetiredModel(RetiredModel::Llm),
             args: JsonText::new(r#"{"prompt":"hello"}"#).unwrap(),
         },
         StoredClass::Mutation,

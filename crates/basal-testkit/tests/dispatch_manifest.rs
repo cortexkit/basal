@@ -56,12 +56,11 @@ fn documented_example_round_trips_and_installs() {
     assert_eq!(parsed.id, "synapse-xcom-inference-news");
     assert_eq!(parsed.version, 3);
     assert_eq!(parsed.state_epoch, 1);
-    assert_eq!(parsed.llm.as_ref().unwrap().iq, 65);
-    assert_eq!(parsed.llm.as_ref().unwrap().eq, 20);
+    assert!(parsed.llm.is_none());
     let again = serde_json::to_string(&parsed).expect("serialise");
     assert_eq!(Manifest::parse(&again).expect("reparse"), parsed);
     assert_eq!(parsed.deadline_ms(1), 600_000);
-    assert_eq!(parsed.token_window_ms(), Some(86_400_000));
+    assert_eq!(parsed.token_window_ms(), None);
 
     let world = World::new("manifest-example");
     world.catalog.set_op(
@@ -94,8 +93,7 @@ fn manifest_refuses_unknown_fields() {
     let top = manifest_with(|m| m["permissions"] = json!(["everything"]));
     let nested = manifest_with(|m| m["sinks"][0]["digest_maximum"] = json!("wake"));
     let in_trigger = manifest_with(|m| m["trigger"]["webhook"] = json!({}));
-    let in_llm = manifest_with(|m| m["llm"]["tools"] = json!(true));
-    for m in [top, nested, in_trigger, in_llm] {
+    for m in [top, nested, in_trigger] {
         match Manifest::parse(&m.to_string()) {
             Err(ManifestError::Decode(e)) => assert!(e.contains("unknown field"), "{e}"),
             other => panic!("accepted an unknown field: {other:?}"),
@@ -528,32 +526,14 @@ fn new_version_applies_to_newly_admitted_triggers_only() {
 }
 
 #[test]
-fn llm_demands_are_required_bounded_and_default_eq_is_zero() {
-    let mut m = basal_testkit::harness::test_manifest();
-    let parsed = basal_core::manifest::Manifest::parse(&m.to_string()).unwrap();
+fn stored_model_grants_still_decode_with_default_eq_and_closed_fields() {
+    let mut m = test_manifest();
+    m["llm"] = json!({"iq":0,"token_cap":{"tokens":1000,"window":"1h"},"max_output":10});
+    let parsed = Manifest::parse_stored(&m.to_string()).unwrap();
     assert_eq!(parsed.llm.as_ref().unwrap().iq, 0);
     assert_eq!(parsed.llm.as_ref().unwrap().eq, 0);
-    m["llm"].as_object_mut().unwrap().remove("iq");
-    assert!(basal_core::manifest::Manifest::parse(&m.to_string()).is_err());
-    for field in ["iq", "eq"] {
-        for bad in [
-            serde_json::json!(-1),
-            serde_json::json!(101),
-            serde_json::json!(1.5),
-            serde_json::json!("70"),
-            serde_json::Value::Null,
-        ] {
-            let mut m = basal_testkit::harness::test_manifest();
-            m["llm"][field] = bad;
-            assert!(
-                basal_core::manifest::Manifest::parse(&m.to_string()).is_err(),
-                "{field}: {m}"
-            );
-        }
-        for good in [0, 100] {
-            let mut m = basal_testkit::harness::test_manifest();
-            m["llm"][field] = serde_json::json!(good);
-            assert!(basal_core::manifest::Manifest::parse(&m.to_string()).is_ok());
-        }
-    }
+    m["llm"]["tools"] = json!(true);
+    assert!(
+        matches!(Manifest::parse_stored(&m.to_string()), Err(ManifestError::Decode(e)) if e.contains("unknown field"))
+    );
 }

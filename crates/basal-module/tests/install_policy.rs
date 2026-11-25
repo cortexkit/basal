@@ -17,7 +17,6 @@ use basal_host::transport::{Transport, WireError};
 use basal_host::{Consent, InstallOutcome};
 use basal_module::caller::Caller;
 use basal_module::module::Hosts;
-use basal_module::unconfigured::UnconfiguredHost;
 use rusqlite::params;
 use serde_json::{Value, json};
 use wire::Fake;
@@ -75,7 +74,6 @@ fn hosts_transport(transport: Arc<dyn Transport>, catalog_consent: bool) -> Host
         host: Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(transport.clone(), catalog.clone())),
             Arc::new(CoreHost::new(transport.clone())),
-            Arc::new(UnconfiguredHost::new()),
         )),
         catalog,
         consent: if catalog_consent {

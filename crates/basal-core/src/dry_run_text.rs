@@ -472,11 +472,6 @@ fn describe(manifest: &Manifest, call: &Value) -> Option<String> {
             Some(agent) => format!("Read facts about {}", quote(&agent)),
             None => "Read facts about an agent".into(),
         },
-        "classify" => "Ask a model to classify text".into(),
-        "llm" => match &manifest.llm {
-            Some(llm) => format!("Ask a model (iq {})", llm.iq),
-            None => "Ask a model".into(),
-        },
         "sink.digest" => {
             let agent = call["sink"]["agent"]
                 .as_str()

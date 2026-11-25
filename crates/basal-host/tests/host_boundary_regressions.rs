@@ -1,7 +1,5 @@
 use basal_host::core_consent::CoreConsent;
 use basal_host::routing::ModuleOpsHost;
-use basal_host::selector::SelectionError;
-use basal_host::selector::decode_selection;
 use basal_host::subc_catalog::{CORE, SubcCatalog};
 use basal_host::transport::{Transport, WireError};
 use basal_host::{
@@ -198,31 +196,6 @@ fn bad_answer_does_not_block_later_valid_decisions_or_acknowledge_the_bad_one() 
             .unwrap()
             .iter()
             .any(|op| op == "consent.ack")
-    );
-}
-#[test]
-fn nullable_model_variant_is_the_absent_variant() {
-    let mut answer = basal_host::selector::fake_answer("d", ("p", "m"), ("p", "m"));
-    answer["route"]["variant"] = Value::Null;
-    assert_eq!(decode_selection(answer).unwrap().variant, None);
-}
-
-#[test]
-fn selection_errors_have_explicit_script_visible_messages() {
-    assert_eq!(
-        SelectionError::Refused {
-            code: "denied".into(),
-            detail: "not allowed".into()
-        }
-        .to_string(),
-        "model selection refused denied: not allowed"
-    );
-    assert_eq!(
-        SelectionError::Unavailable {
-            detail: "offline".into()
-        }
-        .to_string(),
-        "model selection unavailable: offline"
     );
 }
 #[test]

@@ -9,19 +9,8 @@
 //! | `ops.call('mock', 'send', args)` | mutation, honours keys | one effect per idempotency key; a repeat returns the first reply |
 //! | `ops.call('mock', 'post', args)` | mutation, ignores keys | one effect per send |
 //! | `ops.call('mock', 'long', args)` | mutation, honours keys | accepted as long-running; completes when the test says so |
-//! | `llm(request)` | mutation, honours keys | as `long`, Broca-shaped (below) |
-//! | `classify(text, labels)` | query | completes now with a label and separate usage metadata |
 //! | `sink.digest`, `sink.status` | mutation, honours keys | as `send` |
 //! | `facts`, any other op | query | fixed data, or `args` |
-//!
-//! Broca-shaped: the request is basal's envelope, whose `send_id` Broca
-//! deduplicates on. The mock records every send's exact bytes per
-//! `send_id`; a second send under the same `send_id` with different bytes
-//! is refused with code `send_id_reuse`, as Broca refuses it. Usage is
-//! reported with the outcome: the script's request may carry `usage` to set
-//! it, otherwise input is a quarter of the envelope's bytes and output is
-//! the smaller of the clamped `max_output` and 16. [`MockHost::complete_all`]
-//! attaches it to an `llm` completion.
 //!
 //! Arguments may carry `delay_ms` (real time to wait before answering),
 //! `gate` (a name: the call waits until the test opens that gate),
@@ -91,7 +80,6 @@ struct State {
     sends: Vec<(String, String, String)>,
     long: BTreeMap<String, LongCall>,
     /// Every Broca send: (send_id, exact request bytes).
-    broca_sends: Vec<(String, String)>,
     clock_ms: f64,
     clock_step_ms: f64,
     random_state: u64,
@@ -104,7 +92,6 @@ impl Default for State {
             replies: BTreeMap::new(),
             sends: Vec::new(),
             long: BTreeMap::new(),
-            broca_sends: Vec::new(),
             clock_ms: 1_767_225_600_000.0, // 2026-01-01T00:00:00Z
             clock_step_ms: 1.0,
             random_state: 0x9E37_79B9_7F4A_7C15,
@@ -183,7 +170,7 @@ fn op_names(kind: &CallKind) -> (String, String) {
             (module.clone(), op.clone())
         }
         CallKind::Primitive(p) => ("primitive".to_owned(), p.name().to_owned()),
-        CallKind::Tool { .. } => ("unsupported".into(), "tool".into()),
+        CallKind::Tool { .. } | CallKind::RetiredModel(_) => ("unsupported".into(), "tool".into()),
     }
 }
 
@@ -397,32 +384,6 @@ impl MockHost {
         }
     }
 
-    /// Every Broca send, as (send_id, exact request bytes), in send order.
-    pub fn broca_sends(&self) -> Vec<(String, String)> {
-        lock(&self.shared.state).broca_sends.clone()
-    }
-
-    /// The usage the mock reports for `llm` and `classify`: what the
-    /// script's request asks for under `usage`, or a quarter of the
-    /// envelope's bytes as input and at most 16 tokens of output.
-    fn usage_for(envelope: &Value, bytes: usize) -> Value {
-        if let Some(usage) = envelope.get("request").and_then(|r| r.get("usage"))
-            && usage.is_object()
-        {
-            return usage.clone();
-        }
-        let max_output = envelope
-            .get("max_output")
-            .and_then(Value::as_u64)
-            .unwrap_or(16);
-        json!({
-            "input_tokens": bytes.div_ceil(4),
-            "cache_write_tokens": 0,
-            "output_tokens": max_output.min(16),
-            "cached_input_tokens": 0,
-        })
-    }
-
     /// Delivers every completed, unacknowledged long-running call to the
     /// sink again. A sink error leaves it for the next attempt.
     pub fn redeliver(&self) {
@@ -551,7 +512,7 @@ impl MockHost {
             honours_idempotency_keys: true,
         };
         match kind {
-            CallKind::Tool { .. } => CallClass::Mutation {
+            CallKind::Tool { .. } | CallKind::RetiredModel(_) => CallClass::Mutation {
                 honours_idempotency_keys: false,
             },
             CallKind::Op { module, op } | CallKind::OpFor { module, op } if module == "mock" => {
@@ -571,8 +532,7 @@ impl MockHost {
                     honours_idempotency_keys: false,
                 }),
             CallKind::Primitive(p) => match p {
-                Primitive::Llm
-                | Primitive::SinkDigest
+                Primitive::SinkDigest
                 | Primitive::SinkStatus
                 | Primitive::SinkBoard
                 | Primitive::SinkWaitResolve
@@ -620,7 +580,10 @@ impl Host for MockHost {
     }
 
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
-        if matches!(request.kind, CallKind::Tool { .. }) {
+        if matches!(
+            request.kind,
+            CallKind::Tool { .. } | CallKind::RetiredModel(_)
+        ) {
             return Err(TransportError::unsent(
                 "catalog tools are not flow host calls",
             ));
@@ -628,17 +591,7 @@ impl Host for MockHost {
         if let Some(done) = self.builtin(request, None) {
             return done;
         }
-        let envelope: Value = serde_json::from_str(request.args.as_str()).unwrap_or(Value::Null);
-        let broca = matches!(
-            &request.kind,
-            CallKind::Primitive(Primitive::Llm | Primitive::Classify)
-        );
-        // A Broca call's own options sit inside the envelope basal built.
-        let args = if broca {
-            envelope.get("request").cloned().unwrap_or(Value::Null)
-        } else {
-            envelope.clone()
-        };
+        let args: Value = serde_json::from_str(request.args.as_str()).unwrap_or(Value::Null);
         if let Some(ms) = args.get("delay_ms").and_then(Value::as_u64) {
             thread::sleep(Duration::from_millis(ms.min(60_000)));
         }
@@ -672,35 +625,13 @@ impl Host for MockHost {
         state
             .sends
             .push((request.idempotency_key.clone(), module.clone(), op.clone()));
-        if broca {
-            let send_id = envelope
-                .get("send_id")
-                .and_then(Value::as_str)
-                .unwrap_or(&request.idempotency_key)
-                .to_owned();
-            let reused = state
-                .broca_sends
-                .iter()
-                .any(|(id, bytes)| *id == send_id && bytes != request.args.as_str());
-            state
-                .broca_sends
-                .push((send_id, request.args.as_str().to_owned()));
-            if reused {
-                self.save(&state);
-                return Ok(Dispatched::Completed(HostOutcome::rejected(text(
-                    &json!({"message": "send_id reused with a different request", "code": "send_id_reuse"}),
-                ))));
-            }
-        }
-        let usage = broca.then(|| Self::usage_for(&envelope, request.args.len()));
         let honours = matches!(
             class,
             CallClass::Mutation {
                 honours_idempotency_keys: true
             }
         );
-        let long = matches!(&request.kind, CallKind::Primitive(Primitive::Llm))
-            || matches!(&request.kind, CallKind::Op { module, op } if module == "mock" && op == "long");
+        let long = matches!(&request.kind, CallKind::Op { module, op } if module == "mock" && op == "long");
         let result = if long {
             let handle = format!("h-{}", request.idempotency_key);
             let reply = Self::mutate(
@@ -722,7 +653,7 @@ impl Host for MockHost {
                 key: request.idempotency_key.clone(),
                 outcome: None,
                 acknowledged: false,
-                usage,
+                usage: None,
             });
             if let Some(ms) = args.get("complete_after_ms").and_then(Value::as_u64) {
                 let mock = self.clone();
@@ -760,16 +691,6 @@ impl Host for MockHost {
                     Dispatched::Completed(HostOutcome::fulfilled(text(
                         &json!({"agent": args.get("agent"), "activity": {"state": "idle"}}),
                     )))
-                }
-                (CallKind::Primitive(Primitive::Classify), _) => {
-                    let label = args
-                        .get("labels")
-                        .and_then(|l| l.get(0))
-                        .cloned()
-                        .unwrap_or(Value::Null);
-                    let mut outcome = HostOutcome::fulfilled(text(&label));
-                    outcome.usage = usage.and_then(|u| serde_json::from_value(u).ok());
-                    Dispatched::Completed(outcome)
                 }
                 _ => Dispatched::Completed(HostOutcome::fulfilled(request.args.clone())),
             }
@@ -850,7 +771,6 @@ fn encode_state(state: &State) -> Value {
             "acknowledged": c.acknowledged,
             "usage": c.usage,
         })).collect::<Vec<_>>(),
-        "broca_sends": state.broca_sends.iter().map(|(id, b)| json!([id, b])).collect::<Vec<_>>(),
         "clock_ms": state.clock_ms,
         "clock_step_ms": state.clock_step_ms,
         "random_state": state.random_state,
@@ -909,10 +829,6 @@ fn decode_state(v: &Value) -> Option<State> {
                 usage: c.get("usage").filter(|u| !u.is_null()).cloned(),
             },
         );
-    }
-    for s in v.get("broca_sends")?.as_array()? {
-        let s = strings(s, 2)?;
-        state.broca_sends.push((s[0].clone(), s[1].clone()));
     }
     state.clock_ms = v.get("clock_ms")?.as_f64()?;
     state.clock_step_ms = v.get("clock_step_ms")?.as_f64()?;

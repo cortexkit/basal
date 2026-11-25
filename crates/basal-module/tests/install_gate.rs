@@ -18,7 +18,6 @@ use basal_host::transport::WireError;
 use basal_host::{Host, InstallStatus};
 use basal_module::caller::Caller;
 use basal_module::module::Hosts;
-use basal_module::unconfigured::UnconfiguredHost;
 use serde_json::{Value, json};
 use wire::Fake;
 
@@ -51,7 +50,6 @@ fn gated_with_options(
         host: Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(fake.clone(), catalog.clone())),
             Arc::new(CoreHost::new(fake.clone())),
-            Arc::new(UnconfiguredHost::new()),
         )),
         catalog,
         consent: consent.clone(),

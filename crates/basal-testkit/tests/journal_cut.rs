@@ -46,7 +46,7 @@ fn check_uncut(summary: &Summary) {
             "monotonic": true,
         }))
     );
-    // Each keyed mutation (the race loser, the send, the llm call) took
+    // Each keyed mutation (the race loser, the send, the awaited long call) took
     // effect exactly once; the local write once (its first revision).
     assert!(
         summary.effects_per_call.values().all(|n| *n == 1),
@@ -66,15 +66,7 @@ fn check_uncut(summary: &Summary) {
         1,
         "{summary:#?}"
     );
-    // The llm call's reservation was settled by its reported usage, and
-    // every send under its send id carried the same bytes.
-    assert_eq!(summary.tokens.get("open"), Some(&0), "{summary:#?}");
-    assert!(
-        summary.tokens.get("input").is_some_and(|n| *n > 0),
-        "{summary:#?}"
-    );
-    assert_eq!(summary.tokens.get("unreported"), Some(&0), "{summary:#?}");
-    assert_eq!(summary.broca_reuse, 0, "{summary:#?}");
+    assert!(summary.tokens.values().all(|&value| value == 0));
 }
 
 /// Runs every cut list in parallel and returns (cuts, result) pairs.
@@ -300,7 +292,6 @@ fn quiesce_waits_for_dispatch_threads_after_an_activation_cut() {
         Config {
             install_gate: basal_core::InstallGate::Off,
             auto_resume: false,
-            selector: world.selector.clone(),
             ..Config::default()
         },
     )

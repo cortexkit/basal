@@ -1,5 +1,4 @@
-//! Send module ops to their providers and grant-checked facts and sinks to
-//! core. Model calls use a separate host that can be replaced independently.
+//! Send module ops to their providers and grant-checked facts and sinks to core.
 use crate::builtins::BuiltinHost;
 use crate::core_host::{is_core_carrier_op, outcome};
 use crate::subc_catalog::{SubcCatalog, Surface};
@@ -264,18 +263,16 @@ impl Host for ModuleOpsHost {
 pub struct RoutingHost {
     ops: Arc<dyn Host>,
     core: Arc<dyn Host>,
-    model: Arc<dyn Host>,
     builtins: Arc<dyn Host>,
 }
 impl RoutingHost {
     /// Routes the file, git and network built-ins to basal's own
     /// [`BuiltinHost`] with production settings.
-    pub fn new(ops: Arc<dyn Host>, core: Arc<dyn Host>, model: Arc<dyn Host>) -> Self {
+    pub fn new(ops: Arc<dyn Host>, core: Arc<dyn Host>) -> Self {
         let builtins = Arc::new(BuiltinHost::default().with_secret_host(ops.clone()));
         Self {
             ops,
             core,
-            model,
             builtins,
         }
     }
@@ -284,9 +281,9 @@ impl RoutingHost {
         self.builtins = builtins;
         self
     }
-    fn target(&self, kind: &CallKind) -> &dyn Host {
+    fn target(&self, kind: &CallKind) -> Option<&dyn Host> {
         match kind {
-            CallKind::Op { .. } | CallKind::OpFor { .. } => self.ops.as_ref(),
+            CallKind::Op { .. } | CallKind::OpFor { .. } => Some(self.ops.as_ref()),
             CallKind::Primitive(
                 Primitive::SinkDigest
                 | Primitive::SinkStatus
@@ -296,9 +293,9 @@ impl RoutingHost {
                 | Primitive::SinkNoticeSend
                 | Primitive::SinkNoticeResolve
                 | Primitive::Facts,
-            ) => self.core.as_ref(),
-            CallKind::Primitive(p) if p.is_builtin() => self.builtins.as_ref(),
-            _ => self.model.as_ref(),
+            ) => Some(self.core.as_ref()),
+            CallKind::Primitive(p) if p.is_builtin() => Some(self.builtins.as_ref()),
+            _ => None,
         }
     }
 }
@@ -306,15 +303,11 @@ impl Host for RoutingHost {
     fn shutdown(&self) {
         self.ops.shutdown();
         self.core.shutdown();
-        self.model.shutdown();
         self.builtins.shutdown();
     }
 
     fn secret_revoke(&self, params: serde_json::Value) -> Result<serde_json::Value, WireError> {
         self.ops.secret_revoke(params)
-    }
-    fn attach_codemode(&self, sink: Arc<dyn CompletionSink>) {
-        self.model.attach_codemode(sink);
     }
     fn scope_describe(
         &self,
@@ -339,28 +332,8 @@ impl Host for RoutingHost {
         flow_id: &str,
         kind: &CallKind,
     ) -> Result<(), crate::flow_refusal::FlowRefusal> {
-        // kv, now and random are answered inside basal and reach no provider,
-        // so they never need a flow scope. Without this, a flow with no model
-        // grant (and so no Broca in its scope) would be refused its own kv.
-        if let CallKind::Primitive(p) = kind
-            && !p.is_builtin()
-            && !matches!(
-                p,
-                Primitive::Llm
-                    | Primitive::Classify
-                    | Primitive::SinkDigest
-                    | Primitive::SinkStatus
-                    | Primitive::SinkBoard
-                    | Primitive::SinkWaitResolve
-                    | Primitive::SinkRoomPost
-                    | Primitive::SinkNoticeSend
-                    | Primitive::SinkNoticeResolve
-                    | Primitive::Facts
-            )
-        {
-            return Ok(());
-        }
-        self.target(kind).provider_ready(flow_id, kind)
+        self.target(kind)
+            .map_or(Ok(()), |host| host.provider_ready(flow_id, kind))
     }
     fn supports_core_capability(&self, capability: &str) -> bool {
         self.core.supports_core_capability(capability)
@@ -369,39 +342,40 @@ impl Host for RoutingHost {
         self.core.on_catalog_change(notify);
     }
     fn refusal_committed(&self, request: &CallRequest, refusal: &crate::flow_refusal::FlowRefusal) {
-        self.target(&request.kind)
-            .refusal_committed(request, refusal);
-    }
-    fn scope_checks(&self, enabled: bool) {
-        self.model.scope_checks(enabled);
+        if let Some(host) = self.target(&request.kind) {
+            host.refusal_committed(request, refusal);
+        }
     }
     fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
-        self.ops.configure_flow(flow_id, scope.clone());
-        self.model.configure_flow(flow_id, scope);
+        self.ops.configure_flow(flow_id, scope);
     }
     fn retain_flow_routes(&self, flow_id: &str, live: &std::collections::HashSet<String>) {
         self.ops.retain_flow_routes(flow_id, live);
-        self.model.retain_flow_routes(flow_id, live);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
-        self.target(kind).classify(kind)
+        self.target(kind)
+            .map_or(CallClass::Query, |host| host.classify(kind))
     }
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
-        self.target(&request.kind).dispatch(request)
+        match self.target(&request.kind) {
+            Some(host) => host.dispatch(request),
+            None => Err(TransportError::unsent("no host for this call kind")),
+        }
     }
     fn dispatch_classified(
         &self,
         request: &CallRequest,
         class: CallClass,
     ) -> Result<Dispatched, TransportError> {
-        self.target(&request.kind)
-            .dispatch_classified(request, class)
+        match self.target(&request.kind) {
+            Some(host) => host.dispatch_classified(request, class),
+            None => Err(TransportError::unsent("no host for this call kind")),
+        }
     }
     fn dispatch_committed(&self, request: &CallRequest) {
-        self.target(&request.kind).dispatch_committed(request);
-    }
-    fn model_events_committed(&self) {
-        self.model.model_events_committed();
+        if let Some(host) = self.target(&request.kind) {
+            host.dispatch_committed(request);
+        }
     }
     fn now_ms(&self) -> f64 {
         self.ops.now_ms()
@@ -411,8 +385,7 @@ impl Host for RoutingHost {
     }
     fn attach(&self, sink: Arc<dyn CompletionSink>) {
         self.ops.attach(sink.clone());
-        self.core.attach(sink.clone());
-        self.model.attach(sink);
+        self.core.attach(sink);
     }
     fn bind_fs_temps(&self, ledger: Arc<dyn crate::builtins::fs::TempLedger>) {
         self.builtins.bind_fs_temps(ledger);

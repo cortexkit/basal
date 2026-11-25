@@ -37,11 +37,9 @@ The LPAC worker launch, job-owned child processes and the shared spawn lock (`sr
 ### `basal-host`: what a call reaches
 
 - `lib.rs`: the `Host` trait, `CallRequest`, outcomes, the consent and catalog traits.
-- `routing.rs`: sends module ops to providers, core's sinks and facts to core, and model calls to the model host.
+- `routing.rs`: sends module ops to providers and core's sinks and facts to core.
 - `transport.rs`: the blocking subc client: management, tool and run-scope routes.
 - `core_host.rs`: core's sinks, facts, carrier reads and install status.
-- `broca/`: model calls through Broca, the `run.ended` wake, and a deterministic fake.
-- `selector.rs`: model choice through the routing module (the `routing/v1` provider).
 - `builtins/`: `fs`, `git` and `net.fetch`, with their Windows implementations.
 - `secrets.rs`, `secrets/`: vault references, injection and echo redaction.
 - `subc_catalog.rs`, `catalog.rs`: what the daemon declares; `flow_scope.rs`, `target_scope.rs`, `run_scope.rs`, `scope_describe.rs`: scopes basal carries.

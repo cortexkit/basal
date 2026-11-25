@@ -23,13 +23,6 @@ fn synced() -> EpochLsn {
         },
     }
 }
-struct NoWakes;
-impl EventWakes for NoWakes {
-    fn wake(&self, _: &Transaction<'_>, _: &Notice, _: i64) -> Result<usize> {
-        Ok(0)
-    }
-    fn committed(&self) {}
-}
 struct CrashOn {
     boundary: Boundary,
     after: usize,
@@ -221,19 +214,14 @@ fn recurring_schedule_cap_does_not_count_or_coalesce_events() {
     f.schema();
     let path = f.path(Arc::new(NoHooks));
     let report = path
-        .admit_events(
-            &[notice(1), notice(2), notice(3)],
-            &ctx(100),
-            &NoWakes,
-            || Ok(()),
-        )
+        .admit_events(&[notice(1), notice(2), notice(3)], &ctx(100), || Ok(()))
         .unwrap();
     assert_eq!(report.admitted, 3);
     for at in [61_000, 121_000] {
         assert_eq!(tick(&path, at).unwrap().new_runs().len(), 1);
     }
     let report = path
-        .admit_events(&[notice(4), notice(5)], &ctx(100), &NoWakes, || Ok(()))
+        .admit_events(&[notice(4), notice(5)], &ctx(100), || Ok(()))
         .unwrap();
     assert_eq!(report.admitted, 2);
     assert_eq!(f.count("live_runs"), 7);
@@ -341,7 +329,7 @@ fn identity_survives_restored_counter_and_uses_full_id() {
     f.event("flow");
     f.schema();
     let path = f.path(Arc::new(NoHooks));
-    path.admit_events(&[notice(1)], &ctx(100), &NoWakes, || Ok(()))
+    path.admit_events(&[notice(1)], &ctx(100), || Ok(()))
         .unwrap();
     let first = f.ids()[0].clone();
     let prefix = format!("run-{}-1-", f.rt.store().store_id());
@@ -356,7 +344,7 @@ fn identity_survives_restored_counter_and_uses_full_id() {
             Ok(())
         })
         .unwrap();
-    path.admit_events(&[notice(2)], &ctx(100), &NoWakes, || Ok(()))
+    path.admit_events(&[notice(2)], &ctx(100), || Ok(()))
         .unwrap();
     let ids = f.ids();
     assert_eq!(ids.len(), 2);
@@ -471,7 +459,7 @@ fn event_pull_counts_sequentially_and_acks_only_committed_receipts() {
     let path = f.path(Arc::new(NoHooks));
     let acked = Cell::new(false);
     let report = path
-        .admit_events(&[notice(1), notice(2)], &ctx(1), &NoWakes, || {
+        .admit_events(&[notice(1), notice(2)], &ctx(1), || {
             assert_eq!(f.count("live_runs"), 1);
             assert_eq!(f.count("event_receipts"), 2);
             acked.set(true);
@@ -481,7 +469,7 @@ fn event_pull_counts_sequentially_and_acks_only_committed_receipts() {
     assert!(acked.get());
     assert_eq!((report.admitted, report.queued), (1, 1));
     let again = path
-        .admit_events(&[notice(1), notice(2)], &ctx(1), &NoWakes, || Ok(()))
+        .admit_events(&[notice(1), notice(2)], &ctx(1), || Ok(()))
         .unwrap();
     assert_eq!(again.duplicate, 2);
     let later = AdmitContext {
@@ -519,7 +507,7 @@ pub(crate) fn crash_case(boundary: Boundary) {
     let path = f.path(crash);
     let acked = Cell::new(false);
     assert_eq!(
-        path.admit_events(&[notice(1), notice(2)], &ctx(100), &NoWakes, || {
+        path.admit_events(&[notice(1), notice(2)], &ctx(100), || {
             acked.set(true);
             Ok(())
         }),
@@ -543,7 +531,7 @@ pub(crate) fn crash_case(boundary: Boundary) {
     let before = restarted.ids();
     let path = restarted.path(Arc::new(NoHooks));
     let report = path
-        .admit_events(&[notice(1), notice(2)], &ctx(100), &NoWakes, || Ok(()))
+        .admit_events(&[notice(1), notice(2)], &ctx(100), || Ok(()))
         .unwrap();
     if committed {
         assert_eq!(report.duplicate, 2);
@@ -718,7 +706,7 @@ fn admission_epoch_fence_failure_never_acknowledges() {
     );
     let acked = Cell::new(false);
     assert!(matches!(
-        path.admit_events(&[notice(1)], &ctx(100), &NoWakes, || {
+        path.admit_events(&[notice(1)], &ctx(100), || {
             acked.set(true);
             Ok(())
         }),
@@ -916,7 +904,7 @@ fn a_frozen_agent_defers_fires_and_events_until_the_move_is_aborted() {
     assert!(report.new_runs().is_empty());
     assert!(report.planned.is_empty());
     let events = path
-        .admit_events(&[notice(1)], &ctx(100), &NoWakes, || Ok(()))
+        .admit_events(&[notice(1)], &ctx(100), || Ok(()))
         .unwrap();
     assert_eq!((events.admitted, events.queued), (0, 1));
     assert_eq!(path.drain_event_backlog(&ctx(100)).unwrap(), 0);

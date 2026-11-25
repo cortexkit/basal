@@ -1,7 +1,6 @@
 use super::*;
 use crate::{
     NoHooks, Step,
-    broca::BrocaStore,
     model::{RunState, StoredClass},
     run_driver::{Terminal, TerminalEffects},
     run_log::Lsn,
@@ -9,7 +8,7 @@ use crate::{
     run_store::{CloseDriver, TerminalWrite, lock_order},
     run_store_sql::{EpochLsn, GcFloor, LiveRun, Meta, ObligationState},
 };
-use basal_host::{UnknownReason, broca::StateStore};
+use basal_host::UnknownReason;
 use basal_proto::{CallKind, HostCall, JsonText, Settlement};
 use serde_json::json;
 use std::sync::{
@@ -667,56 +666,10 @@ pub(crate) fn arrival_before_acknowledgement_crash_recovers_the_same_outcome() {
 }
 
 #[test]
-fn broca_reads_live_registry_then_finished_history_without_a_single_parent_fk() {
-    let f = Fixture::new();
-    f.seed(true, true);
-    let broca = BrocaStore::new_staged(&f.hosts);
-    let identity = broca.identity(&f.live.run_id).unwrap().unwrap();
-    assert_eq!((identity.flow_id.as_str(), identity.version), ("flow", 1));
-    assert_eq!(broca.deadline(&f.live.run_id).unwrap(), Some(1020));
-    assert!(!broca.run_ended(&f.live.run_id).unwrap());
-    // A live identity read must not be reconstructed from a SQLite run row.
-    f.store
-        .write(|tx| {
-            tx.execute(
-                "UPDATE run_snapshots SET code_hash=?1 WHERE snapshot_id=(SELECT snapshot_id FROM live_runs WHERE run_id=?2)",
-                params![[9u8; 32].as_slice(), f.live.run_id],
-            )?;
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(
-        broca.identity(&f.live.run_id).unwrap().unwrap().code_hash,
-        identity.code_hash
-    );
-    f.close();
-    assert!(broca.run_ended(&f.live.run_id).unwrap());
-    assert_eq!(broca.deadline(&f.live.run_id).unwrap(), None);
-    assert_eq!(
-        broca.identity(&f.live.run_id).unwrap().unwrap().code_hash,
-        crate::ids::hex(&[9u8; 32])
-    );
-    f.store
-        .read(|c| {
-            let mut stmt = c.prepare("PRAGMA foreign_key_list(broca_calls)")?;
-            let tables = stmt
-                .query_map([], |r| r.get::<_, String>(2))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            assert!(
-                tables.is_empty(),
-                "Broca ownership spans live and historical runs"
-            );
-            Ok(())
-        })
-        .unwrap();
-}
-
-#[test]
 fn recovery_precedes_runtime_attach_time_delivery() {
     struct AttachHost {
         completion: Completion,
         ack: Mutex<Option<CompletionAck>>,
-        broca: BrocaStore,
     }
     impl basal_host::Host for AttachHost {
         fn classify(&self, _: &CallKind) -> basal_host::CallClass {
@@ -736,16 +689,6 @@ fn recovery_precedes_runtime_attach_time_delivery() {
         }
         fn attach(&self, sink: Arc<dyn CompletionSink>) {
             lock_order::assert_lock_free();
-            assert!(
-                self.broca
-                    .identity(&self.completion.run_id)
-                    .unwrap()
-                    .is_some()
-            );
-            assert_eq!(
-                self.broca.deadline(&self.completion.run_id).unwrap(),
-                Some(1020)
-            );
             *self.ack.lock().unwrap() = Some(sink.complete(&self.completion).unwrap());
         }
     }
@@ -766,7 +709,6 @@ fn recovery_precedes_runtime_attach_time_delivery() {
     let host = Arc::new(AttachHost {
         completion: f.completion(),
         ack: Mutex::new(None),
-        broca: BrocaStore::new_staged(&hosts),
     });
     let runtime = crate::Runtime::new_staged(
         hosts,

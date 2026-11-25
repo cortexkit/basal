@@ -207,8 +207,6 @@ fn template_and_package_instances_stop_every_call_family_without_changing_enable
         "fs.read('/tmp/revoked-file')",
         "facts('ALF',{})",
         "sink.digest('ALF',{title:'after'})",
-        "llm({prompt:'after'})",
-        "classify('after',['yes','no'])",
     ]
     .iter()
     .enumerate()

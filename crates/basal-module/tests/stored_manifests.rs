@@ -107,6 +107,7 @@ fn legacy_approved_manifest_remains_readable_and_upgradeable() {
     assert!(!dry["summary"]["runs"].as_array().unwrap().is_empty());
 
     let mut next = legacy_manifest();
+    next.as_object_mut().unwrap().remove("llm");
     next["version"] = json!(2);
     next["ops"][0]["module"] = json!("prefrontal");
     next["explanation"] = json!("Reads boards to report work to Synapse.");
@@ -121,6 +122,37 @@ fn legacy_approved_manifest_remains_readable_and_upgradeable() {
 }
 
 #[test]
+fn new_llm_grants_are_refused_at_intake_with_replacements() {
+    let f = fixture("retired-llm-grant");
+    let mut manifest = legacy_manifest();
+    manifest["ops"] = json!([]);
+    manifest["explanation"] = json!("Exercise manifest intake before any work is sent.");
+    let stored = basal_core::Manifest::parse_stored(&manifest.to_string()).unwrap();
+    assert_eq!(stored.token_window_ms(), Some(common::HOUR));
+    for grant in [manifest["llm"].clone(), Value::Null, json!({})] {
+        manifest["llm"] = grant;
+        let error = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "flow.install",
+                json!({"manifest":manifest.to_string(), "script":SCRIPT}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "llm_grant_removed");
+        for required in ["llm_complete", "llm_classify", "model_cost_usd"] {
+            assert!(error.message.contains(required), "{error}");
+        }
+        assert!(matches!(
+            f.module.rt.register_package(SCRIPT, &manifest.to_string()),
+            Err(basal_core::packages::PackageError::Install(
+                InstallError::Manifest(ManifestError::LlmGrantRemoved)
+            ))
+        ));
+    }
+}
+
+#[test]
 fn new_install_still_requires_board_read_coupling() {
     let f = fixture("intake-manifest");
     for (ops, board_read) in [
@@ -132,6 +164,7 @@ fn new_install_still_requires_board_read_coupling() {
         (json!([]), Some(json!(["SYNAPSE"]))),
     ] {
         let mut manifest = legacy_manifest();
+        manifest.as_object_mut().unwrap().remove("llm");
         manifest["explanation"] = json!("Reads boards to report work to Synapse.");
         manifest["ops"] = ops;
         if let Some(board_read) = board_read {

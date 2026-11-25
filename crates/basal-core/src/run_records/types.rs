@@ -26,6 +26,7 @@ impl CallIdentity {
             CallKind::Op { op, .. } | CallKind::OpFor { op, .. } => op.clone(),
             CallKind::Primitive(p) => p.name().to_owned(),
             CallKind::Tool { name } => name.clone(),
+            CallKind::RetiredModel(model) => model.name().into(),
         };
         Self {
             position: call.position,

@@ -20,7 +20,7 @@ impl Spawn for FailingSpawner {
     }
 }
 
-struct RecoverOnAttach(Arc<basal_core::broca::BrocaStore>);
+struct RecoverOnAttach(Arc<std::sync::atomic::AtomicBool>);
 impl basal_host::Host for RecoverOnAttach {
     fn classify(&self, _: &basal_proto::CallKind) -> basal_host::CallClass {
         basal_host::CallClass::Query
@@ -38,17 +38,17 @@ impl basal_host::Host for RecoverOnAttach {
         0.0
     }
     fn attach(&self, _: Arc<dyn basal_host::CompletionSink>) {
-        // BrocaHost also polls immediately when its completion sink attaches.
-        // This read must succeed before any recovery can inspect saved calls.
-        basal_host::broca::StateStore::load(self.0.as_ref())
-            .expect("model store bound before recovery");
+        assert!(
+            self.0.load(Ordering::SeqCst),
+            "store initializer precedes host recovery"
+        );
     }
 }
 
 #[test]
-fn startup_binds_the_model_store_before_host_recovery() {
+fn startup_initializes_the_store_before_host_recovery() {
     let dir = common::scratch("bound-before-recovery");
-    let snapshots = Arc::new(basal_core::broca::BrocaStore::default());
+    let initialized = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut pool = PoolConfig::new("unused", WorkerLaunch::Plain);
     pool.warm_spares = 0;
     let config = ModuleConfig {
@@ -61,7 +61,7 @@ fn startup_binds_the_model_store_before_host_recovery() {
     };
     let hosts = Hosts {
         transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
-        host: Arc::new(RecoverOnAttach(snapshots.clone())),
+        host: Arc::new(RecoverOnAttach(initialized.clone())),
         catalog: Arc::new(MockCatalog::standard()),
         consent: Arc::new(MockConsent::new()),
         hooks: Arc::new(NoHooks),
@@ -72,9 +72,8 @@ fn startup_binds_the_model_store_before_host_recovery() {
             hosts,
             Arc::new(FailingSpawner::default()),
             |_store, _recovered| {
-                snapshots
-                    .bind_recovered(&_recovered)
-                    .map_err(|e| e.to_string())
+                initialized.store(true, Ordering::SeqCst);
+                Ok(())
             },
         )
     }));
@@ -83,7 +82,6 @@ fn startup_binds_the_model_store_before_host_recovery() {
         module.pool.stop();
         drop(module);
     }
-    drop(snapshots);
     std::fs::remove_dir_all(dir).unwrap();
     assert!(succeeded, "host recovery must read the initialized store");
 }
@@ -106,7 +104,6 @@ fn failed_start_does_not_bind_or_retain_the_store() {
     let dir = common::scratch("failed-start");
     let scratch = dir.join("scratch");
     std::fs::write(&scratch, "not a directory").unwrap();
-    let snapshots = Arc::new(basal_core::broca::BrocaStore::default());
     let spawn = Arc::new(FailingSpawner::default());
     let mut pool = PoolConfig::new("missing", WorkerLaunch::Plain);
     pool.warm_spares = 0;
@@ -132,9 +129,7 @@ fn failed_start_does_not_bind_or_retain_the_store() {
         spawn.clone(),
         |store, _recovered| {
             opened = Some(Arc::downgrade(&store));
-            snapshots
-                .bind_recovered(&_recovered)
-                .map_err(|e| e.to_string())
+            Ok(())
         },
     );
     assert!(result.is_err());
@@ -146,15 +141,10 @@ fn failed_start_does_not_bind_or_retain_the_store() {
     let store = Store::open(&config.store_path, config.durability).expect("write lease released");
     drop(store);
     std::fs::remove_file(&scratch).unwrap();
-    let module = Module::start_with_store(config, hosts, spawn, |_store, _recovered| {
-        snapshots
-            .bind_recovered(&_recovered)
-            .map_err(|e| e.to_string())
-    })
-    .unwrap_or_else(|e| panic!("retry: {e}"));
+    let module = Module::start_with_store(config, hosts, spawn, |_store, _recovered| Ok(()))
+        .unwrap_or_else(|e| panic!("retry: {e}"));
     module.pool.stop();
     drop(module);
-    drop(snapshots);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

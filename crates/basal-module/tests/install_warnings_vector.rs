@@ -22,7 +22,6 @@ use basal_host::routing::{ModuleOpsHost, RoutingHost};
 use basal_host::subc_catalog::SubcCatalog;
 use basal_module::caller::Caller;
 use basal_module::module::Hosts;
-use basal_module::unconfigured::UnconfiguredHost;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use wire::Fake;
@@ -54,7 +53,6 @@ fn hosts(fake: Arc<Fake>) -> Hosts {
         host: Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(fake.clone(), catalog.clone())),
             Arc::new(CoreHost::new(fake.clone())),
-            Arc::new(UnconfiguredHost::new()),
         )),
         catalog,
         consent: Arc::new(CoreConsent::new(fake)),

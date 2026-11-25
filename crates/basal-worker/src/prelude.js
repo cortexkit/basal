@@ -22,7 +22,7 @@
 
   // Numeric codes naming each host primitive when it is passed to the native
   // bridge. They must equal basal-proto's Primitive::code on the Rust side.
-  const NOW = 1, RANDOM = 2, FACTS = 3, CLASSIFY = 4, LLM = 5, SINK_DIGEST = 6,
+  const NOW = 1, RANDOM = 2, FACTS = 3, SINK_DIGEST = 6,
     SINK_STATUS = 7, KV_GET = 8, KV_SET = 9, KV_DELETE = 10, SH = 11, FS_READ = 12,
     FS_LIST = 13, FS_STAT = 14, FS_WRITE = 15, GIT_LOG = 16, GIT_REV_PARSE = 17,
     GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21, INSTANCE_END = 24,
@@ -330,12 +330,6 @@
     },
     facts(agent, options) {
       return callPrimitive(FACTS, { agent, options });
-    },
-    classify(text, labels) {
-      return callPrimitive(CLASSIFY, { text, labels });
-    },
-    llm(request) {
-      return callPrimitive(LLM, request);
     },
     sink: {
       digest,

@@ -157,7 +157,6 @@ fn open(
         Config {
             clock,
             install_gate: basal_core::InstallGate::Off,
-            selector: world.selector.clone(),
             activation_deadline: Duration::from_secs(10),
             ..Default::default()
         },

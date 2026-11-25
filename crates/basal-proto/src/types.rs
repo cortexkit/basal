@@ -141,8 +141,6 @@ pub enum Primitive {
     /// A random sample (`Math.random()`, `random()`).
     Random,
     Facts,
-    Classify,
-    Llm,
     SinkDigest,
     SinkStatus,
     SinkBoard,
@@ -177,12 +175,10 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    pub const ALL: [Primitive; 28] = [
+    pub const ALL: [Primitive; 26] = [
         Self::Now,
         Self::Random,
         Self::Facts,
-        Self::Classify,
-        Self::Llm,
         Self::SinkDigest,
         Self::SinkStatus,
         Self::SinkBoard,
@@ -214,8 +210,7 @@ impl Primitive {
             Self::Now => 1,
             Self::Random => 2,
             Self::Facts => 3,
-            Self::Classify => 4,
-            Self::Llm => 5,
+            // 4 and 5 were classify and llm. Keep them reserved.
             Self::SinkDigest => 6,
             Self::SinkStatus => 7,
             Self::KvGet => 8,
@@ -251,8 +246,6 @@ impl Primitive {
             Self::Now => "now",
             Self::Random => "random",
             Self::Facts => "facts",
-            Self::Classify => "classify",
-            Self::Llm => "llm",
             Self::SinkDigest => "sink.digest",
             Self::SinkStatus => "sink.status",
             Self::SinkBoard => "sink.board",
@@ -317,6 +310,38 @@ pub enum CallKind {
     Tool {
         name: String,
     },
+    /// Historical flow records only. Not accepted by the worker protocol.
+    RetiredModel(RetiredModel),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RetiredModel {
+    Classify,
+    Llm,
+}
+
+impl RetiredModel {
+    pub fn stored_code(self) -> u8 {
+        match self {
+            Self::Classify => 4,
+            Self::Llm => 5,
+        }
+    }
+
+    pub fn from_stored_code(code: u8) -> Option<Self> {
+        match code {
+            4 => Some(Self::Classify),
+            5 => Some(Self::Llm),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Classify => "classify",
+            Self::Llm => "llm",
+        }
+    }
 }
 
 impl CallKind {
@@ -345,6 +370,7 @@ impl fmt::Display for CallKind {
             Self::OpFor { module, op } => write!(f, "target op ({module}, {op})"),
             Self::Primitive(p) => write!(f, "{}", p.name()),
             Self::Tool { name } => write!(f, "tool ({name})"),
+            Self::RetiredModel(model) => f.write_str(model.name()),
         }
     }
 }

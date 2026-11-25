@@ -482,7 +482,6 @@ impl DryRunner {
             // A template replay has no real instance to end. Send its authorized
             // end calls to the capture host, leaving local KV replay unchanged.
             capture_instance_end: request.template.is_some(),
-            selector: Arc::new(CapturedSelector),
             // No install gate: core has approved nothing for a dry run, and
             // its capture host never reaches core. Only module ops the
             // catalog marks as queries go out, in live mode; every sink
@@ -778,6 +777,7 @@ fn describe_call(call: &CallRow, config: &DryRunConfig) -> Value {
         }
         CallKind::Primitive(p) => (p.name().to_owned(), None, None),
         CallKind::Tool { .. } => ("unsupported_tool".to_owned(), None, None),
+        CallKind::RetiredModel(model) => (model.name().into(), None, None),
     };
     let args = call.args.as_str();
     let shown = if args.len() <= config.max_arg_bytes_shown {
@@ -1083,27 +1083,6 @@ impl Host for CaptureHost {
     }
 }
 
-#[derive(Debug)]
-struct CapturedSelector;
 #[cfg(test)]
 #[path = "flow_secrets_dryrun_tests.rs"]
 mod flow_secrets_tests;
-impl basal_host::selector::ModelSelector for CapturedSelector {
-    fn select(
-        &self,
-        _: &basal_host::selector::SelectionRequest,
-    ) -> Result<basal_host::selector::ModelSelection, basal_host::selector::SelectionError> {
-        // Previewing a model write must not allocate a real routing decision.
-        Err(basal_host::selector::SelectionError::Refused {
-            code: CAPTURED.into(),
-            detail: "model call captured without selecting or sending model work".into(),
-        })
-    }
-    fn report_outcome(
-        &self,
-        _: &str,
-        _: basal_host::selector::ModelOutcome,
-    ) -> Result<(), basal_host::selector::SelectionError> {
-        Ok(())
-    }
-}

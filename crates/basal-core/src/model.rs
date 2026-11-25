@@ -175,6 +175,7 @@ pub fn kind_columns(kind: &CallKind) -> Result<(i64, Option<&str>, Option<&str>)
         CallKind::Op { module, op } => (0, Some(module.as_str()), Some(op.as_str())),
         CallKind::OpFor { module, op } => (0, Some(module.as_str()), Some(op.as_str())),
         CallKind::Primitive(p) => (i64::from(p.code()), None, None),
+        CallKind::RetiredModel(model) => (i64::from(model.stored_code()), None, None),
         CallKind::Tool { .. } => {
             return Err(CoreError::Corrupt(
                 "catalog tool cannot enter the flow journal".into(),
@@ -196,9 +197,14 @@ pub fn kind_from_columns(
     }
     u8::try_from(code)
         .ok()
-        .and_then(Primitive::from_code)
-        .map(CallKind::Primitive)
+        .and_then(kind_from_stored_primitive)
         .ok_or_else(|| CoreError::Corrupt(format!("call kind code {code}")))
+}
+
+pub(crate) fn kind_from_stored_primitive(code: u8) -> Option<CallKind> {
+    Primitive::from_code(code)
+        .map(CallKind::Primitive)
+        .or_else(|| basal_proto::RetiredModel::from_stored_code(code).map(CallKind::RetiredModel))
 }
 
 pub fn json(text: String, what: &str) -> Result<JsonText> {

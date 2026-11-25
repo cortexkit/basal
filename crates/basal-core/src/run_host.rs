@@ -4,9 +4,8 @@
 //! | Entry point | Locks, in acquisition order | Work after releasing those locks |
 //! | --- | --- | --- |
 //! | Recovery | SQLite reads, released before registry publication | Host attachment afterward |
-//! | Live callback | Broca send gate (if any), actor, accounting | Quarantine transaction, crash hook and acknowledgement afterward |
-//! | Closed callback | Broca send gate (if any), accounting, SQLite | Crash hook and acknowledgement after commit |
-//! | Broca state read | Actor snapshot, released before any SQLite fallback | Host polling afterward |
+//! | Live callback | Actor, accounting | Quarantine transaction, crash hook and acknowledgement afterward |
+//! | Closed callback | Accounting, SQLite | Crash hook and acknowledgement after commit |
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -242,7 +241,6 @@ impl RecoveredHosts {
                             .as_ref()
                             .and_then(|i| i.reservation.as_ref())
                             .cloned();
-                        let frozen_request = call.intent.as_ref().map(|i| i.frozen_request.clone());
                         if call.accepted.is_none() {
                             records.append_pending(
                                 generation,
@@ -277,36 +275,19 @@ impl RecoveredHosts {
                             let value: serde_json::Value =
                                 serde_json::from_str(outcome.value.as_str())
                                     .map_err(|e| CoreError::Invalid(e.to_string()))?;
-                            let cost = frozen_request
+                            let cost = reservation
                                 .as_ref()
-                                .and_then(|request| {
-                                    basal_host::model_cost::recorded_charge(
-                                        request.as_str(),
-                                        outcome.usage,
-                                        reservation.as_ref().map_or(0, |r| r.cost_micros),
-                                        false,
-                                    )
-                                })
-                                .or_else(|| {
-                                    reservation
-                                        .as_ref()
-                                        .filter(|r| {
-                                            r.cost_micros > 0
-                                                || r.input_tokens.saturating_add(r.output_tokens)
-                                                    == 0
-                                        })
-                                        .map(|r| {
-                                            (crate::classify_cost::charge(
-                                                r.cost_micros as f64 / 1_000_000.0,
-                                                Some(&value),
-                                                crate::classify_cost::refusal_code(
-                                                    outcome.settlement,
-                                                    &value,
-                                                ),
-                                            ) * 1_000_000.0)
-                                                .ceil()
-                                                as u64
-                                        })
+                                .filter(|r| r.input_tokens == 0 && r.output_tokens == 0)
+                                .map(|r| {
+                                    (crate::classify_cost::charge(
+                                        r.cost_micros as f64 / 1_000_000.0,
+                                        Some(&value),
+                                        crate::classify_cost::refusal_code(
+                                            outcome.settlement,
+                                            &value,
+                                        ),
+                                    ) * 1_000_000.0)
+                                        .ceil() as u64
                                 });
                             if let Some(report) = outcome.usage {
                                 records.append(

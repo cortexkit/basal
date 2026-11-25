@@ -174,9 +174,7 @@ pub fn admit(
             .ok_or_else(|| Refusal::new("invalid_request", "invalid codemode request fields"))?;
         let fields = request_fields(request)?;
         let limits = limits(request.get("limits"))?;
-        let resolved = super::models::add_catalog(fields.catalog)
-            .map_err(|e| Refusal::new("invalid_catalog", e))?;
-        let catalog = catalog(&resolved, &[])?;
+        let catalog = catalog(fields.catalog, &[])?;
         Ok((scope, agent_id, fields, limits, catalog))
     })();
     let (scope, agent_id, fields, limits, catalog) = match checked {
@@ -255,13 +253,7 @@ pub fn admit(
                     targets: catalog
                         .tools
                         .values()
-                        .map(|tool| {
-                            if super::models::is_local(&tool.module, &tool.op) {
-                                "broca".into()
-                            } else {
-                                tool.module.clone()
-                            }
-                        })
+                        .map(|tool| tool.module.clone())
                         .collect(),
                 },
                 presets: BTreeMap::new(),
@@ -1000,10 +992,8 @@ pub fn admit_tool(
                 .collect(),
             None => BTreeMap::new(),
         };
-        let resolved = super::models::add_catalog(&resolved.catalog)
-            .map_err(|e| json!({"code":"invalid_catalog","message":e}))?;
-        let catalog =
-            catalog(&resolved, &gaps).map_err(|e| json!({"code":e.code,"message":e.message}))?;
+        let catalog = catalog(&resolved.catalog, &gaps)
+            .map_err(|e| json!({"code":e.code,"message":e.message}))?;
         let mut warnings: Vec<Value> = gaps
             .iter()
             .map(|gap| {
@@ -1026,13 +1016,7 @@ pub fn admit_tool(
                 targets: catalog
                     .tools
                     .values()
-                    .map(|t| {
-                        if super::models::is_local(&t.module, &t.op) {
-                            "broca".into()
-                        } else {
-                            t.module.clone()
-                        }
-                    })
+                    .map(|tool| tool.module.clone())
                     .collect(),
             },
             presets,

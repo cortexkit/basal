@@ -14,8 +14,7 @@
 //!
 //! An `args.delay` number puts the outcome that many ticks of virtual time
 //! after the call was issued; the parent always delivers the earliest ready
-//! outcome first, so delays decide races deterministically. `llm` is
-//! long-running; the other primitives answer with fixed data.
+//! outcome first, so delays decide races deterministically.
 
 use std::time::Duration;
 
@@ -109,7 +108,7 @@ impl ScriptHost {
             sleep: Duration::ZERO,
         };
         match &call.kind {
-            CallKind::Tool { .. } => ready(
+            CallKind::Tool { .. } | CallKind::RetiredModel(_) => ready(
                 Settlement::Rejected,
                 text(
                     &json!({"code": "profile_violation", "message": "catalog tools are not flow host calls"}),
@@ -148,18 +147,9 @@ impl ScriptHost {
                 ready(Settlement::Fulfilled, call.args.clone())
             }
             CallKind::Primitive(p) => match p {
-                Primitive::Llm => Answer::LongRunning,
                 Primitive::Facts => ready(
                     Settlement::Fulfilled,
                     text(&json!({"agent": args.get("agent"), "activity": {"state": "idle"}})),
-                ),
-                Primitive::Classify => ready(
-                    Settlement::Fulfilled,
-                    text(
-                        args.get("labels")
-                            .and_then(|l| l.get(0))
-                            .unwrap_or(&Value::Null),
-                    ),
                 ),
                 Primitive::SinkDigest
                 | Primitive::SinkStatus

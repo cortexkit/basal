@@ -354,7 +354,7 @@ fn storage_failure_before_commit_dispatches_nothing() {
     let run_id = admit_as(
         &rt,
         &world,
-        "const x = await llm({ prompt: 'p' }); return x.done;",
+        "const x = await ops.call('mock', 'long', { prompt: 'p' }); return x.done;",
         "trigger-2",
     );
     let first = rt.resume(&run_id).expect("activation");

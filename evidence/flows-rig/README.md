@@ -1,5 +1,7 @@
 # Live flow ownership and package evidence
 
+This is a historical record. The `--models` commands below apply only to the recorded revision; the current rig no longer has that mode.
+
 Basal is the fleet's flow engine. These two cycles built it from `d2978413ce69ba4ed9ceaec79fb5752a7548424c` and ran real modules in ckdev-flows: a private daemon with separate binaries, configuration, home and stores. The later evidence commit changes no executable code. Each check is one assertion; a case groups a scenario's assertions. Not-run cases are explicitly excluded from passing checks. The rig build contains test-only crash/unscoped-send hooks; the staged build contains production features only.
 
 | Mode | Checks | Cases | Failed | Not run | Blocked |
