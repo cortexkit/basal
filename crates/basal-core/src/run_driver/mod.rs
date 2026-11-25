@@ -77,6 +77,10 @@ pub trait Services: CloseDriver + Send + Sync + 'static {
     fn worker_poll(&self) -> Duration {
         worker::WORKER_POLL
     }
+    #[cfg(test)]
+    fn writer_drain_deadline(&self, until: std::time::Instant) -> std::time::Instant {
+        until
+    }
     /// Shutdown kills worker channels without turning their closure into a
     /// failed activation or publishing a late host reply.
     fn stopping(&self) -> bool {

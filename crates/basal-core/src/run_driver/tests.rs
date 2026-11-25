@@ -96,6 +96,7 @@ struct Service {
     before_release: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     held_dispatches: Mutex<Option<Vec<DispatchJob>>>,
     poll: Mutex<Duration>,
+    force_expired_drain: AtomicBool,
 }
 impl CloseDriver for Service {
     fn stop_worker(&self, _: &str) -> Result<()> {
@@ -252,6 +253,13 @@ impl Services for Service {
     }
     fn worker_poll(&self) -> Duration {
         *self.poll.lock().unwrap()
+    }
+    fn writer_drain_deadline(&self, until: std::time::Instant) -> std::time::Instant {
+        if self.force_expired_drain.load(Ordering::Acquire) {
+            std::time::Instant::now()
+        } else {
+            until
+        }
     }
     fn now_ms(&self) -> i64 {
         self.now.load(Ordering::Acquire)
@@ -608,9 +616,11 @@ fn expired_run_never_resends_or_starts_worker() {
     );
 }
 
+type WriteResult = std::result::Result<(), crate::ChannelError>;
+
 struct BlockedInput {
     entered: mpsc::Sender<std::thread::ThreadId>,
-    closed: mpsc::Receiver<()>,
+    resume: mpsc::Receiver<WriteResult>,
 }
 impl crate::channel::WorkerWriter for BlockedInput {
     fn send(
@@ -622,9 +632,9 @@ impl crate::channel::WorkerWriter for BlockedInput {
             ParentMessage::Activate(_) => Ok(()),
             ParentMessage::Deliver(_) => {
                 self.entered.send(std::thread::current().id()).unwrap();
-                // A full pipe stays blocked until its read end is closed.
-                let _ = self.closed.recv();
-                Err(crate::ChannelError::Closed)
+                self.resume
+                    .recv()
+                    .unwrap_or(Err(crate::ChannelError::Closed))
             }
             other => panic!("unexpected parent message {other:?}"),
         }
@@ -642,7 +652,7 @@ struct WedgedWorker {
     welcome: basal_proto::Welcome,
     input: Option<BlockedInput>,
     output: Option<BufferedOutput>,
-    close: Option<mpsc::Sender<()>>,
+    close: Option<mpsc::Sender<WriteResult>>,
 }
 impl crate::WorkerChannel for WedgedWorker {
     fn welcome(&self) -> &basal_proto::Welcome {
@@ -673,13 +683,14 @@ impl crate::WorkerChannel for WedgedWorker {
     }
     fn kill(&mut self) {
         if let Some(close) = self.close.take() {
-            let _ = close.send(());
+            let _ = close.send(Err(crate::ChannelError::Closed));
         }
     }
 }
 
 fn drive_with_blocked_delivery(
     next_frame: impl FnOnce(&Fixture, &Activation) -> basal_proto::WorkerMessage,
+    effects: impl FnOnce(mpsc::Sender<WriteResult>) -> Arc<dyn TerminalEffects>,
 ) -> (crate::ActivationEnd, WedgedWorker) {
     use basal_proto::WorkerMessage;
 
@@ -687,11 +698,11 @@ fn drive_with_blocked_delivery(
     *f.service.poll.lock().unwrap() = Duration::from_secs(600);
     let a = f.claim(0);
     let (entered, writing) = mpsc::channel();
-    let (close, closed) = mpsc::channel();
+    let (close, resume) = mpsc::channel();
     let (output, frames) = mpsc::channel();
     let mut worker = WedgedWorker {
         welcome: Worker::new(Vec::new()).welcome,
-        input: Some(BlockedInput { entered, closed }),
+        input: Some(BlockedInput { entered, resume }),
         output: Some(BufferedOutput(frames)),
         close: Some(close.clone()),
     };
@@ -706,13 +717,9 @@ fn drive_with_blocked_delivery(
         let (done, result) = mpsc::channel();
         let channel = &mut worker;
         let activation = &a;
+        let effects = effects(close.clone());
         let driver = scope.spawn(move || {
-            let end = activation.drive(
-                channel,
-                request(),
-                Arc::new(Effects),
-                Duration::from_secs(600),
-            );
+            let end = activation.drive(channel, request(), effects, Duration::from_secs(600));
             let _ = done.send(end);
         });
         let safety_limit = Duration::from_secs(20);
@@ -725,12 +732,12 @@ fn drive_with_blocked_delivery(
             // An inline write pins the driver even after the clock advances.
             // Close the fake pipe so the old loop returns instead of hanging the test.
             assert!(!driver.is_finished());
-            close.send(()).unwrap();
+            close.send(Err(crate::ChannelError::Closed)).unwrap();
         }
         let end = result.recv_timeout(safety_limit);
         if end.is_err() {
             // Let the scope join even if the driver incorrectly joins before kill.
-            let _ = close.send(());
+            let _ = close.send(Err(crate::ChannelError::Closed));
         }
         driver.join().unwrap();
         send_thread.unwrap();
@@ -742,13 +749,16 @@ fn drive_with_blocked_delivery(
 
 #[test]
 fn blocked_worker_input_does_not_hide_the_activation_deadline() {
-    let (end, worker) = drive_with_blocked_delivery(|f, activation| {
-        let deadline_at = activation
-            .with_state(|state| state.claim.as_ref().unwrap().deadline_at)
-            .unwrap();
-        f.service.now.store(deadline_at + 1, Ordering::Release);
-        basal_proto::WorkerMessage::Blocked { awaiting: vec![] }
-    });
+    let (end, worker) = drive_with_blocked_delivery(
+        |f, activation| {
+            let deadline_at = activation
+                .with_state(|state| state.claim.as_ref().unwrap().deadline_at)
+                .unwrap();
+            f.service.now.store(deadline_at + 1, Ordering::Release);
+            basal_proto::WorkerMessage::Blocked { awaiting: vec![] }
+        },
+        |_| Arc::new(Effects),
+    );
     assert_eq!(
         end,
         crate::ActivationEnd::Failed {
@@ -760,14 +770,19 @@ fn blocked_worker_input_does_not_hide_the_activation_deadline() {
 }
 
 #[test]
-fn finished_while_a_write_is_pending_kills_instead_of_restoring_writer() {
-    let (end, worker) =
-        drive_with_blocked_delivery(|_, activation| basal_proto::WorkerMessage::Finished {
-            activation_id: activation.generation,
-            result: basal_proto::ActivationResult::Completed {
-                value: JsonText::null(),
-            },
-        });
+fn finished_with_a_write_blocked_at_the_deadline_kills_instead_of_restoring_writer() {
+    let (end, worker) = drive_with_blocked_delivery(
+        |f, activation| {
+            f.service.force_expired_drain.store(true, Ordering::Release);
+            basal_proto::WorkerMessage::Finished {
+                activation_id: activation.generation,
+                result: basal_proto::ActivationResult::Completed {
+                    value: JsonText::null(),
+                },
+            }
+        },
+        |_| Arc::new(Effects),
+    );
     assert_eq!(
         end,
         crate::ActivationEnd::Succeeded {
@@ -778,6 +793,38 @@ fn finished_while_a_write_is_pending_kills_instead_of_restoring_writer() {
     assert!(worker.input.is_none(), "the worker's input was restored");
 }
 
+struct FinishDelivery(mpsc::Sender<WriteResult>);
+impl TerminalEffects for FinishDelivery {
+    fn capture(&self, _: &LiveRun, _: &State, state: RunState) -> Result<Box<dyn TerminalWrite>> {
+        assert_eq!(state, RunState::Succeeded);
+        // The worker received the delivery before sending Finished. Delay the
+        // successful return from send until the driver is committing that result.
+        self.0.send(Ok(())).unwrap();
+        Ok(Box::new(Effects))
+    }
+}
+
+#[test]
+fn finished_before_the_last_write_returns_keeps_the_worker() {
+    let (end, worker) = drive_with_blocked_delivery(
+        |_, activation| basal_proto::WorkerMessage::Finished {
+            activation_id: activation.generation,
+            result: basal_proto::ActivationResult::Completed {
+                value: JsonText::null(),
+            },
+        },
+        |resume| Arc::new(FinishDelivery(resume)),
+    );
+    assert_eq!(
+        end,
+        crate::ActivationEnd::Succeeded {
+            value: "null".into()
+        }
+    );
+    assert!(worker.close.is_some(), "a healthy worker was killed");
+    assert!(worker.input.is_some(), "the writer was not restored");
+}
+
 #[test]
 fn blocked_frame_flood_fills_the_writer_queue_and_retires_the_worker() {
     use basal_proto::WorkerMessage;
@@ -785,11 +832,11 @@ fn blocked_frame_flood_fills_the_writer_queue_and_retires_the_worker() {
     let f = Fixture::new();
     let a = f.claim(0);
     let (entered, _writing) = mpsc::channel();
-    let (close, closed) = mpsc::channel();
+    let (close, resume) = mpsc::channel();
     let (output, frames) = mpsc::channel();
     let mut worker = WedgedWorker {
         welcome: Worker::new(Vec::new()).welcome,
-        input: Some(BlockedInput { entered, closed }),
+        input: Some(BlockedInput { entered, resume }),
         output: Some(BufferedOutput(frames)),
         close: Some(close.clone()),
     };
@@ -823,7 +870,7 @@ fn blocked_frame_flood_fills_the_writer_queue_and_retires_the_worker() {
         let end = result.recv_timeout(Duration::from_secs(20));
         drop(output);
         if end.is_err() {
-            let _ = close.send(());
+            let _ = close.send(Err(crate::ChannelError::Closed));
         }
         driver.join().unwrap();
         end.expect("a full writer queue did not end the activation")
@@ -1162,6 +1209,7 @@ impl Fixture {
             before_release: Mutex::new(None),
             held_dispatches: Mutex::new(None),
             poll: Mutex::new(worker::WORKER_POLL),
+            force_expired_drain: AtomicBool::new(false),
         });
         let cut = Arc::new(Cut(Mutex::new(None)));
         let registry = Arc::new(RunStore::new_staged(store.clone(), Arc::new(NoHooks)));
