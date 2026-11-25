@@ -363,7 +363,7 @@ fn flow_complete_requires_a_dollar_cap_and_applies_it_at_dispatch() {
 }
 
 #[test]
-fn flow_extract_install_requires_dollar_cap() {
+fn flow_extract_requires_a_dollar_cap_and_applies_it_at_dispatch() {
     use cortexkit_llm_tools::{MODES, extract};
 
     let world = World::new("extract-dollars");
@@ -379,11 +379,16 @@ fn flow_extract_install_requires_dollar_cap() {
     world.catalog.set_tool_contract(
         "broca",
         "llm_extract",
-        json!({"modes":MODES,"capabilities":[extract::TAG],"input_schema":extract::input_schema()}),
+        json!({"modes":MODES,"capabilities":[extract::TAG],"input_schema":extract::input_schema(),
+        "result_format":"tool-result/v1"}),
     );
-    let (_world, rt, _, mut manifest, _) = runtime_fixture(world, 0.25);
+    let (world, rt, provider, mut manifest, _) = runtime_fixture(world, 0.25);
     manifest["ops"] = json!([{"module":"broca","op":"llm_extract"}]);
-    manifest.as_object_mut().unwrap().remove("model_cost_usd");
+    let caps = manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("model_cost_usd")
+        .unwrap();
     let error = rt
         .install(&InstallRequest {
             manifest: manifest.to_string(),
@@ -399,6 +404,31 @@ fn flow_extract_install_requires_dollar_cap() {
             op: "llm_extract".into(),
         }
     );
+
+    manifest["model_cost_usd"] = caps;
+    *provider.outcome.lock().unwrap() = HostOutcome::fulfilled(
+        JsonText::new(include_str!(
+            "../../../test-vectors/llm-extract-v1/extract-success.ok.json"
+        ))
+        .unwrap(),
+    );
+    let script = r#"return await ops.call('broca', 'llm_extract', {
+        model: 'example/extractor', fields: {total: {type: 'number', instructions: 'Extract the total.'}},
+        item: {state: 'The total is 123.'}, max_cost_usd: 1
+    });"#;
+    let spec = world.spec_with(&rt, script, &manifest).unwrap();
+    let id = rt.admit(&spec).unwrap().run_id().unwrap().to_owned();
+    assert_eq!(
+        finish(&rt, &world, &id).state,
+        basal_core::RunState::Succeeded
+    );
+    let calls = provider.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    let input: Value = serde_json::from_str(calls[0].args.as_str()).unwrap();
+    assert_eq!(input["max_cost_usd"], 0.25);
+    // Unlike programs, flows store whole microdollars (staged_runtime.rs).
+    // Round each charge up so rounding never understates spend against the cap.
+    assert_eq!(spent(&rt, &id), 2e-6);
 }
 
 #[test]

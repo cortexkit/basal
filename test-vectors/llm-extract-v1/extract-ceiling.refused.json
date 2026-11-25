@@ -1,0 +1,1 @@
+{"code":"cost_exceeded","message":"answering this item could cost 0.00005995 USD, crossing max_cost_usd 0 after 0 USD spent","detail":{"class":"permanent","no_spend":true}}
