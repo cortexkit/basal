@@ -75,10 +75,7 @@ async fn management(subject: &Subject, live: &Live, stamp: &RouteStamp) -> Route
 
 #[test]
 fn flow_catalog_has_exact_capability_tag() {
-    let catalog = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:flow.manage/v1"]}
-    }))
-    .unwrap();
+    let catalog = basal_module::tool::catalog(json!({"params":{}})).unwrap();
     let flow = catalog["tools"]
         .as_array()
         .unwrap()
@@ -111,12 +108,14 @@ fn flow_catalog_has_exact_capability_tag() {
 
 #[test]
 fn flow_trigger_schema_declares_an_object() {
-    let catalog = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:flow.manage/v1"]}
-    }))
-    .unwrap();
-    assert_eq!(catalog["tools"][0]["name"], "flow");
-    let schema = &catalog["tools"][0]["input_schema"];
+    let catalog = basal_module::tool::catalog(json!({"params":{}})).unwrap();
+    let flow = catalog["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "flow")
+        .unwrap();
+    let schema = &flow["input_schema"];
     // One concrete type: a union of every JSON type says nothing, and some
     // model providers refuse a `type` array outright.
     assert_eq!(schema["properties"]["trigger"]["type"], json!("object"));

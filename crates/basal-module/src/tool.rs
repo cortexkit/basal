@@ -2,11 +2,11 @@
 //! on the inbound route supply caller authority; model arguments never do.
 
 use cortexkit_role_tool_provider::{
-    CATALOG_CAPABILITY_FILTER, CallMode,
+    CallMode,
     catalog::{
         CatalogAnswer, CatalogRequest, CatalogTool, SystemTextAnswer, check_modes,
-        check_notice_templates_request, composition_digest, schema_digest, select_by_capabilities,
-        serves_call_mode, system_text_digest,
+        check_notice_templates_request, composition_digest, schema_digest, serves_call_mode,
+        system_text_digest,
     },
     describe::{Major, RoleDescribe},
 };
@@ -110,7 +110,6 @@ pub fn describe() -> Value {
         }],
         env!("CARGO_PKG_VERSION"),
     )
-    .with_capabilities(vec![CATALOG_CAPABILITY_FILTER.into()])
     .with_tool_capabilities(
         tools
             .iter()
@@ -139,6 +138,10 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         count_filtered_request(now_ms);
+        return Err(invalid(
+            "params.capabilities",
+            "basal does not support catalog capability filters",
+        ));
     }
     check_preset("preset", request.preset.as_deref())?;
     // Basal serves no session notices, so the contract requires it to refuse
@@ -167,22 +170,13 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     )
     .to_hex()
     .to_string();
-    // Validate the filter against every tag basal serves. A known tag for a
-    // tool outside the preset matches nothing rather than becoming invalid.
-    let tools = select_by_capabilities(&request.params, &full_tools)?
+    let tools = full_tools
         .into_iter()
         .filter(|tool| request.preset.is_none() || tool.name == "codemode")
-        .cloned()
         .collect();
     let mut answer = CatalogAnswer::new(generation, "").with_tools(tools);
     if request.preset.is_none() {
-        answer = if request.params.contains_key("capabilities") {
-            // Keep the filtered reply byte-identical until prefrontal stops
-            // sending filters. Remove this branch along with the filter.
-            answer.with_presets(["head"])
-        } else {
-            answer.with_presets(PRESETS)
-        };
+        answer = answer.with_presets(PRESETS);
     }
 
     answer
@@ -195,17 +189,9 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
         );
     }
     if request.system_text.is_some() {
-        // Only sessions offered codemode need its guidance. Keep a requested
-        // item well-formed without it: empty text still has byte digests and
-        // the selected tool names.
-        let resolved_text = if answer.tools.iter().any(|tool| tool.name == "codemode") {
-            SYSTEM_TEXT
-        } else {
-            ""
-        };
-        let digest = system_text_digest(resolved_text);
+        let digest = system_text_digest(SYSTEM_TEXT);
         let mut text = SystemTextAnswer::new(&digest, &digest)
-            .with_text(resolved_text)
+            .with_text(SYSTEM_TEXT)
             .with_tool_names(answer.tools.iter().map(|tool| tool.name.clone()));
         text.composition_digest = answer.composition_digest.clone();
         answer.system_text = Some(text);
@@ -282,8 +268,11 @@ mod filtered_request_tests {
     #[test]
     fn filtered_catalog_requests_are_counted_even_when_refused() {
         let before = count();
-        catalog(json!({"params": {"capabilities": ["basal:codemode/v1"]}})).unwrap();
-        // A refused filtered request still shows that a runner sent the filter.
+        // Basal no longer offers the filter, so every filtered request is
+        // refused, but the count still shows that a runner sent one.
+        let refused =
+            catalog(json!({"params": {"capabilities": ["basal:codemode/v1"]}})).unwrap_err();
+        assert_eq!(refused.code, "invalid_request");
         let _ = catalog(json!({"preset": "unknown", "params": {"capabilities": []}}));
         assert!(count() >= before + 2);
         let last = filtered_catalog_requests()["last_at_ms"].as_u64().unwrap();

@@ -661,7 +661,7 @@ impl ToolProviderSubject for Subject {
     }
     fn system_text_catalog_arguments(&self) -> Option<Value> {
         Some(json!({
-            "params":{"capabilities":["basal:codemode/v1","basal:flow.manage/v1"]},
+            "params":{},
             "system_text":{"params":{}}
         }))
     }
@@ -742,9 +742,8 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
     use cortexkit_role_tool_provider_conformance::{CaseOutcome, SuiteVerdict};
     println!("{}", report.render());
     for name in [
+        "role_describe_shape",
         "call_mode_matches_catalog",
-        "catalog_filter_preserves_plan_item",
-        "catalog_filter_model_refused",
         "system_text_digests_match_text",
         "system_text_preflight_digest_stable",
         "system_text_preset_optional_served",
@@ -813,6 +812,10 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
             // (the suite's SystemTextFacts capability, added in 0.15.9).
             "system_text_facts_accepted",
             "system_text_facts_malformed_refused",
+            // Basal publishes a discovery index but does not advertise catalog filtering.
+            "catalog_capability_filter_matches_describe",
+            "catalog_filter_preserves_plan_item",
+            "catalog_filter_model_refused",
             // Basal does not declare the suite's tool_versions capability.
             "tool_versions_older_minor_accepted",
             "tool_versions_newer_minor_argument_refused",
@@ -1203,26 +1206,28 @@ async fn unknown_bind_mode_is_refused_for_tools_and_role_operations() {
 }
 
 #[test]
-fn role_describe_advertises_catalog_capability_filter() {
+fn role_describe_keeps_the_tool_capability_index_without_the_filter() {
     let describe = basal_module::tool::describe();
-    assert!(describe["capabilities"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|capability| capability == cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER));
+    assert!(
+        describe["capabilities"]
+            .as_array()
+            .is_none_or(|capabilities| {
+                !capabilities.iter().any(|capability| {
+                    capability == cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER
+                })
+            })
+    );
+    // Prefrontal's discover_head_capability reads this index to find the head codemode provider.
     assert_eq!(
-        describe["tool_capabilities"],
-        json!(["basal:codemode/v1", "basal:flow.manage/v1"])
+        serde_json::to_vec(&describe["tool_capabilities"]).unwrap(),
+        br#"["basal:codemode/v1","basal:flow.manage/v1"]"#
     );
 }
 
 #[test]
 fn role_describe_tool_capabilities_match_catalog_tool_union() {
     let describe = basal_module::tool::describe();
-    let catalog = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:codemode/v1", "basal:flow.manage/v1"]}
-    }))
-    .unwrap();
+    let catalog = basal_module::tool::catalog(json!({"params":{}})).unwrap();
     let union: BTreeSet<String> = catalog["tools"]
         .as_array()
         .unwrap()
@@ -1249,99 +1254,28 @@ fn role_describe_tool_capabilities_match_catalog_tool_union() {
 }
 
 #[test]
-fn catalog_capability_filter_selects_flow_and_refuses_invalid_requests() {
+fn catalog_refuses_requests_with_a_capability_filter() {
     use cortexkit_role_tool_provider::errors::INVALID_REQUEST;
 
-    let selected = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:flow.manage/v1"]}
-    }))
-    .unwrap();
-    assert_eq!(
-        selected["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["flow"]
-    );
-    // Each tag selects only its own tool, so granting one never exposes the other.
-    let codemode = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:codemode/v1"]}
-    }))
-    .unwrap();
-    assert_eq!(
-        codemode["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["codemode"]
-    );
-
-    // tool-provider's select_by_capabilities leaves an unfiltered catalog unchanged.
-    let all = basal_module::tool::catalog(json!({"params":{}})).unwrap();
-    assert_eq!(
-        all["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["codemode", "flow"]
-    );
-    // tool-provider's select_by_capabilities selects no tools for an explicit empty filter.
-    assert_eq!(
-        basal_module::tool::catalog(json!({"params":{"capabilities":[]}})).unwrap()["tools"],
-        json!([])
-    );
-
-    let unknown = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["other:unknown/v1"]}
-    }))
-    .unwrap_err();
-    assert_eq!(unknown.code, INVALID_REQUEST);
-    assert_eq!(
-        unknown.detail.as_ref().unwrap()["field"],
-        "params.capabilities[0]"
-    );
-    assert_eq!(
-        unknown.detail.as_ref().unwrap()["capability"],
-        "other:unknown/v1"
-    );
-
-    for capabilities in [
-        json!(["other:unknown/v1", "basal:flow.manage/v1"]),
-        json!(["basal:flow.manage/v1", "basal:flow.manage/v1"]),
+    for request in [
+        json!({"params":{"capabilities":["basal:flow.manage/v1"]}}),
+        json!({"params":{"capabilities":[]}}),
+        json!({"params":{"capabilities":null}}),
+        json!({"preset":"head","params":{"capabilities":["basal:codemode/v1"]}}),
     ] {
-        let error = basal_module::tool::catalog(json!({"params":{"capabilities":capabilities}}))
-            .unwrap_err();
+        let error = basal_module::tool::catalog(request).unwrap_err();
         assert_eq!(error.code, INVALID_REQUEST);
-        assert_eq!(
-            error.detail.as_ref().unwrap()["field"],
-            "params.capabilities"
-        );
+        assert_eq!(error.detail, Some(json!({"field":"params.capabilities"})));
     }
-
-    let exclude = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:flow.manage/v1"],"exclude":["flow"]}
-    }))
-    .unwrap_err();
-    assert_eq!(exclude.code, INVALID_REQUEST);
-    assert_eq!(exclude.detail.as_ref().unwrap()["field"], "params.exclude");
 }
 
 #[test]
 fn every_public_tool_declares_its_served_modes() {
     use cortexkit_role_tool_provider::catalog::{check_modes, serves_call_mode};
-    let flow_catalog = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:flow.manage/v1"]}
-    }))
-    .unwrap();
-    let flow: cortexkit_role_tool_provider::catalog::CatalogAnswer =
-        serde_json::from_value(flow_catalog).unwrap();
-    let tools = [basal_module::tool::catalog_tool(), flow.tools[0].clone()];
+    let catalog = basal_module::tool::catalog(json!({"params":{}})).unwrap();
+    let catalog: cortexkit_role_tool_provider::catalog::CatalogAnswer =
+        serde_json::from_value(catalog).unwrap();
+    let tools = catalog.tools;
     assert_eq!(
         tools
             .iter()

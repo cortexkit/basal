@@ -224,6 +224,12 @@ Admission reads each provider's tool catalog without a preset first. If that
 answer lists no tools but offers the run's preset, admission reads the named
 preset. A nonempty first answer is used even if the provider offers the preset.
 
+For Basal's own `tool.catalog`, omit `params.capabilities`. A request carrying
+that field is refused with `invalid_request`. The catalog lists `codemode` and
+`flow` without a preset, and only `codemode` for `head`, `worker`, or `reader`.
+Prefrontal finds the head codemode provider through `role.describe`'s
+`tool_capabilities` index, not a filtered catalog request.
+
 A provider that does not serve a tool in codemode, or whose tool catalog can't be
 read or is invalid, does not refuse the run. Admission drops the affected tools
 (one tool for `provider_not_opted_in` or `call_mode_unsupported`, every tool from

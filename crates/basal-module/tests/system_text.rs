@@ -4,42 +4,47 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const TEXT_DIGEST: &str = "ac2a3af84c4039603f45e90c8ae1b28fd8c9a4b40e9b6cc3cdef316bf82dc5d0";
-const EMPTY_TEXT_DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+#[test]
+fn catalog_answers_without_a_filter_keep_their_exact_bytes() {
+    // Pin SHA-256 of complete replies to catch wire changes beyond tool definitions and text.
+    let default_digests = [
+        "ae0a80096497467169d5a6d9ddcdfea43dea1736ffdf7067f945623a45f41adb",
+        "a69dd73166692729fb0f054600687f7f7f71990f8c65e2bc463b160f59780bf9",
+    ];
+    let preset_digests = [
+        "1a350cbc807bf4918faa29008531a6df94796a5fcab71f1054c43d7c42410c21",
+        "7c4a813946c609d9c098ab276f1c2a75ab8215ea303effb2e19bf672b582c81e",
+    ];
+    for preset in [None, Some("head"), Some("worker"), Some("reader")] {
+        let digests = if preset.is_some() {
+            preset_digests
+        } else {
+            default_digests
+        };
+        for (with_text, expected) in [false, true].into_iter().zip(digests) {
+            let mut request = json!({"params":{}});
+            if let Some(preset) = preset {
+                request["preset"] = json!(preset);
+            }
+            if with_text {
+                request["system_text"] = json!({"params":{}});
+                if let Some(preset) = preset {
+                    request["system_text"]["preset"] = json!(preset);
+                }
+            }
+            let answer = tool::catalog(request).unwrap();
+            let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&answer).unwrap()));
+            assert_eq!(digest, expected, "{preset:?}, with text {with_text}");
+        }
+    }
+}
 
 fn arguments() -> Value {
     json!({
-        "params":{"capabilities":["basal:codemode/v1","basal:flow.manage/v1"]},
+        "params":{},
         "system_text":{"params":{}}
     })
-}
-
-#[test]
-fn legacy_filtered_catalog_answer_bytes_are_unchanged() {
-    let digests: Vec<_> = [
-        json!([]),
-        json!(["basal:codemode/v1"]),
-        json!(["basal:flow.manage/v1"]),
-        json!(["basal:codemode/v1", "basal:flow.manage/v1"]),
-    ]
-    .into_iter()
-    .map(|tags| {
-        let mut request = arguments();
-        request["params"]["capabilities"] = tags;
-        let answer = tool::catalog(request).unwrap();
-        format!("{:x}", Sha256::digest(serde_json::to_vec(&answer).unwrap()))
-    })
-    .collect();
-    // SHA-256 of the complete filtered responses. Even filtered-out tools
-    // contribute to catalog generation, so a description change moves all four pins.
-    assert_eq!(
-        digests,
-        [
-            "6bda14400ee9d3de321eebabcb8e0c60ab934b4a20e12e93f690656b0cc8482b",
-            "56c6d72ee8c23f4b88701a3b4a281af99dc33c3afaffb004a69c0acdeb535228",
-            "caabecfef2a094f64b1e49f8a30213ade0c670550e3b2fe4e3bbe47ac1403458",
-            "6d1b61210e7645cf164fd6e3a7b15ec3bde755e02ab19d77dd77cc5495a46f87",
-        ]
-    );
 }
 
 #[test]
@@ -60,7 +65,11 @@ fn default_system_text_is_declared_and_its_exact_bytes_are_pinned() {
     );
     assert_eq!(answer["system_text"]["item_digest"], TEXT_DIGEST);
     assert_eq!(answer["system_text"]["preflight_digest"], TEXT_DIGEST);
-    assert_eq!(answer["presets"], json!(["head"]));
+    assert_eq!(answer["presets"], json!(["head", "worker", "reader"]));
+    assert_eq!(
+        answer["system_text"]["tool_names"],
+        json!(["codemode", "flow"])
+    );
     assert!(answer["system_text"].get("composition_digest").is_none());
 }
 
@@ -79,63 +88,6 @@ fn catalog_tool_bytes_are_unchanged_by_system_text_support() {
         ),
         "9b40e4549f3b07bbb50362434b616030607a1759176987473c87ac695bd83ca2"
     );
-}
-
-#[test]
-fn flow_only_catalog_has_empty_system_text_with_matching_digests() {
-    let mut request = json!({
-        "params":{"capabilities":["basal:flow.manage/v1"]},
-        "system_text":{"params":{}},
-        "composition":{}
-    });
-    let full = tool::catalog(request.clone()).unwrap();
-    assert_eq!(full["system_text"]["text"], "");
-    assert_eq!(full["system_text"]["item_digest"], EMPTY_TEXT_DIGEST);
-    assert_eq!(full["system_text"]["preflight_digest"], EMPTY_TEXT_DIGEST);
-    assert_eq!(full["system_text"]["tool_names"], json!(["flow"]));
-    assert_eq!(
-        full["system_text"]["composition_digest"],
-        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
-    );
-    request["digest_only"] = json!(true);
-    assert_eq!(
-        tool::catalog(request).unwrap(),
-        json!({"generation":full["generation"],"catalog_digest":full["catalog_digest"]})
-    );
-}
-
-#[test]
-fn system_text_names_match_every_filtered_tool_set() {
-    let guidance = include_str!("../src/codemode_system_text.md");
-    for (tags, names, expected_text, expected_digest) in [
-        (json!([]), json!([]), "", EMPTY_TEXT_DIGEST),
-        (
-            json!(["basal:codemode/v1"]),
-            json!(["codemode"]),
-            guidance,
-            TEXT_DIGEST,
-        ),
-        (
-            json!(["basal:flow.manage/v1"]),
-            json!(["flow"]),
-            "",
-            EMPTY_TEXT_DIGEST,
-        ),
-        (
-            json!(["basal:codemode/v1", "basal:flow.manage/v1"]),
-            json!(["codemode", "flow"]),
-            guidance,
-            TEXT_DIGEST,
-        ),
-    ] {
-        let mut request = arguments();
-        request["params"]["capabilities"] = tags;
-        let answer = tool::catalog(request).unwrap();
-        assert_eq!(answer["system_text"]["tool_names"], names);
-        assert_eq!(answer["system_text"]["text"], expected_text);
-        assert_eq!(answer["system_text"]["item_digest"], expected_digest);
-        assert_eq!(answer["system_text"]["preflight_digest"], expected_digest);
-    }
 }
 
 #[test]
@@ -208,24 +160,6 @@ fn preset_discovery_and_selected_system_text_match_the_session() {
             "{preset}"
         );
     }
-}
-
-#[test]
-fn legacy_capability_filter_only_narrows_the_selected_preset() {
-    let request = |preset, capabilities| json!({"preset":preset,"params":{"capabilities":capabilities},"system_text":{"params":{}}});
-    let worker = tool::catalog(request("worker", json!(["basal:flow.manage/v1"]))).unwrap();
-    assert_eq!(worker["tools"], json!([]));
-    assert_eq!(worker["system_text"]["tool_names"], json!([]));
-    assert_eq!(worker["system_text"]["text"], "");
-
-    let head = tool::catalog(request(
-        "head",
-        json!(["basal:codemode/v1", "basal:flow.manage/v1"]),
-    ))
-    .unwrap();
-    assert_eq!(head["tools"].as_array().unwrap().len(), 1);
-    assert_eq!(head["tools"][0]["name"], "codemode");
-    assert_eq!(head["system_text"]["tool_names"], json!(["codemode"]));
 }
 
 #[test]
