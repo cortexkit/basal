@@ -57,6 +57,7 @@ impl GithubHost {
                 assert!(item["body"].as_str().unwrap().len() <= 4096);
                 assert!(serde_json::to_vec(&item["data"]).unwrap().len() <= 8192);
                 assert!(serde_json::to_vec(item).unwrap().len() <= 16384);
+                assert!(item["links"].as_array().unwrap().len() <= 8);
                 self.items.lock().unwrap().insert(
                     args["replace_key"].as_str().unwrap().to_owned(),
                     item.clone(),
@@ -225,12 +226,10 @@ impl Test {
             },
         );
         let card = if intake {
-            let reply = common::install(
-                &f,
-                &Caller::Operator,
-                script,
-                &serde_json::from_str(&common::authored_manifest(manifest)).unwrap(),
-            );
+            let mut first_version: Value = serde_json::from_str(manifest).unwrap();
+            // Intake in a fresh store refuses change notes without a previous version.
+            first_version.as_object_mut().unwrap().remove("changes");
+            let reply = common::install(&f, &Caller::Operator, script, &first_version);
             let card_id = reply["card_id"].as_str().unwrap();
             let card = consent.card(card_id).unwrap().fields;
             assert!(consent.decide(card_id, basal_host::CardDecision::Approve, "operator"));
@@ -273,8 +272,13 @@ impl Test {
         now: i64,
     ) -> basal_core::Run {
         self.host.mock.set_clock(now as f64);
-        let key = format!("{:064x}", self.host.bodies.lock().unwrap().len() + 1);
-        body["event_key"] = json!(key);
+        let key = if let Some(key) = body["event_key"].as_str() {
+            key.to_owned()
+        } else {
+            let key = format!("{:064x}", self.host.bodies.lock().unwrap().len() + 1);
+            body["event_key"] = json!(key);
+            key
+        };
         let bytes = body.to_string();
         self.host.bodies.lock().unwrap().insert(key.clone(), body);
         let report = self
@@ -366,12 +370,22 @@ fn pinned_reaction(kind: &str, event: usize) -> String {
 fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
     Manifest::parse_stored(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 9);
-    // The manifest declares only a trigger, a global audience sink, and three operations.
+    assert_eq!(manifest["version"], 10);
+    // The trigger, global sink and three operations are the only requested capabilities.
     assert_eq!(
         manifest.as_object().unwrap().keys().collect::<Vec<_>>(),
         [
-            "audience", "deadline", "format", "id", "ops", "purpose", "sinks", "trigger", "version"
+            "audience",
+            "changes",
+            "deadline",
+            "explanation",
+            "format",
+            "id",
+            "ops",
+            "purpose",
+            "sinks",
+            "trigger",
+            "version"
         ]
     );
     assert_eq!(manifest["audience"], json!({"kind":"global"}));
@@ -811,6 +825,268 @@ fn updates_replace_one_item_and_accumulate_times_with_newest_summary() {
     );
     // Only the opened notice reacted.
     assert_eq!(t.host.reactions.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn comment_lines_and_links_survive_pushes() {
+    let t = Test::new();
+    set_clock(&t, "2026-07-01T10:00:00Z");
+    let pr_url = "https://github.com/cortexkit/basal/pull/42";
+    for minute in 0..13 {
+        let mut body = item("pull_request", "updated");
+        body["url"] = json!(pr_url);
+        if let Some(author) = match minute {
+            1 => Some("river"),
+            5 => Some("sky"),
+            9 => Some("rowan"),
+            _ => None,
+        } {
+            body["actor_logins"] = json!([author]);
+            body["comment_author"] = json!(author);
+            body["comment_url"] = json!(format!("{pr_url}#issuecomment-{minute}"));
+        }
+        assert_eq!(t.event(body)["delivered"], 1);
+        t.f.clock.advance(60_000);
+    }
+
+    let writes = t.writes();
+    let digest = &writes[12]["item"];
+    assert_eq!(
+        digest["body"],
+        "- cortexkit/basal PR #42 updated at 12:00, 12:01, 12:02, 12:03, 12:04, 12:05 and 7 more: \"Synthetic subject\"\n\
+         New comment by rowan at 12:09.\n\
+         New comment by sky at 12:05.\n\
+         New comment by river at 12:01."
+    );
+    assert_eq!(
+        digest["links"],
+        json!([
+            {"kind":"url", "url":pr_url},
+            {"kind":"url", "url":format!("{pr_url}#issuecomment-9")},
+            {"kind":"url", "url":format!("{pr_url}#issuecomment-5")},
+            {"kind":"url", "url":format!("{pr_url}#issuecomment-1")}
+        ])
+    );
+    for (minute, write) in writes.iter().enumerate() {
+        let action = if [1, 5, 9].contains(&minute) {
+            "wake"
+        } else {
+            "piggyback"
+        };
+        assert_eq!(write["action"], action, "observation at minute {minute}");
+    }
+}
+
+#[test]
+fn plexus_comment_excerpt_vectors_render_link_and_wake() {
+    let sums = include_str!("../../../test-vectors/github-comment-excerpt-v1/SHA256SUMS");
+    let issue = include_str!("../../../test-vectors/github-comment-excerpt-v1/issue-comment.json");
+    let pr = include_str!("../../../test-vectors/github-comment-excerpt-v1/pr-comment.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(sums)),
+        "a5031b11a6688eb7bd64d5622b45c10b4215dbfe4bad09f0676a7bd68c1b2dc4"
+    );
+    assert_eq!(
+        sums,
+        format!(
+            "{:x}  issue-comment.json\n{:x}  pr-comment.json\n",
+            Sha256::digest(issue),
+            Sha256::digest(pr)
+        )
+    );
+
+    let t = Test::new();
+    set_clock(&t, "2026-08-20T12:02:03.456Z");
+    let cases = [
+        (
+            issue,
+            "New comment by elliot at 14:02: \"I can reproduce this.\"",
+            "https://github.com/fixture-org/lanterns/issues/3#issuecomment-1",
+        ),
+        (
+            pr,
+            "New comment by mira at 14:02: \"Thanks for the fix!\"",
+            "https://github.com/fixture-org/lanterns/pull/7#issuecomment-1",
+        ),
+    ];
+    for (i, (fixture, expected_line, comment_url)) in cases.into_iter().enumerate() {
+        let mut body: Value = serde_json::from_str(fixture).unwrap();
+        let key = body["event_key"].clone();
+        body["repo"] = json!("cortexkit/basal");
+        let result = t.event(body);
+        assert_eq!(result["delivered"], 1);
+        assert_eq!(result["events"][0]["event_key"], key);
+        let writes = t.writes();
+        let write = &writes[i];
+        assert_eq!(write["agent"], BASAL);
+        assert_eq!(write["action"], "wake");
+        assert_eq!(
+            write["item"]["body"].as_str().unwrap().lines().nth(1),
+            Some(expected_line)
+        );
+        assert_eq!(
+            write["item"]["links"][1],
+            json!({"kind":"url", "url":comment_url})
+        );
+    }
+}
+
+#[test]
+fn comment_excerpt_is_optional_quoted_sanitized_and_byte_capped() {
+    let t = Test::new();
+    set_clock(&t, "2026-07-01T10:00:00Z");
+    let cases = [
+        (None, "reader", "New comment by reader at 12:00.".into()),
+        (
+            Some(Value::Null),
+            "reader",
+            "New comment by reader at 12:00.".into(),
+        ),
+        (
+            Some(json!(42)),
+            "reader",
+            "New comment by reader at 12:00.".into(),
+        ),
+        (
+            Some(json!("")),
+            "reader",
+            "New comment by reader at 12:00.".into(),
+        ),
+        (
+            Some(json!("I pushed the changes…")),
+            "reader",
+            "New comment by reader at 12:00: \"I pushed the changes…\"".into(),
+        ),
+        (
+            Some(json!("a \"quote\"\n<and another line>\r")),
+            "re<\"ad\r\ner",
+            "New comment by re‹'ad  er at 12:00: \"a 'quote' ‹and another line> \"".into(),
+        ),
+        (
+            Some(json!("🦀".repeat(100))),
+            "reader",
+            format!("New comment by reader at 12:00: \"{}...\"", "🦀".repeat(69)),
+        ),
+    ];
+    for (i, (excerpt, author, line)) in cases.into_iter().enumerate() {
+        let mut body = item("pull_request", "created");
+        body["number"] = json!(i + 1);
+        body["comment_author"] = json!(author);
+        if let Some(excerpt) = excerpt {
+            if excerpt.is_string() {
+                body["comment_url"] = json!(format!(
+                    "https://github.com/cortexkit/basal/pull/{}#issuecomment-1",
+                    i + 1
+                ));
+            }
+            body["comment_excerpt"] = excerpt;
+        }
+        assert_eq!(t.event(body)["delivered"], 1);
+        assert_eq!(
+            t.writes()[i]["item"]["body"],
+            format!(
+                "- cortexkit/basal PR #{} new comment observed at 12:00. \"Synthetic subject\"\n{line}",
+                i + 1
+            )
+        );
+    }
+}
+
+#[test]
+fn many_comments_keep_six_newest_with_excerpts_under_memory_and_digest_limits() {
+    let t = Test::new();
+    set_clock(&t, "2026-07-01T10:00:00Z");
+    let first = t.f.clock.now_ms();
+    let pr_url = "https://github.com/cortexkit/basal/pull/42";
+    let comment_url = |i| {
+        let query = "a".repeat(if i == 18 { 50_000 } else { 3860 });
+        format!("{pr_url}?{query}#issuecomment-{i}")
+    };
+    let excerpt = "é".repeat(140);
+    for i in 0..20 {
+        let mut body = item("pull_request", "updated");
+        body["url"] = json!(pr_url);
+        body["title"] = json!("🦀".repeat(1200));
+        body["comment_author"] = json!(format!("reader-{i}"));
+        body["comment_url"] = json!(comment_url(i));
+        body["comment_excerpt"] = json!(excerpt);
+        assert_eq!(t.event(body)["delivered"], 1);
+        t.f.clock.advance(60_000);
+    }
+
+    let memory = t.memory();
+    assert!(serde_json::to_vec(&memory).unwrap().len() <= 48_000);
+    let history = &memory["items"]["github:cortexkit/basal:pull_request:42"];
+    assert_eq!(history["comment_count"], 20);
+    let comments = history["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 6);
+    for (comment, i) in comments.iter().zip((14..=19).rev()) {
+        assert_eq!(
+            *comment,
+            json!({
+                "author": format!("reader-{i}"),
+                "time": first + 60_000 * i,
+                "comment_url": if i == 18 { None } else { Some(comment_url(i)) },
+                "excerpt": excerpt
+            })
+        );
+    }
+
+    let writes = t.writes();
+    let digest = &writes[19]["item"];
+    let lines = digest["body"].as_str().unwrap().lines().skip(1);
+    let expected = (14..=19)
+        .rev()
+        .map(|i| format!("New comment by reader-{i} at 12:{i}: \"{excerpt}\""))
+        .chain(["14 earlier comments.".into()])
+        .collect::<Vec<_>>();
+    assert_eq!(lines.collect::<Vec<_>>(), expected);
+    assert_eq!(
+        digest["links"],
+        json!([
+            {"kind":"url", "url":pr_url},
+            {"kind":"url", "url":comment_url(19)}
+        ])
+    );
+}
+
+#[test]
+fn commenter_wake_policy_leaves_echo_and_actor_suppression_in_place() {
+    let t = Test::new();
+    let mut body = item("pull_request", "updated");
+    body["repo"] = json!("cortexkit/aft");
+    for (author, expected) in [
+        ("someone[BoT]", "piggyback"),
+        ("UALTINOK", "piggyback"),
+        ("CUBIC-dev-ai", "piggyback"),
+        ("aft-alfonso", "piggyback"),
+        ("someone", "wake"),
+    ] {
+        body["comment_author"] = json!(author);
+        body["actor_logins"] = json!([author, "another-human"]);
+        let result = t.event(body.clone());
+        assert_eq!(result["delivered"], 1);
+        assert_eq!(result["events"][0]["would_action"], expected, "{author}");
+        let writes = t.writes();
+        let write = writes.last().unwrap();
+        assert_eq!(write["action"], expected, "{author}");
+        assert!(
+            write["item"]["body"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("\nNew comment by {author} at "))
+        );
+    }
+    body["actor_logins"] = json!(["ualtinok"]);
+    assert_eq!(
+        t.event(body.clone())["events"][0]["suppressed_reason"],
+        "suppressed_actor_set"
+    );
+    body["action"] = json!("suppressed_own_echo");
+    body["actor_logins"] = json!(["someone"]);
+    assert_eq!(t.event(body)["events"][0]["suppressed_reason"], "own_echo");
+    assert_eq!(t.writes().len(), 5);
+    assert!(t.reactions().is_empty());
 }
 
 #[test]

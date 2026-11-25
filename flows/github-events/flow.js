@@ -50,12 +50,14 @@ const SUPPRESS_ACTORS = ['ualtinok', 'alfonso-aft', 'MC-Alfonso'];
 // have no project id.
 const SUPPRESS_ACTORS_BY_REPO = { 'cortexkit/aft': ['cubic-dev-ai', 'greptile-apps'] };
 
-// Owner actions: a newly opened issue or PR wakes its owner; every other
-// accepted event is an update that piggybacks on the owner's next wake.
-const ACTION = { opened: 'wake', update: 'piggyback' };
 const MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const ROLLING_MS = 30 * 60 * 1000;
 const CAP_MS = 60 * 60 * 1000;
+const MAX_COMMENTS = 6;
+const MAX_COMMENT_AUTHOR_BYTES = 128;
+const MAX_COMMENT_EXCERPT_BYTES = 280;
+// Keep six links plus escaped excerpts and observation metadata within the KV budget.
+const MAX_COMMENT_URL_JSON_BYTES = 4096;
 
 // Incremental helper from templates/github-ci-watch, adapted to a flow's body
 // and item metadata instead of template params. Never reserialize per character.
@@ -193,7 +195,17 @@ function render(repo, kind, number, action, history, summary) {
     const last = times.pop();
     prefix = `- ${subject} updated at ${times.join(', ')} and ${last}: `;
   }
-  return `${prefix}"${short(sanitize(summary), 4096 - bytes(prefix) - 2)}"`;
+  const comments = history.comments ?? [];
+  let suffix = '';
+  for (const { author, time, excerpt } of comments) {
+    suffix += `\nNew comment by ${author} at ${madridHHMM(time)}`;
+    suffix += excerpt ? `: "${excerpt}"` : '.';
+  }
+  if (history.comment_count > comments.length) {
+    const overflow = history.comment_count - comments.length;
+    suffix += `\n${overflow} earlier ${overflow === 1 ? 'comment' : 'comments'}.`;
+  }
+  return `${prefix}"${short(sanitize(summary), 4096 - bytes(prefix) - bytes(suffix) - 2)}"${suffix}`;
 }
 
 async function save(memory) {
@@ -226,7 +238,7 @@ const owner = owners[repo] ?? null;
 const isNew = (kind === 'issue' || kind === 'pull_request') && body.action === 'opened';
 const comparison = { repo, kind: kind ?? null, number: number ?? null,
   event_key: body.event_key ?? event.event_key, would_owner: owner,
-  would_action: isNew ? ACTION.opened : ACTION.update,
+  would_action: isNew ? 'wake' : 'piggyback',
   suppressed_reason: null, rule: 'deliver' };
 // events[] keeps the routing decision for every event, delivered or dropped,
 // so a run result still explains why an event did or did not reach its owner.
@@ -267,8 +279,9 @@ const bot = bots[repo] ?? null;
 const ownAuthored = bot != null && String(body.author ?? '').toLowerCase() === bot;
 // consumers.rs:1282-1327,1673-1701: authorship is not comment authorship.
 // Plexus has no user type or separate reviews; comment_author is its evidence.
-const humanComment = typeof body.comment_author === 'string' && body.comment_author.length > 0 &&
-  !body.comment_author.toLowerCase().endsWith('[bot]');
+const commentAuthor = typeof body.comment_author === 'string' && body.comment_author.length > 0 ?
+  body.comment_author : null;
+const humanComment = commentAuthor != null && !commentAuthor.toLowerCase().endsWith('[bot]');
 if (ownAuthored && !humanComment) return drop('own_bot_automated');
 // Logins compare case-insensitively and without a trailing `[bot]`, so a
 // review bot's account and its App identity are the same actor.
@@ -306,6 +319,9 @@ if (!(ownAuthored && humanComment) && echo) return drop('suppressed_actor_set');
 
 const prior = memory.items[key];
 if (prior?.event_keys.includes(comparison.event_key)) return drop('duplicate_event');
+// Bypassing the echo gate on an own-bot subject does not entitle a suppressed
+// author to wake the owner.
+if (humanComment && !suppressed.has(login(commentAuthor))) comparison.would_action = 'wake';
 // Opened issues/PRs bypass update debounce. Updates would become due 30 minutes
 // after the latest observation, capped at 60 minutes after the first update.
 // Event-only flows cannot schedule trailing-edge runs: deliver now, but record
@@ -314,6 +330,20 @@ const first = !prior || prior.is_new || prior.due_ms <= now || isNew ? now : pri
 const history = prior ?? { count: 0, times: [], event_keys: [] };
 history.count = Math.min(Number.MAX_SAFE_INTEGER, history.count + 1);
 if (history.times.length < 6) history.times.push(now);
+if (commentAuthor != null) {
+  const commentUrl = body.comment_url;
+  const excerpt = body.comment_excerpt;
+  const comment = {
+    author: short(sanitize(commentAuthor), MAX_COMMENT_AUTHOR_BYTES),
+    time: now,
+    comment_url: typeof commentUrl === 'string' && bytes(JSON.stringify(commentUrl)) <= MAX_COMMENT_URL_JSON_BYTES ?
+      commentUrl : null,
+    excerpt: typeof excerpt === 'string' && excerpt.length > 0 ?
+      short(sanitize(excerpt), MAX_COMMENT_EXCERPT_BYTES) : null,
+  };
+  history.comments = [comment, ...(history.comments ?? [])].slice(0, MAX_COMMENTS);
+  history.comment_count = Math.min(Number.MAX_SAFE_INTEGER, (history.comment_count ?? 0) + 1);
+}
 history.event_keys.push(comparison.event_key);
 history.event_keys = history.event_keys.slice(-64);
 history.first_seen_ms = first;
@@ -330,8 +360,10 @@ const summary = String(body.title ?? '');
 const fields = { repo, kind, number, event_key: comparison.event_key, state: comparison.state,
   first_seen_ms: first, latest_ms: now, due_ms: history.due_ms, observation_count: history.count,
   observation_times: history.times, overflow: comparison.overflow };
+const links = [{ kind: 'url', url: body.url }];
+for (const comment of history.comments ?? []) links.push({ kind: 'url', url: comment.comment_url });
 const item = boundedDigest(sanitize(`${repo} ${kind} #${number}`), render(repo, kind, number, body.action, history, summary),
-  fields, { summary }, [{ kind: 'url', url: body.url }]);
+  fields, { summary }, links);
 await sink.digest(owner, item, comparison.would_action, { replace_key: key });
 result.delivered = 1;
 // React once, on the first delivery of a newly opened issue or PR. Updates and
