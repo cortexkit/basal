@@ -510,7 +510,9 @@ fn model_and_classifier_share_the_program_dollar_cap_including_inflight_reserves
     assert_eq!(attempt.input["max_cost_usd"], 0.0625);
     attempt
         .reply
-        .send(Ok(json!({"answers":{},"usage":{},"cost_usd":0.0625})))
+        .send(Ok(
+            json!({"model":"example/classifier","answers":{},"usage":{},"cost_usd":0.0625}),
+        ))
         .unwrap();
     assert_eq!(f.f.delivery().position, 1);
     f.f.issue(2, "model", json!({"prompt":"hello","max_output":1}));

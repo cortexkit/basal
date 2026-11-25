@@ -141,6 +141,7 @@ pub fn load(conn: &Connection, flow: &str, version: u32) -> crate::Result<ToolPo
 const MODEL_TOOL_TAGS: &[&str] = &[
     cortexkit_llm_tools::classify::TAG,
     cortexkit_llm_tools::complete::TAG,
+    cortexkit_llm_tools::extract::TAG,
 ];
 
 /// Recognizes the contract rather than a particular provider or tool alias.

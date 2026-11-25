@@ -96,7 +96,11 @@ fn runtime_fixture(world: World, cap: f64) -> (World, Runtime, Arc<Provider>, Va
         calls: Mutex::new(vec![]),
         lose_reply: AtomicBool::new(false),
         outcome: Mutex::new(HostOutcome::fulfilled(
-            JsonText::new(json!({"answers":{},"usage":{},"cost_usd":0}).to_string()).unwrap(),
+            JsonText::new(
+                json!({"model":"example/classifier","answers":{},"usage":{},"cost_usd":0})
+                    .to_string(),
+            )
+            .unwrap(),
         )),
     });
     let clock = Clock::manual(100);
@@ -172,7 +176,11 @@ fn flow_classify_exhausted_dollars_never_send() {
 fn flow_classify_charges_success_overrun_and_rolling_window() {
     let (world, rt, provider, m, clock) = fixture(0.30);
     *provider.outcome.lock().unwrap() = HostOutcome::fulfilled(
-        JsonText::new(json!({"answers":{},"usage":{},"cost_usd":0.42}).to_string()).unwrap(),
+        JsonText::new(
+            json!({"model":"example/classifier","answers":{},"usage":{},"cost_usd":0.42})
+                .to_string(),
+        )
+        .unwrap(),
     );
     let id = run(&world, &rt, &m, Some(0.001), "t1");
     assert_eq!(spent(&rt, &id), 0.42);
@@ -217,7 +225,7 @@ fn flow_classify_tool_result_cost_is_not_the_reservation() {
     let (world, rt, provider, m, _) = fixture(0.30);
     *provider.outcome.lock().unwrap() = HostOutcome::fulfilled(
         JsonText::new(
-            json!({"content":[],"structuredContent":{"answers":{},"usage":{},"cost_usd":0.042}})
+            json!({"content":[],"structuredContent":{"model":"example/classifier","answers":{},"usage":{},"cost_usd":0.042}})
                 .to_string(),
         )
         .unwrap(),
@@ -246,7 +254,11 @@ fn flow_classify_per_run_cap_is_not_reset_between_calls() {
     let (world, rt, provider, mut m, _) = fixture(0.30);
     m["model_cost_usd"]["per_run"] = json!(0.10);
     *provider.outcome.lock().unwrap() = HostOutcome::fulfilled(
-        JsonText::new(json!({"answers":{},"usage":{},"cost_usd":0.10}).to_string()).unwrap(),
+        JsonText::new(
+            json!({"model":"example/classifier","answers":{},"usage":{},"cost_usd":0.10})
+                .to_string(),
+        )
+        .unwrap(),
     );
     let args = json!({"model":"example/classifier","questions":{"urgent":{"type":"noul","instructions":"Is this urgent?"}},"item":{"state":"A kettle"}});
     let script = format!(
@@ -348,6 +360,45 @@ fn flow_complete_requires_a_dollar_cap_and_applies_it_at_dispatch() {
     let input: Value = serde_json::from_str(calls[0].args.as_str()).unwrap();
     assert_eq!(input["max_cost_usd"], 0.25);
     assert_eq!(spent(&rt, &id), 0.0105);
+}
+
+#[test]
+fn flow_extract_install_requires_dollar_cap() {
+    use cortexkit_llm_tools::{MODES, extract};
+
+    let world = World::new("extract-dollars");
+    world.catalog.set_op(
+        "broca",
+        "llm_extract",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    world.catalog.set_tool_contract(
+        "broca",
+        "llm_extract",
+        json!({"modes":MODES,"capabilities":[extract::TAG],"input_schema":extract::input_schema()}),
+    );
+    let (_world, rt, _, mut manifest, _) = runtime_fixture(world, 0.25);
+    manifest["ops"] = json!([{"module":"broca","op":"llm_extract"}]);
+    manifest.as_object_mut().unwrap().remove("model_cost_usd");
+    let error = rt
+        .install(&InstallRequest {
+            manifest: manifest.to_string(),
+            script: "return 1".into(),
+            author: "alice".into(),
+            loop_override: false,
+        })
+        .unwrap_err();
+    assert_eq!(
+        error,
+        InstallError::ModelCostCapRequired {
+            module: "broca".into(),
+            op: "llm_extract".into(),
+        }
+    );
 }
 
 #[test]

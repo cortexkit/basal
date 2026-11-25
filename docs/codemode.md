@@ -4,13 +4,13 @@ Basal provides one agent-facing tool, `codemode({code, description?, limits?})`,
 
 ## Model dollar budget
 
-`tools.model` and tools carrying the shared contract's `llm.classify/v1` or
-`llm.complete/v1` tag share **$0.50 per program run**, in addition to the direct
-model call/token limits.
+`tools.model` and tools tagged `llm.classify/v1`, `llm.complete/v1`, or
+`llm.extract/v1` share **$0.50 per program run**, in addition to the direct model
+call/token limits.
 `limits: {model_cost_usd: 0.30}` may lower that budget (including to zero), never raise it.
-For a tagged tool such as `tools.llm_classify` or `tools.llm_complete`, Basal
-supplies an omitted `max_cost_usd` from the remaining budget, or clamps a supplied
-ceiling to that remainder before sending it to Broca.
+For a tagged tool such as `tools.llm_classify`, `tools.llm_complete`, or
+`tools.llm_extract`, Basal supplies an omitted `max_cost_usd` from the remaining
+budget, or clamps a supplied ceiling to that remainder before sending it to Broca.
 Concurrent calls reserve their whole ceilings, so they cannot spend the same remainder.
 With nothing left, the promise rejects before sending with `budget_exhausted` and
 `budget: "model_cost_usd"` in its structured error.

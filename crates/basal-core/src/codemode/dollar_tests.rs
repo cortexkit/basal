@@ -1,4 +1,5 @@
 use super::*;
+use cortexkit_llm_tools::{Usage, errors, extract};
 
 fn fixture(cap: f64, tagged: bool) -> Fixture {
     let f = Fixture::new();
@@ -99,7 +100,9 @@ fn program_classify_charges_reported_cost_and_overrun() {
     assert_eq!(attempt.input["max_cost_usd"], 0.001);
     attempt
         .reply
-        .send(Ok(json!({"answers":{},"usage":{},"cost_usd":0.42})))
+        .send(Ok(
+            json!({"model":"example/classifier","answers":{},"usage":{},"cost_usd":0.42}),
+        ))
         .unwrap();
     assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
     assert_eq!(spent(&f), 0.42);
@@ -341,6 +344,138 @@ fn program_complete_charges_refusals_by_the_spend_marker() {
         assert_eq!(delivery.settlement, Settlement::Rejected);
         assert_eq!(parse(delivery.value.as_str()).unwrap()["code"], code);
         assert_eq!(spent(&f), cumulative_spend, "{code}");
+    }
+    f.cleanup(true);
+}
+
+fn extract_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.catalog.set_op(
+        "broca",
+        "llm_extract",
+        OpDecl {
+            kind: Some(OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    f.catalog.set_tool_contract(
+        "broca",
+        "llm_extract",
+        json!({"capabilities":[extract::TAG],"result_format":"tool-result/v1"}),
+    );
+    f.host.content_results.store(true, Ordering::SeqCst);
+    f.start(
+        &[(
+            "llm_extract",
+            "broca",
+            "llm_extract",
+            extract::input_schema(),
+        )],
+        Limits {
+            model_cost_usd: 0.25,
+            ..Limits::default()
+        },
+        100_000,
+    );
+    assert!(matches!(
+        f.parent.recv_timeout(TIMEOUT).unwrap(),
+        ParentMessage::Activate(_)
+    ));
+    f
+}
+
+fn extract_input(ceiling: f64) -> Value {
+    let request: extract::Request = serde_json::from_value(json!({
+        "model":"example/extractor",
+        "fields":{"color":{"type":"text","instructions":"Extract the color."}},
+        "item":{"state":"A teal kettle"},
+        "max_cost_usd":ceiling
+    }))
+    .unwrap();
+    extract::validate_request(&request).unwrap();
+    serde_json::to_value(request).unwrap()
+}
+
+fn extract_reply(cost: f64) -> Value {
+    let result = extract::Result {
+        answers: [(
+            "color".into(),
+            serde_json::from_str(r#"{"type":"text","value":"teal"}"#).unwrap(),
+        )]
+        .into_iter()
+        .collect(),
+        truncated: None,
+        state_text: None,
+        usage: Usage::default(),
+        cost_usd: serde_json::Number::from_f64(cost).unwrap(),
+    };
+    json!({
+        "content":[{"type":"text","text":serde_json::to_string(&result).unwrap()}],
+        "structuredContent":result
+    })
+}
+
+#[test]
+fn program_extract_caps_dispatch_and_charges_the_reported_cost() {
+    let f = extract_fixture();
+    for (position, (ceiling, cost, cumulative_spend)) in
+        [(0.25, 0.0625, 0.0625), (0.1875, 0.03125, 0.09375)]
+            .into_iter()
+            .enumerate()
+    {
+        f.issue(position as u64, "llm_extract", extract_input(1.0));
+        let attempt = f.attempt();
+        assert_eq!(attempt.input["max_cost_usd"], ceiling);
+        assert_eq!(spent(&f), 0.25, "before the provider settles");
+        attempt.reply.send(Ok(extract_reply(cost))).unwrap();
+        let delivery = f.delivery();
+        assert_eq!(delivery.settlement, Settlement::Fulfilled);
+        assert_eq!(
+            parse(delivery.value.as_str()).unwrap()["answers"]["color"]["value"],
+            "teal"
+        );
+        assert_eq!(spent(&f), cumulative_spend);
+    }
+    f.finish("null");
+    assert_eq!(f.terminal()["budgets"]["model_cost_usd"]["spent"], 0.09375);
+    f.cleanup(false);
+}
+
+#[test]
+fn program_extract_charges_refusals_by_the_spend_marker() {
+    let f = extract_fixture();
+    let refusal = errors::refusal("provider_error", "extraction provider failed").unwrap();
+    for (position, (detail, pending_spend, settled_spend)) in [
+        (refusal.detail.clone().with_no_spend(), 0.0625, 0.0),
+        (
+            refusal.detail.clone().with_cost_usd(0.03125),
+            0.0625,
+            0.03125,
+        ),
+        (refusal.detail.clone().with_cost_unknown(), 0.09375, 0.09375),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        f.issue(position as u64, "llm_extract", extract_input(0.0625));
+        let attempt = f.attempt();
+        assert_eq!(spent(&f), pending_spend);
+        attempt
+            .reply
+            .send(Err(WireError::RefusedDetails {
+                code: refusal.code.clone(),
+                message: refusal.message.clone(),
+                detail: serde_json::to_value(detail).unwrap(),
+            }))
+            .unwrap();
+        let delivery = f.delivery();
+        assert_eq!(delivery.settlement, Settlement::Rejected);
+        assert_eq!(
+            parse(delivery.value.as_str()).unwrap()["code"],
+            refusal.code
+        );
+        assert_eq!(spent(&f), settled_spend);
     }
     f.cleanup(true);
 }
