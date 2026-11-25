@@ -272,8 +272,13 @@ impl Test {
         now: i64,
     ) -> basal_core::Run {
         self.host.mock.set_clock(now as f64);
-        let key = format!("{:064x}", self.host.bodies.lock().unwrap().len() + 1);
-        body["event_key"] = json!(key);
+        let key = if let Some(key) = body["event_key"].as_str() {
+            key.to_owned()
+        } else {
+            let key = format!("{:064x}", self.host.bodies.lock().unwrap().len() + 1);
+            body["event_key"] = json!(key);
+            key
+        };
         let bytes = body.to_string();
         self.host.bodies.lock().unwrap().insert(key.clone(), body);
         let report = self
@@ -869,6 +874,60 @@ fn comment_lines_and_links_survive_pushes() {
             "piggyback"
         };
         assert_eq!(write["action"], action, "observation at minute {minute}");
+    }
+}
+
+#[test]
+fn plexus_comment_excerpt_vectors_render_link_and_wake() {
+    let sums = include_str!("../../../test-vectors/github-comment-excerpt-v1/SHA256SUMS");
+    let issue = include_str!("../../../test-vectors/github-comment-excerpt-v1/issue-comment.json");
+    let pr = include_str!("../../../test-vectors/github-comment-excerpt-v1/pr-comment.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(sums)),
+        "a5031b11a6688eb7bd64d5622b45c10b4215dbfe4bad09f0676a7bd68c1b2dc4"
+    );
+    assert_eq!(
+        sums,
+        format!(
+            "{:x}  issue-comment.json\n{:x}  pr-comment.json\n",
+            Sha256::digest(issue),
+            Sha256::digest(pr)
+        )
+    );
+
+    let t = Test::new();
+    set_clock(&t, "2026-08-20T12:02:03.456Z");
+    let cases = [
+        (
+            issue,
+            "New comment by elliot at 14:02: \"I can reproduce this.\"",
+            "https://github.com/fixture-org/lanterns/issues/3#issuecomment-1",
+        ),
+        (
+            pr,
+            "New comment by mira at 14:02: \"Thanks for the fix!\"",
+            "https://github.com/fixture-org/lanterns/pull/7#issuecomment-1",
+        ),
+    ];
+    for (i, (fixture, expected_line, comment_url)) in cases.into_iter().enumerate() {
+        let mut body: Value = serde_json::from_str(fixture).unwrap();
+        let key = body["event_key"].clone();
+        body["repo"] = json!("cortexkit/basal");
+        let result = t.event(body);
+        assert_eq!(result["delivered"], 1);
+        assert_eq!(result["events"][0]["event_key"], key);
+        let writes = t.writes();
+        let write = &writes[i];
+        assert_eq!(write["agent"], BASAL);
+        assert_eq!(write["action"], "wake");
+        assert_eq!(
+            write["item"]["body"].as_str().unwrap().lines().nth(1),
+            Some(expected_line)
+        );
+        assert_eq!(
+            write["item"]["links"][1],
+            json!({"kind":"url", "url":comment_url})
+        );
     }
 }
 
