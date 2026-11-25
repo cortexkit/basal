@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
@@ -128,8 +128,8 @@ impl Frames {
 
 struct Writer {
     queue: mpsc::SyncSender<ParentMessage>,
-    outstanding: Arc<AtomicUsize>,
     failed: Arc<AtomicBool>,
+    completed: mpsc::Receiver<()>,
     thread: JoinHandle<Option<Box<dyn WorkerWriter>>>,
 }
 
@@ -144,42 +144,41 @@ impl Writer {
         // queued frames. A full queue means the worker stopped reading; end
         // the activation rather than blocking the driver or growing the queue.
         let (queue, frames) = mpsc::sync_channel(64);
-        let outstanding = Arc::new(AtomicUsize::new(0));
+        let (done, completed) = mpsc::channel();
         let failed = Arc::new(AtomicBool::new(false));
-        let unwritten = outstanding.clone();
         let write_failed = failed.clone();
         let thread = thread::Builder::new()
             .name("flow-writer".into())
             .spawn(move || {
-                while let Ok(frame) = frames.recv() {
+                let writer = loop {
+                    let Ok(frame) = frames.recv() else {
+                        break Some(writer);
+                    };
                     let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         writer.send(&frame)
                     }));
                     let error = match sent {
-                        Ok(Ok(())) => {
-                            unwritten.fetch_sub(1, Ordering::Release);
-                            continue;
-                        }
+                        Ok(Ok(())) => continue,
                         Ok(Err(error)) => error,
                         Err(_) => ChannelError::Broken("worker writer panicked".into()),
                     };
                     write_failed.store(true, Ordering::Release);
                     let _ = wake.send(Wake::WriteFailed(error));
-                    return None;
-                }
-                Some(writer)
+                    break None;
+                };
+                let _ = done.send(());
+                writer
             })
             .map_err(|e| ChannelError::Broken(e.to_string()))?;
         Ok(Self {
             queue,
-            outstanding,
             failed,
+            completed,
             thread,
         })
     }
 
     fn send(&self, frame: ParentMessage) -> std::result::Result<(), ChannelError> {
-        self.outstanding.fetch_add(1, Ordering::Relaxed);
         self.queue.try_send(frame).map_err(|error| match error {
             mpsc::TrySendError::Full(_) => {
                 ChannelError::Broken("worker writer queue is full".into())
@@ -188,14 +187,23 @@ impl Writer {
         })
     }
 
-    fn idle(&self) -> bool {
-        // Only the writer retires a frame, once send has returned successfully.
-        // Zero means there is neither a queued frame nor a write to wait for.
-        self.outstanding.load(Ordering::Acquire) == 0
-    }
-
-    fn stop(self) -> Result<Option<Box<dyn WorkerWriter>>> {
+    fn stop(
+        self,
+        reuse_until: Option<Instant>,
+        kill: impl FnOnce(),
+    ) -> Result<Option<Box<dyn WorkerWriter>>> {
         drop(self.queue);
+        // The peer can read a frame and report Finished before send returns.
+        // Wait for the queue to drain, but kill before joining if the peer
+        // reports Finished and leaves a write blocked in its input pipe.
+        if let Some(until) = reuse_until
+            && self
+                .completed
+                .recv_timeout(until.saturating_duration_since(Instant::now()))
+                == Err(mpsc::RecvTimeoutError::Timeout)
+        {
+            kill();
+        }
         self.thread
             .join()
             .map_err(|_| CoreError::Worker("worker writer panicked".into()))
@@ -206,7 +214,7 @@ struct WorkerIo<'a> {
     worker: &'a mut dyn WorkerChannel,
     frames: Option<Frames>,
     writer: Option<Writer>,
-    idle_at_finished: bool,
+    finished_by: Option<Instant>,
     killed: bool,
 }
 
@@ -265,17 +273,20 @@ impl WorkerIo<'_> {
         if self.writer.is_none() && self.frames.is_none() {
             return Ok(());
         }
-        let keep = reusable_end && self.idle_at_finished && !self.killed;
-        // A worker can claim Finished without reading its input. If any write
-        // was still pending at Finished, joining first could wedge the driver.
-        if !keep {
+        let reuse_until = self.finished_by.filter(|_| reusable_end && !self.killed);
+        if reuse_until.is_none() {
             self.kill();
         }
+        let writer = self
+            .writer
+            .take()
+            .map(|writer| writer.stop(reuse_until, || self.kill()))
+            .transpose();
         let reader = self.frames.take().map(Frames::stop).transpose();
-        let writer = self.writer.take().map(Writer::stop).transpose();
         match (reader, writer) {
             (Ok(_), Ok(writer)) => {
-                if keep
+                if reuse_until.is_some()
+                    && !self.killed
                     && !writer
                         .flatten()
                         .is_some_and(|w| self.worker.restore_writer(w).is_some())
@@ -360,7 +371,7 @@ impl Activation {
             worker,
             frames: None,
             writer: None,
-            idle_at_finished: false,
+            finished_by: None,
             killed: false,
         };
         let result = self.drive_inner(&mut io, &mut request, &effects, timeout);
@@ -609,7 +620,9 @@ impl Activation {
                         self.requeue(true)?;
                         return Ok(ActivationEnd::Requeued);
                     }
-                    io.idle_at_finished = io.writer.as_ref().is_some_and(Writer::idle);
+                    #[cfg(test)]
+                    let until = self.driver.services.writer_drain_deadline(until);
+                    io.finished_by = Some(until);
                     if let Some((kind, detail)) = self.with_state(control_failure)? {
                         io.kill();
                         return self.fail(kind, detail, effects);
