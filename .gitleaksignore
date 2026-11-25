@@ -26,3 +26,6 @@ fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixt
 fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
 fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
 fae6b9b5e56be923c384ea202db3ccc4105a0ecf:crates/basal-host/src/builtins/net/fixtures/ordinary-responses/jwts.json:jwt:1
+# Synthetic event_key digests in Plexus's comment_excerpt samples, not secrets.
+a05b9f2082b9bfe9e8cdfeabddb77d2bdfc3611f:test-vectors/github-comment-excerpt-v1/issue-comment.json:generic-api-key:1
+a05b9f2082b9bfe9e8cdfeabddb77d2bdfc3611f:test-vectors/github-comment-excerpt-v1/pr-comment.json:generic-api-key:1
