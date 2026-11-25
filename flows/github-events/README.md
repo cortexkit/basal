@@ -1,20 +1,23 @@
 # GitHub events: live owner delivery
 
-Version 3 replaces prefrontal-core's GitHub wake consumer. It resolves Plexus
+This flow replaces prefrontal-core's GitHub wake consumer. It resolves Plexus
 v2 issue, PR and release notices, applies the routing, suppression and own-echo
-rules below (unchanged from the v2 comparison shadow, which matched core for a
-full day with no missed wakes and no owner mismatches), and delivers each
-accepted event to its **real owner** from the `OWNERS` map:
+rules below, and delivers each accepted event to its **real owner** using
+Plexus's repository bindings and the unbound-owner fallbacks:
 
-- A newly opened issue or PR is sent with `wake`; every other accepted event
-  (comments, edits, closes, reopens, releases, unknown actions) is an update
-  sent with `piggyback`. Core's delivery planner may still downgrade either
-  action under the manifest's `digest_max` and the recipient's wake policy.
+- A newly opened issue or PR, or an accepted comment or review by a person
+  whose login is not suppressed, is sent with `wake`. Other accepted updates
+  (including bot comments) are sent with `piggyback`. Core's delivery planner
+  may still downgrade either action under the manifest's `digest_max` and the
+  recipient's wake policy.
 - Every delivery uses `replace_key` `github:<repo>:<kind>:<number>`, so later
   updates replace the same undelivered item.
-- The body is the same rendering as before: quoted, sanitized title, local
-  observation times and the overflow count. Digest `data` carries the item's
-  identity (`repo`, `kind`, `number`, `event_key`, `state`), its observation
+- The body starts with the quoted, sanitized title, local observation times and
+  the overflow count. It also names the author and time of each of the six most
+  recent comments, newest first, and counts any earlier comments. When an
+  excerpt is available, it is quoted as the commenter's words. Available comment
+  links follow the item link, subject to digest size limits. Digest `data`
+  carries the item's identity (`repo`, `kind`, `number`, `event_key`, `state`), its observation
   counts and times, and the modeled debounce timestamps. It no longer carries
   the shadow's comparison fields (`would_owner`, `would_action`,
   `suppressed_reason`, `rule`).
@@ -71,7 +74,7 @@ References below are to the sibling **prefrontal** repository, inspected on
 | `reopened` forces state open, even over a stale closed body. | consumers.rs:1121-1128 |
 | Own subject authorship is separate from comment authorship. Own-bot-authored subjects need a human comment/review to pass; a human login is nonempty and does not end in `[bot]`. This exception also bypasses the actor-set gate. | consumers.rs:1282-1327,1673-1701 |
 | Operator, project and own-agent logins form one set, compared case-insensitively and without a trailing `[bot]`. An event is an own echo, and never wakes, when every actor is in the set, or at least one is and every other is `github-actions[bot]` (automation an agent's own action set off). `github-actions[bot]` alone, any human, or any unlisted bot still wakes; a missing or empty actor list wakes. A workflow run is decided by who started it (`workflow_run.triggering_actor`, else `actor`): started by a suppressed login with only suppressed or `github-actions[bot]` actors (an empty set counts) is an echo; started by anyone else wakes. | Ufuk's own-echo ruling, 2026-10-17, as core's consumer implements it |
-| Opened issues/PRs are new (`wake`); everything else is an update (`piggyback`). | commands.rs:424-491,751-815 |
+| Opened issues/PRs are new (`wake`); core sends other events as updates (`piggyback`). The flow also requests `wake` for comments by people (see below). | commands.rs:424-491,751-815 |
 | Model rolling update debounce at 30 minutes, capped at 60 minutes from the first update in that window. New items bypass debounce. | commands.rs:424-491,751-815 |
 | Repeated observations become one item with the first six times, an overflow count and the newest summary. | commands.rs:1501-1618,1712-1762 |
 | Use fixed action words: opened, new comment, edit, closed, reopened, otherwise update; never interpolate arbitrary vendor action text. | commands.rs:965-1010 |
@@ -107,9 +110,12 @@ only; no private configuration records or real comment text are included.
   first update starts an update window. An update arriving after the modeled
   due time starts another window. These timestamps are observations, not
   vendor `updated_at` values.
-- **Action policy.** The one `ACTION` constant maps opened items to `wake` and
-  updates to `piggyback`. Flow sinks go through core's delivery planner:
-  manifest `digest_max` and the recipient's wake policy may downgrade the action.
+- **Action policy.** After the existing echo and suppression rules, the flow
+  requests `wake` for newly opened items and for comments by people. A comment
+  does not earn a wake if its author ends in `[bot]` or matches a suppressed
+  login (operator, project or repository bot). Flow sinks go through core's
+  delivery planner: manifest `digest_max` and the recipient's wake policy may
+  downgrade the action.
 - **Rescan age.** Preserve the router's six-hour guard on
   `completed_at ?? updated_at`, measured to the body's `observed_at` (when
   Plexus first stored the item) so a delayed publish is not stale; bodies
@@ -124,6 +130,10 @@ only; no private configuration records or real comment text are included.
 - **Human activity.** Plexus v2 has no `type` field or separate review event.
   Its identified `comment_author` is the available human-comment/review evidence;
   `actor_logins` alone does not prove a comment on an own-bot-authored subject.
+  An issue or PR body may also carry `comment_excerpt`, the first nonblank
+  line of the linked comment, cut to 280 UTF-8 bytes by Plexus. Before
+  quoting it, the flow sanitizes it and enforces that byte limit again.
+  Older bodies and comments with no excerpt still get a byline.
 - **Releases.** No release body schema was found in this repository's docs.
   Assume `tag_name` (or `tag`) is the release identity, put it in `number`, and
   use kind `release`. Releases are updates, not new issues/PRs. Missing tags
@@ -132,8 +142,10 @@ only; no private configuration records or real comment text are included.
   replaces an undelivered item within this flow (docs/script.md:145-155).
   The flow cannot observe core delivery acknowledgements, so observation history
   spans runs rather than resetting upon delivery. It remembers the last
-  64 event keys per item and caps fleet KV at 48,000 serialized bytes, evicting
-  oldest histories first. Replays beyond retained history can be observed anew.
+  64 event keys and the six newest comments per item. Comment links too large
+  to retain are omitted, not shortened. Fleet KV is capped at 48,000 serialized
+  bytes, evicting oldest histories first. Replays beyond retained history can be
+  observed anew.
   Identities exceeding the sink's 200-byte key limit or containing control
   characters are reported as `invalid_identity`, never silently truncated into
   a colliding key. Digest bounding reuses the incremental helper from
