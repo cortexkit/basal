@@ -257,7 +257,10 @@ impl Test {
     }
 
     fn notice_with_clock(&self, body: Value, name: &str, header_repo: &str, now: i64) -> Value {
-        let done = self.run_notice(body, name, header_repo, now);
+        Self::successful_result(self.run_notice(body, name, header_repo, now))
+    }
+
+    fn successful_result(done: basal_core::Run) -> Value {
         assert_eq!(done.state, RunState::Succeeded, "{done:#?}");
         done.result
             .map(|value| serde_json::from_str(&value).unwrap())
@@ -271,14 +274,21 @@ impl Test {
         header_repo: &str,
         now: i64,
     ) -> basal_core::Run {
+        // Generate a fresh key for each notice, even when its body reuses a template.
+        let key = format!("{:064x}", self.host.bodies.lock().unwrap().len() + 1);
+        body["event_key"] = json!(key);
+        self.run_keyed_notice(body, name, header_repo, now)
+    }
+
+    fn run_keyed_notice(
+        &self,
+        body: Value,
+        name: &str,
+        header_repo: &str,
+        now: i64,
+    ) -> basal_core::Run {
         self.host.mock.set_clock(now as f64);
-        let key = if let Some(key) = body["event_key"].as_str() {
-            key.to_owned()
-        } else {
-            let key = format!("{:064x}", self.host.bodies.lock().unwrap().len() + 1);
-            body["event_key"] = json!(key);
-            key
-        };
+        let key = body["event_key"].as_str().unwrap().to_owned();
         let bytes = body.to_string();
         self.host.bodies.lock().unwrap().insert(key.clone(), body);
         let report = self
@@ -897,23 +907,27 @@ fn plexus_comment_excerpt_vectors_render_link_and_wake() {
 
     let t = Test::new();
     set_clock(&t, "2026-08-20T12:02:03.456Z");
+    let repo = "cortexkit/basal";
     let cases = [
         (
             issue,
+            "github_issue_changed",
             "New comment by elliot at 14:02: \"I can reproduce this.\"",
             "https://github.com/fixture-org/lanterns/issues/3#issuecomment-1",
         ),
         (
             pr,
+            "github_pr_changed",
             "New comment by mira at 14:02: \"Thanks for the fix!\"",
             "https://github.com/fixture-org/lanterns/pull/7#issuecomment-1",
         ),
     ];
-    for (i, (fixture, expected_line, comment_url)) in cases.into_iter().enumerate() {
+    for (i, (fixture, event_name, expected_line, comment_url)) in cases.into_iter().enumerate() {
         let mut body: Value = serde_json::from_str(fixture).unwrap();
         let key = body["event_key"].clone();
-        body["repo"] = json!("cortexkit/basal");
-        let result = t.event(body);
+        body["repo"] = json!(repo);
+        let result =
+            Test::successful_result(t.run_keyed_notice(body, event_name, repo, t.f.clock.now_ms()));
         assert_eq!(result["delivered"], 1);
         assert_eq!(result["events"][0]["event_key"], key);
         let writes = t.writes();
