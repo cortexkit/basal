@@ -345,8 +345,8 @@ mod tests {
     }
 
     fn confinement_payload(suffix: &[u8]) -> Vec<u8> {
-        // A version-13 Welcome with an empty engine name and two zero hashes.
-        let mut payload = vec![101, 0, 0, 0, 14, 0, 0, 0, 0];
+        // A version-15 Welcome with an empty engine name and two zero hashes.
+        let mut payload = vec![101, 0, 0, 0, 15, 0, 0, 0, 0];
         payload.extend_from_slice(&[0; 64]);
         payload.extend_from_slice(suffix);
         payload
