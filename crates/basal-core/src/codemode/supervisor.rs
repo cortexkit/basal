@@ -10,6 +10,9 @@
 //! a cancel, or a move of a manual clock. Without held replies or reconnect waits,
 //! its only timeout is the run's wall deadline, so an ordinary slow RPC costs no
 //! polling CPU.
+//! Frames to the worker go out through the run's writer thread, so neither
+//! a worker that has stopped reading its input nor a full pipe can keep the
+//! driver from handling events or ending the run at its deadline.
 //! Calls held by a provider schedule bounded reads for their final replies.
 //! Calls awaiting a restarting provider use the same event wait with a bounded
 //! retry timer.
@@ -40,7 +43,7 @@ use super::store::{
     self, Budget, CallStart, Lookup, Outcome, RunError, RunRecord, Status, Terminal,
 };
 use crate::authorize::ShellDenylist;
-use crate::channel::{ChannelError, WorkerChannel, WorkerReceiver, WorkerSource};
+use crate::channel::{ChannelError, WorkerChannel, WorkerReceiver, WorkerSource, WorkerWriter};
 use crate::clock::{Clock, Watcher};
 use crate::error::{CoreError, Result};
 use crate::store::Store;
@@ -54,6 +57,12 @@ const PROVIDER_RECHECK_MS: i64 = 1_000;
 /// refuses longer ones; the parent checks again, so a worker that bypassed
 /// the prelude cannot hold a longer pause.
 const MAX_SLEEP_MS: u64 = 10_000;
+/// The most `sleep` requests one run may make. Each one is answered with a
+/// delivery queued for the worker's writer, so this cap, with the tool-call
+/// budget, bounds that queue; see [`Driver::write`].
+const MAX_SLEEPS: u64 = 10_000;
+// The refusal message in `Driver::sleep` spells this limit out.
+const _: () = assert!(MAX_SLEEPS == 10_000);
 
 /// Everything that can wake a run's driver, in the order it happened.
 enum Event {
@@ -61,6 +70,10 @@ enum Event {
     Worker(std::result::Result<WorkerMessage, ChannelError>),
     /// The worker's receiver panicked on the reader thread.
     ReaderPanicked,
+    /// The writer thread could not write a frame to the worker.
+    WriteFailed(ChannelError),
+    /// The worker's writer panicked on the writer thread.
+    WriterPanicked,
     /// A provider answer from a dispatch thread.
     Answer(Answer),
     LateAnswer {
@@ -197,6 +210,10 @@ struct Shared {
     wakes: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     worker_blocked: AtomicBool,
+    /// Frames queued for a writer thread and not yet through its write, so
+    /// a test can wait until every queued delivery has reached the worker.
+    #[cfg(test)]
+    unwritten: std::sync::atomic::AtomicUsize,
 }
 
 /// Owns codemode supervisors only. Supply a fresh-worker source, never a flow
@@ -333,6 +350,8 @@ impl Supervisor {
             wakes: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             worker_blocked: AtomicBool::new(false),
+            #[cfg(test)]
+            unwritten: std::sync::atomic::AtomicUsize::new(0),
         }));
         let shared = Arc::downgrade(&supervisor.0);
         supervisor.0.transport.on_catalog_change(Arc::new(move || {
@@ -414,6 +433,7 @@ impl Supervisor {
                 }
                 shared.active.lock().unwrap().remove(&driver.run.run_id);
                 driver.stop_reader();
+                driver.stop_writer();
                 #[cfg(test)]
                 if let Some(hook) = shared.before_exit.lock().unwrap().as_ref() {
                     hook();
@@ -706,6 +726,10 @@ struct Driver {
     /// memory faster than the driver handles them.
     credit: Option<mpsc::Sender<()>>,
     reader: Option<thread::JoinHandle<()>>,
+    /// Frames for the worker, in the order the writer thread writes them;
+    /// see [`Driver::write`].
+    frames: Option<mpsc::Sender<ParentMessage>>,
+    writer: Option<thread::JoinHandle<()>>,
     /// Kept alive for as long as the driver runs; the clock holds it weakly.
     clock_watch: Option<Watcher>,
     /// Set while a clock move is waiting in the event channel, so repeated
@@ -735,6 +759,8 @@ struct Driver {
     /// Pending sleeps as (due time on the run's clock, position), earliest
     /// first. The driver's event wait ends at the earliest one.
     sleeps: BTreeSet<(i64, u64)>,
+    /// How many sleeps the program has asked for; see [`MAX_SLEEPS`].
+    sleep_requests: u64,
     /// Each tool call's 1-based number among the run's tool calls. Sleeps
     /// take positions too, so messages number tool calls from this map
     /// rather than from positions.
@@ -772,6 +798,8 @@ impl Driver {
             event_tx,
             credit: None,
             reader: None,
+            frames: None,
+            writer: None,
             clock_watch: None,
             clock_moved: Arc::new(AtomicBool::new(false)),
             queue: VecDeque::new(),
@@ -787,6 +815,7 @@ impl Driver {
             person_time: held_time::PersonTime::default(),
             late_entries: BTreeSet::new(),
             sleeps: BTreeSet::new(),
+            sleep_requests: 0,
             tool_numbers: BTreeMap::new(),
             blocked: false,
             person_wait_ms: 0,
@@ -872,15 +901,11 @@ impl Driver {
             },
             prefix: Vec::new(),
         };
-        if let Err(error) = self
-            .worker
-            .as_mut()
-            .unwrap()
-            .send(&ParentMessage::Activate(Box::new(request)))
-        {
-            self.end(failed("worker_lost", error.to_string()))?;
+        self.spawn_writer()?;
+        if self.stopping {
             return Ok(());
         }
+        self.write(ParentMessage::Activate(Box::new(request)));
         self.spawn_reader()?;
         while !self.stopping {
             if self.wall()? {
@@ -953,13 +978,16 @@ impl Driver {
                         let _ = credit.send(());
                     }
                 }
-                Some(Event::Worker(Err(error))) => {
+                Some(Event::Worker(Err(error)) | Event::WriteFailed(error)) => {
                     if !self.parent_owned_kill {
                         self.end(failed("worker_lost", error.to_string()))?;
                     }
                 }
                 Some(Event::ReaderPanicked) => {
                     return Err(CoreError::Invalid("worker receiver panicked".into()));
+                }
+                Some(Event::WriterPanicked) => {
+                    return Err(CoreError::Invalid("worker writer panicked".into()));
                 }
             }
         }
@@ -1031,9 +1059,11 @@ impl Driver {
     }
 
     /// Moves the worker's receive side to a thread of its own, which
-    /// forwards each frame into the driver's event channel. The driver keeps
-    /// the channel's send side, so deliveries and the kill never wait on a
-    /// blocked receive.
+    /// forwards each frame into the driver's event channel, so the kill never
+    /// waits on a blocked receive. Frames to the worker go through the writer
+    /// thread (see [`Driver::spawn_writer`]): the driver gives the reader its
+    /// next credit without waiting for a worker that has stopped reading its
+    /// input until its own output is drained.
     fn spawn_reader(&mut self) -> Result<()> {
         let receiver = self.worker.as_mut().unwrap().receiver();
         let events = self.event_tx.clone();
@@ -1067,6 +1097,75 @@ impl Driver {
             && reader.join().is_err()
         {
             tracing::error!("codemode worker reader panicked");
+        }
+    }
+
+    /// Moves the worker's send side to a thread of its own. A worker that
+    /// stops reading its input while its own output waits to be read makes a
+    /// write block until the pipe has room. Writing on the driver would then
+    /// stop the driver from giving the reader its next credit, so the output
+    /// would never drain, and from checking the deadline, so nothing would
+    /// end the run. The driver only queues frames; see [`Driver::write`].
+    fn spawn_writer(&mut self) -> Result<()> {
+        let Some(writer) = self.worker.as_mut().unwrap().writer() else {
+            return self.end(failed(
+                "worker_lost",
+                "the worker channel cannot split off its send side",
+            ));
+        };
+        let events = self.event_tx.clone();
+        let (frames, queued) = mpsc::channel();
+        #[cfg(test)]
+        let written = {
+            let shared = self.shared.clone();
+            move || {
+                shared.unwritten.fetch_sub(1, Ordering::SeqCst);
+            }
+        };
+        #[cfg(not(test))]
+        let written = || {};
+        match thread::Builder::new()
+            .name(format!("{}:writer", self.key()))
+            .spawn(move || write_worker(writer, queued, events, written))
+        {
+            Ok(handle) => {
+                self.writer = Some(handle);
+                self.frames = Some(frames);
+                Ok(())
+            }
+            Err(error) => self.end(failed("worker_lost", error.to_string())),
+        }
+    }
+
+    /// Queues a frame for the writer thread, which writes frames in the
+    /// order they were queued, so `delivery_order` matches what the worker
+    /// receives. Never blocks.
+    ///
+    /// The queue is unbounded, but what can enter it is not: one activation,
+    /// at most one delivery per tool call, with tool calls capped by the run's
+    /// budget (at most 200) and each value capped at `MAX_VALUE_BYTES`, and
+    /// one null delivery per sleep, capped at [`MAX_SLEEPS`].
+    fn write(&mut self, message: ParentMessage) {
+        // The writer stops only after a failed write or a panic, and it
+        // reports either one as an event before it stops. That event ends
+        // the run, so a frame the stopped writer cannot take needs nothing.
+        if let Some(frames) = &self.frames {
+            #[cfg(test)]
+            self.shared.unwritten.fetch_add(1, Ordering::SeqCst);
+            let _ = frames.send(message);
+        }
+    }
+
+    /// Waits for the writer thread once the run has ended. The writer is
+    /// blocked either in a write to the worker, which fails once every
+    /// ending has killed the worker, or on its next frame, whose sender is
+    /// dropped here.
+    fn stop_writer(&mut self) {
+        self.frames = None;
+        if let Some(writer) = self.writer.take()
+            && writer.join().is_err()
+        {
+            tracing::error!("codemode worker writer panicked");
         }
     }
 
@@ -1683,6 +1782,13 @@ impl Driver {
                 format!("sleep takes an integer from 0 to {MAX_SLEEP_MS} milliseconds"),
             ));
         };
+        self.sleep_requests += 1;
+        if self.sleep_requests > MAX_SLEEPS {
+            return self.end(failed(
+                "profile_violation",
+                "this program asked to sleep more than 10,000 times; the limit is 10,000 per run",
+            ));
+        }
         let due = self.shared.clock.now_ms().saturating_add(ms as i64);
         self.sleeps.insert((due, call.position));
         Ok(())
@@ -1700,19 +1806,13 @@ impl Driver {
             #[cfg(test)]
             self.shared.worker_blocked.store(false, Ordering::SeqCst);
             self.delivery_order += 1;
-            if let Err(error) =
-                self.worker
-                    .as_mut()
-                    .unwrap()
-                    .send(&ParentMessage::Deliver(Delivery {
-                        position,
-                        settlement: Settlement::Fulfilled,
-                        value: JsonText::null(),
-                        delivery_order: self.delivery_order,
-                    }))
-            {
-                self.end(failed("worker_lost", error.to_string()))?;
-            }
+            let delivery_order = self.delivery_order;
+            self.write(ParentMessage::Deliver(Delivery {
+                position,
+                settlement: Settlement::Fulfilled,
+                value: JsonText::null(),
+                delivery_order,
+            }));
         }
         Ok(())
     }
@@ -2388,19 +2488,13 @@ impl Driver {
             (Settlement::Rejected, value)
         };
         self.delivery_order += 1;
-        if let Err(error) = self
-            .worker
-            .as_mut()
-            .unwrap()
-            .send(&ParentMessage::Deliver(Delivery {
-                position: call.position,
-                settlement,
-                value,
-                delivery_order: self.delivery_order,
-            }))
-        {
-            self.end(failed("worker_lost", error.to_string()))?;
-        }
+        let delivery_order = self.delivery_order;
+        self.write(ParentMessage::Deliver(Delivery {
+            position: call.position,
+            settlement,
+            value,
+            delivery_order,
+        }));
         Ok(())
     }
 
@@ -2579,6 +2673,32 @@ fn read_worker(
             }
             Err(_) => {
                 let _ = events.send(Event::ReaderPanicked);
+                return;
+            }
+        }
+    }
+}
+
+/// The body of a run's writer thread. It writes queued frames in order and
+/// stops at the first failed write, which a kill produces even for a write
+/// already blocked on a full pipe, or once the driver drops the queue.
+fn write_worker(
+    mut writer: Box<dyn WorkerWriter>,
+    frames: mpsc::Receiver<ParentMessage>,
+    events: mpsc::Sender<Event>,
+    written: impl Fn(),
+) {
+    while let Ok(frame) = frames.recv() {
+        let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer.send(&frame)));
+        written();
+        match sent {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = events.send(Event::WriteFailed(error));
+                return;
+            }
+            Err(_) => {
+                let _ = events.send(Event::WriterPanicked);
                 return;
             }
         }

@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use basal_core::channel::{ChannelError, WorkerReceiver};
+use basal_core::channel::{ChannelError, WorkerReceiver, WorkerWriter};
 use basal_proto::{
     FrameError, PROTOCOL_VERSION, ParentMessage, Welcome, WorkerMessage, encode_parent_frame,
     read_worker_message,
@@ -328,16 +328,18 @@ impl WorkerProcess {
     }
 
     pub fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
-        let frame =
-            encode_parent_frame(message).map_err(|e| ChannelError::Broken(e.to_string()))?;
-        let stdin = self.stdin.as_mut().ok_or(ChannelError::Closed)?;
-        stdin
-            .write_all(&frame)
-            .and_then(|_| stdin.flush())
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::BrokenPipe => ChannelError::Closed,
-                _ => ChannelError::Broken(e.to_string()),
-            })
+        write_frame(self.stdin.as_mut().ok_or(ChannelError::Closed)?, message)
+    }
+
+    /// A send side for another thread. It takes the worker's input pipe, so
+    /// [`WorkerProcess::send`] reports `Closed` from then on. A kill ends the
+    /// process, which closes the pipe's read end, so a write blocked on a
+    /// worker that stopped reading fails with a broken pipe instead of
+    /// waiting forever. `None` once the pipe is gone.
+    pub fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
+        self.stdin
+            .take()
+            .map(|stdin| Box::new(ProcessWriter(stdin)) as Box<dyn WorkerWriter>)
     }
 
     pub fn recv(&mut self, timeout: Duration) -> Result<WorkerMessage, ChannelError> {
@@ -479,6 +481,27 @@ impl WorkerReceiver for SharedIncoming {
         let incoming = self.0.lock().unwrap_or_else(|p| p.into_inner());
         incoming.recv().unwrap_or(Err(ChannelError::Closed))
     }
+}
+
+/// The worker's input pipe, split off for a writer thread; see
+/// [`WorkerProcess::writer`].
+struct ProcessWriter(ChildStdin);
+
+impl WorkerWriter for ProcessWriter {
+    fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
+        write_frame(&mut self.0, message)
+    }
+}
+
+fn write_frame(stdin: &mut ChildStdin, message: &ParentMessage) -> Result<(), ChannelError> {
+    let frame = encode_parent_frame(message).map_err(|e| ChannelError::Broken(e.to_string()))?;
+    stdin
+        .write_all(&frame)
+        .and_then(|_| stdin.flush())
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::BrokenPipe => ChannelError::Closed,
+            _ => ChannelError::Broken(e.to_string()),
+        })
 }
 
 /// The receiver of a lease whose process is already gone.

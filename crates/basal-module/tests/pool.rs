@@ -740,3 +740,58 @@ fn killed_worker_releases_pool_capacity_while_its_activation_lease_is_still_held
     assert_eq!(pool.stats().busy, 0);
     pool.stop();
 }
+
+/// A codemode run writes to its worker from a thread of its own. A worker
+/// that stops reading its input leaves that write blocked on a full pipe, and
+/// the lease's kill must end the write so the run can join its writer thread.
+// SIGSTOP and SIGKILL are POSIX signals.
+#[cfg(unix)]
+#[test]
+fn killing_a_lease_ends_a_write_blocked_on_a_worker_that_stopped_reading() {
+    use basal_core::WorkerChannel;
+    use basal_core::channel::ChannelError;
+    use basal_proto::{JsonText, Outcome, ParentMessage, Settlement};
+    let mut config = pool_config(&Options::default());
+    config.warm_spares = 0;
+    config.max_workers = 1;
+    let spawner = Arc::new(RecordedSpawner {
+        inner: Arc::new(ProcessSpawner::new(&config)),
+        pids: Mutex::new(Vec::new()),
+    });
+    let pool = Pool::new(
+        config,
+        spawner.clone(),
+        basal_core::Clock::manual(T0),
+        Arc::default(),
+    );
+    let mut lease = pool.acquire(Binding::Codemode).unwrap();
+    let pid = spawner.pids.lock().unwrap()[0];
+    // A stopped worker reads nothing, as a worker blocked on writing its own
+    // unread output does.
+    // SAFETY: the spawner recorded this live child of the test.
+    assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) }, 0);
+    let mut writer = lease.writer().expect("a live lease splits off its writer");
+    // Far larger than a pipe's buffer, so this write cannot complete while
+    // the worker reads nothing.
+    let frame = ParentMessage::Deliver(Outcome {
+        position: 0,
+        settlement: Settlement::Fulfilled,
+        value: JsonText::new(format!("\"{}\"", "x".repeat(512 * 1024))).unwrap(),
+        delivery_order: 1,
+    });
+    let (entered, writing) = mpsc::channel();
+    let write = std::thread::spawn(move || {
+        entered.send(()).unwrap();
+        writer.send(&frame)
+    });
+    writing.recv().unwrap();
+    assert!(
+        !write.is_finished(),
+        "the write completed to a stopped worker"
+    );
+    lease.kill();
+    assert_eq!(write.join().unwrap(), Err(ChannelError::Closed));
+    drop(lease);
+    pool.stop();
+    spawner.reap_workers();
+}

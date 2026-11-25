@@ -108,7 +108,10 @@ with them:
   row in the call summary. If the wall deadline comes first, the run ends at
   the deadline as `budget_exhausted:wall`; cancelling the run ends a sleep at
   once. Time while a program is sleeping is never person-wait time, even when
-  its tool calls are all held on a person.
+  its tool calls are all held on a person. A run may ask for at most 10,000
+  sleeps, counted by basal's parent; the 10,001st ends the run as `failed`
+  with `profile_violation`. `waitFor` sleeps between its attempts, so its
+  attempts count toward this limit too.
 - `await waitFor(condition, {timeout, interval})` calls `condition()` (which
   may be async) and returns its first truthy value; an error `condition`
   throws propagates unchanged. Between attempts it sleeps `interval` ms

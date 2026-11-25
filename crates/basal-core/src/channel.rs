@@ -44,6 +44,18 @@ pub trait WorkerChannel: Send {
     /// worker. Each frame goes to whichever reader takes it first, so a caller
     /// that splits off a receiver reads only through that receiver.
     fn receiver(&mut self) -> Box<dyn WorkerReceiver>;
+    /// A send side another thread can block on while this side can still
+    /// kill the worker. A worker that is not reading its input makes a send
+    /// wait until the pipe has room, so a caller that must keep draining the
+    /// worker or enforcing deadlines writes from another thread. Once split,
+    /// every frame goes through the writer, never through [`Self::send`].
+    ///
+    /// `None` means this channel cannot split its send side. The codemode
+    /// supervisor refuses such a channel rather than write from its event
+    /// loop; flow drivers never split.
+    fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
+        None
+    }
     /// Scripted in-process peers may couple recv to send without a split pipe.
     /// Real workers always use the split receiver so the parent owns deadlines.
     #[cfg(any(test, feature = "test-support"))]
@@ -61,6 +73,14 @@ pub trait WorkerReceiver: Send {
     /// no timeout: the thread that owns the worker's deadline kills the
     /// worker, and the kill ends this wait.
     fn recv(&mut self) -> Result<WorkerMessage, ChannelError>;
+}
+
+/// The send side of a [`WorkerChannel`], writable from its own thread.
+pub trait WorkerWriter: Send {
+    /// Blocks until the frame is written or the channel fails. There is no
+    /// timeout: [`WorkerChannel::kill`] ends the worker, and a write blocked
+    /// on it then fails instead of waiting for room that never comes.
+    fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError>;
 }
 
 /// Hands out greeted workers. The module's pool implements it; tests spawn

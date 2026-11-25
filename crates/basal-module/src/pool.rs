@@ -35,7 +35,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use basal_core::Clock;
-use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
+use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver, WorkerWriter};
 use basal_proto::{Confinement, LANDLOCK_ABI, ParentMessage, Welcome, WorkerMessage};
 
 use crate::metrics::Metrics;
@@ -601,6 +601,7 @@ impl Pool {
             killed: false,
             channel_lost: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             channel_failure_caused_kill: false,
+            writer_split: false,
         })
     }
 
@@ -828,7 +829,10 @@ impl Pool {
         // fault has already ended the worker. Retain that death as a confinement crash.
         let crash_status = status.filter(|status| !lease.killed || is_confinement_fault(status));
         let crashed = crash_status.is_some();
-        let keep = match (&lease.binding, lease.killed || crashed) {
+        let keep = match (
+            &lease.binding,
+            lease.killed || crashed || lease.writer_split,
+        ) {
             (Binding::Flow(_), false) if activations >= self.shared.config.max_activations => None,
             (Binding::Flow(flow), false) if !state.stopped => Some(flow.clone()),
             _ => None,
@@ -1049,6 +1053,10 @@ pub struct Lease {
     killed: bool,
     channel_lost: Arc<std::sync::atomic::AtomicBool>,
     channel_failure_caused_kill: bool,
+    /// Set once the worker's input pipe moved to a split-off writer. Such a
+    /// worker cannot take frames through the lease again, so it is never
+    /// kept for another activation.
+    writer_split: bool,
 }
 
 struct TrackedReceiver {
@@ -1063,6 +1071,21 @@ impl WorkerReceiver for TrackedReceiver {
             .as_ref()
             .is_err_and(|error| !matches!(error, ChannelError::Timeout))
         {
+            self.channel_lost.store(true, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
+struct TrackedWriter {
+    inner: Box<dyn WorkerWriter>,
+    channel_lost: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl WorkerWriter for TrackedWriter {
+    fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
+        let result = self.inner.send(message);
+        if result.is_err() {
             self.channel_lost.store(true, Ordering::Relaxed);
         }
         result
@@ -1121,6 +1144,15 @@ impl WorkerChannel for Lease {
             inner,
             channel_lost: self.channel_lost.clone(),
         })
+    }
+
+    fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
+        let inner = self.process.as_mut()?.writer()?;
+        self.writer_split = true;
+        Some(Box::new(TrackedWriter {
+            inner,
+            channel_lost: self.channel_lost.clone(),
+        }))
     }
 
     fn kill(&mut self) {

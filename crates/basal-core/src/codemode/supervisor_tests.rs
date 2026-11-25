@@ -289,7 +289,40 @@ impl Transport for FakeTransport {
 /// blocked receive look at the fake's flags again.
 enum Inbox {
     Frame(WorkerMessage),
+    PipeTail(WorkerMessage, Arc<FullPipe>),
     Wake,
+}
+
+/// Models a worker that cannot read stdin until its stdout tail drains.
+struct FullPipe {
+    state: Mutex<(bool, bool)>, // (write started, stdout drained or closed)
+    changed: Condvar,
+    entered: mpsc::Sender<thread::ThreadId>,
+}
+
+impl FullPipe {
+    fn write(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.0 = true;
+        let _ = self.entered.send(thread::current().id());
+        self.changed.notify_all();
+        drop(self.changed.wait_while(state, |state| !state.1).unwrap());
+    }
+
+    fn read_tail(&self) {
+        let mut state = self.state.lock().unwrap();
+        // Keep the tail pending until the write is known to be blocked.
+        while !state.0 && !state.1 {
+            state = self.changed.wait(state).unwrap();
+        }
+        state.1 = true;
+        self.changed.notify_all();
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap().1 = true;
+        self.changed.notify_all();
+    }
 }
 
 /// The test's end of the fake worker's outgoing frames.
@@ -350,8 +383,13 @@ impl FakeQueue {
                 }),
                 None => messages.recv().map_err(|_| ChannelError::Closed),
             };
-            if let Inbox::Frame(message) = next? {
-                return Ok(message);
+            match next? {
+                Inbox::Frame(message) => return Ok(message),
+                Inbox::PipeTail(message, pipe) => {
+                    pipe.read_tail();
+                    return Ok(message);
+                }
+                Inbox::Wake => {}
             }
         }
     }
@@ -368,15 +406,53 @@ struct FakeWorker {
     welcome: Welcome,
     parent: mpsc::Sender<ParentMessage>,
     events: Arc<Mutex<Vec<String>>>,
+    pipe: Option<Arc<FullPipe>>,
+    split: bool,
+}
+impl FakeWorker {
+    fn input(&self) -> FakeInput {
+        FakeInput {
+            parent: self.parent.clone(),
+            pipe: self.pipe.clone(),
+            killed: self.queue.killed.clone(),
+        }
+    }
+}
+
+/// The fake worker's input side, written by its channel or by a writer split
+/// off from it.
+struct FakeInput {
+    parent: mpsc::Sender<ParentMessage>,
+    pipe: Option<Arc<FullPipe>>,
+    killed: Arc<AtomicBool>,
+}
+impl WorkerWriter for FakeInput {
+    fn send(&mut self, message: &ParentMessage) -> std::result::Result<(), ChannelError> {
+        if matches!(message, ParentMessage::Deliver(_))
+            && let Some(pipe) = &self.pipe
+        {
+            pipe.write();
+            // A real write blocked on a full pipe fails once the kill closes
+            // the pipe.
+            if self.killed.load(Ordering::SeqCst) {
+                return Err(ChannelError::Closed);
+            }
+        }
+        self.parent
+            .send(message.clone())
+            .map_err(|_| ChannelError::Closed)
+    }
 }
 impl WorkerChannel for FakeWorker {
     fn welcome(&self) -> &Welcome {
         &self.welcome
     }
     fn send(&mut self, message: &ParentMessage) -> std::result::Result<(), ChannelError> {
-        self.parent
-            .send(message.clone())
-            .map_err(|_| ChannelError::Closed)
+        if self.split {
+            // As a real worker's: the input pipe went to the split writer.
+            return Err(ChannelError::Closed);
+        }
+        self.input().send(message)
     }
     fn recv(&mut self, timeout: Duration) -> std::result::Result<WorkerMessage, ChannelError> {
         self.queue.next(Some(timeout))
@@ -384,10 +460,17 @@ impl WorkerChannel for FakeWorker {
     fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
         Box::new(self.queue.clone())
     }
+    fn writer(&mut self) -> Option<Box<dyn WorkerWriter>> {
+        self.split = true;
+        Some(Box::new(self.input()))
+    }
     fn kill(&mut self) {
         self.events.lock().unwrap().push("kill".into());
         // A killed worker's channel ends, which releases a blocked receive.
         self.queue.killed.store(true, Ordering::SeqCst);
+        if let Some(pipe) = &self.pipe {
+            pipe.close();
+        }
         let _ = self.wake.send(Inbox::Wake);
     }
 }
@@ -416,6 +499,7 @@ struct Fixture {
     source: Arc<FakeSource>,
     clock: Clock,
     dir: PathBuf,
+    pipe: Option<Arc<FullPipe>>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -456,6 +540,8 @@ impl Fixture {
             },
             parent: parent_tx,
             events: events.clone(),
+            pipe: None,
+            split: false,
         }))));
         let catalog = Arc::new(MockCatalog::new());
         let host = Arc::new(FakeTransport {
@@ -510,6 +596,7 @@ impl Fixture {
             source,
             clock,
             dir,
+            pipe: None,
         }
     }
     fn start(&self, tools: &[(&str, &str, &str, Value)], limits: Limits, deadline: i64) {
@@ -682,6 +769,9 @@ impl Fixture {
             // has failed; normal teardown must still prove the real kill and join.
             self.worker_exit.store(true, Ordering::SeqCst);
             self.clock.set(i64::MAX);
+            if let Some(pipe) = &self.pipe {
+                pipe.close();
+            }
         }
         let supervisor = self.supervisor.clone();
         teardown(move || {
@@ -2566,6 +2656,18 @@ impl Fixture {
         }));
         reports
     }
+
+    fn fill_worker_pipe(&mut self) -> mpsc::Receiver<thread::ThreadId> {
+        let (entered, writing) = mpsc::channel();
+        let pipe = Arc::new(FullPipe {
+            state: Mutex::new((false, false)),
+            changed: Condvar::new(),
+            entered,
+        });
+        self.source.0.lock().unwrap().as_mut().unwrap().pipe = Some(pipe.clone());
+        self.pipe = Some(pipe);
+        writing
+    }
 }
 
 #[test]
@@ -2615,6 +2717,82 @@ fn a_manual_clock_jump_past_the_deadline_ends_a_sleeping_run() {
     assert_eq!(f.calls()[0].code.as_deref(), Some("no_outcome"));
     drop(held);
     f.assert_order();
+}
+
+/// A worker that writes faster than it reads: its next frame stays unread
+/// until the parent drains it, and until then the worker reads no input, so a
+/// delivery's write blocks. If the driver wrote that delivery itself, it could
+/// not give the reader its next credit, the frame would never drain, and the
+/// run would stall with the worker and both parent threads waiting on each
+/// other.
+#[test]
+fn a_full_worker_pipe_does_not_stop_reader_credits() {
+    let mut f = Fixture::new();
+    let writing = f.fill_worker_pipe();
+    f.standard();
+    // An unknown tool is rejected while its frame is handled, so its
+    // delivery is written before the driver gives the reader its next credit.
+    f.issue(0, "unknown", json!({}));
+    f.worker
+        .0
+        .send(Inbox::PipeTail(
+            WorkerMessage::HostCall(HostCall {
+                position: 1,
+                kind: CallKind::Tool {
+                    name: "read".into(),
+                },
+                args: JsonText::new("{}").unwrap(),
+            }),
+            f.pipe.as_ref().unwrap().clone(),
+        ))
+        .unwrap();
+    writing.recv_timeout(TIMEOUT).unwrap();
+    let next = f.attempt();
+    next.reply.send(Ok(json!(1))).unwrap();
+    for position in 0..2 {
+        let delivery = f.delivery();
+        assert_eq!(delivery.position, position);
+        assert_eq!(delivery.delivery_order, position + 1);
+    }
+}
+
+/// A delivery whose write never completes must not keep the run past its wall
+/// deadline, and the kill that ends the run must release the blocked write so
+/// shutdown can join every thread of the run.
+#[test]
+fn wall_deadline_kills_a_worker_with_a_blocked_delivery() {
+    let mut f = Fixture::new();
+    let writing = f.fill_worker_pipe();
+    let (driver_thread, driving) = mpsc::channel();
+    *f.supervisor.0.before_wait.lock().unwrap() = Some(Arc::new(move |_| {
+        let _ = driver_thread.send(thread::current().id());
+    }));
+    let (terminal, ended) = mpsc::channel();
+    f.supervisor.on_terminal(Arc::new(move |_, result| {
+        let _ = terminal.send(result);
+        Ok(())
+    }));
+    f.standard();
+    let driver = driving.recv_timeout(TIMEOUT).unwrap();
+    f.issue(0, "read", json!({}));
+    f.attempt().reply.send(Ok(json!(1))).unwrap();
+    let writer = writing.recv_timeout(TIMEOUT).unwrap();
+    f.clock.set(10_000);
+    let result = if writer == driver {
+        // Nothing drains this fake pipe before the kill. A driver blocked in
+        // the write cannot see the clock move, so the run would stay
+        // running however long the test waited: read the result as it is.
+        f.supervisor.result("r").unwrap().unwrap()
+    } else {
+        ended.recv_timeout(TIMEOUT).unwrap()
+    };
+    assert_eq!(result["status"], "budget_exhausted:wall");
+    assert_eq!(result["duration_ms"], 9_900);
+    f.supervisor.shutdown().unwrap();
+    assert!(matches!(
+        f.parent.try_recv(),
+        Err(mpsc::TryRecvError::Disconnected)
+    ));
 }
 
 #[test]
@@ -3485,7 +3663,8 @@ impl Fixture {
             .unwrap();
     }
 
-    /// Returns once the driver has handled every event sent before this call.
+    /// Returns once the driver has handled every event sent before this call
+    /// and the writer has passed every frame queued by then to the worker.
     /// Worker frames reach the driver in order and a manual clock move queues
     /// its event before returning, so a console line stored after them proves
     /// they were handled, without waiting on real time.
@@ -3499,6 +3678,7 @@ impl Fixture {
             .as_str()
             .unwrap()
             .ends_with(&line)
+            || self.supervisor.0.unwritten.load(Ordering::SeqCst) != 0
         {
             assert!(Instant::now() < until, "{marker} was not stored");
             thread::yield_now();
@@ -3586,6 +3766,32 @@ fn a_sleep_outside_0_to_10000_ms_from_the_worker_is_a_profile_violation() {
         assert!(f.calls().is_empty());
         f.assert_order();
     }
+}
+
+#[test]
+fn the_10001st_sleep_of_a_run_is_a_profile_violation() {
+    let f = Fixture::new();
+    f.standard();
+    // Long sleeps that never fall due, so every request stays a request.
+    for position in 0..10_000 {
+        f.sleep(position, "10000");
+    }
+    f.settled("at the limit");
+    assert_eq!(
+        f.supervisor.result("r").unwrap().unwrap()["status"],
+        "running"
+    );
+    f.sleep(10_000, "10000");
+    let result = f.terminal();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(
+        result["error"],
+        json!({
+            "code": "profile_violation",
+            "message": "this program asked to sleep more than 10,000 times; the limit is 10,000 per run",
+        })
+    );
+    f.assert_order();
 }
 
 #[test]
