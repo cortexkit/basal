@@ -231,6 +231,10 @@ Protocol errors remain protocol Error frames: unserved call modes
 admission refusals preserve their existing codes, messages and optional detail.
 They do not acquire a ToolResult in the Error frame's detail.
 
+Admission reads each provider's tool catalog without a preset first. If that
+answer lists no tools but offers the run's preset, admission reads the named
+preset. A nonempty first answer is used even if the provider offers the preset.
+
 A provider that does not serve a tool in codemode, or whose tool catalog can't be
 read or is invalid, does not refuse the run. Admission drops the affected tools
 (one tool for `provider_not_opted_in` or `call_mode_unsupported`, every tool from

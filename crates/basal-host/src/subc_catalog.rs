@@ -84,10 +84,8 @@ fn role_call_key() -> String {
 
 /// Reads `module`'s own `tool.catalog` answer: `role.describe` first, then
 /// a preset-less `tool.catalog`. Only an empty answer leads to a read of the
-/// `flow` preset, if listed. If the catalog is still empty and the provider
-/// offers legacy capability filtering, ask for every tag it serves. The
-/// answer carries per-tool declarations the daemon catalog does not, such as
-/// `emits_events` and `modes`.
+/// `flow` preset, if listed. The answer carries per-tool declarations the
+/// daemon catalog does not, such as `emits_events` and `modes`.
 ///
 /// Each request is bounded by the transport's call timeout. A failed call,
 /// an invalid description, or an answer that does not decode is an error.
@@ -129,10 +127,10 @@ fn read_tool_catalog_with(
     preset: Option<&str>,
     mut send: impl FnMut(&str, Value) -> Result<Value, WireError>,
 ) -> Result<(CatalogAnswer, bool), WireError> {
-    use cortexkit_role_tool_provider::catalog::{CatalogRequest, params_for_capabilities};
-    use cortexkit_role_tool_provider::describe::{check_describe, select_tool_capabilities};
+    use cortexkit_role_tool_provider::catalog::CatalogRequest;
+    use cortexkit_role_tool_provider::describe::check_describe;
     let describe = send("role.describe", json!({}))?;
-    let describe = check_describe(&describe)
+    check_describe(&describe)
         .map_err(|problems| WireError::Unreadable(format!("role.describe: {problems:?}")))?;
     let mut read = |request: &CatalogRequest| -> Result<CatalogAnswer, WireError> {
         let request =
@@ -152,14 +150,6 @@ fn read_tool_catalog_with(
     }
     if let Some(preset) = preset.filter(|_| serves_preset) {
         request.preset = Some(preset.to_owned());
-        answer = read(&request)?;
-    }
-    // Providers that still rely on filtering can return no tools by default.
-    if answer.tools.is_empty()
-        && let Some(tags) = select_tool_capabilities(&describe, &describe.tool_capabilities)
-    {
-        request.preset = None;
-        request.params = params_for_capabilities(tags);
         answer = read(&request)?;
     }
     Ok((answer, serves_preset))
@@ -798,9 +788,6 @@ mod emits_events_tests {
             let calls = plexus.calls();
             let names: Vec<&str> = calls.iter().map(|(name, ..)| name.as_str()).collect();
             assert_eq!(names, ["role.describe", "tool.catalog"]);
-            // This describe does not advertise
-            // tool-catalog-capability-filter/v1, so the request's params
-            // are empty.
             assert_eq!(calls[1].1, json!({"params":{}}));
             assert_ne!(calls[0].2, calls[1].2, "each call has its own key");
         }
@@ -842,42 +829,16 @@ mod emits_events_tests {
         );
     }
 
-    fn filtering_describe() -> Value {
-        let mut filtering = describe();
-        filtering["capabilities"] =
-            json!([cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER]);
-        filtering["tool_capabilities"] = json!(["plexus:github.react/v1", "plexus:github.read/v1"]);
-        filtering
-    }
-
     #[test]
-    fn a_capability_filtering_provider_is_asked_for_every_tag_it_serves() {
-        let default = json!({"generation":"g","catalog_digest":"default","tools":[]});
-        let plexus = Plexus::answering_catalogs(
-            filtering_describe(),
-            [Ok(default), Ok(answer(Some(json!(false))))],
-        );
-        assert_eq!(read(&plexus, "react"), Ok(Some(false)));
-        let calls = plexus.calls();
-        let names: Vec<_> = calls.iter().map(|(name, ..)| name.as_str()).collect();
-        assert_eq!(names, ["role.describe", "tool.catalog", "tool.catalog"]);
-        assert_eq!(calls[1].1, json!({"params":{}}));
-        assert_eq!(
-            calls[2].1,
-            json!({"params":{"capabilities":["plexus:github.react/v1","plexus:github.read/v1"]}})
-        );
-    }
-
-    #[test]
-    fn an_empty_preset_catalog_falls_back_to_the_legacy_filter_without_a_preset() {
+    fn an_empty_preset_catalog_does_not_fall_back_to_a_capability_filter() {
+        let mut legacy = describe();
+        legacy["capabilities"] = json!([cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER]);
+        legacy["tool_capabilities"] = json!(["plexus:github.react/v1"]);
         let mut default = json!({"generation":"g","catalog_digest":"default","tools":[]});
         default["presets"] = json!(["flow"]);
         let flow = json!({"generation":"g","catalog_digest":"flow","tools":[]});
-        let plexus = Plexus::answering_catalogs(
-            filtering_describe(),
-            [Ok(default), Ok(flow), Ok(answer(Some(json!(false))))],
-        );
-        assert_eq!(read(&plexus, "react"), Ok(Some(false)));
+        let plexus = Plexus::answering_catalogs(legacy, [Ok(default), Ok(flow)]);
+        assert_eq!(read(&plexus, "react"), Ok(None));
         assert_eq!(
             plexus
                 .calls()
@@ -888,7 +849,6 @@ mod emits_events_tests {
                 json!({}),
                 json!({"params":{}}),
                 json!({"params":{},"preset":"flow"}),
-                json!({"params":{"capabilities":["plexus:github.react/v1","plexus:github.read/v1"]}}),
             ]
         );
     }
