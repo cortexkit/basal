@@ -57,8 +57,6 @@ pub struct Health {
     pub admitted: u64,
     pub queued: u64,
     pub overflow: u64,
-    /// Retained for health reply compatibility; always zero.
-    pub model_wakes: u64,
     /// In-subscription notices basal could not decode: for example, ordinary
     /// notices with inline bodies, invalid subjects or headers, or undeclared
     /// versions. Also counts invalid control notices: a result from an earlier
