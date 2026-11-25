@@ -408,7 +408,7 @@ fn scope_shape_precedes_attestation_and_needs_no_flow_targets() {
     ));
     assert_eq!(run.status, Status::Running);
     let start = start.unwrap();
-    assert_eq!(start.scope.targets, ["broca".into()].into_iter().collect());
+    assert!(start.scope.targets.is_empty());
     assert!(!start.tools.contains_key("model"));
     assert!(!start.tools.contains_key("classify"));
     assert_eq!(start.scope.selector.scope_ref, "scope:run");
@@ -663,9 +663,7 @@ fn dropped_entry(bad: Value, reason: &str) {
     req["catalog"] = json!([bad, entry("good")]);
     let (run, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
     let start = start.unwrap();
-    // `good` plus basal's built-in `model` tool.
-    assert_eq!(start.tools.len(), 2);
-    assert!(start.tools.contains_key("good"));
+    assert_eq!(start.tools.keys().collect::<Vec<_>>(), ["good"]);
     let warnings: Vec<Value> = serde_json::from_str(&run.warnings).unwrap();
     assert_eq!(warnings.len(), 1);
     assert_eq!(warnings[0]["code"], "tool_entry_invalid");
@@ -738,9 +736,18 @@ fn tool_names_are_ascii_identifiers_of_at_most_128_bytes() {
         dropped_entry(entry(&name), "invalid tool name");
     }
     let mut req = request("run", "agent");
-    req["catalog"] = json!([entry(&"x".repeat(128)), entry("_A0")]);
+    let longest = "x".repeat(128);
+    req["catalog"] = json!([entry(&longest), entry("_A0")]);
     let (_, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
-    assert_eq!(start.unwrap().tools.len(), 3);
+    assert_eq!(
+        start
+            .unwrap()
+            .tools
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["_A0", longest.as_str()]
+    );
 }
 
 #[test]
@@ -870,7 +877,7 @@ fn same_document_schema_compiles_once_and_scope_targets_come_from_modules() {
     assert!(!start.tools["read"].input_schema.is_valid(&json!("42")));
     assert_eq!(
         start.scope.targets.into_iter().collect::<Vec<_>>(),
-        vec!["broca", "calendar", "notes"]
+        vec!["calendar", "notes"]
     );
     assert_eq!(run.agent_id, "agent");
     assert_eq!(run.catalog_digest.len(), 64);

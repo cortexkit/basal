@@ -300,8 +300,10 @@ fn arrival(
     reservation: Option<&crate::run_records::Reservation>,
 ) -> Arrival {
     let value: Option<serde_json::Value> = serde_json::from_str(outcome.value.as_str()).ok();
+    // Legacy journal conversion (run_cutover/convert.rs) can put both token
+    // and dollar limits in one reservation.
     let cost_micros = reservation
-        .filter(|r| r.input_tokens == 0 && r.output_tokens == 0)
+        .filter(|r| r.cost_micros > 0 || r.input_tokens.saturating_add(r.output_tokens) == 0)
         .map(|r| {
             (crate::classify_cost::charge(
                 r.cost_micros as f64 / 1_000_000.0,
