@@ -1,6 +1,11 @@
 # basal
 
-basal is the fleet's flow runtime. A flow is a small JavaScript script with a JSON manifest; it runs on a schedule or in response to a module event, reads facts and module data, decides what to do, and sends its output to an agent through prefrontal-core, the module that manages agents and their output destinations. Each script runs in `ck-basal-worker`, a separate QuickJS process confined by the operating system, that holds no durable state. The parent module, `ck-basal`, supervised by the subc daemon, checks every call a script makes against its approved manifest and journals it before it leaves and records its outcome when it comes back, so a crash anywhere resumes the run without repeating an effect. The operator approves each exact script version: an edit requires a new approval. basal also provides the agent-facing `codemode` tool, which runs a short JavaScript program over the calling agent's own tools in the same confined worker ([docs/codemode.md](docs/codemode.md)).
+> [!WARNING]
+> **Alpha.** basal is in early development and is not yet released for general use.
+> Breaking changes will happen between versions, including changes to its settings,
+> stored data and interfaces. Pin an exact version if you depend on it.
+
+basal is the fleet's flow runtime. A flow is a small JavaScript script with a JSON manifest; it runs on a schedule or in response to a module event, reads facts and module data, decides what to do, and sends its output to an agent through prefrontal, the module that manages agents and their output destinations. Each script runs in `ck-basal-worker`, a separate QuickJS process confined by the operating system, that holds no durable state. The parent module, `ck-basal`, supervised by the subc daemon, checks every call a script makes against its approved manifest and journals it before it leaves and records its outcome when it comes back, so a crash anywhere resumes the run without repeating an effect. The operator approves each exact script version: an edit requires a new approval. basal also provides the agent-facing `codemode` tool, which runs a short JavaScript program over the calling agent's own tools in the same confined worker ([docs/codemode.md](docs/codemode.md)).
 
 The name comes from the basal ganglia, the part of the brain that selects actions and runs habits and routines.
 
