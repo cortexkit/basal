@@ -222,6 +222,9 @@ fn flow_secret_use_readiness_shares_the_flow_call_grace() {
         );
         assert_eq!(carrier.0.load(Ordering::SeqCst), 1);
         assert!(rt.fixture_deferral(&run, 0).unwrap().proven_unsent);
+        // The run can park while the first dispatch is still registered as
+        // in flight. Join that dispatch before making the retry due.
+        rt.quiesce();
         clock.advance(if expire { 60_000 } else { 1_000 });
         let mut next = ScriptedWorker::new(vec![
             WorkerMessage::Blocked { awaiting: vec![0] },
@@ -232,10 +235,11 @@ fn flow_secret_use_readiness_shares_the_flow_call_grace() {
                 },
             },
         ]);
-        assert!(matches!(
-            rt.activate(&run, &mut next).unwrap(),
-            crate::ActivationEnd::Succeeded { .. }
-        ));
+        let end = rt.activate(&run, &mut next).unwrap();
+        assert!(
+            matches!(end, crate::ActivationEnd::Succeeded { .. }),
+            "expire={expire}: {end:?}"
+        );
         let call = rt.fixture_call_state(&run, 0).unwrap();
         let value: Value = serde_json::from_str(call.arrival.unwrap().value.as_str()).unwrap();
         if expire {
