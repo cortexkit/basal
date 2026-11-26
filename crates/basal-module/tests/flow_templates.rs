@@ -1334,6 +1334,100 @@ fn wait_resolution_refusal_does_not_block_digest_or_end() {
 }
 
 #[test]
+fn instantiate_param_unknown_lists_reminder_parameters() {
+    assert_reminder_param_refusal(
+        json!({"at":"2026-05-01T01:00:00Z","message":"Check the rollout"}),
+        "param_unknown",
+        "message",
+        Value::Null,
+        "parameter `message` is not one of remind-at's parameters.",
+    );
+}
+
+#[test]
+fn instantiate_param_missing_lists_reminder_parameters() {
+    assert_reminder_param_refusal(
+        json!({"at":"2026-05-01T01:00:00Z"}),
+        "param_missing",
+        "note",
+        json!({"type":"string","max_bytes":4096}),
+        "required parameter `note` is missing for remind-at.",
+    );
+}
+
+#[test]
+fn instantiate_param_out_of_bounds_lists_reminder_parameters() {
+    assert_reminder_param_refusal(
+        json!({"at":"not-a-timestamp","note":"Check the rollout"}),
+        "param_out_of_bounds",
+        "at",
+        json!({"type":"timestamp","max_ahead":"365d"}),
+        "parameter `at` does not meet the bounds for remind-at.",
+    );
+}
+
+fn assert_reminder_param_refusal(
+    values: Value,
+    code: &str,
+    param: &str,
+    bound: Value,
+    problem: &str,
+) {
+    use cortexkit_role_tool_provider::{CallMode, call::ToolCallRequest};
+    use subc_protocol::{BindIdentity, Principal};
+
+    let t = Test::new();
+    let mut params = json!({"template":"remind-at","version":5,"params":values,"expires_in":"1d"});
+    let error =
+        t.f.module
+            .handle(&agent(OWNER), "flow.instantiate", params.clone())
+            .unwrap_err();
+    assert_eq!(error.code, code);
+    assert_eq!(
+        error.message,
+        format!(
+            "{problem} remind-at takes: at (UTC time like 2026-11-26T16:33:30Z, up to 365 days ahead), note (text, up to 4096 bytes). All parameters are required."
+        )
+    );
+    assert_eq!(
+        error.detail,
+        Some(json!({"param":param,"bound":bound,"params":[
+            {"name":"at","type":"timestamp","max_ahead":"365d"},
+            {"name":"note","type":"string","max_bytes":4096},
+        ]}))
+    );
+
+    let context = basal_module::tool::Context {
+        call_mode: CallMode::Classic,
+        consumer_capabilities: None,
+        bind_identity: BindIdentity::new("agent-harness", "agent-session"),
+        principal: Principal::Reserved {
+            module_id: "broca".into(),
+        },
+        scope: Some(
+            serde_json::from_value(json!({
+                "owner":{"kind":"reserved","module_id":"prefrontal"},
+                "ref":"agent-scope","scope_epoch":7,"kind":"head",
+                "attributes":{"agent_id":OWNER},"owner_authorized":true,
+            }))
+            .unwrap(),
+        ),
+    };
+    params["action"] = json!("instantiate");
+    let tool_error =
+        t.f.module
+            .handle_tool(
+                &context,
+                ToolCallRequest::new("flow", params),
+                Duration::ZERO,
+            )
+            .unwrap_err();
+    assert_eq!(tool_error.code, error.code);
+    assert_eq!(tool_error.message, error.message);
+    assert_eq!(tool_error.detail, error.detail);
+}
+
+#[test]
 fn reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation() {
     let t = Test::new();
     for at in [

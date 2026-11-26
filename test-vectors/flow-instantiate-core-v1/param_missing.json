@@ -6,9 +6,16 @@
         "max_bytes": 200,
         "type": "string"
       },
-      "param": "project_id"
+      "param": "project_id",
+      "params": [
+        {
+          "max_bytes": 200,
+          "name": "project_id",
+          "type": "string"
+        }
+      ]
     },
-    "message": "param_missing: parameter `project_id`"
+    "message": "required parameter `project_id` is missing for docs-proposals. docs-proposals takes: project_id (text, up to 200 bytes). All parameters are required."
   },
   "name": "param_missing",
   "request": {

@@ -1572,14 +1572,10 @@ fn template_dry_run_param_missing_matches_instantiate() {
     assert_eq!(error.code, "param_missing");
     let created = create(&f, OWNER, json!({}), 1, "1h").unwrap_err();
     assert_eq!(error.detail, created.detail);
-    // A text reply shows only the message, so it must name the parameter.
-    let param = created.detail.as_ref().unwrap()["param"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    assert_eq!(error.message, created.message);
     assert_eq!(
         created.message,
-        format!("param_missing: parameter `{param}`")
+        "required parameter `note` is missing for watch. watch takes: note (text, up to 4096 bytes). All parameters are required."
     );
 }
 

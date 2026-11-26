@@ -348,13 +348,94 @@ pub fn instance_id(template: &str, agent: &str, values: &Value) -> String {
 #[derive(Debug)]
 pub struct Refusal {
     pub code: &'static str,
+    pub message: Option<String>,
     pub detail: Value,
 }
 
-fn parameter_refusal(code: &'static str, name: &str, bound: Value) -> Refusal {
+enum ParameterProblem<'a> {
+    Unknown,
+    Missing(&'a Parameter),
+    OutOfBounds(&'a Parameter),
+}
+
+fn duration_words(text: &str) -> String {
+    let (amount, unit) = text.split_at(text.len() - 1);
+    let unit = match unit {
+        "s" => "second",
+        "m" => "minute",
+        "h" => "hour",
+        "d" => "day",
+        _ => unreachable!("registered duration units were validated"),
+    };
+    let amount = amount.trim_start_matches('0');
+    let plural = if amount == "1" { "" } else { "s" };
+    format!("{amount} {unit}{plural}")
+}
+
+fn describe_parameter(decl: &Parameter) -> String {
+    match decl {
+        Parameter::Path { under } => format!("file path under {under:?}"),
+        Parameter::Repo { under } => format!("Git repository under {under:?}"),
+        Parameter::Url { hosts } => format!("HTTPS URL on {}", hosts.join(", ")),
+        Parameter::Duration { min, max } => format!("duration from `{min}` to `{max}`"),
+        Parameter::Integer { min, max } => format!("whole number from {min} to {max}"),
+        Parameter::String { max_bytes } => format!("text, up to {max_bytes} bytes"),
+        Parameter::Enum { values } => format!("text, one of {values:?}"),
+        Parameter::Timestamp { max_ahead } => format!(
+            "UTC time like 2026-11-26T16:33:30Z, up to {} ahead",
+            duration_words(max_ahead)
+        ),
+    }
+}
+
+fn parameter_refusal(
+    template: &str,
+    decls: &BTreeMap<String, Parameter>,
+    name: &str,
+    problem: ParameterProblem<'_>,
+) -> Refusal {
+    #[derive(Serialize)]
+    struct Declaration<'a> {
+        name: &'a str,
+        #[serde(flatten)]
+        bound: &'a Parameter,
+    }
+
+    let (code, bound, problem) = match problem {
+        ParameterProblem::Unknown => (
+            "param_unknown",
+            None,
+            format!("parameter `{name}` is not one of {template}'s parameters."),
+        ),
+        ParameterProblem::Missing(bound) => (
+            "param_missing",
+            Some(bound),
+            format!("required parameter `{name}` is missing for {template}."),
+        ),
+        ParameterProblem::OutOfBounds(bound) => (
+            "param_out_of_bounds",
+            Some(bound),
+            format!("parameter `{name}` does not meet the bounds for {template}."),
+        ),
+    };
+    let params: Vec<_> = decls
+        .iter()
+        .map(|(name, bound)| Declaration { name, bound })
+        .collect();
+    let message = if params.is_empty() {
+        format!("{problem} {template} takes no parameters.")
+    } else {
+        let list = params
+            .iter()
+            .map(|param| format!("{} ({})", param.name, describe_parameter(param.bound)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{problem} {template} takes: {list}. All parameters are required.")
+    };
     Refusal {
         code,
-        detail: json!({"param": name, "bound": bound}),
+        message: Some(message),
+        detail: json!({"param": name, "bound": bound, "params": params}),
     }
 }
 
@@ -407,6 +488,7 @@ pub fn validate_values(manifest: &Manifest, values: &Value, now: i64) -> Result<
     let Some(object) = values.as_object() else {
         return Err(Refusal {
             code: "invalid_params",
+            message: None,
             detail: json!({"field":"params"}),
         });
     };
@@ -414,11 +496,20 @@ pub fn validate_values(manifest: &Manifest, values: &Value, now: i64) -> Result<
     let mut validated = serde_json::Map::new();
     for name in names {
         let Some(decl) = decls.get(name) else {
-            return Err(parameter_refusal("param_unknown", name, Value::Null));
+            return Err(parameter_refusal(
+                &manifest.id,
+                &decls,
+                name,
+                ParameterProblem::Unknown,
+            ));
         };
-        let bound = serde_json::to_value(decl).expect("bounds serialize");
         let Some(value) = object.get(name) else {
-            return Err(parameter_refusal("param_missing", name, bound));
+            return Err(parameter_refusal(
+                &manifest.id,
+                &decls,
+                name,
+                ParameterProblem::Missing(decl),
+            ));
         };
         let mut canonical = value.clone();
         let fits = match decl {
@@ -483,7 +574,12 @@ pub fn validate_values(manifest: &Manifest, values: &Value, now: i64) -> Result<
             fits
         };
         if !fits {
-            return Err(parameter_refusal("param_out_of_bounds", name, bound));
+            return Err(parameter_refusal(
+                &manifest.id,
+                &decls,
+                name,
+                ParameterProblem::OutOfBounds(decl),
+            ));
         }
         validated.insert(name.clone(), canonical);
     }
@@ -600,7 +696,11 @@ impl From<Refusal> for TemplateError {
     }
 }
 fn refused(code: &'static str, detail: Value) -> TemplateError {
-    TemplateError::Refused(Refusal { code, detail })
+    TemplateError::Refused(Refusal {
+        code,
+        message: None,
+        detail,
+    })
 }
 
 impl crate::Runtime {
