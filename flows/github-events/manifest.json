@@ -1,10 +1,10 @@
 {
   "format": 1,
   "id": "github-events",
-  "version": 10,
+  "version": 11,
   "purpose": "Deliver GitHub issue, PR and release events to each repository's owning agent, wake it for newly opened issues and PRs and for comments by people, and add an eyes reaction on newly opened items only.",
   "explanation": "Watch GitHub issues, pull requests and releases through Plexus and send accepted events to each repository's owning agent. Wake the owner for new issues and pull requests and for comments by people who aren't filtered out. Read GitHub event and actor details; the only GitHub write is an eyes reaction as the owner on a newly opened issue or pull request.",
-  "changes": "Digests now name who commented, quote a short excerpt and link the comment when available, and keep the six most recent comments on an item. Comments by people wake the owner so replies don't get buried among other updates. Other updates still arrive without waking.",
+  "changes": "Digest times are now shown in UTC with a Z, so they match GitHub and basal's records.",
   "trigger": {
     "events": [
       {"module": "plexus", "name": "github_issue_changed", "version": 2, "match": {"repo": "cortexkit/*"}, "max_age": "6h"},

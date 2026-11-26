@@ -162,17 +162,8 @@ function sanitize(text) {
   return String(text ?? '').replace(/</g, '\u2039').replace(/"/g, "'").replace(/[\r\n]/g, ' ');
 }
 
-// Mirrors core's chrono::Local on the operator's Europe/Madrid host
-// (commands.rs:955-963). EU DST switches at 01:00 UTC on the last Sundays
-// of March and October. UTC getters keep replay independent of worker location.
-function madridHHMM(ms) {
-  const year = new Date(ms).getUTCFullYear();
-  const lastSunday = month => {
-    const last = new Date(Date.UTC(year, month + 1, 0));
-    return Date.UTC(year, month, last.getUTCDate() - last.getUTCDay(), 1);
-  };
-  const summer = ms >= lastSunday(2) && ms < lastSunday(9);
-  return new Date(ms + (summer ? 2 : 1) * 3600000).toISOString().slice(11, 16);
+function utcHHMM(ms) {
+  return new Date(ms).toISOString().slice(11, 16) + 'Z';
 }
 
 function render(repo, kind, number, action, history, summary) {
@@ -186,11 +177,11 @@ function render(repo, kind, number, action, history, summary) {
   const word = words.get(action) ?? 'update';
   let prefix;
   if (history.count === 1) {
-    prefix = `- ${subject} ${word} observed at ${madridHHMM(history.times[0])}. `;
+    prefix = `- ${subject} ${word} observed at ${utcHHMM(history.times[0])}. `;
   } else {
     // Repeated observations show the first six times, an overflow count, and
     // only the newest summary (commands.rs:1567-1617).
-    const times = history.times.map(madridHHMM);
+    const times = history.times.map(utcHHMM);
     if (history.count > 6) times.push(`${history.count - 6} more`);
     const last = times.pop();
     prefix = `- ${subject} updated at ${times.join(', ')} and ${last}: `;
@@ -198,7 +189,7 @@ function render(repo, kind, number, action, history, summary) {
   const comments = history.comments ?? [];
   let suffix = '';
   for (const { author, time, excerpt } of comments) {
-    suffix += `\nNew comment by ${author} at ${madridHHMM(time)}`;
+    suffix += `\nNew comment by ${author} at ${utcHHMM(time)}`;
     suffix += excerpt ? `: "${excerpt}"` : '.';
   }
   if (history.comment_count > comments.length) {

@@ -380,7 +380,7 @@ fn pinned_reaction(kind: &str, event: usize) -> String {
 fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
     Manifest::parse_stored(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 10);
+    assert_eq!(manifest["version"], 11);
     // The trigger, global sink and three operations are the only requested capabilities.
     assert_eq!(
         manifest.as_object().unwrap().keys().collect::<Vec<_>>(),
@@ -831,7 +831,7 @@ fn updates_replace_one_item_and_accumulate_times_with_newest_summary() {
     assert_eq!(writes[1]["item"]["data"]["observation_count"], 2);
     assert_eq!(
         writes[1]["item"]["body"],
-        "- cortexkit/basal Issue #42 updated at 12:00 and 12:01: \"Newest synthetic title\""
+        "- cortexkit/basal Issue #42 updated at 10:00Z and 10:01Z: \"Newest synthetic title\""
     );
     // Only the opened notice reacted.
     assert_eq!(t.host.reactions.lock().unwrap().len(), 1);
@@ -863,10 +863,10 @@ fn comment_lines_and_links_survive_pushes() {
     let digest = &writes[12]["item"];
     assert_eq!(
         digest["body"],
-        "- cortexkit/basal PR #42 updated at 12:00, 12:01, 12:02, 12:03, 12:04, 12:05 and 7 more: \"Synthetic subject\"\n\
-         New comment by rowan at 12:09.\n\
-         New comment by sky at 12:05.\n\
-         New comment by river at 12:01."
+        "- cortexkit/basal PR #42 updated at 10:00Z, 10:01Z, 10:02Z, 10:03Z, 10:04Z, 10:05Z and 7 more: \"Synthetic subject\"\n\
+         New comment by rowan at 10:09Z.\n\
+         New comment by sky at 10:05Z.\n\
+         New comment by river at 10:01Z."
     );
     assert_eq!(
         digest["links"],
@@ -912,13 +912,13 @@ fn plexus_comment_excerpt_vectors_render_link_and_wake() {
         (
             issue,
             "github_issue_changed",
-            "New comment by elliot at 14:02: \"I can reproduce this.\"",
+            "New comment by elliot at 12:02Z: \"I can reproduce this.\"",
             "https://github.com/fixture-org/lanterns/issues/3#issuecomment-1",
         ),
         (
             pr,
             "github_pr_changed",
-            "New comment by mira at 14:02: \"Thanks for the fix!\"",
+            "New comment by mira at 12:02Z: \"Thanks for the fix!\"",
             "https://github.com/fixture-org/lanterns/pull/7#issuecomment-1",
         ),
     ];
@@ -950,36 +950,39 @@ fn comment_excerpt_is_optional_quoted_sanitized_and_byte_capped() {
     let t = Test::new();
     set_clock(&t, "2026-07-01T10:00:00Z");
     let cases = [
-        (None, "reader", "New comment by reader at 12:00.".into()),
+        (None, "reader", "New comment by reader at 10:00Z.".into()),
         (
             Some(Value::Null),
             "reader",
-            "New comment by reader at 12:00.".into(),
+            "New comment by reader at 10:00Z.".into(),
         ),
         (
             Some(json!(42)),
             "reader",
-            "New comment by reader at 12:00.".into(),
+            "New comment by reader at 10:00Z.".into(),
         ),
         (
             Some(json!("")),
             "reader",
-            "New comment by reader at 12:00.".into(),
+            "New comment by reader at 10:00Z.".into(),
         ),
         (
             Some(json!("I pushed the changes…")),
             "reader",
-            "New comment by reader at 12:00: \"I pushed the changes…\"".into(),
+            "New comment by reader at 10:00Z: \"I pushed the changes…\"".into(),
         ),
         (
             Some(json!("a \"quote\"\n<and another line>\r")),
             "re<\"ad\r\ner",
-            "New comment by re‹'ad  er at 12:00: \"a 'quote' ‹and another line> \"".into(),
+            "New comment by re‹'ad  er at 10:00Z: \"a 'quote' ‹and another line> \"".into(),
         ),
         (
             Some(json!("🦀".repeat(100))),
             "reader",
-            format!("New comment by reader at 12:00: \"{}...\"", "🦀".repeat(69)),
+            format!(
+                "New comment by reader at 10:00Z: \"{}...\"",
+                "🦀".repeat(69)
+            ),
         ),
     ];
     for (i, (excerpt, author, line)) in cases.into_iter().enumerate() {
@@ -999,7 +1002,7 @@ fn comment_excerpt_is_optional_quoted_sanitized_and_byte_capped() {
         assert_eq!(
             t.writes()[i]["item"]["body"],
             format!(
-                "- cortexkit/basal PR #{} new comment observed at 12:00. \"Synthetic subject\"\n{line}",
+                "- cortexkit/basal PR #{} new comment observed at 10:00Z. \"Synthetic subject\"\n{line}",
                 i + 1
             )
         );
@@ -1051,7 +1054,7 @@ fn many_comments_keep_six_newest_with_excerpts_under_memory_and_digest_limits() 
     let lines = digest["body"].as_str().unwrap().lines().skip(1);
     let expected = (14..=19)
         .rev()
-        .map(|i| format!("New comment by reader-{i} at 12:{i}: \"{excerpt}\""))
+        .map(|i| format!("New comment by reader-{i} at 10:{i}Z: \"{excerpt}\""))
         .chain(["14 earlier comments.".into()])
         .collect::<Vec<_>>();
     assert_eq!(lines.collect::<Vec<_>>(), expected);
@@ -1403,7 +1406,7 @@ fn observation_times_cap_at_six_and_count_overflow_without_old_titles() {
     let last = t.writes().pop().unwrap();
     assert_eq!(
         last["item"]["body"],
-        "- cortexkit/basal Issue #42 updated at 12:00, 12:01, 12:02, 12:03, 12:04, 12:05 and 3 more: \"Synthetic observation 8\""
+        "- cortexkit/basal Issue #42 updated at 10:00Z, 10:01Z, 10:02Z, 10:03Z, 10:04Z, 10:05Z and 3 more: \"Synthetic observation 8\""
     );
     assert_eq!(last["item"]["data"]["overflow"], 3);
     assert_eq!(
@@ -1684,15 +1687,13 @@ fn release_assumes_a_tag_identity_and_is_a_piggyback_update() {
 }
 
 #[test]
-fn madrid_clock_covers_2026_dst_transitions_and_normal_summer_and_winter() {
+fn utc_clock_covers_2026_dst_transitions() {
     let t = Test::new();
     for (timestamp, expected) in [
-        ("2026-03-29T00:59:00Z", "01:59"),
-        ("2026-03-29T01:00:00Z", "03:00"),
-        ("2026-10-25T00:59:00Z", "02:59"),
-        ("2026-10-25T01:00:00Z", "02:00"),
-        ("2026-07-01T10:15:00Z", "12:15"),
-        ("2026-12-01T10:15:00Z", "11:15"),
+        ("2026-03-29T00:59:00Z", "00:59Z"),
+        ("2026-03-29T01:00:00Z", "01:00Z"),
+        ("2026-10-25T00:59:00Z", "00:59Z"),
+        ("2026-10-25T01:00:00Z", "01:00Z"),
     ] {
         let now = timestamp
             .parse::<jiff::Timestamp>()
@@ -1709,4 +1710,26 @@ fn madrid_clock_covers_2026_dst_transitions_and_normal_summer_and_winter() {
             "{timestamp}"
         );
     }
+}
+
+fn assert_utc_digest_time(timestamp: &str) {
+    let t = Test::new();
+    set_clock(&t, timestamp);
+    let mut body = item("issue", "created");
+    body["comment_author"] = json!("reader");
+    t.event(body);
+    assert_eq!(
+        t.writes()[0]["item"]["body"],
+        "- cortexkit/basal Issue #42 new comment observed at 10:15Z. \"Synthetic subject\"\nNew comment by reader at 10:15Z."
+    );
+}
+
+#[test]
+fn utc_clock_summer_matches_timestamp() {
+    assert_utc_digest_time("2026-07-01T10:15:23Z");
+}
+
+#[test]
+fn utc_clock_winter_matches_timestamp() {
+    assert_utc_digest_time("2026-12-01T10:15:23Z");
 }
