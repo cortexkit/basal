@@ -4,6 +4,14 @@ The staging scripts, deploy cards and placement procedure below are the develope
 
 basal never places its own binaries. In this fleet the operator places every module binary with `subconscious/scripts/fleet/place-module.sh`, from a card the module stages. basal ships two binaries, `ck-basal` (the module) and `ck-basal-worker` (the confined QuickJS worker it runs flows in). [`script/stage.sh`](../script/stage.sh) builds, signs, smoke-tests and stages both and prints one card covering the two gate invocations. The operator posts the card and performs every step after staging.
 
+## GitHub releases
+
+The [Release workflow](../.github/workflows/release.yml) uses [`script/release-build.sh`](../script/release-build.sh) to build `ck-basal` and `ck-basal-worker` from the same clean commit, without test hooks. It verifies both programs' reported revision and publishes a ZIP and SHA-256 checksum per program and platform. `ck setup` uses the release manifest to install the two programs side by side.
+
+On macOS, both programs use Developer ID signing with the hardened runtime. The worker has the signing identifier `ck-basal-worker` and no entitlements. The workflow notarizes the signed archives and runs the worker's confinement gate on the signed bytes extracted from its ZIP.
+
+Windows builds are checked but their archives are withheld from published releases until the native suite runs in the release lane. `ck setup` therefore reports Windows as `release-incomplete`. A manual dispatch rehearses the release without publishing. Only a matching `v*` tag on a commit with green push CI can publish, and only after `BASAL_REQUIRES_CORE` is set to the confirmed minimum public core version.
+
 ## Staging
 
 ```sh

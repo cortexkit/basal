@@ -11,6 +11,7 @@ def load_tests(loader, tests, pattern):
         "script.tests.exit_traps",
         "script.tests.codemode_manifest",
         "script.tests.flows_rig",
+        "script.tests.release_assets",
         "script.tests.sign_worker",
         "script.tests.stage_card",
     ])

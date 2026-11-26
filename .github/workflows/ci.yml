@@ -48,7 +48,7 @@ jobs:
           curl --fail --location --retry 3 https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz -o "$RUNNER_TEMP/shellcheck.tar.xz"
           tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
-          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" -x script/*.sh
+          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" -x script/*.sh script/release/*.sh
       # These suites use fixture signing and debugger functions, not the real
       # codesign, lldb or worker, so they need no Rust build or macOS runner.
       - name: Check offline flow rig contracts
@@ -79,6 +79,8 @@ jobs:
           python3 -m unittest script.tests.stage_card -v
       - name: Check worker signing gate and core JSON features
         run: python3 -m unittest script.tests.sign_worker script.tests.codemode_manifest -v
+      - name: Check offline release assets
+        run: python3 -m unittest script.tests.release_assets -v
 
   checks:
     if: github.event_name != 'schedule'
