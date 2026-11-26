@@ -66,7 +66,6 @@ fn check_uncut(summary: &Summary) {
         1,
         "{summary:#?}"
     );
-    assert!(summary.tokens.values().all(|&value| value == 0));
 }
 
 /// Runs every cut list in parallel and returns (cuts, result) pairs.

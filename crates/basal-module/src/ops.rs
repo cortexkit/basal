@@ -902,22 +902,6 @@ impl Module {
                     // the install back: the operator decides with that known.
                     Err(e) => json!({ "error": e.to_string() }),
                 };
-                let token_window = self
-                    .rt
-                    .token_usage(&installed.flow_id, now)
-                    .map_err(|e| self.core_error(e))?
-                    .map(|w| {
-                        json!({
-                            "window_ms": w.window_ms,
-                            "window_start": w.window_start,
-                            "reserved": w.reserved,
-                            "input_tokens": w.input_tokens,
-                            "cache_write_tokens": w.cache_write_tokens,
-                            "output_tokens": w.output_tokens,
-                            "cached_input_tokens": w.cached_input_tokens,
-                            "unreported_tokens": w.unreported_tokens,
-                        })
-                    });
                 let mut fields = card::fields(&CardInput {
                     manifest,
                     script: &request.script,
@@ -925,7 +909,6 @@ impl Module {
                     author: &request.author,
                     installed: &installed,
                     catalog: self.catalog.as_ref(),
-                    token_window,
                     dry_run,
                 });
                 fields["wire_author"] = card_author(caller)?;
@@ -1641,25 +1624,6 @@ impl Module {
             .collect();
         let ages = self.rt.run_ages().map_err(|e| self.core_error(e))?;
         let health = self.rt.health().map_err(|e| self.core_error(e))?;
-        let mut tokens = Vec::new();
-        let flow_ids: Vec<_> = flows.iter().map(|f| f.flow_id.as_str()).collect();
-        let token_usage = self
-            .rt
-            .token_usage_many(&flow_ids, now)
-            .map_err(|e| self.core_error(e))?;
-        for f in &flows {
-            if let Some(w) = token_usage.get(&f.flow_id) {
-                tokens.push(json!({
-                    "flow_id": f.flow_id,
-                    "window_start": w.window_start,
-                    "window_ms": w.window_ms,
-                    // Outstanding reservations, against what was reported.
-                    "reserved": w.reserved,
-                    "actual": w.input_tokens + w.cache_write_tokens + w.output_tokens + w.unreported_tokens,
-                    "cached_input_tokens": w.cached_input_tokens,
-                }));
-            }
-        }
         let mut entries = Vec::with_capacity(flows.len());
         for f in flows {
             let last_run = match f.last_run {
@@ -1739,7 +1703,8 @@ impl Module {
                 "bound": pool.bound.iter().map(|(f, n)| json!({"flow_id": f, "idle": n})).collect::<Vec<_>>(),
             },
             "metrics": self.metrics.to_json(),
-            "tokens": tokens,
+            // Compatibility only; coordinate removing `tokens` from the health reply with prefrontal and operator clients.
+            "tokens": [],
             "active_activations": self.engine.active_count(),
         }))
     }

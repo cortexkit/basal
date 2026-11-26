@@ -84,9 +84,7 @@ fn restored_runs_appear_in_diagnostics_and_operator_can_cancel_or_retrigger_with
                 &recovered.records,
                 Budgets {
                     dispatch_window_ms: 1000,
-                    token_window_ms: 1000,
                     dispatches: 100,
-                    tokens: 100,
                     cost_micros: 100,
                     cost_window: None,
                 },

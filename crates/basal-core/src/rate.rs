@@ -17,7 +17,14 @@ use rusqlite::{Transaction, params};
 
 use crate::error::{CoreError, Result};
 use crate::install::{self, Actor};
-use crate::tokens::window_start;
+
+/// The start of the window containing `now_ms`.
+pub(crate) fn window_start(now_ms: i64, window_ms: i64) -> i64 {
+    if window_ms <= 0 {
+        return now_ms;
+    }
+    now_ms.div_euclid(window_ms) * window_ms
+}
 
 /// The limits, from the runtime's configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -531,7 +531,7 @@ fn recovery_closes_a_retired_model_call_without_dispatch() {
                 input_tokens: 20,
                 output_tokens: 10,
                 cost_micros: 2_000,
-                window_start: crate::tokens::window_start(now, 3_600_000),
+                window_start: crate::rate::window_start(now, 3_600_000),
             }),
         }),
     )
@@ -588,12 +588,18 @@ fn recovery_closes_a_retired_model_call_without_dispatch() {
                 |r| r.get(0),
             )?;
             assert_eq!(historical, snapshot);
-            let charged: u64 = c.query_row(
-                "SELECT unreported_tokens FROM token_ledger WHERE run_id=?1 AND state='settled'",
+            let token_rows: u64 = c.query_row(
+                "SELECT COUNT(*) FROM token_ledger WHERE run_id=?1",
                 [id],
                 |r| r.get(0),
             )?;
-            assert_eq!(charged, 30);
+            assert_eq!(token_rows, 0);
+            let charged: f64 = c.query_row(
+                "SELECT charged FROM classify_costs WHERE run_id=?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            assert_eq!(charged, 0.002);
             Ok(())
         })
         .unwrap();
@@ -828,9 +834,7 @@ fn pending_preparation_survives_restart_and_reprepares_without_duplicate_send() 
             &recovered.records,
             run_driver::Budgets {
                 dispatch_window_ms: 60_000,
-                token_window_ms: 86_400_000,
                 dispatches: 1000,
-                tokens: u64::MAX,
                 cost_micros: u64::MAX,
                 cost_window: None,
             },

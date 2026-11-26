@@ -846,8 +846,6 @@ impl Activation {
     fn refuse_budget(&self, identity: CallIdentity, reason: &str) -> Result<()> {
         let code = if reason.starts_with("dispatch") {
             crate::authorize::codes::DISPATCH_BUDGET
-        } else if reason.starts_with("token") {
-            crate::authorize::codes::TOKEN_CAP
         } else {
             "budget_exhausted"
         };

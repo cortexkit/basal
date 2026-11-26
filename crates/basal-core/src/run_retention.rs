@@ -18,7 +18,6 @@ const BATCH: usize = crate::retention::BATCH;
 
 // Filter before LIMIT so permanently open obligations cannot starve deletions.
 const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM obligations o WHERE o.run_id=r.run_id AND o.state<>'settled') \
-    OR EXISTS (SELECT 1 FROM token_ledger t WHERE t.run_id=r.run_id AND t.state='reserved') \
     OR EXISTS (SELECT 1 FROM classify_costs c WHERE c.kind='flow' AND c.run_id=r.run_id AND c.charged IS NULL) \
     OR EXISTS (SELECT 1 FROM decision_cards d WHERE d.run_id=r.run_id AND d.state='open') \
     OR EXISTS (SELECT 1 FROM broca_calls b WHERE b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0) \
@@ -39,14 +38,6 @@ const HISTORY_PREDICATES: &[(&str, &str)] = &[
          OR (kind NOT IN ('flow.owner_notice','codemode.late_result_ready','attribution.fact','refusal_committed') AND delivered_at<=?1)",
     ),
     ("schedule_dropped", "at<=?1"),
-    (
-        "token_ledger",
-        "state='settled' AND settled_at<=?1 AND NOT EXISTS (SELECT 1 FROM run_identities r WHERE r.run_id=token_ledger.run_id)",
-    ),
-    (
-        "token_windows",
-        "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM token_ledger t WHERE t.flow_id=token_windows.flow_id AND t.window_ms=token_windows.window_ms AND t.window_start=token_windows.window_start AND (t.state='reserved' OR EXISTS (SELECT 1 FROM run_identities r WHERE r.run_id=t.run_id)))",
-    ),
     (
         "decision_cards",
         "state<>'open' AND answered_at<=?1 AND NOT EXISTS (SELECT 1 FROM run_identities r WHERE r.run_id=decision_cards.run_id) AND (kind<>'reenable' OR EXISTS (SELECT 1 FROM decision_cards newer WHERE newer.kind='reenable' AND newer.flow_id=decision_cards.flow_id AND newer.instance>decision_cards.instance))",
@@ -159,10 +150,10 @@ pub(crate) fn prune_history(
 ) -> Result<bool> {
     let flows = store.read(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT flow_id FROM rate_windows WHERE window_start+window_ms<=?1 UNION SELECT flow_id FROM token_windows WHERE window_start+window_ms<=?2",
+            "SELECT DISTINCT flow_id FROM rate_windows WHERE window_start+window_ms<=?1",
         )?;
         Ok(stmt
-            .query_map([rate_cutoff,cutoff], |r| r.get::<_, String>(0))?
+            .query_map([rate_cutoff], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     })?;
     let mut live = BTreeMap::new();
@@ -177,17 +168,7 @@ pub(crate) fn prune_history(
         serde_json::to_string(&live).map_err(|e| crate::CoreError::Invalid(e.to_string()))?;
     let mut full = false;
     for &(table, predicate) in HISTORY_PREDICATES {
-        full |= delete_history_batch(
-            store,
-            table,
-            predicate,
-            cutoff,
-            if table == "token_windows" {
-                Some(&live_json)
-            } else {
-                None
-            },
-        )? == BATCH;
+        full |= delete_history_batch(store, table, predicate, cutoff, None)? == BATCH;
     }
     full |= delete_history_batch(
         store,
@@ -209,8 +190,8 @@ fn delete_history_batch(
     cutoff: i64,
     live_json: Option<&str>,
 ) -> Result<usize> {
-    // Live token reservations, like dispatch counts, have no ledger rows until
-    // close. Protect their windows as well as the committed ledger dependencies.
+    // Live dispatch counts are folded into SQLite at close. Protect those
+    // windows as well as the ones pinned by committed obligations.
     let live = if live_json.is_some() {
         format!(
             "AND NOT EXISTS (SELECT 1 FROM json_each(?2) flow, json_each(flow.value) stamp WHERE flow.key={table}.flow_id AND stamp.value>={table}.window_start AND stamp.value<{table}.window_start+{table}.window_ms)"

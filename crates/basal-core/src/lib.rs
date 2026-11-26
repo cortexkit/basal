@@ -109,7 +109,6 @@ pub mod template_events;
 pub mod templates;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub mod tokens;
 
 pub use admission::{Admission, TriggerSpec};
 pub use authorize::ShellDenylist;

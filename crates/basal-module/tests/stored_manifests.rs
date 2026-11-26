@@ -60,14 +60,15 @@ fn legacy_approved_manifest_remains_readable_and_upgradeable() {
     assert_eq!(list["flows"][0]["state"], "enabled");
     let health = common::call(&f, &Caller::Core, "flow.health", json!({})).unwrap();
     assert_eq!(health["flows"][0]["state"], "enabled");
-    assert_eq!(health["tokens"][0]["flow_id"], FLOW);
-    assert_eq!(health["tokens"][0]["window_ms"], common::HOUR);
-    assert_eq!(health["tokens"][0]["actual"], 0);
-    let usage = f.module.rt.token_usage(FLOW, common::T0).unwrap().unwrap();
-    assert_eq!(usage.window_ms, common::HOUR);
-    assert_eq!(usage.counted(), 0);
-    let batch = f.module.rt.token_usage_many(&[FLOW], common::T0).unwrap();
-    assert_eq!(batch[FLOW], usage);
+    assert_eq!(health["tokens"], json!([]));
+    let details = common::call(
+        &f,
+        &Caller::Operator,
+        "flow.details",
+        json!({"flow_id":FLOW}),
+    )
+    .unwrap();
+    assert_eq!(details["manifest"], legacy_manifest());
 
     let admitted = f
         .module
@@ -122,13 +123,37 @@ fn legacy_approved_manifest_remains_readable_and_upgradeable() {
 }
 
 #[test]
+fn stored_llm_member_is_ignored_without_loosening_the_manifest() {
+    let mut value = legacy_manifest();
+    value["llm"] = json!(["not a grant"]);
+    let stored = basal_core::Manifest::parse_stored(&value.to_string()).unwrap();
+    assert!(serde_json::to_value(&stored).unwrap().get("llm").is_none());
+    assert!(matches!(
+        stored.check(),
+        Err(ManifestError::LlmGrantRemoved)
+    ));
+
+    let duplicate = format!(
+        r#"{{"llm":null,{}"#,
+        value.to_string().trim_start_matches('{')
+    );
+    assert!(matches!(
+        basal_core::Manifest::parse_stored(&duplicate),
+        Err(ManifestError::Decode(reason)) if reason.contains("duplicate field `llm`")
+    ));
+    value["unrecognized"] = json!(true);
+    assert!(matches!(
+        basal_core::Manifest::parse_stored(&value.to_string()),
+        Err(ManifestError::Decode(reason)) if reason.contains("unknown field `unrecognized`")
+    ));
+}
+
+#[test]
 fn new_llm_grants_are_refused_at_intake_with_replacements() {
     let f = fixture("retired-llm-grant");
     let mut manifest = legacy_manifest();
     manifest["ops"] = json!([]);
     manifest["explanation"] = json!("Exercise manifest intake before any work is sent.");
-    let stored = basal_core::Manifest::parse_stored(&manifest.to_string()).unwrap();
-    assert_eq!(stored.token_window_ms(), Some(common::HOUR));
     for grant in [manifest["llm"].clone(), Value::Null, json!({})] {
         manifest["llm"] = grant;
         let error = f

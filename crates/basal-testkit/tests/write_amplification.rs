@@ -232,9 +232,7 @@ fn measure(
             &[],
             Budgets {
                 dispatch_window_ms: 60_000,
-                token_window_ms: DAY,
                 dispatches: 100_000,
-                tokens: u64::MAX,
                 cost_micros: u64::MAX,
                 cost_window: None,
             },

@@ -33,16 +33,12 @@ pub const MAX_TITLE_CHARS: usize = 80;
 pub const MAX_EXPLANATION_CHARS: usize = 1500;
 /// The longest version-change explanation, in Unicode scalar values.
 pub const MAX_CHANGES_CHARS: usize = 600;
-/// The largest token cap per window.
-pub const MAX_TOKEN_CAP: u64 = 1_000_000_000;
-/// The largest per-call output ceiling.
-pub const MAX_OUTPUT_TOKENS: u32 = 200_000;
 /// Bounds of the per-run wall-clock deadline.
 pub const MIN_DEADLINE_MS: i64 = 1_000;
 pub const MAX_DEADLINE_MS: i64 = 24 * 3_600_000;
-/// Bounds of a token window.
-pub const MIN_TOKEN_WINDOW_MS: i64 = 60_000;
-pub const MAX_TOKEN_WINDOW_MS: i64 = 31 * 86_400_000;
+/// Bounds of the rolling model cost window.
+const MIN_COST_WINDOW_MS: i64 = 60_000;
+const MAX_COST_WINDOW_MS: i64 = 31 * 86_400_000;
 
 fn format_v1() -> u32 {
     MANIFEST_FORMAT
@@ -152,9 +148,15 @@ pub struct Manifest {
     pub ops: Vec<OpRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facts: Option<FactsGrant>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    // Stored approvals and their token accounting still display this grant.
-    pub llm: Option<LlmGrant>,
+    // Recognize the member without decoding it so stored approvals can load.
+    // Decoding the original JSON still catches duplicate members.
+    #[serde(
+        default,
+        rename = "llm",
+        skip_serializing,
+        deserialize_with = "retired_llm"
+    )]
+    retired_llm: bool,
     /// Shared dollar caps for ops whose catalog advertises a model tool tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_cost_usd: Option<ModelCostCap>,
@@ -438,24 +440,8 @@ pub struct FactsGrant {
     pub text: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LlmGrant {
-    /// Minimum intelligence demand passed to routing instead of a model name.
-    pub iq: u32,
-    #[serde(default)]
-    pub eq: u32,
-    pub token_cap: TokenCap,
-    /// The ceiling on any one call's output tokens.
-    pub max_output: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TokenCap {
-    pub tokens: u64,
-    /// The window length, such as `"1d"`.
-    pub window: String,
+fn retired_llm<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(decoder).map(|_| true)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1038,7 +1024,7 @@ impl Manifest {
     }
 
     pub(crate) fn check_for_intake(&self, kind: IntakeKind) -> Result<(), ManifestError> {
-        if self.llm.is_some() {
+        if self.retired_llm {
             return Err(ManifestError::LlmGrantRemoved);
         }
         // Validate literal provider ids before the template placeholder scan so
@@ -1529,45 +1515,12 @@ impl Manifest {
                 ));
             }
             if !duration_ms(&cap.window)
-                .is_some_and(|ms| (MIN_TOKEN_WINDOW_MS..=MAX_TOKEN_WINDOW_MS).contains(&ms))
+                .is_some_and(|ms| (MIN_COST_WINDOW_MS..=MAX_COST_WINDOW_MS).contains(&ms))
             {
                 return Err(invalid(
                     "model_cost_usd.window",
                     "must be a duration from 1m to 31d",
                 ));
-            }
-        }
-        if let Some(llm) = &self.llm {
-            if llm.iq > 100 {
-                return Err(invalid("llm.iq", "must be between 0 and 100"));
-            }
-            if llm.eq > 100 {
-                return Err(invalid("llm.eq", "must be between 0 and 100"));
-            }
-            let cap = llm.token_cap.tokens;
-            if cap == 0 || cap > MAX_TOKEN_CAP {
-                return Err(invalid(
-                    "llm.token_cap.tokens",
-                    format!("must be between 1 and {MAX_TOKEN_CAP}"),
-                ));
-            }
-            match duration_ms(&llm.token_cap.window) {
-                Some(ms) if (MIN_TOKEN_WINDOW_MS..=MAX_TOKEN_WINDOW_MS).contains(&ms) => {}
-                _ => {
-                    return Err(invalid(
-                        "llm.token_cap.window",
-                        "must be a duration from 1m to 31d, such as \"1d\"",
-                    ));
-                }
-            }
-            if llm.max_output == 0 || llm.max_output > MAX_OUTPUT_TOKENS {
-                return Err(invalid(
-                    "llm.max_output",
-                    format!("must be between 1 and {MAX_OUTPUT_TOKENS}"),
-                ));
-            }
-            if u64::from(llm.max_output) > cap {
-                return Err(invalid("llm.max_output", "exceeds the token cap"));
             }
         }
         if let Some(fs) = &self.fs {
@@ -1774,13 +1727,6 @@ impl Manifest {
             out.extend(git.read.iter().map(|r| ("git.read", r.as_str())));
         }
         out
-    }
-
-    /// The token window in milliseconds, when the flow may call models.
-    pub fn token_window_ms(&self) -> Option<i64> {
-        self.llm
-            .as_ref()
-            .and_then(|l| duration_ms(&l.token_cap.window))
     }
 
     /// The per-run deadline, or `default_ms` when the manifest sets none.
@@ -2303,33 +2249,26 @@ mod tests {
             // `flow.dry_run` parses its `window` parameter (how far back to
             // replay the flow's schedule fires) with this same parser.
             assert_eq!(duration_ms(text), None, "window {text:?}");
-            for field in ["deadline", "token_window", "schedule_interval"] {
+            for field in ["deadline", "cost_window", "schedule_interval"] {
                 let mut value = serde_json::json!({
                     "id":"unicode", "version":1, "explanation":"Exercises the declared trigger and grants for a test, without additional effects.","purpose":"test",
                     "trigger":{"events":[{"module":"echo","name":"tick","version":1}]}
                 });
                 match field {
                     "deadline" => value["deadline"] = text.into(),
-                    "token_window" => {
-                        value["llm"] = serde_json::json!({
-                            "iq":0,"eq":0,"max_output":1,
-                            "token_cap":{"tokens":10,"window":text}
-                        })
+                    "cost_window" => {
+                        value["model_cost_usd"] =
+                            serde_json::json!({"per_run":1,"usd":10,"window":text})
                     }
                     _ => value["trigger"] = serde_json::json!({"schedule":{"interval":text}}),
                 }
-                let error = if field == "token_window" {
-                    Manifest::parse_stored(&value.to_string())
-                } else {
-                    Manifest::parse(&value.to_string())
-                }
-                .unwrap_err();
+                let error = Manifest::parse(&value.to_string()).unwrap_err();
                 match field {
                     "deadline" => assert!(
                         matches!(error, ManifestError::Invalid { field, .. } if field == "deadline")
                     ),
-                    "token_window" => assert!(
-                        matches!(error, ManifestError::Invalid { field, .. } if field == "llm.token_cap.window")
+                    "cost_window" => assert!(
+                        matches!(error, ManifestError::Invalid { field, .. } if field == "model_cost_usd.window")
                     ),
                     _ => assert!(matches!(error, ManifestError::Schedule(_))),
                 }

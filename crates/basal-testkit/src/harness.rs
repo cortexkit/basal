@@ -323,9 +323,6 @@ pub struct Summary {
     /// The flow's `kv`, as key to `value@revision`: a write applied twice
     /// shows as a higher revision.
     pub kv: BTreeMap<String, String>,
-    /// The flow's token ledger: reservations still open and settled
-    /// usage summed by field.
-    pub tokens: BTreeMap<String, u64>,
     pub calls: usize,
     pub open_obligations: usize,
 }
@@ -353,7 +350,6 @@ impl Summary {
             "audit": self.audit.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<BTreeMap<_, _>>(),
             "audit_rows": self.audit_rows,
             "kv": self.kv,
-            "tokens": self.tokens,
             "calls": self.calls,
             "open_obligations": self.open_obligations,
         })
@@ -382,7 +378,7 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
         .into_iter()
         .map(|row| (row.position, row.outcome))
         .collect();
-    let (audit_rows, kv, tokens) = rt.store().read(|c| {
+    let (audit_rows, kv) = rt.store().read(|c| {
         // Count independently persisted rig identities for the recovered prefix;
         // a discarded lazy tail is not part of the run's replayable call set.
         let rows: i64 = c.query_row(
@@ -400,36 +396,7 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
                 ))
             })?
             .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
-        let (open, input, cache_write, output, cached, unreported): (i64, i64, i64, i64, i64, i64) =
-            c.query_row(
-                "SELECT COALESCE(SUM(state = 'reserved'), 0), COALESCE(SUM(input_tokens), 0), \
-                 COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(output_tokens), 0), \
-                 COALESCE(SUM(cached_input_tokens), 0), COALESCE(SUM(unreported_tokens), 0) \
-                 FROM token_ledger WHERE run_id = ?1",
-                [run_id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                    ))
-                },
-            )?;
-        let tokens: BTreeMap<String, u64> = [
-            ("open", open),
-            ("input", input),
-            ("cache_write", cache_write),
-            ("output", output),
-            ("cached_input", cached),
-            ("unreported", unreported),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), u64::try_from(v).unwrap_or(u64::MAX)))
-        .collect();
-        Ok((rows as usize, kv, tokens))
+        Ok((rows as usize, kv))
     })?;
     let open = rt.health()?.open_obligations.len();
     Ok(Summary {
@@ -444,7 +411,6 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
         audit,
         audit_rows,
         kv,
-        tokens,
         calls: calls.len(),
         open_obligations: open,
     })

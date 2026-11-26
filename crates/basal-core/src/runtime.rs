@@ -103,7 +103,7 @@ pub struct Config {
     /// the local instance lifecycle effect. Only disposable dry-run runtimes
     /// enable this; ordinary-flow authorization still refuses the primitive.
     pub capture_instance_end: bool,
-    /// The clock for token windows, rate windows and run deadlines.
+    /// The clock for rate windows and run deadlines.
     pub clock: Clock,
     /// Module ops no flow may call, even when its manifest lists them.
     pub shell_denylist: ShellDenylist,
@@ -412,9 +412,7 @@ impl Runtime {
         let budgets = crate::run_driver::Budgets {
             dispatch_window_ms: i64::try_from(config.rate.window.as_millis())
                 .map_err(|_| CoreError::Invalid("invalid rate window".into()))?,
-            token_window_ms: 86_400_000,
             dispatches: u64::from(config.rate.max_dispatches),
-            tokens: u64::MAX,
             cost_micros: u64::MAX,
             cost_window: None,
         };
@@ -1089,112 +1087,6 @@ impl Runtime {
         {
             self.wake(&id);
         }
-    }
-
-    // ---- Tokens ------------------------------------------------------------
-
-    /// Records a model call's usage reported apart from its outcome (Broca
-    /// reports usage with the run's end). Deduplicated by `send_id`: only
-    /// the first report for a reservation is applied, whichever way it
-    /// came. Returns whether this one was applied.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn report_usage(&self, send_id: &str, usage: crate::tokens::Usage) -> Result<bool> {
-        let hosts = self
-            .shared
-            .staged_hosts
-            .as_ref()
-            .expect("log-backed runtime");
-        for actor in hosts.registry().snapshot() {
-            let (id, _, _, state) = actor.reader_snapshot();
-            let Some(position) = state.calls.values().find_map(|call| {
-                call.intent
-                    .as_ref()
-                    .filter(|i| i.idempotency_key.as_deref() == Some(send_id))
-                    .map(|_| call.identity.position)
-            }) else {
-                continue;
-            };
-            let Ok(entrant) = actor.enter() else {
-                break;
-            };
-            let budgets = hosts.budgets_for(&id)?;
-            return entrant.account(|records| {
-                records.check_healthy()?;
-                let state = records.state();
-                let call = &state.calls[&position];
-                if call.arrival.is_some()
-                    || call.usage_report.is_some()
-                    || call
-                        .intent
-                        .as_ref()
-                        .and_then(|i| i.reservation.as_ref())
-                        .is_none_or(|r| r.input_tokens.saturating_add(r.output_tokens) == 0)
-                {
-                    return Ok((false, crate::run_driver::accounting::rows(state, &budgets)?));
-                }
-                let lsn = records.append(
-                    state.generation,
-                    crate::run_records::Body::MeasuredUsage {
-                        position,
-                        report: crate::run_records::UsageReport {
-                            input_tokens: Some(usage.input_tokens),
-                            cache_write_tokens: Some(usage.cache_write_tokens),
-                            output_tokens: Some(usage.output_tokens),
-                            cached_input_tokens: Some(usage.cached_input_tokens),
-                        },
-                    },
-                )?;
-                crate::run_store::RunRecords::sync_through(records, lsn)?;
-                Ok((
-                    true,
-                    crate::run_driver::accounting::rows(records.state(), &budgets)?,
-                ))
-            });
-        }
-        let now = self.config.clock.now_ms();
-        self.write_execution(|tx| {
-            crate::tokens::settle(
-                tx,
-                crate::tokens::Key::SendId(send_id),
-                crate::tokens::Report::Usage(usage),
-                now,
-            )
-        })
-    }
-
-    /// What a flow's token window counts. `at_ms` picks the window; the
-    /// window length comes from the flow's approved manifest.
-    pub fn token_usage(
-        &self,
-        flow_id: &str,
-        at_ms: i64,
-    ) -> Result<Option<crate::tokens::WindowUsage>> {
-        if self.uses_run_log() {
-            return self.log_token_usage(flow_id, at_ms);
-        }
-        self.shared.store.read(|c| {
-            let Some(approved) = crate::install::approved(c, flow_id)? else {
-                return Ok(None);
-            };
-            let manifest = crate::manifest::Manifest::parse_stored(&approved.manifest)
-                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
-            let Some(window_ms) = manifest.token_window_ms() else {
-                return Ok(None);
-            };
-            let start = crate::tokens::window_start(at_ms, window_ms);
-            crate::tokens::window_usage(c, flow_id, window_ms, start).map(Some)
-        })
-    }
-
-    /// Current token windows for approved flows, read in one SQL statement with
-    /// live accounting merged under sorted flow locks. Unknown flows and flows
-    /// without token grants are omitted.
-    pub fn token_usage_many(
-        &self,
-        flow_ids: &[&str],
-        at_ms: i64,
-    ) -> Result<std::collections::BTreeMap<String, crate::tokens::WindowUsage>> {
-        self.log_token_usage_many(flow_ids, at_ms)
     }
 }
 

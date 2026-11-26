@@ -56,11 +56,9 @@ fn documented_example_round_trips_and_installs() {
     assert_eq!(parsed.id, "synapse-xcom-inference-news");
     assert_eq!(parsed.version, 3);
     assert_eq!(parsed.state_epoch, 1);
-    assert!(parsed.llm.is_none());
     let again = serde_json::to_string(&parsed).expect("serialise");
     assert_eq!(Manifest::parse(&again).expect("reparse"), parsed);
     assert_eq!(parsed.deadline_ms(1), 600_000);
-    assert_eq!(parsed.token_window_ms(), None);
 
     let world = World::new("manifest-example");
     world.catalog.set_op(
@@ -523,17 +521,4 @@ fn new_version_applies_to_newly_admitted_triggers_only() {
     assert_eq!(first_run.state, RunState::Succeeded, "{first_run:#?}");
     assert_eq!(result(&first_run), json!(1));
     assert_eq!(result(&second_run), json!(2));
-}
-
-#[test]
-fn stored_model_grants_still_decode_with_default_eq_and_closed_fields() {
-    let mut m = test_manifest();
-    m["llm"] = json!({"iq":0,"token_cap":{"tokens":1000,"window":"1h"},"max_output":10});
-    let parsed = Manifest::parse_stored(&m.to_string()).unwrap();
-    assert_eq!(parsed.llm.as_ref().unwrap().iq, 0);
-    assert_eq!(parsed.llm.as_ref().unwrap().eq, 0);
-    m["llm"]["tools"] = json!(true);
-    assert!(
-        matches!(Manifest::parse_stored(&m.to_string()), Err(ManifestError::Decode(e)) if e.contains("unknown field"))
-    );
 }

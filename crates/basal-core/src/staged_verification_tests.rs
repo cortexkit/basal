@@ -160,9 +160,7 @@ fn restore_case(case: RestoreCase, cut: Option<Boundary>) {
             &recovered.records,
             run_driver::Budgets {
                 dispatch_window_ms: 60_000,
-                token_window_ms: 86_400_000,
                 dispatches: 1000,
-                tokens: u64::MAX,
                 cost_micros: u64::MAX,
                 cost_window: None,
             },

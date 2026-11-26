@@ -1,5 +1,5 @@
 //! The install card's fields, built from the version as installed, the
-//! catalog, the dry run and the flow's token window. The card shows everything
+//! catalog and the dry run. The card shows everything
 //! the manifest grants and the code itself, because approval binds to the
 //! code hash: what the operator approves is exactly what runs.
 
@@ -77,8 +77,6 @@ pub struct CardInput<'a> {
     pub author: &'a str,
     pub installed: &'a Installed,
     pub catalog: &'a dyn Catalog,
-    /// The flow's current token window, split by field, when it has one.
-    pub token_window: Option<Value>,
     pub dry_run: Value,
 }
 
@@ -157,12 +155,9 @@ pub fn fields(input: &CardInput<'_>) -> Value {
         "claims": m.claims.iter().map(|c| json!({ "agent": c.agent, "source_kind": c.source_kind })).collect::<Vec<_>>(),
         "ops": ops,
         "facts": m.facts.as_ref().map(|f| json!({ "targets": f.targets, "private_text": f.text })),
-        "token_cap": m.llm.as_ref().map(|l| json!({
-            "tokens": l.token_cap.tokens,
-            "window": l.token_cap.window,
-            "max_output": l.max_output,
-        })),
-        "token_window": input.token_window,
+        // Compatibility only; `core_consent::request_for` reads both fields for prefrontal's install card.
+        "token_cap": null,
+        "token_window": null,
         "model_cost_usd": m.model_cost_usd.as_ref().map(|cap| json!({"per_run":cap.per_run,"usd":cap.usd,"window":cap.window})),
         // The built-in lines, as approved: roots as written (`~` is the
         // user's home) and each host with the methods it is approved for.

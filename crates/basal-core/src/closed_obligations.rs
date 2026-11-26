@@ -71,9 +71,9 @@ fn cancelled(call: &CallState) -> bool {
     })
 }
 
-/// Settles the ledgers of a call whose closed-run obligation was settled
-/// without an observed outcome, and records why. Its reservations are kept
-/// as the charge, as for any completion that reports no usage.
+/// Settles the dollar reservation when a closed-run obligation is settled
+/// without an observed outcome, and records why. With no reported cost, the
+/// reservation is kept as the charge.
 pub(crate) fn finish_unobserved(
     tx: &Transaction<'_>,
     run_id: &str,
@@ -82,12 +82,6 @@ pub(crate) fn finish_unobserved(
     reason: &str,
     now: i64,
 ) -> Result<()> {
-    crate::tokens::settle(
-        tx,
-        crate::tokens::Key::Call { run_id, position },
-        crate::tokens::Report::Unreported,
-        now,
-    )?;
     crate::classify_cost::settle(tx, "flow", run_id, position, None, None)?;
     // A card raised while the run was live now asks about a settled row.
     tx.execute(

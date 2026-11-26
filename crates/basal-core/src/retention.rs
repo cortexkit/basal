@@ -2,16 +2,14 @@
 //!
 //! By default, a successful run's payloads and event body become eligible for
 //! pruning 24 hours after it ends; run summaries, call metadata, activations
-//! and code snapshots keep 90 days. Either is deferred while any call, token
+//! and code snapshots keep 90 days. Either is deferred while any call, dollar
 //! reservation or open decision card still needs the run.
-//! Quarantine, call/audit history, delivered
-//! outbox notifications, settled token ledgers and dropped schedules keep
-//! thirty days; any existing run protects its dependent history. Unsent
+//! Quarantine, call/audit history, delivered outbox notifications and dropped
+//! schedules keep thirty days; any existing run protects its dependent history. Unsent
 //! notifications and open reservations/cards stay until settled. Old rate
 //! windows are removed only outside the current saturation streak and any
-//! window a live call could refund; token windows stay while a reservation or
-//! existing run needs them. Closed decision cards retain the latest re-enable
-//! episode per flow forever, because its number allocates the next episode.
+//! window a live call could refund. Closed decision cards retain the latest
+//! re-enable episode per flow forever, because its number allocates the next episode.
 //! Trigger and idempotency tombstones stay forever: no source redelivery
 //! horizon is established, so deleting one could permit a second effect.
 //! Full batches schedule another bounded pass after one second rather than

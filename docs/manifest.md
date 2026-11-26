@@ -14,7 +14,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | Field | Type | Required | Default | Limits and meaning |
 |---|---|---|---|---|
 | `format` | integer | no | `1` | The manifest format. Only `1` is read. |
-| `id` | string | yes | | The flow id: 1 to 63 bytes of `a-z`, `0-9`, `-`, `_`. Stable across versions; `kv`, the token windows, the rate limits and the owner are per flow id. `flow.install` refuses ids ending in `_` followed by exactly 16 lowercase hex characters (`_[0-9a-f]{16}$`) with `flow_id_reserved`: this namespace belongs to [package instances](packages.md). |
+| `id` | string | yes | | The flow id: 1 to 63 bytes of `a-z`, `0-9`, `-`, `_`. Stable across versions; `kv`, the rate limits and the owner are per flow id. `flow.install` refuses ids ending in `_` followed by exactly 16 lowercase hex characters (`_[0-9a-f]{16}$`) with `flow_id_reserved`: this namespace belongs to [package instances](packages.md). |
 | `version` | integer | yes | | At least 1. A new install must be above the approved version. |
 | `state_epoch` | integer | no | `1` | From 1 to 2147483647. Declares which stored-value layout this version reads; valid for ordinary flows, packages and templates. Part of the hashed manifest and approval card. |
 | `title` | string | no | absent | Short, literal name for the install card, e.g. `"Build server health check"`. 1 to 80 Unicode scalar values, no control characters (including newline), not only whitespace, and no leading or trailing whitespace; refused rather than trimmed. |
@@ -586,7 +586,7 @@ Grant Broca’s `llm_complete`, `llm_classify` or `llm_extract` through `ops`.
 For example, grant `{"module":"broca","op":"llm_complete"}` and call it with
 `ops.call("broca", "llm_complete", {demand, prompt, max_output_tokens, max_cost_usd})`.
 New versions with a legacy `llm` grant are refused with `llm_grant_removed`.
-Stored approvals and their token ledgers remain readable.
+Stored approvals still load, and the original manifest remains visible, but Basal ignores the retired `llm` grant and does not track its token cap.
 An op tagged `llm.classify/v1`, `llm.complete/v1`, or `llm.extract/v1`
 additionally requires:
 

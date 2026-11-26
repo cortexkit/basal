@@ -154,32 +154,6 @@ fn instance_collision_cannot_change_a_regular_flow() {
 }
 
 #[test]
-fn huge_usage_settles_and_keeps_window_totals_integral() {
-    let mut conn = connection();
-    let tx = conn.transaction().unwrap();
-    tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved) VALUES ('f',60000,0,20)", []).unwrap();
-    for (p, key) in [(0, "a"), (1, "b")] {
-        tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,reserved_at) VALUES (?1,'f','r',?2,60000,0,10,'reserved',0)", params![key,p]).unwrap();
-        assert!(
-            tokens::settle(
-                &tx,
-                tokens::Key::SendId(key),
-                tokens::Report::Usage(tokens::Usage {
-                    input_tokens: u64::MAX,
-                    output_tokens: u64::MAX,
-                    cache_write_tokens: u64::MAX,
-                    cached_input_tokens: u64::MAX
-                }),
-                1
-            )
-            .unwrap()
-        );
-    }
-    let totals: (i64,i64,i64,i64,i64) = tx.query_row("SELECT reserved,input_tokens,cache_write_tokens,output_tokens,cached_input_tokens FROM token_windows", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
-    assert_eq!(totals, (0, i64::MAX, i64::MAX, i64::MAX, i64::MAX));
-}
-
-#[test]
 fn health_does_not_hide_a_store_error() {
     let fixture = TestRuntime::new();
     fixture

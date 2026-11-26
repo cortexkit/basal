@@ -29,7 +29,6 @@ mod tests;
 pub(crate) fn retirement_busy(conn: &Connection, flow: &str, version: u64) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM run_identities r WHERE r.flow_id=?1 AND r.flow_version=?2 AND (
         EXISTS(SELECT 1 FROM live_runs l WHERE l.run_id=r.run_id)
-        OR EXISTS(SELECT 1 FROM token_ledger t WHERE t.run_id=r.run_id AND t.state='reserved')
         OR EXISTS(SELECT 1 FROM classify_costs c WHERE c.kind='flow' AND c.run_id=r.run_id AND c.charged IS NULL)
         OR EXISTS(SELECT 1 FROM outbox o WHERE o.kind='refusal_committed' AND CAST(json_extract(o.body,'$.run_id') AS TEXT)=r.run_id)))", rusqlite::params![flow,version], |r| r.get(0))?)
 }
@@ -410,122 +409,6 @@ impl crate::Runtime {
         let actor = self.shared.staged_hosts.as_ref()?.registry().get(id)?;
         Some(actor.read_state(|state| RunTimer::of(state, owner, actor.deadline_close_failed())))
     }
-    pub(crate) fn log_token_usage(
-        &self,
-        flow: &str,
-        at: i64,
-    ) -> Result<Option<crate::tokens::WindowUsage>> {
-        Ok(self.log_token_usage_many(&[flow], at)?.remove(flow))
-    }
-
-    pub(crate) fn log_token_usage_many(
-        &self,
-        flow_ids: &[&str],
-        at: i64,
-    ) -> Result<BTreeMap<String, crate::tokens::WindowUsage>> {
-        let flow_ids: Vec<_> = flow_ids
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let states = self.log_states();
-        let hosts = self.shared.staged_hosts.as_ref().unwrap();
-        hosts
-            .registry()
-            .accounting_read_many(&flow_ids, self.store(), |conn, flows| {
-                let mut windows = crate::tokens::window_usage_many(conn, &flow_ids, at)?;
-                for (flow, usage) in &mut windows {
-                    let key = format!("token:{}:{}", usage.window_ms, usage.window_start);
-                    let Some(runs) = flows.get(flow) else {
-                        continue;
-                    };
-                    for (id, rows) in *runs {
-                        for row in rows.iter().filter(|r| r.window.0 == key) {
-                            let call = states.get(id).and_then(|s| s.calls.get(&row.position));
-                            match call.and_then(|c| c.token_usage()) {
-                                Some(measured)
-                                    if measured
-                                        .input_tokens
-                                        .saturating_add(measured.output_tokens)
-                                        == row.amount =>
-                                {
-                                    let report = call.and_then(|c| c.usage_report).unwrap_or(
-                                        crate::run_records::UsageReport {
-                                            input_tokens: Some(measured.input_tokens),
-                                            cache_write_tokens: None,
-                                            output_tokens: Some(measured.output_tokens),
-                                            cached_input_tokens: None,
-                                        },
-                                    );
-                                    usage.input_tokens = usage
-                                        .input_tokens
-                                        .saturating_add(report.input_tokens.unwrap_or(0));
-                                    usage.cache_write_tokens = usage
-                                        .cache_write_tokens
-                                        .saturating_add(report.cache_write_tokens.unwrap_or(0));
-                                    usage.output_tokens = usage
-                                        .output_tokens
-                                        .saturating_add(report.output_tokens.unwrap_or(0));
-                                    usage.cached_input_tokens = usage
-                                        .cached_input_tokens
-                                        .saturating_add(report.cached_input_tokens.unwrap_or(0));
-                                    let known = report
-                                        .input_tokens
-                                        .unwrap_or(0)
-                                        .saturating_add(report.cache_write_tokens.unwrap_or(0))
-                                        .saturating_add(report.output_tokens.unwrap_or(0));
-                                    usage.unreported_tokens = usage
-                                        .unreported_tokens
-                                        .saturating_add(row.amount.saturating_sub(known));
-                                }
-                                None if call.is_some_and(|c| c.arrival.is_some()) => {
-                                    usage.unreported_tokens =
-                                        usage.unreported_tokens.saturating_add(row.amount)
-                                }
-                                // A callback may have settled after the run state used for
-                                // this accounting read was captured.
-                                // The accounting amount is authoritative; categorize an
-                                // unmatched row as reserved rather than under-counting it.
-                                _ => usage.reserved = usage.reserved.saturating_add(row.amount),
-                            }
-                        }
-                    }
-                }
-                Ok(windows)
-            })
-    }
-
-    pub fn open_reservations(&self, id: &str) -> Result<u64> {
-        {}
-        let state = self.staged_snapshot(id);
-        let identity = self
-            .store()
-            .read(|c| sql::identity(c, id))?
-            .ok_or_else(|| CoreError::NoSuchRun(id.into()))?;
-        self.shared
-            .staged_hosts
-            .as_ref()
-            .unwrap()
-            .registry()
-            .accounting_read(&identity.flow_id, self.store(), |conn, runs| {
-                let committed = crate::tokens::open_reservations(conn, id)?;
-                let pending = runs
-                    .get(id)
-                    .into_iter()
-                    .flatten()
-                    .filter(|r| r.window.0.starts_with("token:"))
-                    .filter(|r| {
-                        state
-                            .as_ref()
-                            .and_then(|s| s.calls.get(&r.position))
-                            .is_none_or(|c| c.arrival.is_none())
-                    })
-                    .count() as u64;
-                Ok(committed.saturating_add(pending))
-            })
-    }
-
     pub fn classify_cost_spent(&self, id: &str) -> Result<f64> {
         {}
         let identity = self

@@ -267,14 +267,10 @@ impl Services for Service {
 }
 
 #[test]
-fn reservations_settle_in_the_original_windows_and_fold_once() {
+fn dollar_reservation_is_replaced_by_actual_cost_at_close() {
     let f = Fixture::new();
     let a = f.claim(0);
     let mut result = arrival(0, "7");
-    result.usage = Some(crate::run_records::Usage {
-        input_tokens: 4,
-        output_tokens: 2,
-    });
     result.cost_micros = Some(1);
     f.service
         .replies
@@ -285,65 +281,22 @@ fn reservations_settle_in_the_original_windows_and_fold_once() {
     let rows = accounting::rows(&a.state().unwrap(), &budgets()).unwrap();
     assert_eq!(
         rows.iter()
-            .find(|r| r.window.0.starts_with("token:"))
+            .find(|r| r.window.0.starts_with("cost:"))
             .unwrap()
             .amount,
-        6
+        1
     );
     a.finish(f.terminal(RunState::Failed)).unwrap();
-    f.store.read(|conn| {
-        let h = sql::history(conn,&f.live.run_id)?.unwrap();
-        assert_eq!((h.tokens_charged,h.cost_microusd),(6,1));
-        let (pending,input,output): (i64,i64,i64) = conn.query_row("SELECT reserved,input_tokens,output_tokens FROM token_windows WHERE window_start=0",[],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-        assert_eq!((pending,input,output),(0,4,2));
-        let state: String = conn.query_row("SELECT state FROM token_ledger",[],|r| r.get(0))?;
-        assert_eq!(state,"settled");
-        let cost: f64 = conn.query_row("SELECT charged FROM classify_costs",[],|r| r.get(0))?;
-        assert_eq!(cost,0.000001);
-        Ok(())
-    }).unwrap();
-}
-
-#[test]
-fn recovered_unactivated_run_counts_against_other_runs_budget() {
-    let f = Fixture::new();
-    let a = f.claim(0);
-    drop(a.issue(call(0, "model")).unwrap());
-    let recovered = f.log.recover(&f.live.run_id);
-    let registry = Arc::new(RunStore::new_staged(f.store.clone(), Arc::new(NoHooks)));
-    let mut limits = budgets();
-    limits.tokens = 8;
-    let driver = Driver::new_staged(
-        f.store.clone(),
-        registry,
-        f.service.clone(),
-        Arc::new(NoHooks),
-        limits,
-    );
-    driver.register(&f.live, recovered).unwrap();
-    let mut other = f.live.clone();
-    other.run_id = "another-run".into();
-    other.trigger_id = "another-trigger".into();
     f.store
-        .write(|tx| {
-            let mut identity = sql::identity(tx, &f.live.run_id)?.unwrap();
-            identity.run_id = other.run_id.clone();
-            sql::insert_live(tx, &other, &identity)
+        .read(|conn| {
+            let h = sql::history(conn, &f.live.run_id)?.unwrap();
+            assert_eq!((h.tokens_charged, h.cost_microusd), (0, 1));
+            let cost: f64 =
+                conn.query_row("SELECT charged FROM classify_costs", [], |r| r.get(0))?;
+            assert_eq!(cost, 0.000001);
+            Ok(())
         })
         .unwrap();
-    driver
-        .register(
-            &other,
-            Records::new(other.run_id.clone(), 10, f.log.clone()),
-        )
-        .unwrap();
-    let Claim::Active(a) = driver.claim(other, 0).unwrap() else {
-        panic!("gate closed")
-    };
-    assert!(
-        matches!(a.issue(call(0,"model")),Err(CoreError::Invalid(message)) if message == "token budget exhausted")
-    );
-    assert!(f.service.sent.lock().unwrap().is_empty());
 }
 
 struct Worker {
@@ -1143,9 +1096,7 @@ impl TerminalWrite for Effects {
 fn budgets() -> Budgets {
     Budgets {
         dispatch_window_ms: 1000,
-        token_window_ms: 1000,
         dispatches: 100,
-        tokens: 100,
         cost_micros: 100,
         cost_window: None,
     }
@@ -1912,15 +1863,6 @@ pub(crate) fn crash_case(boundary: Boundary) {
         4
     );
     let accounted = accounting::rows(state, &budgets()).unwrap();
-    assert_eq!(
-        accounted
-            .iter()
-            .filter(|r| r.window.0.starts_with("token:"))
-            .map(|r| r.amount)
-            .sum::<u64>(),
-        6,
-        "{boundary:?}: token budget"
-    );
     assert_eq!(
         accounted
             .iter()

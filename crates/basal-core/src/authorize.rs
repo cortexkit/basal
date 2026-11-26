@@ -65,8 +65,6 @@ pub mod codes {
     pub const FLOW_DISABLED: &str = "flow_disabled";
     /// The flow's dispatch budget for the current window is spent.
     pub const DISPATCH_BUDGET: &str = "dispatch_budget";
-    /// The model call does not fit the flow's token cap for the window.
-    pub const TOKEN_CAP: &str = "token_cap";
     /// A `kv` size limit.
     pub const KV_LIMIT: &str = "kv_limit";
     /// The refusal code when prefrontal's current catalog does not declare

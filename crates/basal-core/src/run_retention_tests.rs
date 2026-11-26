@@ -225,18 +225,17 @@ fn all_obligation_kinds_protect_runs_without_starving_other_candidates() {
             Ok(())
         }).unwrap();
     }
-    for id in ["reserved", "dollars", "card", "refusal", "free"] {
+    for id in ["dollars", "card", "refusal", "free"] {
         f.add(id, 100);
     }
     f.store.write(|tx| {
-        tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,reserved_at) VALUES('send','flow','reserved',0,100,0,1,'reserved',50)", [])?;
         tx.execute("INSERT INTO classify_costs(kind,run_id,position,flow_id,created_at,reserved,args) VALUES('flow','dollars',0,'flow',50,1,'{}')", [])?;
         tx.execute("INSERT INTO decision_cards(dedup_key,kind,flow_id,version,run_id,position,call_key,instance,card,state,created_at) VALUES('card','reconcile','flow',1,'card',0,'key',1,'{}','open',50)", [])?;
         tx.execute("INSERT INTO outbox(at,kind,flow_id,body) VALUES(50,'refusal_committed','flow','{\"run_id\":\"refusal\"}')", [])?;
         Ok(())
     }).unwrap();
     assert_eq!(prune(&f.store, 200, 100).unwrap().pruned, ["free"]);
-    assert_eq!(f.count("run_history"), 134);
+    assert_eq!(f.count("run_history"), 133);
 }
 
 #[test]
@@ -247,27 +246,19 @@ fn history_predicates_keep_identity_dependencies_and_latest_reenable() {
         for id in ["kept", "gone"] {
             tx.execute("INSERT INTO quarantine(run_id,position,settlement,value,payload_hash,reason,at) VALUES(?1,0,'fulfilled','1',zeroblob(32),'unknown_call',1)", [id])?;
             tx.execute("INSERT INTO audit(at,actor,action,run_id,detail) VALUES(1,'test','test',?1,'{}')", [id])?;
-            tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,reserved_at,settled_at) VALUES(?1,'flow',?1,0,100,0,1,'settled',1,2)", [id])?;
         }
-        tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved) VALUES('flow',100,0,1)", [])?;
         for n in 1..=2 {
             tx.execute("INSERT INTO decision_cards(dedup_key,kind,flow_id,version,instance,card,state,created_at,answered_at) VALUES(?1,'reenable','flow',1,?2,'{}','declined',1,2)", params![format!("reenable-{n}"),n])?;
         }
         Ok(())
     }).unwrap();
     assert!(!prune_history(&f.store, 100, 100, |_| vec![]).unwrap());
-    for table in [
-        "quarantine",
-        "audit",
-        "token_ledger",
-        "token_windows",
-        "decision_cards",
-    ] {
+    for table in ["quarantine", "audit", "decision_cards"] {
         assert_eq!(f.count(table), 1, "{table}");
     }
     prune(&f.store, 300, 100).unwrap();
     prune_history(&f.store, 300, 300, |_| vec![]).unwrap();
-    for table in ["quarantine", "audit", "token_ledger", "token_windows"] {
+    for table in ["quarantine", "audit"] {
         assert_eq!(f.count(table), 0, "{table}");
     }
     assert_eq!(f.count("decision_cards"), 1);
@@ -392,30 +383,4 @@ fn live_rate_windows_do_not_starve_later_expired_windows() {
             Ok(())
         })
         .unwrap();
-}
-
-#[test]
-fn live_accounting_protects_token_windows_before_a_ledger_row_exists() {
-    let f = Fixture::new();
-    f.store.write(|tx| {
-        for start in [0,100,200,300] {
-            tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start,reserved) VALUES('flow',100,?1,0)", [start])?;
-        }
-        Ok(())
-    }).unwrap();
-    assert_eq!(f.count("token_ledger"), 0);
-    prune_history(&f.store, 350, 350, |_| vec![150]).unwrap();
-    let starts = f
-        .store
-        .read(|c| {
-            Ok(
-                c.prepare("SELECT window_start FROM token_windows ORDER BY window_start")?
-                    .query_map([], |r| r.get::<_, i64>(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
-            )
-        })
-        .unwrap();
-    assert_eq!(starts, [100, 300]);
-    prune_history(&f.store, 350, 350, |_| vec![]).unwrap();
-    assert_eq!(f.count("token_windows"), 1);
 }

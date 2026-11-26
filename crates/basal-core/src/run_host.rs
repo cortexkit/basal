@@ -43,15 +43,6 @@ fn budgets_for(store: &Store, id: &str, defaults: &Budgets) -> Result<Budgets> {
     let value: serde_json::Value =
         serde_json::from_str(&manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
     let mut budgets = defaults.clone();
-    if let Some(cap) = value.get("llm").and_then(|v| v.get("token_cap")) {
-        budgets.tokens = cap["tokens"]
-            .as_u64()
-            .ok_or_else(|| CoreError::Corrupt("invalid token cap".into()))?;
-        budgets.token_window_ms = cap["window"]
-            .as_str()
-            .and_then(crate::manifest::duration_ms)
-            .ok_or_else(|| CoreError::Corrupt("invalid token window".into()))?;
-    }
     if let Some(cap) = value.get("model_cost_usd").filter(|cap| !cap.is_null()) {
         let micros = |key: &str| -> Result<u64> {
             let n = cap[key]
@@ -410,7 +401,6 @@ impl RecoveredHosts {
             match result {
                 SettleResult::Settled => {
                     if let Some(outcome) = outcome {
-                        crate::tokens::settle_outcome(tx, run_id, position, outcome, now)?;
                         let value = serde_json::from_str(outcome.value.as_str())
                             .map_err(|e| CoreError::Invalid(e.to_string()))?;
                         crate::classify_cost::settle(
@@ -422,12 +412,6 @@ impl RecoveredHosts {
                             crate::classify_cost::refusal_code(outcome.settlement, &value),
                         )?;
                     } else {
-                        crate::tokens::settle(
-                            tx,
-                            crate::tokens::Key::Call { run_id, position },
-                            crate::tokens::Report::Unreported,
-                            now,
-                        )?;
                         crate::classify_cost::settle(tx, "flow", run_id, position, None, None)?;
                     }
                 }

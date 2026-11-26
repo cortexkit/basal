@@ -10,7 +10,7 @@
 //! A disabled flow admits nothing, and every run of it, resumed ones
 //! included, is refused any new call outside its VM. Calls it already
 //! dispatched keep their obligations: their outcomes are still recorded and
-//! their token reservations still settled. The operator can disable any
+//! their dollar reservations still settled. The operator can disable any
 //! flow, and an agent can disable a flow it owns; each disable tells the
 //! owner through the outbox.
 

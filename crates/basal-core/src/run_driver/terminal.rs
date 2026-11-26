@@ -233,7 +233,7 @@ impl TerminalBuilder<Records> for Terminal {
                 .map_or(0, |r| r.to_string().len() as u64),
             call_counts: json!({"class": classes, "outcome": outcomes}),
             writes_sent,
-            tokens_charged: total("token:")?,
+            tokens_charged: 0,
             cost_microusd: total("cost:")?,
             broken: u32::try_from(state.broken)
                 .map_err(|_| CoreError::Invalid("broken count overflow".into()))?,
@@ -333,14 +333,7 @@ impl Projection {
                 }
             }
         }
-        accounting::fold(
-            tx,
-            &history.flow_id,
-            id,
-            &self.state,
-            &self.budgets,
-            history.ended_at,
-        )?;
+        accounting::fold(tx, &history.flow_id, id, &self.state, &self.budgets)?;
         tx.execute("INSERT OR IGNORE INTO tombstones(kind,key,run_id,pruned_at) VALUES('trigger',?1,?2,?3)", params![crate::admission::trigger_key(&history.flow_id,&history.trigger_id),id,history.ended_at])?;
         let mut obligations = Vec::new();
         let mut unobserved = Vec::new();

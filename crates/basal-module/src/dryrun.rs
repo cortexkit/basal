@@ -610,7 +610,7 @@ impl DryRunner {
 
         let mut runs = Vec::new();
         for (trigger_id, payload) in fires {
-            // Clock reads, token windows and deadlines all read the fire's
+            // Clock reads, rate windows and deadlines all read the fire's
             // due time when it has one, else the request's time.
             let at = payload
                 .get("due")

@@ -177,7 +177,7 @@ impl Fixture {
                     frozen_request: call.args,
                     attempts: 1,
                     dispatch_count_window: Some(crate::run_records::DispatchCount {
-                        window_start: crate::tokens::window_start(
+                        window_start: crate::rate::window_start(
                             self.rt.config.clock.now_ms(),
                             i64::try_from(self.rt.config.rate.window.as_millis()).unwrap(),
                         ),
@@ -615,14 +615,12 @@ fn retention_prunes_old_history_but_keeps_live_obligations_and_card_episodes() {
   tx.execute("INSERT INTO outbox(at,kind,flow_id,body,delivered_at) VALUES(0,'delivered','flow','{}',0),(0,'pending','flow','{}',NULL)",[])?;
   tx.execute("INSERT INTO schedule_dropped(flow_id,trigger_id,due_ms,payload,reason,at) VALUES('flow','old',0,'null','disabled',0)",[])?;
   tx.execute("INSERT INTO rate_windows(flow_id,window_ms,window_start,saturated) VALUES('flow',60000,0,1),('obsolete',60000,0,1)",[])?;
-  tx.execute("INSERT INTO token_windows(flow_id,window_ms,window_start) VALUES('flow',60000,0)",[])?;
-  tx.execute("INSERT INTO token_ledger(send_id,flow_id,run_id,position,window_ms,window_start,reserved,state,reserved_at,settled_at) VALUES('old','flow','old',0,60000,0,1,'settled',0,0),('live','flow','live',0,60000,0,1,'reserved',0,NULL)",[])?;
   tx.execute("INSERT INTO decision_cards(dedup_key,kind,flow_id,version,instance,card,state,created_at,answered_at) VALUES('old','reenable','flow',1,1,'{}','expired',0,0),('latest','reenable','flow',1,2,'{}','expired',0,0),('open','reenable','other-flow',1,3,'{}','open',0,NULL)",[])?;Ok(())
  }).unwrap();
     f.rt.enforce_deadlines().unwrap();
     f.rt.store()
         .read(|c| {
-            for table in ["quarantine", "audit", "outbox", "token_ledger"] {
+            for table in ["quarantine", "audit", "outbox"] {
                 let count: i64 =
                     c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
                 assert_eq!(count, 1, "{table}");
@@ -637,11 +635,6 @@ fn retention_prunes_old_history_but_keeps_live_obligations_and_card_episodes() {
                     .get::<_, i64>(0))?,
                 1,
                 "the live accounting audit timestamp must retain its original window"
-            );
-            assert_eq!(
-                c.query_row("SELECT COUNT(*) FROM token_windows", [], |r| r
-                    .get::<_, i64>(0))?,
-                1
             );
             assert_eq!(
                 c.query_row("SELECT COUNT(*) FROM decision_cards", [], |r| r

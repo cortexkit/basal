@@ -112,9 +112,7 @@ impl CloseDriver for Effects {
 fn budgets() -> Budgets {
     Budgets {
         dispatch_window_ms: 1000,
-        token_window_ms: 1000,
         dispatches: 100,
-        tokens: 100,
         cost_micros: 100,
         cost_window: None,
     }
@@ -440,12 +438,6 @@ fn closed_completions_keep_receipts_for_q5_a_b_c_d_and_f() {
     );
     f.store
         .read(|c| {
-            let (reserved, input, cache, output): (i64, i64, i64, i64) = c.query_row(
-                "SELECT reserved,input_tokens,cache_write_tokens,output_tokens FROM token_windows",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )?;
-            assert_eq!((reserved, input, cache, output), (0, 3, 1, 2));
             let charged: f64 =
                 c.query_row("SELECT charged FROM classify_costs", [], |r| r.get(0))?;
             assert_eq!(charged, 0.000001);
@@ -480,12 +472,6 @@ fn closed_unknown_keeps_a_receipt_and_conservatively_settles_reservations() {
     assert_eq!(f.obligation(), receipt);
     f.store
         .read(|c| {
-            let (pending, unreported): (i64, i64) = c.query_row(
-                "SELECT reserved,unreported_tokens FROM token_windows",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            assert_eq!((pending, unreported), (0, 8));
             let charged: f64 =
                 c.query_row("SELECT charged FROM classify_costs", [], |r| r.get(0))?;
             assert_eq!(charged, 0.000002);
@@ -495,21 +481,23 @@ fn closed_unknown_keeps_a_receipt_and_conservatively_settles_reservations() {
 }
 
 #[test]
-fn settlement_failure_rolls_back_receipt_usage_and_acknowledgement() {
+fn settlement_failure_rolls_back_receipt_cost_and_acknowledgement() {
     let f = Fixture::new();
     f.seed(true, true);
     f.close();
     f.store.write(|tx| {
-        tx.execute_batch("CREATE TRIGGER fail_settle BEFORE UPDATE ON token_ledger BEGIN SELECT RAISE(ABORT,'injected settlement failure'); END")?;
+        tx.execute_batch("CREATE TRIGGER fail_settle BEFORE UPDATE ON classify_costs BEGIN SELECT RAISE(ABORT,'injected settlement failure'); END")?;
         Ok(())
     }).unwrap();
     assert!(f.hosts.complete(&f.completion()).is_err());
     assert_eq!(f.obligation().state, ObligationState::Open);
     f.store
         .read(|c| {
-            let pending: i64 =
-                c.query_row("SELECT reserved FROM token_windows", [], |r| r.get(0))?;
-            assert_eq!(pending, 8);
+            let state: (f64, Option<f64>) =
+                c.query_row("SELECT reserved,charged FROM classify_costs", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?;
+            assert_eq!(state, (0.000002, None));
             Ok(())
         })
         .unwrap();

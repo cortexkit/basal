@@ -1,7 +1,7 @@
 //! The module's own counters, for the operator's view of basal: worker kills and
 //! respawns, and what replay costs. They live in memory and start from zero
-//! at each process start; the durable figures (run ages, token windows,
-//! flow health) are read from the store when asked for.
+//! at each process start; durable run ages and flow health are read from
+//! the store when asked for.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

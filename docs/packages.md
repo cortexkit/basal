@@ -52,7 +52,7 @@ Both lengths are byte lengths. Renaming an agent leaves its instances, and their
 
 `flow.install` refuses any flow id that ends in `_` followed by exactly 16 lowercase hex characters (`flow_id_reserved`), so an ordinary flow can never take an instance's id.
 
-The id doesn't depend on the package version. So an instance keeps its `kv`, token windows, rate windows and schedule across upgrades, the same way a flow keeps them across versions. Each agent's instance has its own state, so one agent's instance can't read or exhaust another's.
+The id doesn't depend on the package version. So an instance keeps its `kv`, rate windows and schedule across upgrades, the same way a flow keeps them across versions. Each agent's instance has its own state, so one agent's instance can't read or exhaust another's.
 
 An instance's owner is its agent's `agent_id`. It acts only as that agent:
 - Every `$self` in its manifest resolves to that `agent_id` when calls are authorized, and sink calls carry that id.

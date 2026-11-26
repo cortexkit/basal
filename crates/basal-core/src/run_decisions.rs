@@ -590,7 +590,6 @@ impl RecoveredHosts {
                 {
                     return Err(CoreError::Invalid("obligation changed".into()));
                 }
-                crate::tokens::settle_outcome(tx, id, position, &outcome, now)?;
                 let value: Value = serde_json::from_str(outcome.value.as_str())
                     .map_err(|e| CoreError::Invalid(e.to_string()))?;
                 crate::classify_cost::settle(tx, "flow", id, position, Some(&value), None)?;

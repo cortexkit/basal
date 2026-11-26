@@ -275,7 +275,7 @@ fn insufficient_vacuum_space_refuses_without_changing_durability_or_leaving_dele
 }
 
 #[test]
-fn migrated_reservations_settle_in_place_without_recounting_dispatches() {
+fn migrated_dollars_settle_without_changing_legacy_tokens_or_recounting_dispatches() {
     use crate::run_records::{Arrival, ArrivalDurability, Usage};
     let fixture = Fixture::new();
     let store = fixture.store();
@@ -310,9 +310,7 @@ fn migrated_reservations_settle_in_place_without_recounting_dispatches() {
     });
     let budgets = crate::run_driver::Budgets {
         dispatch_window_ms: 60000,
-        token_window_ms: 60000,
         dispatches: 1000,
-        tokens: 1000,
         cost_micros: 1_000_000,
         cost_window: None,
     };
@@ -323,14 +321,13 @@ fn migrated_reservations_settle_in_place_without_recounting_dispatches() {
     );
     for _ in 0..2 {
         store
-            .write(|tx| {
-                crate::run_driver::accounting::fold(tx, "flow", "live", &state, &budgets, 20)
-            })
+            .write(|tx| crate::run_driver::accounting::fold(tx, "flow", "live", &state, &budgets))
             .unwrap();
     }
     store.read(|c| {
         assert_eq!(c.query_row("SELECT COUNT(*) FROM token_ledger",[],|r|r.get::<_,i64>(0))?,2);
-        let row:(i64,i64,i64)=c.query_row("SELECT reserved,input_tokens,output_tokens FROM token_windows WHERE flow_id='flow'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;assert_eq!(row,(10,2,3));
+        let row:(i64,i64,i64)=c.query_row("SELECT reserved,input_tokens,output_tokens FROM token_windows WHERE flow_id='flow'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;assert_eq!(row,(20,0,0));
+        assert_eq!(c.query_row("SELECT state FROM token_ledger WHERE run_id='live'",[],|r|r.get::<_,String>(0))?,"reserved");
         assert_eq!(c.query_row("SELECT dispatches FROM rate_windows WHERE flow_id='flow'",[],|r|r.get::<_,i64>(0))?,9);
         assert_eq!(c.query_row("SELECT charged FROM classify_costs WHERE run_id='live'",[],|r|r.get::<_,f64>(0))?,0.3);
         Ok(())

@@ -295,7 +295,7 @@ fn cancel_card_commits_with_terminal_history_and_recovers_before_attach() {
 }
 
 #[test]
-fn closed_resolution_is_sqlite_only_and_settles_usage_cost_and_exact_card() {
+fn closed_resolution_is_sqlite_only_and_settles_cost_and_exact_card() {
     let f = Fixture::new();
     // An accepted call: without a handle, closing settles a query outright
     // (closed_obligations::closing), and no card would be raised.
@@ -334,12 +334,6 @@ fn closed_resolution_is_sqlite_only_and_settles_usage_cost_and_exact_card() {
     assert_eq!(f.obligation().state, ObligationState::Settled);
     f.store
         .read(|c| {
-            let usage: (u64, u64, u64, u64) = c.query_row(
-                "SELECT reserved,input_tokens,cache_write_tokens,output_tokens FROM token_windows",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )?;
-            assert_eq!(usage, (0, 3, 1, 2));
             assert_eq!(
                 c.query_row("SELECT charged FROM classify_costs", [], |r| r
                     .get::<_, f64>(0))?,
@@ -646,11 +640,11 @@ fn every_answer_to_a_closed_runs_card_settles_its_call() {
             .read(|c| {
                 assert_eq!(
                     c.query_row(
-                        "SELECT COUNT(*) FROM token_ledger WHERE state='reserved'",
+                        "SELECT charged FROM classify_costs WHERE kind='flow'",
                         [],
-                        |r| r.get::<_, i64>(0)
+                        |r| r.get::<_, f64>(0)
                     )?,
-                    0,
+                    0.000002,
                     "{choice}"
                 );
                 Ok(())

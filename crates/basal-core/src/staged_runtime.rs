@@ -736,8 +736,10 @@ impl run_driver::Services for Services {
                         input_tokens: 0,
                         output_tokens: 0,
                         cost_micros,
-                        window_start: now.div_euclid(budgets.token_window_ms)
-                            * budgets.token_window_ms,
+                        window_start: crate::rate::window_start(
+                            now,
+                            crate::run_driver::accounting::COST_BUCKET_MS,
+                        ),
                     });
                 Ok(Prepared::Remote(Box::new(Intent {
                     call: CallIdentity::new(call.clone(), class),
