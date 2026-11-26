@@ -380,7 +380,7 @@ fn pinned_reaction(kind: &str, event: usize) -> String {
 fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
     Manifest::parse_stored(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 11);
+    assert_eq!(manifest["version"], 12);
     // The trigger, global sink and three operations are the only requested capabilities.
     assert_eq!(
         manifest.as_object().unwrap().keys().collect::<Vec<_>>(),
@@ -1007,6 +1007,56 @@ fn comment_excerpt_is_optional_quoted_sanitized_and_byte_capped() {
             )
         );
     }
+}
+
+fn assert_comment_excerpt_line(excerpt: &str, expected: &str) {
+    let t = Test::new();
+    set_clock(&t, "2026-07-01T10:00:00Z");
+    let mut body = item("pull_request", "created");
+    body["comment_author"] = json!("reader");
+    body["comment_url"] = json!("https://github.com/cortexkit/basal/pull/42#issuecomment-1");
+    body["comment_excerpt"] = json!(excerpt);
+    assert_eq!(t.event(body)["delivered"], 1);
+    let writes = t.writes();
+    assert_eq!(writes[0]["action"], "wake");
+    assert_eq!(
+        writes[0]["item"]["body"].as_str().unwrap().lines().nth(1),
+        Some(expected)
+    );
+    assert_eq!(
+        writes[0]["item"]["links"][1],
+        json!({"kind":"url", "url":"https://github.com/cortexkit/basal/pull/42#issuecomment-1"})
+    );
+    assert_eq!(
+        t.memory()["items"]["github:cortexkit/basal:pull_request:42"]["comment_count"],
+        1
+    );
+}
+
+#[test]
+fn comment_excerpt_marker_only_has_no_quote() {
+    assert_comment_excerpt_line(
+        "  <!-- design-gate -->  ",
+        "New comment by reader at 10:00Z.",
+    );
+}
+
+#[test]
+fn comment_excerpt_cut_marker_has_no_quote() {
+    assert_comment_excerpt_line("<!-- design-gate", "New comment by reader at 10:00Z.");
+}
+
+#[test]
+fn comment_excerpt_closed_marker_followed_by_text_is_quoted() {
+    assert_comment_excerpt_line(
+        "<!-- x --> Thanks",
+        "New comment by reader at 10:00Z: \"‹!-- x --> Thanks\"",
+    );
+}
+
+#[test]
+fn comment_excerpt_ordinary_text_is_quoted() {
+    assert_comment_excerpt_line("Thanks", "New comment by reader at 10:00Z: \"Thanks\"");
 }
 
 #[test]

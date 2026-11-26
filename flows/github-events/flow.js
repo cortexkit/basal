@@ -324,12 +324,15 @@ if (history.times.length < 6) history.times.push(now);
 if (commentAuthor != null) {
   const commentUrl = body.comment_url;
   const excerpt = body.comment_excerpt;
+  const trimmedExcerpt = typeof excerpt === 'string' ? excerpt.trim() : '';
+  const markerOnly = trimmedExcerpt.startsWith('<!--') &&
+    (trimmedExcerpt.endsWith('-->') || !trimmedExcerpt.includes('-->'));
   const comment = {
     author: short(sanitize(commentAuthor), MAX_COMMENT_AUTHOR_BYTES),
     time: now,
     comment_url: typeof commentUrl === 'string' && bytes(JSON.stringify(commentUrl)) <= MAX_COMMENT_URL_JSON_BYTES ?
       commentUrl : null,
-    excerpt: typeof excerpt === 'string' && excerpt.length > 0 ?
+    excerpt: typeof excerpt === 'string' && excerpt.length > 0 && !markerOnly ?
       short(sanitize(excerpt), MAX_COMMENT_EXCERPT_BYTES) : null,
   };
   history.comments = [comment, ...(history.comments ?? [])].slice(0, MAX_COMMENTS);
