@@ -173,7 +173,6 @@ dependencies = [
  "cortexkit-log",
  "cortexkit-role-agent-data",
  "cortexkit-role-harness",
- "cortexkit-role-routing",
  "cortexkit-role-tool-provider",
  "cortexkit-role-tool-provider-conformance",
  "cortexkit-store-types",

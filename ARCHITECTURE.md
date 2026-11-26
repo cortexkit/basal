@@ -80,7 +80,7 @@ Local calls (`kv`, clock, random) are served in the parent and recorded in the r
 
 ## Model calls
 
-Programs call Broca's `tools.llm_complete`, `tools.llm_classify` or `tools.llm_extract` from the catalog. Flows grant those tools as ops and declare `model_cost_usd`. Broca uses the stamped scope to route and enforce the flow's private-content provider grant; Basal does not select a model, open a session or price tokens. Basal identifies model tools by capability tag, caps their `max_cost_usd` to the remaining budget, and charges the reported `cost_usd` ($0.50 per codemode run by default; manifest-declared caps for flows). Basal still registers `basal.flow`, `basal.codemode` and their `.classify` children, so Broca can select a model on behalf of a flow or program when it classifies an item. Historical direct calls and token ledgers remain readable.
+Programs call Broca's `tools.llm_complete`, `tools.llm_classify` or `tools.llm_extract` from the catalog. Flows grant those tools as ops and declare `model_cost_usd`. Broca uses the scope the daemon stamps on each call (a program's run scope or a flow's scope) to route and enforce the flow's private-content provider grant; Basal does not select a model, open a session or price tokens. Basal identifies model tools by capability tag, caps their `max_cost_usd` to the remaining budget, and charges the reported `cost_usd` ($0.50 per codemode run by default; manifest-declared caps for flows). Basal declares no routing consumers: Broca routes its tools under its own names. Historical direct calls and token ledgers remain readable.
 
 ## Codemode, end to end
 

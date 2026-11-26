@@ -40,7 +40,6 @@ cortexkit-bus-trait.workspace = true
 cortexkit-bus-nats.workspace = true
 cortexkit-log.workspace = true
 cortexkit-role-tool-provider.workspace = true
-cortexkit-role-routing.workspace = true
 cortexkit-role-agent-data.workspace = true
 blake3.workspace = true
 getrandom.workspace = true

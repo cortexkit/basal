@@ -1,10 +1,6 @@
 //! The subc manifest, built in Rust so the binary and its declaration cannot
 //! drift: `ck-basal --manifest` prints exactly what `serve` registers.
 
-use cortexkit_role_routing::declarations::ConsumerPriority;
-use cortexkit_role_routing::placement::Placement;
-use cortexkit_role_routing::select::ToolsRequirement;
-use cortexkit_role_routing::{ConsumerDeclaration, ConsumerDeclarations, DemandDefaults};
 use serde_json::json;
 use subc_protocol::PROTOCOL_VERSION;
 use subc_protocol::manifest::{
@@ -18,11 +14,6 @@ use subc_protocol::manifest::{
 /// principal in the fleet `reserved:basal`. The daemon also derives the
 /// module's store path from it, so it never changes once deployed.
 pub const MODULE_ID: &str = "basal";
-
-const FLOW_CONSUMER: &str = "basal.flow";
-const CODEMODE_CONSUMER: &str = "basal.codemode";
-const FLOW_CLASSIFY_CONSUMER: &str = "basal.flow.classify";
-const CODEMODE_CLASSIFY_CONSUMER: &str = "basal.codemode.classify";
 
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
@@ -240,10 +231,6 @@ pub fn manifest() -> ModuleManifest {
             subc_protocol::manifest::OperationDelivery::WATCH,
         )]))
         .flow_operations(Some(vec!["diagnostics.findings".into()]))
-        .role_declarations(std::collections::BTreeMap::from([(
-            cortexkit_role_routing::ROLE_DECLARATIONS_KEY.into(),
-            routing_consumers(),
-        )]))
         .events(Some(
             basal_core::template_events::EVENTS
                 .iter()
@@ -258,45 +245,6 @@ pub fn manifest() -> ModuleManifest {
         ))
         .provenance(Some(build_provenance()))
         .build()
-}
-
-fn routing_consumers() -> serde_json::Map<String, serde_json::Value> {
-    // Flows run unattended, so they yield to callers that are waiting. A
-    // program's model call holds up the agent turn that started the program,
-    // so it is `blocking`. Routing reads `priority` only when it advertises
-    // `consumer_priority`. Flow and program model calls are one-shot and use
-    // the `quick` workload; routing's own settings still take precedence.
-    let consumers = [
-        FLOW_CONSUMER,
-        CODEMODE_CONSUMER,
-        FLOW_CLASSIFY_CONSUMER,
-        CODEMODE_CLASSIFY_CONSUMER,
-    ]
-    .into_iter()
-    .map(|name| {
-        // Core opens the flow/program scopes Broca uses; basal does not own them.
-        // List Broca explicitly to admit its routing requests on basal's behalf.
-        let priority = if name == FLOW_CONSUMER || name == FLOW_CLASSIFY_CONSUMER {
-            ConsumerPriority::Background
-        } else {
-            ConsumerPriority::Blocking
-        };
-        let mut defaults = DemandDefaults::new()
-            .with_placement(Placement::module("broca"))
-            .with_selectors(vec!["broca".into()])
-            .with_priority(priority);
-        defaults.tools = Some(ToolsRequirement::None);
-        if name == FLOW_CONSUMER || name == CODEMODE_CONSUMER {
-            defaults = defaults.with_workload("quick");
-        }
-        ConsumerDeclaration::new(name).with_defaults(defaults)
-    })
-    .collect();
-    serde_json::to_value(ConsumerDeclarations::new().with_consumers(consumers))
-        .expect("routing consumer declarations serialize")
-        .as_object()
-        .expect("routing consumer declarations are an object")
-        .clone()
 }
 
 /// The commit this binary was built from, as `build.rs` embedded it.
