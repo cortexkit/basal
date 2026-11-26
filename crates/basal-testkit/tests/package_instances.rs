@@ -91,7 +91,15 @@ fn package_tool_policies_follow_the_runs_version_after_instance_upgrade() {
 fn batched_token_usage_reads_package_approvals_and_omits_revoked_instances() {
     let world = World::new("pkg-token-batch");
     let rt = runtime(&world, InstallGate::Core);
-    let id = ensure(&rt, "return 1", 1, 1);
+    // Only a historical package can carry the token cap that these readers report.
+    let mut legacy = manifest(1);
+    legacy["llm"] = json!({"iq":0,"max_output":10,"token_cap":{"tokens":1000,"window":"1d"}});
+    basal_core::test_support::seed_stored_version(&rt, "return 1", &legacy.to_string(), true)
+        .unwrap();
+    let id = rt.ensure_instance("dark-wake", 1, OWNER, 1).unwrap()["flow_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let usage = rt.token_usage_many(&[&id], 1_000).unwrap();
     assert_eq!(usage.len(), 1);
     assert_eq!(usage[&id].window_ms, 86_400_000);

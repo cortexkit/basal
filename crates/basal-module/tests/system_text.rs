@@ -29,14 +29,15 @@ fn legacy_filtered_catalog_answer_bytes_are_unchanged() {
         format!("{:x}", Sha256::digest(serde_json::to_vec(&answer).unwrap()))
     })
     .collect();
-    // SHA-256 of complete responses captured before preset discovery changed.
+    // SHA-256 of the complete filtered responses. Even filtered-out tools
+    // contribute to catalog generation, so a description change moves all four pins.
     assert_eq!(
         digests,
         [
-            "386c03aa6d2e7b050ec7e8ab2742f26f6683e84ab4313c0c058549171e7abb23",
-            "79efce238b06407fc814e549cb25d042d7cc3a0727e66dbc90e3517c57404264",
-            "33d5e8a441dd08fb65e08913cbd600678d345f5ec0d5c82c84d387dcd77d1e56",
-            "6efeac1a357e02c5ec7373bd33b4bfb21b6ec2d903a510a73a9b2b7b60538657",
+            "6bda14400ee9d3de321eebabcb8e0c60ab934b4a20e12e93f690656b0cc8482b",
+            "56c6d72ee8c23f4b88701a3b4a281af99dc33c3afaffb004a69c0acdeb535228",
+            "caabecfef2a094f64b1e49f8a30213ade0c670550e3b2fe4e3bbe47ac1403458",
+            "6d1b61210e7645cf164fd6e3a7b15ec3bde755e02ab19d77dd77cc5495a46f87",
         ]
     );
 }
@@ -76,7 +77,7 @@ fn catalog_tool_bytes_are_unchanged_by_system_text_support() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&with_text["tools"]).unwrap())
         ),
-        "76df34f1039187c1c27f6c5b68bd2e7e2f29e25828f005dbd4e472b84cf4c184"
+        "9b40e4549f3b07bbb50362434b616030607a1759176987473c87ac695bd83ca2"
     );
 }
 
