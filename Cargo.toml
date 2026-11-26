@@ -41,12 +41,12 @@ cortexkit-test-support = "=0.1.14"
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
 cortexkit-store = { version = "=0.2.5", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
-cortexkit-role-tool-provider = "=0.15.10"
+cortexkit-role-tool-provider = "=0.15.19"
 # The agent-data/v1 participant contract Entorhinal drives when it moves an
 # agent between computers. Pinned exactly so its refusal table can't drift.
 cortexkit-role-agent-data = "=0.3.3"
 cortexkit-llm-tools = "=0.4.0"
-cortexkit-role-tool-provider-conformance = "=0.15.11"
+cortexkit-role-tool-provider-conformance = "=0.15.21"
 # The provider-owned resource-busy refusal is shared across the fleet.
 cortexkit-resource-busy = { git = "https://github.com/cortexkit/commons", rev = "c46f324133c5df6411703714e4c147f7cc8554a0" }
 # The driver cortexkit-store is built on. basal-core writes its own queries

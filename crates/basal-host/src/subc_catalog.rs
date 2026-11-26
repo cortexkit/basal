@@ -794,6 +794,17 @@ mod emits_events_tests {
     }
 
     #[test]
+    fn a_capability_index_without_the_catalog_filter_is_readable() {
+        // Providers that dropped the retired capability filter keep
+        // `tool_capabilities`; reading such a describe must not refuse
+        // installs or catalog reads.
+        let mut describe = describe();
+        describe["tool_capabilities"] = json!(["plexus:github.read/v1"]);
+        let plexus = Plexus::answering(describe, Ok(answer(Some(json!(false)))));
+        assert_eq!(read(&plexus, "react"), Ok(Some(false)));
+    }
+
+    #[test]
     fn a_management_op_or_an_unlisted_tool_declares_nothing() {
         let plexus = Plexus::answering(describe(), Ok(answer(Some(json!(false)))));
         assert_eq!(read(&plexus, "label"), Ok(None));

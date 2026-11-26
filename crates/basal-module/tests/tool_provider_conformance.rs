@@ -812,7 +812,13 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
             // Basal's tools do not declare system-text facts
             // (the suite's SystemTextFacts capability, added in 0.15.9).
             "system_text_facts_accepted",
-            "system_text_facts_malformed_refused"
+            "system_text_facts_malformed_refused",
+            // Basal does not declare the suite's tool_versions capability.
+            "tool_versions_older_minor_accepted",
+            "tool_versions_newer_minor_argument_refused",
+            "tool_versions_different_major_refused",
+            "tool_versions_malformed_pin_refused",
+            "tool_versions_shipped_tp1_admitted",
         ]
         .into_iter()
         .collect()
