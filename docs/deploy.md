@@ -8,9 +8,11 @@ basal never places its own binaries. In this fleet the operator places every mod
 
 The [Release workflow](../.github/workflows/release.yml) uses [`script/release-build.sh`](../script/release-build.sh) to build `ck-basal` and `ck-basal-worker` from the same clean commit, without test hooks. It verifies both programs' reported revision and publishes a ZIP and SHA-256 checksum per program and platform. `ck setup` uses the release manifest to install the two programs side by side.
 
+The five targets are built and verified on native runners: `darwin-arm64`, `linux-x64`, `linux-arm64`, `windows-x64` and `windows-arm64`. There is no Intel Mac release.
+
 On macOS, both programs use Developer ID signing with the hardened runtime. The worker has the signing identifier `ck-basal-worker` and no entitlements. The workflow notarizes the signed archives and runs the worker's confinement gate on the signed bytes extracted from its ZIP.
 
-Windows archives publish like the others. A tag publishes only when the push CI run for its commit passed the production worker suites on Linux (both architectures) and macOS, and all four native Windows suites (two Windows versions, each half of the workspace). A manual dispatch rehearses the release without publishing. Only a matching `v*` tag on a commit with green push CI can publish, and only after `BASAL_REQUIRES_CORE` is set to the confirmed minimum public core version.
+Windows archives publish like the others. A tag publishes only when the push CI run for its commit passed the production worker suites on Linux (both architectures) and macOS, and all six native Windows jobs (two suites on each of `windows-latest`, `windows-2022` and `windows-11-arm`). A manual dispatch rehearses the release without publishing. Only a matching `v*` tag on a commit with green push CI can publish, and only after `BASAL_REQUIRES_CORE` is set to the confirmed minimum public core version.
 
 ## Staging
 

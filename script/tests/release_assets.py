@@ -17,7 +17,9 @@ from script.release import assets
 REVISION = "a" * 40
 VERSION = "0.1.0"
 BINARIES = ("ck-basal", "ck-basal-worker")
-TARGETS = ("darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "windows-x64")
+UNIX_TARGETS = ("darwin-arm64", "linux-x64", "linux-arm64")
+WINDOWS_TARGETS = ("windows-x64", "windows-arm64")
+TARGETS = (*UNIX_TARGETS, *WINDOWS_TARGETS)
 
 
 class ReleaseAssets(unittest.TestCase):
@@ -106,10 +108,10 @@ else:
     def make_inventory(self):
         for target in TARGETS:
             for binary in BINARIES:
-                name = binary + (".exe" if target == "windows-x64" else "")
+                name = binary + (".exe" if target in WINDOWS_TARGETS else "")
                 path = self.source / name
                 path.write_text(f"fixture for {binary} on {target}\n")
-                path.chmod(0o755)
+                path.chmod(0o644 if target in WINDOWS_TARGETS else 0o755)
                 self.pack(target, binary)
                 archive = self.built / f"{binary}-{target}.zip"
                 with ZipFile(archive) as zipped:
@@ -121,31 +123,39 @@ else:
         assets.assemble(argparse.Namespace(directory=self.built, output=output, revision=REVISION,
                                             dry_run=dry_run, publish_windows=publish_windows))
 
-    def test_manual_rehearsal_keeps_windows_but_public_release_omits_it(self):
+    def test_windows_assets_are_published_only_for_rehearsals_or_with_ci_approval(self):
         self.make_inventory()
         dry = self.root / "dry"
         release = self.root / "release"
+        approved = self.root / "approved"
         with patch.dict(os.environ, {"BASAL_REQUIRES_CORE": ""}):
             with self.assertRaisesRegex(ValueError, "BASAL_REQUIRES_CORE must be set"):
                 self.assemble(release)
             self.assemble(dry, dry_run=True)
         with patch.dict(os.environ, {"BASAL_REQUIRES_CORE": "1.2.3"}):
             self.assemble(release)
+            self.assemble(approved, publish_windows=True)
         manifest = {"binaries": {"ck-basal": {"reports": REVISION},
                                  "ck-basal-worker": {"reports": None}}}
         self.assertEqual(json.loads((dry / "release-manifest.json").read_text()), manifest)
         self.assertEqual(json.loads((release / "release-manifest.json").read_text()),
                          {**manifest, "requires_core": "1.2.3"})
-        self.assertEqual(len(list(dry.glob("*.zip*"))), 20)
-        self.assertEqual(len(list(release.glob("*.zip*"))), 16)
-        self.assertEqual(sorted(p.name for p in dry.glob("*-windows-x64.zip")),
-                         ["ck-basal-windows-x64.zip", "ck-basal-worker-windows-x64.zip"])
-        self.assertFalse(list(release.glob("*-windows-x64.zip*")))
+        for output, targets in ((dry, TARGETS), (release, UNIX_TARGETS), (approved, TARGETS)):
+            with self.subTest(output=output.name):
+                expected = {f"{binary}-{target}.zip{suffix}"
+                            for binary in BINARIES for target in targets for suffix in ("", ".sha256")}
+                self.assertEqual({p.name for p in output.glob("*.zip*")}, expected)
 
     def test_assembly_refuses_corrupt_windows_archive_even_when_withheld(self):
         self.make_inventory()
-        archive = self.built / "ck-basal-worker-windows-x64.zip"
-        archive.write_bytes(b"not the archived worker")
-        with patch.dict(os.environ, {"BASAL_REQUIRES_CORE": "1.2.3"}):
-            with self.assertRaisesRegex(ValueError, "ck-basal-worker-windows-x64.zip.sha256: checksum does not match"):
-                self.assemble(self.root / "release")
+        for target in WINDOWS_TARGETS:
+            with self.subTest(target=target), patch.dict(os.environ, {"BASAL_REQUIRES_CORE": "1.2.3"}):
+                archive = self.built / f"ck-basal-worker-{target}.zip"
+                original = archive.read_bytes()
+                archive.write_bytes(b"not the archived worker")
+                try:
+                    error = rf"ck-basal-worker-{target}\.zip\.sha256: checksum does not match"
+                    with self.assertRaisesRegex(ValueError, error):
+                        self.assemble(self.root / f"release-{target}")
+                finally:
+                    archive.write_bytes(original)

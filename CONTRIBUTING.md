@@ -39,7 +39,7 @@ python3 script/check-local-paths.py
 python3 -m unittest script.tests
 ```
 
-Tests are ordinary cargo tests, run per crate as above. Each Windows image, windows-latest and windows-2022, runs two parallel package groups: launcher + worker + host (including the remaining workspace packages), and module + core + testkit + rig. The workspace pass includes all host tests once; launcher and worker suites retain both production and `deviations` modes.
+Tests are ordinary cargo tests, run per crate as above. Each Windows image (`windows-latest`, `windows-2022` and `windows-11-arm`) runs two parallel package groups: launcher + worker + host (including the remaining workspace packages), and module + core + testkit + rig. The workspace pass includes all host tests once; launcher and worker suites retain both production and `deviations` modes.
 
 ## Commits
 
