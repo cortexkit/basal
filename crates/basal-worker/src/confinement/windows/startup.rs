@@ -134,11 +134,16 @@ fn lower_integrity(adjustment: Result<Token, String>, skip: bool) -> Result<(), 
 /// Step 3: close the handles the loader left that nothing uses again (see
 /// [`leftover`]). A handle that cannot be listed, named or closed refuses
 /// startup as `handle-not-allowed`, the check that would otherwise see it.
+/// Before the first ALPC port, the client/server runtime's connection, is
+/// closed, the heap in that port's shared view is destroyed (see
+/// [`native::destroy_client_server_heap`]), so no heap in the process list
+/// is left pointing at memory the close releases.
 fn close_startup_leftovers() -> Result<(), Refusal> {
     let refuse = |detail: String| Refusal::new(reason::HANDLE_NOT_ALLOWED, detail);
     let types = native::object_types().map_err(refuse)?;
     let standard = native::standard_handles();
     let current_directory = native::current_directory_handle().map_err(refuse)?;
+    let mut runtime_heap_destroyed = false;
     for entry in native::handle_snapshot().map_err(refuse)? {
         let Some(type_name) = types.get(&entry.type_index) else {
             continue;
@@ -159,6 +164,10 @@ fn close_startup_leftovers() -> Result<(), Refusal> {
             action = leftover(&candidate);
         }
         if action == Leftover::Close {
+            if type_name == "ALPC Port" && !runtime_heap_destroyed {
+                native::destroy_client_server_heap().map_err(refuse)?;
+                runtime_heap_destroyed = true;
+            }
             close(entry.handle, &format!("{type_name} {value:#x}")).map_err(refuse)?;
         }
     }

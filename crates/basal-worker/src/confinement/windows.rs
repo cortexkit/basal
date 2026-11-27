@@ -15,8 +15,9 @@
 //!    (`thread-token-present`);
 //! 2. it lowers its primary token from Low to Untrusted integrity and closes
 //!    the handle it used (`integrity-lower-failed`);
-//! 3. it closes the connection to the session's client/server runtime port
-//!    and any device handle the loader left that it did not inherit;
+//! 3. it closes the connection to the session's client/server runtime port,
+//!    after destroying the heap ntdll keeps in that port's shared view, and
+//!    any device handle the loader left that it did not inherit;
 //! 4. it reads its actual primary token back and checks every property
 //!    (`not-lpac`, `capabilities-present`, `restricting-sid-mismatch`,
 //!    `group-not-deny-only`, `privileges-present`, `integrity-not-untrusted`);

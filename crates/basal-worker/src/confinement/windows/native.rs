@@ -678,3 +678,69 @@ pub(super) fn handle_table() -> Result<Vec<HandleEntry>> {
     }
     Ok(table)
 }
+
+/// Destroys the heap the client/server runtime keeps in its port's shared
+/// view, before startup closes that port.
+///
+/// Connecting to csrss at process start maps a 64 KiB section view shared
+/// with the server, and ntdll builds a heap on it that it registers in the
+/// process heap list. Closing the port unmaps the view, but nothing removes
+/// the heap from the list. Anything that later walks the process heaps then
+/// reads released memory: on Windows 11 arm64 the heap manager's timer
+/// (`RtlpHpGCTimerCallback` via `RtlpEnumProcessHeaps`) does so about a second
+/// after start-up, on a thread-pool thread, and kills the worker with an
+/// access violation. Chromium's sandbox, which also disconnects csrss, destroys
+/// this heap first for the same reason (`CsrssDisconnectCleanup` in
+/// `sandbox/win/src/handle_closer_agent.cc`).
+///
+/// The heap is the one process heap whose memory is a mapped view: every
+/// other heap in the list is private memory. No mapped heap means nothing
+/// to clean; more than one means it cannot be told which is the runtime's,
+/// and startup refuses rather than destroy a heap it has not identified.
+pub(super) fn destroy_client_server_heap() -> Result<()> {
+    use windows_sys::Win32::System::Memory::{
+        GetProcessHeaps, HeapDestroy, MEM_MAPPED, MEMORY_BASIC_INFORMATION, VirtualQuery,
+    };
+    // SAFETY: a zero-length query writes nothing and returns the count.
+    let count = unsafe { GetProcessHeaps(0, null_mut()) };
+    let mut heaps: Vec<HANDLE> = vec![null_mut(); count as usize];
+    // SAFETY: the buffer holds `count` handles.
+    let listed = unsafe { GetProcessHeaps(count, heaps.as_mut_ptr()) };
+    if listed == 0 || listed > count {
+        return Err(format!(
+            "GetProcessHeaps listed {listed} of {count} heaps: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    heaps.truncate(listed as usize);
+    let mapped: Vec<HANDLE> = heaps
+        .into_iter()
+        .filter(|heap| {
+            // SAFETY: MEMORY_BASIC_INFORMATION is plain data; zero is valid.
+            let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+            // SAFETY: VirtualQuery only describes the address and writes `info`.
+            let written = unsafe {
+                VirtualQuery(
+                    heap.cast_const(),
+                    &mut info,
+                    size_of::<MEMORY_BASIC_INFORMATION>(),
+                )
+            };
+            written != 0 && info.Type == MEM_MAPPED
+        })
+        .collect();
+    match mapped.as_slice() {
+        [] => Ok(()),
+        // SAFETY: the handle is a live heap from the process heap list, and
+        // nothing in the worker allocates from the runtime's heap.
+        [heap] => match unsafe { HeapDestroy(*heap) } {
+            0 => Err(last("HeapDestroy(client/server runtime heap)")),
+            _ => Ok(()),
+        },
+        several => Err(format!(
+            "{} process heaps are in mapped views; the client/server runtime's \
+             cannot be told apart",
+            several.len()
+        )),
+    }
+}

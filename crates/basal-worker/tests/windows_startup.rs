@@ -467,6 +467,129 @@ fn startup_keeps_the_cng_device_and_closes_only_identified_leftovers() {
     assert_eq!(ended.code, 0, "{}", ended.stderr);
 }
 
+/// Every heap in a worker's process heap list, read from its process
+/// environment block (PEB), with the state and type of the memory it lives
+/// in, as `(heap, state, type)`.
+fn worker_heaps(child: &ConfinedProcess) -> Vec<(usize, u32, u32)> {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+    use windows_sys::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, VirtualQueryEx};
+
+    #[link(name = "ntdll", kind = "raw-dylib")]
+    unsafe extern "system" {
+        fn NtQueryInformationProcess(
+            process: HANDLE,
+            class: u32,
+            buffer: *mut c_void,
+            length: u32,
+            returned: *mut u32,
+        ) -> i32;
+    }
+    /// `ProcessBasicInformation`; the PEB address is its second field.
+    const PROCESS_BASIC_INFORMATION: u32 = 0;
+    /// `PEB.NumberOfHeaps` and `PEB.ProcessHeaps` in the 64-bit PEB, the
+    /// same on x64 and arm64.
+    const NUMBER_OF_HEAPS: usize = 0xE8;
+    const PROCESS_HEAPS: usize = 0xF0;
+
+    let process = child.as_raw_handle() as HANDLE;
+    let read = |address: usize, into: *mut c_void, size: usize| {
+        let mut done = 0usize;
+        // SAFETY: `into` points to `size` writable bytes owned by the caller.
+        let ok =
+            unsafe { ReadProcessMemory(process, address as *const c_void, into, size, &mut done) };
+        assert!(
+            ok != 0 && done == size,
+            "ReadProcessMemory({address:#x}): {}",
+            std::io::Error::last_os_error()
+        );
+    };
+    let mut basic = [0usize; 6];
+    // SAFETY: the buffer is as large as PROCESS_BASIC_INFORMATION.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process,
+            PROCESS_BASIC_INFORMATION,
+            basic.as_mut_ptr().cast(),
+            std::mem::size_of_val(&basic) as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    assert!(status >= 0, "NtQueryInformationProcess: {status:#010x}");
+    let peb = basic[1];
+    let mut count = 0u32;
+    read(peb + NUMBER_OF_HEAPS, (&raw mut count).cast(), 4);
+    let mut list = 0usize;
+    read(peb + PROCESS_HEAPS, (&raw mut list).cast(), 8);
+    let mut heaps = vec![0usize; count as usize];
+    read(list, heaps.as_mut_ptr().cast(), heaps.len() * 8);
+    heaps
+        .into_iter()
+        .map(|heap| {
+            // SAFETY: MEMORY_BASIC_INFORMATION is plain data; zero is valid.
+            let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+            // SAFETY: VirtualQueryEx only describes the address and writes `info`.
+            let written = unsafe {
+                VirtualQueryEx(
+                    process,
+                    heap as *const c_void,
+                    &mut info,
+                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+                )
+            };
+            assert_ne!(written, 0, "VirtualQueryEx({heap:#x})");
+            (heap, info.State, info.Type)
+        })
+        .collect()
+}
+
+/// Closing the client/server runtime's ALPC port unmaps the 64 KiB view
+/// shared with csrss, which ntdll had registered as a process heap. Startup
+/// destroys that heap before closing the port, so the heap list holds no
+/// heap in released memory: Windows 11 arm64's heap manager walks the list
+/// from a thread-pool timer about a second after start-up, and a stale entry
+/// killed the worker with an access violation. No heap may stay in a mapped
+/// view either, since the only one there is the runtime's.
+#[test]
+fn startup_leaves_no_process_heap_in_released_or_shared_memory() {
+    const MEM_FREE: u32 = 0x10000;
+    const MEM_MAPPED: u32 = 0x40000;
+
+    let mut child = start(Deviation::Full);
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = child.stdout.take().expect("stdout");
+    write_parent_message(
+        &mut stdin,
+        &ParentMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .expect("send hello");
+    match read_worker_message(&mut stdout) {
+        Ok(WorkerMessage::Welcome(welcome)) => assert_eq!(welcome.confinement, CONFINED),
+        other => fail(child, format!("no welcome: {other:?}")),
+    }
+    let heaps = worker_heaps(&child);
+    println!("heaps after startup (heap, state, type): {heaps:x?}");
+    assert!(!heaps.is_empty());
+    let stale: Vec<_> = heaps
+        .iter()
+        .filter(|(_, state, kind)| *state == MEM_FREE || *kind == MEM_MAPPED)
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "process heaps in released or mapped memory: {stale:x?}"
+    );
+
+    write_parent_message(&mut stdin, &ParentMessage::Shutdown).expect("send shutdown");
+    drop(stdin);
+    drop(stdout);
+    let ended = end(child);
+    assert_eq!(ended.code, 0, "{}", ended.stderr);
+}
+
 // Worker checks of token, mitigation and handle properties the launcher can
 // break when it creates the process. In these test variants the parent's own
 // pre-resume checks expect the broken property, so the worker is resumed and
