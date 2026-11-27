@@ -7,8 +7,8 @@ that created it. The four one-shot watches/reminders use `wake` and best-effort
 resolve waits naming their flow as `met` when the condition is satisfied, or
 `failed` when a terminal condition makes success impossible. Resolution is
 awaited after the digest and before end, so a stuck resolution cannot lose the
-notification. `github-ci-watch` is
-a standing watch, described below. There are no model calls or script-side
+notification. `github-ci-watch` and `github-repo-events` are standing watches,
+described below. There are no model calls or script-side
 network fetches. Template versions have their own approval card; instances do
 not go through ordinary flow-install approval.
 
@@ -117,6 +117,26 @@ contract reports repository disappearance; without events the watch expires.
 
 Example values:
 `{"note":"The fix can ship now","repo":"owner/project","kind":"pr","number":42,"state":"merged"}`.
+
+## `github-repo-events`
+
+A standing digest for one GitHub repository, using Plexus **v2**
+`github_issue_changed`, `github_pr_changed`, and `github_release_published`.
+New issues, new pull requests, and comments by people wake the creating agent.
+Pushes, bot comments, and releases appear in the digest without waking it.
+Comment lines name the author and show the UTC observation time and a first-line
+excerpt, when there is one. Hidden-marker-only excerpts are not quoted.
+
+| Parameter | Meaning |
+| --- | --- |
+| `repo` | Exact `owner/name`, at most 200 UTF-8 bytes, matched case-insensitively. |
+
+Connect the repository to the creating agent in Plexus first. Without that
+connection, Plexus sends no events to the agent and refuses event body fetches.
+The watch reads only event bodies; it does not write to GitHub. It stays live
+until expiry or until the agent ends it.
+
+Example values: `{"repo":"owner/project"}`.
 
 ## `remind-at`
 

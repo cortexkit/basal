@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "id": "github-repo-events",
+  "version": 1,
+  "title": "GitHub activity for one repository",
+  "purpose": "Send the creating agent a standing digest of issues, pull requests and releases in one GitHub repository.",
+  "explanation": "Wake the agent that creates the watch when an issue or pull request opens or when a person comments. Keep pushes, bot comments and releases in its digest without waking it. The repository must be connected to that agent in Plexus. The watch reads event details from Plexus and makes no changes on GitHub.",
+  "trigger": {
+    "events": [
+      { "module": "plexus", "name": "github_issue_changed", "version": 2, "match": { "repo": "$params.repo" }, "max_age": "6h" },
+      { "module": "plexus", "name": "github_pr_changed", "version": 2, "match": { "repo": "$params.repo" }, "max_age": "6h" },
+      { "module": "plexus", "name": "github_release_published", "version": 2, "match": { "repo": "$params.repo" }, "max_age": "6h" }
+    ]
+  },
+  "ops": [{ "module": "plexus", "op": "events_get" }],
+  "sinks": [{ "agent": "$self", "digest_max": "wake" }],
+  "params": {
+    "repo": { "type": "string", "max_bytes": 200 }
+  },
+  "template": { "max_per_agent": 100, "max_lifetime": "365d" }
+}

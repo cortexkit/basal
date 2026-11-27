@@ -7,6 +7,7 @@ Typical templates:
 - a git commit, tag or branch moves;
 - a URL's content changes;
 - a pull request or issue changes state;
+- a repository gets new issues, pull requests, comments or releases;
 - review findings arrive on a repository's pull requests;
 - a time is reached.
 
@@ -19,6 +20,32 @@ values), shown as **What it does** on the approval card. They also require
 the same template name is stored in any state; `changes` is refused on a first
 version. Both are nonblank plain text, allow newlines but no other controls,
 and follow the [manifest intake rules](manifest.md#approval-explanations).
+
+## Repository activity: `github-repo-events`
+
+The [`github-repo-events`](../templates/github-repo-events/manifest.json)
+template is a standing digest for one GitHub repository. After its version is
+registered and approved, the agent creates an instance:
+
+```json
+{
+  "template": "github-repo-events",
+  "version": 1,
+  "params": { "repo": "owner/name" },
+  "expires_in": "365d"
+}
+```
+
+`repo` is an exact `owner/name` string of at most 200 UTF-8 bytes, matched
+case-insensitively. Connect the repository to the creating agent in Plexus
+first: without that connection Plexus sends no events to the agent and refuses
+event body fetches.
+
+The watch uses Plexus v2 issue, pull request and release notices. It wakes the
+agent for newly opened issues and pull requests and comments by people. Pushes,
+bot comments and releases go into the digest without waking the agent. The
+watch reads event bodies but does not write to GitHub. It stays live until it
+expires or the agent ends it.
 
 ## Review feedback: `review-findings`
 
