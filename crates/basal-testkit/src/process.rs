@@ -67,6 +67,10 @@ pub struct WorkerProcess {
     /// The thread copying the worker's stderr into `stderr`; it finishes
     /// once the pipe reaches end of file.
     stderr_reader: thread::JoinHandle<()>,
+    /// The worker binary as given to `spawn`, before staging; its build's
+    /// PDB symbolizes a crash report on Windows.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    binary: std::path::PathBuf,
 }
 
 pub(crate) struct ProcessWriter(ChildStdin);
@@ -93,6 +97,7 @@ impl WorkerProcess {
     }
 
     pub fn spawn_with_args(binary: &Path, args: &[&str]) -> io::Result<Self> {
+        let original = binary;
         let binary = crate::binaries::dev_worker_binary(binary);
         #[cfg(windows)]
         let mut child = windows::spawn_worker(&binary, args)?;
@@ -164,6 +169,7 @@ impl WorkerProcess {
             incoming: Arc::new(Mutex::new(incoming)),
             stderr,
             stderr_reader,
+            binary: original.to_path_buf(),
         })
     }
 
@@ -268,7 +274,7 @@ impl WorkerProcess {
     /// be read to the end, so a crash message written just before exit is
     /// not missed.
     pub fn exit_report(&mut self, timeout: Duration) -> String {
-        const STDERR_TAIL_BYTES: usize = 4096;
+        const STDERR_TAIL_BYTES: usize = 16 * 1024;
         let deadline = Instant::now() + timeout;
         let status = match self.wait_exit(timeout) {
             Some(status) => status.to_string(),
@@ -283,7 +289,11 @@ impl WorkerProcess {
         while !stderr.is_char_boundary(start) {
             start += 1;
         }
-        format!("worker {status}; stderr: {:?}", &stderr[start..])
+        #[allow(unused_mut)]
+        let mut report = format!("worker {status}; stderr: {:?}", &stderr[start..]);
+        #[cfg(windows)]
+        report.push_str(&windows::symbolize_crash_report(&self.binary, &stderr));
+        report
     }
 
     pub fn stderr_text(&self) -> String {
