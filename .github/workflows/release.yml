@@ -17,9 +17,10 @@ concurrency:
 env:
   # Set to the oldest public core that accepts Basal's registration.
   BASAL_REQUIRES_CORE: ''
-  # Turn on only after the suite has passed natively on Windows. Missing
-  # Windows archives make ck setup report release-incomplete on that target.
-  BASAL_PUBLISH_WINDOWS: 'false'
+  # The Windows archives publish because CI runs the whole suite natively on
+  # Windows, and the verify job below requires those runs to have passed on
+  # the tagged commit.
+  BASAL_PUBLISH_WINDOWS: 'true'
 
 jobs:
   verify:
@@ -70,15 +71,19 @@ jobs:
             --event push --status success --limit 100 --json databaseId --jq '.[].databaseId')
           for run in $runs; do
             # A skipped test can leave a green workflow. Require the production
-            # worker suite on both Linux architectures and on macOS in this run.
+            # worker suite on both Linux architectures and on macOS, and all
+            # four native Windows suites (two Windows versions, two halves of
+            # the workspace), in this run.
             green=$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json status,conclusion,jobs \
-              --jq '[select(.status == "completed" and .conclusion == "success") | .jobs[] | .steps[]? | select(.name == "Test confined worker packages") | .conclusion] == ["success", "success", "success"]')
+              --jq 'select(.status == "completed" and .conclusion == "success")
+                | ([.jobs[] | .steps[]? | select(.name == "Test confined worker packages") | .conclusion] == ["success", "success", "success"])
+                  and ([.jobs[] | select(.name | startswith("windows-baseline ")) | .conclusion] | length == 4 and all(. == "success"))')
             if [[ "$green" == true ]]; then
               echo "Verified push CI run $run for $REVISION"
               exit 0
             fi
           done
-          echo "::error::no successful ci.yml push run on main for $REVISION ran all three production worker suites"
+          echo "::error::no successful ci.yml push run on main for $REVISION ran all three production worker suites and the four Windows suites"
           exit 1
 
   build:

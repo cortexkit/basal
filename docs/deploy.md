@@ -10,7 +10,7 @@ The [Release workflow](../.github/workflows/release.yml) uses [`script/release-b
 
 On macOS, both programs use Developer ID signing with the hardened runtime. The worker has the signing identifier `ck-basal-worker` and no entitlements. The workflow notarizes the signed archives and runs the worker's confinement gate on the signed bytes extracted from its ZIP.
 
-Windows builds are checked but their archives are withheld from published releases until the native suite runs in the release lane. `ck setup` therefore reports Windows as `release-incomplete`. A manual dispatch rehearses the release without publishing. Only a matching `v*` tag on a commit with green push CI can publish, and only after `BASAL_REQUIRES_CORE` is set to the confirmed minimum public core version.
+Windows archives publish like the others. A tag publishes only when the push CI run for its commit passed the production worker suites on Linux (both architectures) and macOS, and all four native Windows suites (two Windows versions, each half of the workspace). A manual dispatch rehearses the release without publishing. Only a matching `v*` tag on a commit with green push CI can publish, and only after `BASAL_REQUIRES_CORE` is set to the confirmed minimum public core version.
 
 ## Staging
 
