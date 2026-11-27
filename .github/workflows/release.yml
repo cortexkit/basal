@@ -72,18 +72,18 @@ jobs:
           for run in $runs; do
             # A skipped test can leave a green workflow. Require the production
             # worker suite on both Linux architectures and on macOS, and all
-            # four native Windows suites (two Windows versions, two halves of
-            # the workspace), in this run.
+            # six native Windows jobs (three runners, two suites per runner),
+            # in this run.
             green=$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json status,conclusion,jobs \
               --jq 'select(.status == "completed" and .conclusion == "success")
                 | ([.jobs[] | .steps[]? | select(.name == "Test confined worker packages") | .conclusion] == ["success", "success", "success"])
-                  and ([.jobs[] | select(.name | startswith("windows-baseline ")) | .conclusion] | length == 4 and all(. == "success"))')
+                  and ([.jobs[] | select(.name | startswith("windows-baseline ")) | .conclusion] | length == 6 and all(. == "success"))')
             if [[ "$green" == true ]]; then
               echo "Verified push CI run $run for $REVISION"
               exit 0
             fi
           done
-          echo "::error::no successful ci.yml push run on main for $REVISION ran all three production worker suites and the four Windows suites"
+          echo "::error::no successful ci.yml push run on main for $REVISION ran all three production worker suites and all six native Windows jobs"
           exit 1
 
   build:
@@ -97,14 +97,14 @@ jobs:
         include:
           - target: darwin-arm64
             runner: macos-latest
-          - target: darwin-x64
-            runner: macos-15-intel
           - target: linux-x64
             runner: ubuntu-latest
           - target: linux-arm64
             runner: ubuntu-24.04-arm
           - target: windows-x64
             runner: windows-latest
+          - target: windows-arm64
+            runner: windows-11-arm
     env:
       RELEASE_TARGET: ${{ matrix.target }}
       RELEASE_REVISION: ${{ needs.verify.outputs.revision }}

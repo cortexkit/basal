@@ -246,7 +246,7 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-minimum-main-${{ github.run_id }}
 
   # Each Windows image leaves a different set of loader and thread-pool handles
-  # in the worker, so both must exercise the startup allowlist. Native suites
+  # in the worker, so each must exercise the startup allowlist. Native suites
   # also exercise the launcher, worker probes and filesystem/Git guards. Two
   # package groups run in parallel per image; logs survive failed gates.
   windows-baseline:
@@ -254,7 +254,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, windows-2022]
+        os: [windows-latest, windows-2022, windows-11-arm]
         suite: [launch-worker-host, module-core-testkit-rig]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
