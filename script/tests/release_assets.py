@@ -131,7 +131,8 @@ else:
             self.assemble(dry, dry_run=True)
         with patch.dict(os.environ, {"BASAL_REQUIRES_CORE": "1.2.3"}):
             self.assemble(release)
-        manifest = {"binaries": {name: {"reports": REVISION} for name in BINARIES}}
+        manifest = {"binaries": {"ck-basal": {"reports": REVISION},
+                                 "ck-basal-worker": {"reports": None}}}
         self.assertEqual(json.loads((dry / "release-manifest.json").read_text()), manifest)
         self.assertEqual(json.loads((release / "release-manifest.json").read_text()),
                          {**manifest, "requires_core": "1.2.3"})

@@ -136,7 +136,14 @@ def assemble(args):
                 shutil.copyfile(path, args.output / path.name)
                 shutil.copyfile(sidecar, args.output / sidecar.name)
 
-    manifest: dict[str, object] = {"binaries": {binary: {"reports": args.revision} for binary in BINARIES}}
+    # `ck upgrade` compares a binary's first --version token with the release
+    # version whenever `reports` is set. The worker prints its own crate
+    # version, which need not match, so it publishes `reports: null`: upgrade
+    # then checks only that it runs, and its provenance is the archive's sha256.
+    manifest: dict[str, object] = {"binaries": {
+        "ck-basal": {"reports": args.revision},
+        "ck-basal-worker": {"reports": None},
+    }}
     if floor is not None:
         manifest["requires_core"] = floor
     (args.output / "release-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
