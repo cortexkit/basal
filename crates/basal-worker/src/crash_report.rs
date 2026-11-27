@@ -142,12 +142,6 @@ unsafe extern "system" fn report(info: *const ExceptionPointers) -> i32 {
     }
     let _ = writeln!(text, "{MARKER}: {}", registers(context));
     let _ = writeln!(text, "{MARKER}: {}", stack_layout().0);
-    let _ = writeln!(text, "{MARKER}: {}", threads());
-    let _ = writeln!(
-        text,
-        "{MARKER}: {}",
-        crate::confinement::windows::diagnostic_handles()
-    );
     let mut frames = [std::ptr::null_mut::<c_void>(); 62];
     // SAFETY: the buffer holds `frames.len()` pointers and no hash is asked for.
     let captured = unsafe {
@@ -169,10 +163,9 @@ unsafe extern "system" fn report(info: *const ExceptionPointers) -> i32 {
     EXCEPTION_CONTINUE_SEARCH
 }
 
-/// The faulting thread's stack pointer, program counter and, on arm64, every
-/// general register (x18 holds the thread environment block (TEB), x29 the
-/// frame pointer and x30 the link register), read from the `CONTEXT` record
-/// at the fixed offsets winnt.h gives for each architecture.
+/// The faulting thread's stack pointer, program counter and, on arm64, frame
+/// pointer and link register, read from the `CONTEXT` record at the fixed
+/// offsets winnt.h gives for each architecture.
 fn registers(context: *const u8) -> String {
     if context.is_null() {
         return "no context".into();
@@ -181,11 +174,13 @@ fn registers(context: *const u8) -> String {
     // than every offset read here; reads are unaligned-safe.
     let at = |offset: usize| unsafe { context.add(offset).cast::<u64>().read_unaligned() };
     if cfg!(target_arch = "aarch64") {
-        // X0..X28, then Fp (X29) and Lr (X30), from offset 8.
-        let general: Vec<String> = (0..31)
-            .map(|index| format!("x{index} {:#x}", at(8 + index * 8)))
-            .collect();
-        format!("sp {:#x} pc {:#x} {}", at(256), at(264), general.join(" "))
+        format!(
+            "sp {:#x} pc {:#x} fp {:#x} lr {:#x}",
+            at(256),
+            at(264),
+            at(240),
+            at(248)
+        )
     } else if cfg!(target_arch = "x86_64") {
         format!("rsp {:#x} rip {:#x}", at(0x98), at(0xF8))
     } else {
@@ -303,91 +298,4 @@ fn region(address: usize) -> String {
         info.Protect,
         info.Type
     )
-}
-
-/// A FILETIME as 100-nanosecond units.
-fn units(time: windows_sys::Win32::Foundation::FILETIME) -> u64 {
-    u64::from(time.dwHighDateTime) << 32 | u64::from(time.dwLowDateTime)
-}
-
-/// Every thread of this process: its id, its age, and how long after the
-/// process started it was created, so a thread-pool thread created or retired
-/// just before the fault shows up.
-fn threads() -> String {
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
-    };
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, GetThreadTimes, OpenThread,
-        THREAD_QUERY_LIMITED_INFORMATION,
-    };
-
-    let zero = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    // Now, as 100-nanosecond units since 1601, the FILETIME epoch.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_nanos() as u64 / 100 + 116_444_736_000_000_000)
-        .unwrap_or(0);
-    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-    // SAFETY: the pseudo-handle names this process; the out-pointers are live.
-    unsafe {
-        GetProcessTimes(
-            GetCurrentProcess(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
-        )
-    };
-    let process_start = units(created);
-    let mut text = format!(
-        "process age {} ms; threads:",
-        now.saturating_sub(process_start) / 10_000
-    );
-    // SAFETY: plain Toolhelp calls; the entry's size is set before use and
-    // every handle opened is closed.
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if snapshot == INVALID_HANDLE_VALUE {
-            return format!(
-                "{text} snapshot failed ({})",
-                std::io::Error::last_os_error()
-            );
-        }
-        let mut entry: THREADENTRY32 = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
-        let mut more = Thread32First(snapshot, &mut entry) != 0;
-        let me = GetCurrentProcessId();
-        while more {
-            if entry.th32OwnerProcessID == me {
-                let id = entry.th32ThreadID;
-                let thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, id);
-                if thread.is_null() {
-                    let _ = write!(
-                        text,
-                        " {id} (not opened: {})",
-                        std::io::Error::last_os_error()
-                    );
-                } else {
-                    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-                    GetThreadTimes(thread, &mut created, &mut exited, &mut kernel, &mut user);
-                    CloseHandle(thread);
-                    let born = units(created);
-                    let _ = write!(
-                        text,
-                        " {id} (created at {} ms, cpu {} ms)",
-                        born.saturating_sub(process_start) / 10_000,
-                        (units(kernel) + units(user)) / 10_000
-                    );
-                }
-            }
-            more = Thread32Next(snapshot, &mut entry) != 0;
-        }
-        CloseHandle(snapshot);
-    }
-    text
 }
