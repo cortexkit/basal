@@ -16,7 +16,7 @@ concurrency:
 
 env:
   # Set to the oldest public core that accepts Basal's registration.
-  BASAL_REQUIRES_CORE: ''
+  BASAL_REQUIRES_CORE: '0.24.8'
   # The Windows archives publish because CI runs the whole suite natively on
   # Windows, and the verify job below requires those runs to have passed on
   # the tagged commit.
