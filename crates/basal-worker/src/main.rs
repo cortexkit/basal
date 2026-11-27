@@ -18,6 +18,9 @@ use std::process::ExitCode;
 use basal_worker::{confinement, probe, serve};
 
 fn main() -> ExitCode {
+    // Temporary: report an unhandled fault before the process ends.
+    #[cfg(windows)]
+    basal_worker::crash_report::install();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => {}
@@ -93,9 +96,6 @@ fn main() -> ExitCode {
         }
     };
 
-    // Temporary: report faults while serving activations.
-    #[cfg(windows)]
-    basal_worker::crash_report::install();
     let reader = io::stdin().lock();
     let writer = BufWriter::new(io::stdout().lock());
     let exit = serve::serve(reader, writer, entered.confinement);

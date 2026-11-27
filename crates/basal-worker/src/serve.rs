@@ -67,9 +67,6 @@ pub fn serve<R: Read + 'static, W: Write + 'static>(
             (WorkerState::Idle, ParentMessage::Activate(request)) => {
                 let activation_id = request.activation_id;
                 let result = run_activation_owned(*request, channel.clone());
-                // Temporary: report an exhausted main-thread stack.
-                #[cfg(windows)]
-                crate::crash_report::check_stack();
                 if channel.borrow().shutdown_requested() {
                     return ServeExit::Done;
                 }
