@@ -40,7 +40,7 @@ mod startup;
 #[cfg(windows)]
 pub use native::PackageSid;
 #[cfg(windows)]
-pub use startup::enter;
+pub use startup::{diagnostic_handles, enter};
 
 /// The reason tokens the worker exits with. Each names the check that
 /// failed; tests and the parent match on them.

@@ -160,7 +160,46 @@ fn close_startup_leftovers() -> Result<(), Refusal> {
         }
         if action == Leftover::Close {
             close(entry.handle, &format!("{type_name} {value:#x}")).map_err(refuse)?;
+            // Temporary, for the crash report: what startup closed.
+            if let Ok(mut closed) = CLOSED.lock() {
+                closed.push(format!(
+                    "{type_name} {value:#x}{}",
+                    candidate.name.map(|n| format!(" {n}")).unwrap_or_default()
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// TEMPORARY, for the crash report: the handles startup closed in
+/// `close_startup_leftovers`.
+static CLOSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// TEMPORARY, for the crash report: the handles startup closed, and the
+/// current handle table as type, access and count, so a crash report shows
+/// both what confinement removed and what the process holds at the fault.
+pub fn diagnostic_handles() -> String {
+    let closed = CLOSED
+        .try_lock()
+        .map(|closed| closed.join(", "))
+        .unwrap_or_else(|_| "unavailable".into());
+    let table = match native::handle_table() {
+        Ok(entries) => {
+            let mut counts: std::collections::BTreeMap<(String, u32), usize> =
+                std::collections::BTreeMap::new();
+            for entry in &entries {
+                *counts
+                    .entry((entry.type_name.clone(), entry.access))
+                    .or_default() += 1;
+            }
+            counts
+                .iter()
+                .map(|((type_name, access), count)| format!("{count}x {type_name} {access:#x}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        Err(error) => format!("unreadable: {error}"),
+    };
+    format!("startup closed [{closed}]; handles now [{table}]")
 }
