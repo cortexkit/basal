@@ -257,7 +257,13 @@ pub fn run_case(parent: &mut TestParent, tally: &mut Tally, label: &str, trigger
         Ending::Finished(ActivationResult::Failed(Failure::Script { .. })) => {
             tally.script_error += 1
         }
-        other => tally.unexpected.push(format!("{label}: {other:?}")),
+        other => {
+            let mut entry = format!("{label}: {other:?} after {:?}", report.wall);
+            if let Some(exit) = &report.worker_exit {
+                entry.push_str(&format!("; {exit}"));
+            }
+            tally.unexpected.push(entry);
+        }
     }
 }
 

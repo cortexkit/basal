@@ -103,6 +103,11 @@ pub struct Report {
     /// Frames the worker refused (a test parent bug if any appear unasked).
     pub refusals: Vec<Refusal>,
     pub wall: Duration,
+    /// For an activation that ended because the worker closed its output
+    /// ([`ParentError::Closed`]): the worker's exit status and the end of its
+    /// stderr, so a crash shows its cause, for example a Windows exception
+    /// code. `None` for every other ending.
+    pub worker_exit: Option<String>,
 }
 
 impl Report {
@@ -229,6 +234,7 @@ impl TestParent {
             host_calls: Vec::new(),
             refusals: Vec::new(),
             wall: Duration::ZERO,
+            worker_exit: None,
         };
         if let Err(e) = self.worker() {
             report.ending = Ending::Broken(e);
@@ -250,6 +256,12 @@ impl TestParent {
         report.ending = self.drive(run, request, &mut report.host_calls, &mut report.refusals);
         report.wall = started.elapsed();
         if !matches!(report.ending, Ending::Finished(_)) {
+            if report.ending == Ending::Broken(ParentError::Closed) {
+                report.worker_exit = self
+                    .worker
+                    .as_mut()
+                    .map(|worker| worker.exit_report(Duration::from_secs(5)));
+            }
             // A hung or broken worker is never reused.
             self.kill_worker();
         }
