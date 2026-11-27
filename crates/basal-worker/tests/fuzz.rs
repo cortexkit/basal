@@ -80,55 +80,73 @@ fn an_empty_matching_loop_regex_ends_typed_and_the_worker_survives() {
 /// TEMPORARY bisection of the Windows arm64 crash in
 /// `fuzzed_payloads_end_typed_and_the_worker_survives`. There, `regex-2`
 /// (`/(a|a?)+$/u` on forty `a`s and `!`) killed the confined worker with an
-/// access violation as its 153rd activation, while a fresh confined worker
-/// survives the same pattern. Each plan below runs a different prefix of
-/// the fuzz sequence in its own fresh worker before `regex-2`. The test
-/// fails, listing every plan's unexpected endings with the worker's exit
-/// report, if any plan's activations did not all end typed. Remove it once
-/// the crash is fixed.
+/// access violation as its 153rd activation, at 73, 93 and 249 ms in three
+/// runs, while each half of the preceding sequence followed by `regex-2`
+/// survived. Each plan below runs the fuzz test's whole sequence (150
+/// payloads, then every regex case) in its own fresh worker: five times
+/// with the fuzz test's 200 ms JS time budget, to see how often it crashes,
+/// and twice with a 5 s budget, to see whether the crash follows the
+/// budget's interrupt or the amount of regex work. Every regex case's
+/// ending and wall time is listed. The test fails, listing everything, if
+/// any activation did not end with a typed result from the worker. Remove
+/// it once the crash is fixed.
 #[test]
 fn regex_crash_bisection() {
-    enum Case {
-        Payload(u64),
-        Regex(usize),
-    }
-    let payloads = |range: std::ops::Range<u64>| range.map(Case::Payload).collect::<Vec<_>>();
-    let plans: Vec<(&str, Vec<Case>)> = vec![
-        ("payloads 0..150, then regex-2", payloads(0..150)),
-        (
-            "regex-0 and regex-1, then regex-2",
-            vec![Case::Regex(0), Case::Regex(1)],
-        ),
-        ("payloads 0..75, then regex-2", payloads(0..75)),
-        ("payloads 75..150, then regex-2", payloads(75..150)),
-    ];
+    let plans: Vec<(String, u64, u64)> = (1..=5)
+        .map(|run| {
+            (
+                format!("full sequence, 200 ms budget, run {run}"),
+                200_000,
+                15,
+            )
+        })
+        .chain((1..=2).map(|run| {
+            (
+                format!("full sequence, 5 s budget, run {run}"),
+                5_000_000,
+                60,
+            )
+        }))
+        .collect();
     let regexes = fuzz::regex_cases();
     let mut lines = Vec::new();
     let mut failed = false;
-    for (plan, mut cases) in plans {
-        cases.push(Case::Regex(2));
+    for (plan, js_time_micros, deadline) in plans {
         let mut parent = common::parent();
-        parent.budgets.js_time_micros = 200_000;
-        parent.deadline = Duration::from_secs(15);
+        parent.budgets.js_time_micros = js_time_micros;
+        parent.deadline = Duration::from_secs(deadline);
         let mut tally = fuzz::Tally::default();
-        for case in cases {
-            let (label, trigger) = match case {
-                Case::Payload(index) => (
-                    format!("payload-{index}"),
-                    json!({ "raw": fuzz::payload(0x5EED, index) }),
-                ),
-                Case::Regex(index) => {
-                    let (pattern, subject) = &regexes[index];
-                    (
-                        format!("regex-{index}"),
-                        json!({ "raw": "\"x\"", "pattern": pattern, "subject": subject }),
-                    )
-                }
-            };
-            fuzz::run_case(&mut parent, &mut tally, &label, trigger);
+        for index in 0..150 {
+            let trigger = json!({ "raw": fuzz::payload(0x5EED, index) });
+            fuzz::run_case(
+                &mut parent,
+                &mut tally,
+                &format!("payload-{index}"),
+                trigger,
+            );
+        }
+        let mut endings = Vec::new();
+        for (index, (pattern, subject)) in regexes.iter().enumerate() {
+            let trigger = json!({ "raw": "\"x\"", "pattern": pattern, "subject": subject });
+            parent.trigger = basal_proto::JsonText::new(trigger.to_string()).expect("small");
+            let report = parent.run(&format!("regex-{index}"), fuzz::SCRIPT);
+            let typed = matches!(report.ending, Ending::Finished(_));
+            failed |= !typed;
+            let mut line = format!(
+                "  regex-{index}: {:?} after {:?}",
+                report.ending, report.wall
+            );
+            if let Some(exit) = &report.worker_exit {
+                line.push_str(&format!("; {exit}"));
+            }
+            endings.push(line);
         }
         failed |= !tally.unexpected.is_empty();
-        lines.push(format!("{plan}: unexpected {:#?}", tally.unexpected));
+        lines.push(format!(
+            "{plan}: unexpected payload endings {:#?}\n{}",
+            tally.unexpected,
+            endings.join("\n")
+        ));
     }
     let report = lines.join("\n");
     println!("{report}");
