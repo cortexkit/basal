@@ -270,6 +270,13 @@ jobs:
           rustup default stable
           rustc --version
           cargo --version
+          # The arm64 image must build natively, never as emulated x64.
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          echo "rustc host: $host"
+          case "$RUNNER_ARCH:$host" in
+            ARM64:aarch64-*|X64:x86_64-*) ;;
+            *) echo "::error::rustc host $host does not match runner architecture $RUNNER_ARCH"; exit 1 ;;
+          esac
       - name: Record installed Rust version
         id: rust
         run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
