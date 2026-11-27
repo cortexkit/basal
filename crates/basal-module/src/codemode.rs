@@ -672,9 +672,16 @@ fn render_text(result: &mut Value) -> String {
             .unwrap_or(calls.len() as u64),
         result["person_wait_ms"]
     ));
-    if let Some(budget) = result.get("budgets").and_then(|b| b.get("model_cost_usd")) {
+    // Most programs call no model tool, so the budget line shows only once
+    // something was charged against it. The structured result always keeps
+    // the budget.
+    if let Some(budget) = result
+        .get("budgets")
+        .and_then(|b| b.get("model_cost_usd"))
+        .filter(|budget| budget["spent"].as_f64().is_some_and(|spent| spent != 0.0))
+    {
         text.push_str(&format!(
-            "Classifier dollars: ${} spent · ${} remaining (limit ${})\n",
+            "Model-call dollars: ${} spent · ${} remaining (limit ${})\n",
             budget["spent"], budget["remaining"], budget["limit"]
         ));
     }

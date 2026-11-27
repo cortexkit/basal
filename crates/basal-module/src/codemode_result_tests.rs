@@ -13,7 +13,20 @@ fn text(result: &Value) -> &str {
 }
 
 #[test]
-fn classifier_dollar_spend_and_negative_remainder_render_in_both_formats() {
+fn an_unspent_model_budget_is_left_out_of_the_text() {
+    let budget = json!({"limit":0.50,"spent":0.0,"remaining":0.50});
+    let mut run = successful_run();
+    run["budgets"] = json!({"model_cost_usd":budget});
+    let reply = render("codemode:example", run);
+    assert!(!text(&reply).contains("dollars"), "{}", text(&reply));
+    assert_eq!(
+        reply["structuredContent"]["budgets"]["model_cost_usd"],
+        budget
+    );
+}
+
+#[test]
+fn model_dollar_spend_and_negative_remainder_render_in_both_formats() {
     let budget = json!({"limit":0.50,"spent":0.60,"remaining":-0.10});
     for output_size in [0, 4 * MAX_RESULT_BYTES] {
         let mut run = successful_run();
@@ -21,7 +34,7 @@ fn classifier_dollar_spend_and_negative_remainder_render_in_both_formats() {
         run["budgets"] = json!({"model_cost_usd":budget});
         let reply = render("codemode:example", run);
         assert!(
-            text(&reply).contains("Classifier dollars: $0.6 spent · $-0.1 remaining (limit $0.5)")
+            text(&reply).contains("Model-call dollars: $0.6 spent · $-0.1 remaining (limit $0.5)")
         );
         assert_eq!(
             reply["structuredContent"]["budgets"]["model_cost_usd"],
