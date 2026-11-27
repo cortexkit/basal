@@ -57,6 +57,26 @@ fn fuzzed_payloads_end_typed_and_the_worker_survives() {
     assert_eq!(parent.worker().expect("worker").pid(), pid);
 }
 
+/// `/(a|a?)+$/u` backtracks through loop iterations whose body matched
+/// nothing. On Windows arm64 it once killed the confined worker with an
+/// access violation before its time budget ran out. It must end typed, and
+/// the worker must survive it.
+#[test]
+fn an_empty_matching_loop_regex_ends_typed_and_the_worker_survives() {
+    let mut parent = common::parent();
+    parent.budgets.js_time_micros = 200_000;
+    parent.deadline = Duration::from_secs(15);
+    let pid = parent.worker().expect("worker").pid();
+    let report = parent.run("t", "return /(a|a?)+$/u.test('a'.repeat(40) + '!');");
+    assert_eq!(
+        report.result(),
+        Some(&ActivationResult::BudgetExhausted(BudgetKind::JsTime)),
+        "{report:?}"
+    );
+    parent.run("after", "return 1").value();
+    assert_eq!(parent.worker().expect("worker").pid(), pid);
+}
+
 /// A worker that dies during an activation is reported with its exit status,
 /// so a fuzz case that kills the worker names how it died (on Windows, an
 /// exception code) instead of only the closed channel.
