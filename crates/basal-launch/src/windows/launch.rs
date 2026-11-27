@@ -454,15 +454,21 @@ fn capability_sids(deviation: Deviation) -> Result<Vec<SidBuf>> {
     Ok(Vec::new())
 }
 
-/// The AppContainer creation attribute. The capability list pointer is
-/// never NULL, even when the list is empty.
+/// The AppContainer creation attribute. An empty capability list is passed
+/// as a NULL pointer with a zero count. Windows on Arm refuses the dangling
+/// non-NULL pointer of an empty slice with ERROR_INVALID_PARAMETER, while
+/// x64 accepts both. Either way the child gets no capabilities.
 fn security_capabilities(
     package: &PackageSid,
     capabilities: &[SID_AND_ATTRIBUTES],
 ) -> SECURITY_CAPABILITIES {
     SECURITY_CAPABILITIES {
         AppContainerSid: package.as_psid(),
-        Capabilities: capabilities.as_ptr().cast_mut(),
+        Capabilities: if capabilities.is_empty() {
+            null_mut()
+        } else {
+            capabilities.as_ptr().cast_mut()
+        },
         CapabilityCount: capabilities.len() as u32,
         Reserved: 0,
     }
@@ -757,6 +763,23 @@ mod tests {
         let mut command = Vec::new();
         push_argument(&mut command, OsStr::new(arg));
         String::from_utf16(&command).unwrap()
+    }
+
+    #[test]
+    fn an_empty_capability_list_is_passed_as_a_null_pointer() {
+        let package = create_or_open_profile().expect("worker profile");
+        let none = security_capabilities(&package, &[]);
+        assert!(none.Capabilities.is_null());
+        assert_eq!(none.CapabilityCount, 0);
+
+        let capability = SidBuf::parse("S-1-15-3-1").expect("capability SID");
+        let list = [SID_AND_ATTRIBUTES {
+            Sid: capability.as_psid(),
+            Attributes: SE_GROUP_ENABLED as u32,
+        }];
+        let one = security_capabilities(&package, &list);
+        assert_eq!(one.Capabilities.cast_const(), list.as_ptr());
+        assert_eq!(one.CapabilityCount, 1);
     }
 
     #[test]
