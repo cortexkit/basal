@@ -7,7 +7,7 @@ mod common;
 use std::time::Duration;
 
 use basal_proto::{ActivationResult, BudgetKind};
-use basal_testkit::fuzz;
+use basal_testkit::{Ending, ParentError, fuzz};
 use serde_json::json;
 
 #[test]
@@ -55,4 +55,46 @@ fn fuzzed_payloads_end_typed_and_the_worker_survives() {
     let pid = parent.worker().expect("worker").pid();
     parent.run("after", "return 1").value();
     assert_eq!(parent.worker().expect("worker").pid(), pid);
+}
+
+/// A worker that dies during an activation is reported with its exit status,
+/// so a fuzz case that kills the worker names how it died (on Windows, an
+/// exception code) instead of only the closed channel.
+#[test]
+fn a_worker_that_dies_mid_activation_is_reported_with_its_exit_status() {
+    let mut parent = common::parent();
+    parent.budgets.js_time_micros = 30_000_000;
+    parent.deadline = Duration::from_secs(60);
+    let pid = parent.worker().expect("worker").pid();
+    let killer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        kill(pid);
+    });
+    let report = parent.run("t", "while (true) {}");
+    killer.join().expect("killer thread");
+    assert_eq!(
+        report.ending,
+        Ending::Broken(ParentError::Closed),
+        "{report:?}"
+    );
+    let exit = report.worker_exit.as_deref().expect("an exit report");
+    #[cfg(unix)]
+    assert!(exit.starts_with("worker signal: 9"), "{exit}");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        let status = std::process::ExitStatus::from_raw(basal_launch::KILL_EXIT_CODE);
+        assert!(exit.starts_with(&format!("worker {status};")), "{exit}");
+    }
+}
+
+fn kill(pid: u32) {
+    #[cfg(unix)]
+    {
+        // SAFETY: kill only sends a signal to the worker this test spawned.
+        let killed = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        assert_eq!(killed, 0, "{}", std::io::Error::last_os_error());
+    }
+    #[cfg(windows)]
+    basal_testkit::process::terminate_process(pid).expect("terminate the worker");
 }

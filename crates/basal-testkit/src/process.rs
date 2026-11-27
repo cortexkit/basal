@@ -64,6 +64,9 @@ pub struct WorkerProcess {
     /// frames (see [`WorkerProcess::receiver`]).
     incoming: Arc<Mutex<Receiver<Incoming>>>,
     stderr: Arc<Mutex<Vec<u8>>>,
+    /// The thread copying the worker's stderr into `stderr`; it finishes
+    /// once the pipe reaches end of file.
+    stderr_reader: thread::JoinHandle<()>,
 }
 
 pub(crate) struct ProcessWriter(ChildStdin);
@@ -141,7 +144,7 @@ impl WorkerProcess {
 
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let sink = stderr.clone();
-        thread::spawn(move || {
+        let stderr_reader = thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match stderr_pipe.read(&mut buf) {
@@ -160,6 +163,7 @@ impl WorkerProcess {
             stdin,
             incoming: Arc::new(Mutex::new(incoming)),
             stderr,
+            stderr_reader,
         })
     }
 
@@ -255,6 +259,31 @@ impl WorkerProcess {
                 _ => return None,
             }
         }
+    }
+
+    /// Describes how a worker that closed its output ended: its exit status
+    /// (on Windows an exception code such as `0xc00000fd` for a stack
+    /// overflow or `0xc0000409` for a fail-fast) and the end of its stderr.
+    /// Waits up to `timeout` for the process to exit and for its stderr to
+    /// be read to the end, so a crash message written just before exit is
+    /// not missed.
+    pub fn exit_report(&mut self, timeout: Duration) -> String {
+        const STDERR_TAIL_BYTES: usize = 4096;
+        let deadline = Instant::now() + timeout;
+        let status = match self.wait_exit(timeout) {
+            Some(status) => status.to_string(),
+            None => format!("still running {timeout:?} after closing its output"),
+        };
+        let mut backoff = crate::backoff::Backoff::new();
+        while !self.stderr_reader.is_finished() && Instant::now() < deadline {
+            backoff.sleep(deadline);
+        }
+        let stderr = self.stderr_text();
+        let mut start = stderr.len().saturating_sub(STDERR_TAIL_BYTES);
+        while !stderr.is_char_boundary(start) {
+            start += 1;
+        }
+        format!("worker {status}; stderr: {:?}", &stderr[start..])
     }
 
     pub fn stderr_text(&self) -> String {
