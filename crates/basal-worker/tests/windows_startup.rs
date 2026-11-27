@@ -464,15 +464,6 @@ fn startup_keeps_the_cng_device_and_closes_only_identified_leftovers() {
     drop(stdin);
     drop(stdout);
     let ended = end(child);
-    // Temporary: show what startup closed on this image in CI logs.
-    for line in ended
-        .stderr
-        .lines()
-        .filter(|l| l.contains("startup closed"))
-    {
-        println!("full: {line}");
-        eprintln!("full: {line}");
-    }
     assert_eq!(ended.code, 0, "{}", ended.stderr);
 }
 

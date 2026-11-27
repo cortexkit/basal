@@ -315,51 +315,49 @@ pub(super) fn symbolize_crash_report(binary: &Path, stderr: &str) -> String {
     let _guard = DBGHELP.lock().unwrap_or_else(|poison| poison.into_inner());
     let wide = |text: &std::ffi::OsStr| text.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     let mut out = String::new();
-    // Each module's key, image path, PDB directory and image size (0: read
-    // it from the image).
-    let mut modules: Vec<(String, std::path::PathBuf, std::path::PathBuf, u32)> = Vec::new();
+    // Each module's image path and the directory its PDB is in.
+    let mut modules: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
     modules.push((
         "exe".into(),
         binary.to_path_buf(),
         binary.parent().unwrap_or(Path::new(".")).to_path_buf(),
-        0,
     ));
     for key in SYSTEM {
         if frames.iter().any(|(_, module, _)| module == key) {
             match system_pdb(key) {
-                Ok(module) => {
-                    out.push_str(&format!("\n  {key}: PDB {}", module.pdb));
-                    modules.push((key.into(), module.image, module.directory, module.size));
-                }
+                Ok((image, directory)) => modules.push((key.into(), image, directory)),
                 Err(error) => out.push_str(&format!("\n  symbolization of {key}: {error}")),
             }
         }
     }
-    const NAME_UNITS: usize = 512;
-    // One private symbol session per module, so modules cannot collide.
-    for (index, (key, image, directory, size)) in modules.iter().enumerate() {
-        // Any unique value names a symbol session that does not inspect a
-        // live process.
-        let session = (0x5EED_0000_usize + index) as HANDLE;
-        // SAFETY: plain dbghelp calls on a private session; every buffer
-        // passed is live and sized as declared, and the session is cleaned
-        // up below.
-        unsafe {
-            SymSetOptions(SYMOPT_UNDNAME | SYMOPT_LOAD_LINES | SYMOPT_FAIL_CRITICAL_ERRORS);
-            if SymInitializeW(session, wide(directory.as_os_str()).as_ptr(), 0) == 0 {
-                out.push_str(&format!(
-                    "\n  symbolization of {key}: SymInitializeW failed: {}",
-                    io::Error::last_os_error()
-                ));
-                continue;
-            }
+    let search = modules
+        .iter()
+        .map(|(_, _, directory)| directory.display().to_string())
+        .collect::<Vec<_>>()
+        .join(";");
+    // Any unique value names a symbol session that does not inspect a live
+    // process.
+    let session = 0x5EED_usize as HANDLE;
+    // SAFETY: plain dbghelp calls on a private session; every buffer passed
+    // is live and sized as declared, and the session is cleaned up below.
+    unsafe {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_LOAD_LINES | SYMOPT_FAIL_CRITICAL_ERRORS);
+        if SymInitializeW(session, wide(search.as_ref()).as_ptr(), 0) == 0 {
+            return format!(
+                "{out}\n  symbolization: SymInitializeW failed: {}",
+                io::Error::last_os_error()
+            );
+        }
+        let mut bases: HashMap<String, u64> = HashMap::new();
+        for (index, (key, image, _)) in modules.iter().enumerate() {
+            let hint = 0x1_0000_0000_u64 * (index as u64 + 1);
             let base = SymLoadModuleExW(
                 session,
                 std::ptr::null_mut(),
                 wide(image.as_os_str()).as_ptr(),
                 std::ptr::null(),
-                0x1_0000_0000,
-                *size,
+                hint,
+                0,
                 std::ptr::null(),
                 0,
             );
@@ -369,68 +367,60 @@ pub(super) fn symbolize_crash_report(binary: &Path, stderr: &str) -> String {
                     image.display(),
                     io::Error::last_os_error()
                 ));
-                SymCleanup(session);
-                continue;
+            } else {
+                bases.insert(key.clone(), base);
             }
-            for (label, _, offset) in frames.iter().filter(|(_, module, _)| module == key) {
-                let address = base + offset;
-                // SYMBOL_INFOW ends in a variable-length name.
-                let mut buffer =
-                    vec![0u64; (std::mem::size_of::<SYMBOL_INFOW>() + NAME_UNITS * 2) / 8 + 1];
-                let symbol = buffer.as_mut_ptr().cast::<SYMBOL_INFOW>();
-                (*symbol).SizeOfStruct = std::mem::size_of::<SYMBOL_INFOW>() as u32;
-                (*symbol).MaxNameLen = NAME_UNITS as u32;
-                let mut displacement = 0u64;
-                let name = if SymFromAddrW(session, address, &mut displacement, symbol) != 0 {
-                    let units = std::slice::from_raw_parts(
-                        std::ptr::addr_of!((*symbol).Name).cast::<u16>(),
-                        ((*symbol).NameLen as usize).min(NAME_UNITS),
-                    );
-                    format!("{}+{displacement:#x}", String::from_utf16_lossy(units))
-                } else {
-                    format!("<no symbol: {}>", io::Error::last_os_error())
-                };
-                let mut line: IMAGEHLP_LINEW64 = std::mem::zeroed();
-                line.SizeOfStruct = std::mem::size_of::<IMAGEHLP_LINEW64>() as u32;
-                let mut column = 0u32;
-                let place = if SymGetLineFromAddrW64(session, address, &mut column, &mut line) != 0
-                {
-                    let mut length = 0;
-                    while *line.FileName.add(length) != 0 {
-                        length += 1;
-                    }
-                    let file =
-                        String::from_utf16_lossy(std::slice::from_raw_parts(line.FileName, length));
-                    format!(" at {file}:{}", line.LineNumber)
-                } else {
-                    String::new()
-                };
-                out.push_str(&format!("\n  {label} => {key}!{name}{place}"));
-            }
-            SymCleanup(session);
         }
+        const NAME_UNITS: usize = 512;
+        for (label, key, offset) in frames {
+            let Some(base) = bases.get(&key) else {
+                continue;
+            };
+            let address = base + offset;
+            // SYMBOL_INFOW ends in a variable-length name.
+            let mut buffer =
+                vec![0u64; (std::mem::size_of::<SYMBOL_INFOW>() + NAME_UNITS * 2) / 8 + 1];
+            let symbol = buffer.as_mut_ptr().cast::<SYMBOL_INFOW>();
+            (*symbol).SizeOfStruct = std::mem::size_of::<SYMBOL_INFOW>() as u32;
+            (*symbol).MaxNameLen = NAME_UNITS as u32;
+            let mut displacement = 0u64;
+            let name = if SymFromAddrW(session, address, &mut displacement, symbol) != 0 {
+                let units = std::slice::from_raw_parts(
+                    std::ptr::addr_of!((*symbol).Name).cast::<u16>(),
+                    ((*symbol).NameLen as usize).min(NAME_UNITS),
+                );
+                format!("{}+{displacement:#x}", String::from_utf16_lossy(units))
+            } else {
+                format!("<no symbol: {}>", io::Error::last_os_error())
+            };
+            let mut line: IMAGEHLP_LINEW64 = std::mem::zeroed();
+            line.SizeOfStruct = std::mem::size_of::<IMAGEHLP_LINEW64>() as u32;
+            let mut column = 0u32;
+            let place = if SymGetLineFromAddrW64(session, address, &mut column, &mut line) != 0 {
+                let mut length = 0;
+                while *line.FileName.add(length) != 0 {
+                    length += 1;
+                }
+                let file =
+                    String::from_utf16_lossy(std::slice::from_raw_parts(line.FileName, length));
+                format!(" at {file}:{}", line.LineNumber)
+            } else {
+                String::new()
+            };
+            out.push_str(&format!("\n  {label} => {key}!{name}{place}"));
+        }
+        SymCleanup(session);
     }
     out
 }
 
-/// A System32 DLL, its image size, and the directory holding its PDB.
-struct SystemModule {
-    image: std::path::PathBuf,
-    directory: std::path::PathBuf,
-    size: u32,
-    /// `<pdb name>/<key>`, the PDB's path on the symbol server, so the
-    /// frames can also be symbolized elsewhere when loading fails here.
-    pdb: String,
-}
-
-/// This machine's copy of a System32 DLL and its PDB, downloaded once per
-/// process from Microsoft's public symbol server.
-fn system_pdb(module: &str) -> Result<SystemModule, String> {
+/// This machine's copy of a System32 DLL and a directory holding its PDB,
+/// downloaded once per process from Microsoft's public symbol server.
+fn system_pdb(module: &str) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     let image = Path::new(&root).join("System32").join(module);
     let bytes = std::fs::read(&image).map_err(|e| format!("reading {}: {e}", image.display()))?;
     let (key, pdb) = codeview(&bytes).ok_or("no CodeView record in its debug directory")?;
-    let size = image_size(&bytes).unwrap_or(0);
     let directory = std::env::temp_dir()
         .join("basal-crash-symbols")
         .join(format!("{module}-{key}"));
@@ -446,22 +436,10 @@ fn system_pdb(module: &str) -> Result<SystemModule, String> {
             .map_err(|e| format!("running curl.exe: {e}"))?;
         if !status.success() {
             let _ = std::fs::remove_file(&target);
-            return Err(format!("PDB {pdb}/{key}: curl.exe {url}: {status}"));
+            return Err(format!("curl.exe {url}: {status}"));
         }
     }
-    Ok(SystemModule {
-        image,
-        directory,
-        size,
-        pdb: format!("{pdb}/{key}"),
-    })
-}
-
-/// `SizeOfImage` from a PE32+ optional header.
-fn image_size(bytes: &[u8]) -> Option<u32> {
-    let pe = u32::from_le_bytes(bytes.get(0x3c..0x40)?.try_into().ok()?) as usize;
-    let at = pe + 24 + 56;
-    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+    Ok((image, directory))
 }
 
 /// The symbol server key (GUID and age) and PDB file name from a PE image's

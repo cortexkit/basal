@@ -159,124 +159,17 @@ fn close_startup_leftovers() -> Result<(), Refusal> {
             action = leftover(&candidate);
         }
         if action == Leftover::Close {
-            // Temporary, for the crash report: who the port talks to, and
-            // which mapped views closing it releases.
-            let port = (*type_name == "ALPC Port").then(|| port_facts(entry.handle));
-            let views = mapped_views();
             close(entry.handle, &format!("{type_name} {value:#x}")).map_err(refuse)?;
-            let released: Vec<String> = views
-                .iter()
-                .filter(|(base, _)| region_is_free(*base))
-                .map(|(base, size)| format!("{base:#x}+{size:#x}"))
-                .collect();
+            // Temporary, for the crash report: what startup closed.
             if let Ok(mut closed) = CLOSED.lock() {
                 closed.push(format!(
-                    "{type_name} {value:#x}{}{} released views [{}]",
-                    candidate.name.map(|n| format!(" {n}")).unwrap_or_default(),
-                    port.map(|facts| format!(" ({facts})")).unwrap_or_default(),
-                    released.join(", ")
+                    "{type_name} {value:#x}{}",
+                    candidate.name.map(|n| format!(" {n}")).unwrap_or_default()
                 ));
             }
         }
     }
-    // Temporary: name what startup closed, for CI logs on every image.
-    if let Ok(closed) = CLOSED.lock() {
-        eprintln!("ck-basal-worker: startup closed [{}]", closed.join("; "));
-    }
     Ok(())
-}
-
-#[link(name = "ntdll", kind = "raw-dylib")]
-unsafe extern "system" {
-    fn NtAlpcQueryInformation(
-        port: HANDLE,
-        class: u32,
-        buffer: *mut std::ffi::c_void,
-        length: u32,
-        returned: *mut u32,
-    ) -> i32;
-    fn CsrGetProcessId() -> HANDLE;
-}
-
-/// TEMPORARY: the server process an ALPC port is connected to
-/// (`AlpcServerSessionInformation`), its basic flags
-/// (`AlpcBasicInformation`), and the client/server runtime's process id, so
-/// the report says whether the port is the CSR connection.
-fn port_facts(port: HANDLE) -> String {
-    const ALPC_BASIC_INFORMATION: u32 = 0;
-    const ALPC_SERVER_SESSION_INFORMATION: u32 = 12;
-    let mut session = [0u32; 2];
-    let mut basic = [0u64; 2];
-    // SAFETY: each buffer is live and as large as the length passed.
-    let (session_status, basic_status, csr) = unsafe {
-        (
-            NtAlpcQueryInformation(
-                port,
-                ALPC_SERVER_SESSION_INFORMATION,
-                session.as_mut_ptr().cast(),
-                std::mem::size_of_val(&session) as u32,
-                null_mut(),
-            ),
-            NtAlpcQueryInformation(
-                port,
-                ALPC_BASIC_INFORMATION,
-                basic.as_mut_ptr().cast(),
-                std::mem::size_of_val(&basic) as u32,
-                null_mut(),
-            ),
-            CsrGetProcessId() as usize,
-        )
-    };
-    format!(
-        "server session {} pid {} (status {session_status:#x}); basic flags {:#x} (status \
-         {basic_status:#x}); client/server runtime pid {csr}",
-        session[0], session[1], basic[0] as u32
-    )
-}
-
-/// TEMPORARY: every mapped view in the process, as (base, size).
-fn mapped_views() -> Vec<(usize, usize)> {
-    use windows_sys::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, VirtualQuery};
-    const MEM_MAPPED: u32 = 0x40000;
-    let mut views = Vec::new();
-    let mut address = 0x10000usize;
-    while address < 0x7FFF_FFFF_0000 {
-        // SAFETY: MEMORY_BASIC_INFORMATION is plain data; zero is valid.
-        let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: VirtualQuery only describes the address and writes `info`.
-        let written = unsafe {
-            VirtualQuery(
-                address as *const std::ffi::c_void,
-                &mut info,
-                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
-            )
-        };
-        if written == 0 || info.RegionSize == 0 {
-            break;
-        }
-        if info.Type == MEM_MAPPED && info.BaseAddress == info.AllocationBase {
-            views.push((info.BaseAddress as usize, info.RegionSize));
-        }
-        address = info.BaseAddress as usize + info.RegionSize;
-    }
-    views
-}
-
-/// TEMPORARY: whether nothing is reserved at `base` any more.
-fn region_is_free(base: usize) -> bool {
-    use windows_sys::Win32::System::Memory::{MEMORY_BASIC_INFORMATION, VirtualQuery};
-    const MEM_FREE: u32 = 0x10000;
-    // SAFETY: MEMORY_BASIC_INFORMATION is plain data; zero is valid.
-    let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: VirtualQuery only describes the address and writes `info`.
-    let written = unsafe {
-        VirtualQuery(
-            base as *const std::ffi::c_void,
-            &mut info,
-            std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
-        )
-    };
-    written != 0 && info.State == MEM_FREE
 }
 
 /// TEMPORARY, for the crash report: the handles startup closed in
