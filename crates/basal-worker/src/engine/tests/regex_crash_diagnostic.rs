@@ -10,11 +10,7 @@
 //! Comparing them separates the candidate causes: QuickJS alone, outside
 //! basal and outside the sandbox (`bare-*`), against basal's engine with its
 //! budget allocator but still unconfined (`engine-*`), and the failing
-//! pattern against near relatives. `poisoned-*` repeats the bare variants
-//! with an allocator that poisons new and freed blocks and moves every
-//! reallocation, so a read of uninitialized or released heap memory faults;
-//! `engine-regex-sequence` and `engine-after-heap-churn` give the engine the
-//! history a long-lived worker has. On Windows a vectored exception handler
+//! pattern against near relatives. On Windows a vectored exception handler
 //! prints the fault's code, address, access parameters and a symbolized
 //! backtrace before the child dies. `regex_crash_variants_exit_cleanly` fails
 //! with every variant's outcome when any child does not exit cleanly.
@@ -28,7 +24,6 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use basal_proto::Profile;
-use rquickjs::allocator::{Allocator, RustAllocator};
 
 use super::{EchoLink, request};
 use crate::engine::run_activation;
@@ -84,11 +79,6 @@ const ENGINE: &[(&str, &str)] = &[
 /// `(a|a?)+$`, subject forty `a`s and `!`), run through the regex step of the
 /// fuzz script.
 const FUZZ_CASE: &str = "engine-fuzz-case";
-/// The fuzz test's three regex cases before and including the failing one,
-/// in one process.
-const SEQUENCE: &str = "engine-regex-sequence";
-/// The failing fuzz case after the process heap has been fragmented.
-const CHURN: &str = "engine-after-heap-churn";
 const FUZZ_SCRIPT: &str = r#"
     const v = await ops.call('mock', 'echo', trigger.raw);
     const str = typeof v === 'string' ? v : JSON.stringify(v);
@@ -101,16 +91,11 @@ const FUZZ_SCRIPT: &str = r#"
 #[test]
 fn regex_crash_variants_exit_cleanly() {
     let exe = std::env::current_exe().expect("test binary path");
-    let poisoned: Vec<String> = BARE
-        .iter()
-        .map(|(name, ..)| name.replacen("bare-", "poisoned-", 1))
-        .collect();
     let names = BARE
         .iter()
         .map(|(name, ..)| *name)
-        .chain(poisoned.iter().map(String::as_str))
         .chain(ENGINE.iter().map(|(name, _)| *name))
-        .chain([FUZZ_CASE, SEQUENCE, CHURN]);
+        .chain([FUZZ_CASE]);
     let mut outcomes = Vec::new();
     let mut failed = false;
     for name in names {
@@ -190,78 +175,32 @@ fn child() {
     crash_report::install();
     if let Some((_, source, polls)) = BARE.iter().find(|(n, ..)| *n == name) {
         println!("\nvariant {name}: {}", bare(source, *polls));
-    } else if let Some((_, source, polls)) = BARE
-        .iter()
-        .find(|(n, ..)| name.strip_prefix("poisoned-") == n.strip_prefix("bare-"))
-    {
-        println!("\nvariant {name}: {}", poisoned(source, *polls));
-    } else if name == SEQUENCE {
-        // The order of the fuzz test's regex cases, in one process.
-        for (pattern, subject) in [
-            ("(a+)+$", "a".repeat(40) + "!"),
-            ("(a|aa)+$", "a".repeat(40) + "!"),
-            ("(a|a?)+$", "a".repeat(40) + "!"),
-        ] {
-            println!(
-                "\nvariant {name} {pattern}: {:?}",
-                fuzz_case(pattern, &subject)
-            );
-        }
-    } else if name == CHURN {
-        // Fragment the process heap first, as many earlier activations in a
-        // long-lived worker would, so the engine's blocks land elsewhere and
-        // its reallocations move.
-        let mut kept = Vec::new();
-        for i in 0..20_000usize {
-            let block = vec![0x5Au8; 16 + (i * 7919) % 65_536];
-            if i % 2 == 0 {
-                kept.push(block);
-            }
-        }
-        let subject = "a".repeat(40) + "!";
-        println!("\nvariant {name}: {:?}", fuzz_case("(a|a?)+$", &subject));
-        drop(kept);
     } else if let Some((_, script)) = ENGINE.iter().find(|(n, _)| *n == name) {
         let mut request = request(Profile::Flow, script);
         request.budgets.js_time_micros = 200_000;
         let link = Rc::new(RefCell::new(EchoLink::default()));
         println!("\nvariant {name}: {:?}", run_activation(&request, link));
     } else if name == FUZZ_CASE {
-        let subject = "a".repeat(40) + "!";
-        println!("\nvariant {name}: {:?}", fuzz_case("(a|a?)+$", &subject));
+        // The fuzz case's regex step, after a host call as in the fuzz
+        // script, so it runs in a resumed job rather than the first entry.
+        let mut request = request(Profile::Flow, FUZZ_SCRIPT);
+        request.budgets.js_time_micros = 200_000;
+        let trigger = format!(
+            r#"{{"raw":"\"x\"","pattern":"(a|a?)+$","subject":"{}!"}}"#,
+            "a".repeat(40)
+        );
+        request.trigger = basal_proto::JsonText::new(trigger).expect("small");
+        let link = Rc::new(RefCell::new(EchoLink::default()));
+        println!("\nvariant {name}: {:?}", run_activation(&request, link));
     } else {
         panic!("unknown variant {name}");
     }
-}
-
-/// Runs the fuzz script's regex step on `pattern` and `subject` through the
-/// engine, after a host call as in the fuzz script, so the regex runs in a
-/// resumed job rather than the first entry.
-fn fuzz_case(pattern: &str, subject: &str) -> basal_proto::ActivationResult {
-    let mut request = request(Profile::Flow, FUZZ_SCRIPT);
-    request.budgets.js_time_micros = 200_000;
-    let trigger = format!(r#"{{"raw":"\"x\"","pattern":"{pattern}","subject":"{subject}"}}"#);
-    request.trigger = basal_proto::JsonText::new(trigger).expect("small");
-    let link = Rc::new(RefCell::new(EchoLink::default()));
-    run_activation(&request, link)
 }
 
 /// Evaluates `source` in a plain QuickJS runtime with rquickjs's default
 /// allocator and no basal setup, interrupting after `polls` polls.
 fn bare(source: &str, polls: u64) -> String {
     let rt = rquickjs::Runtime::new().expect("runtime");
-    evaluate(rt, source, polls)
-}
-
-/// Like [`bare`], with an allocator that fills new blocks with 0xA5, moves
-/// every reallocated block and fills freed blocks with 0xDD, so a read of
-/// uninitialized or released heap memory yields a pointer that faults.
-fn poisoned(source: &str, polls: u64) -> String {
-    let rt = rquickjs::Runtime::new_with_alloc(PoisonAllocator).expect("runtime");
-    evaluate(rt, source, polls)
-}
-
-fn evaluate(rt: rquickjs::Runtime, source: &str, polls: u64) -> String {
     let count = Rc::new(Cell::new(0u64));
     let seen = count.clone();
     rt.set_interrupt_handler(Some(Box::new(move || {
@@ -274,64 +213,6 @@ fn evaluate(rt: rquickjs::Runtime, source: &str, polls: u64) -> String {
         Err(error) => format!("error {error}: {:?}", ctx.catch()),
     });
     format!("{outcome} after {} polls", count.get())
-}
-
-/// Hands out blocks from rquickjs's Rust allocator, but fills every new
-/// block with 0xA5, moves every reallocation, and fills every freed block
-/// with 0xDD first.
-struct PoisonAllocator;
-
-// SAFETY: every block comes from RustAllocator and is returned to it; the
-// fills stay within each block's usable size.
-unsafe impl Allocator for PoisonAllocator {
-    fn alloc(&mut self, size: usize) -> *mut u8 {
-        let block = RustAllocator.alloc(size);
-        if !block.is_null() {
-            // SAFETY: the block holds at least `size` bytes.
-            unsafe { std::ptr::write_bytes(block, 0xA5, size) };
-        }
-        block
-    }
-
-    fn calloc(&mut self, count: usize, size: usize) -> *mut u8 {
-        RustAllocator.calloc(count, size)
-    }
-
-    unsafe fn dealloc(&mut self, ptr: *mut u8) {
-        // SAFETY: `ptr` is a live block from RustAllocator.
-        unsafe {
-            let size = RustAllocator::usable_size(ptr);
-            std::ptr::write_bytes(ptr, 0xDD, size);
-            RustAllocator.dealloc(ptr);
-        }
-    }
-
-    unsafe fn realloc(&mut self, ptr: *mut u8, size: usize) -> *mut u8 {
-        if ptr.is_null() {
-            return self.alloc(size);
-        }
-        if size == 0 {
-            // SAFETY: `ptr` is a live block from this allocator.
-            unsafe { self.dealloc(ptr) };
-            return std::ptr::null_mut();
-        }
-        let moved = self.alloc(size);
-        if !moved.is_null() {
-            // SAFETY: both blocks are live and distinct; the copy stays
-            // within the smaller of them, and the old one is freed once.
-            unsafe {
-                let old = RustAllocator::usable_size(ptr);
-                std::ptr::copy_nonoverlapping(ptr, moved, old.min(size));
-                self.dealloc(ptr);
-            }
-        }
-        moved
-    }
-
-    unsafe fn usable_size(ptr: *mut u8) -> usize {
-        // SAFETY: `ptr` is a live block from RustAllocator.
-        unsafe { RustAllocator::usable_size(ptr) }
-    }
 }
 
 /// Prints how a fatal fault happened before Windows ends the process.

@@ -77,64 +77,6 @@ fn an_empty_matching_loop_regex_ends_typed_and_the_worker_survives() {
     assert_eq!(parent.worker().expect("worker").pid(), pid);
 }
 
-/// TEMPORARY bisection of the Windows arm64 crash in
-/// `fuzzed_payloads_end_typed_and_the_worker_survives`. There, `regex-2`
-/// (`/(a|a?)+$/u` on forty `a`s and `!`) killed the confined worker with an
-/// access violation as its 153rd activation, while a fresh confined worker
-/// survives the same pattern. Each plan below runs a different prefix of
-/// the fuzz sequence in its own fresh worker before `regex-2`. The test
-/// fails, listing every plan's unexpected endings with the worker's exit
-/// report, if any plan's activations did not all end typed. Remove it once
-/// the crash is fixed.
-#[test]
-fn regex_crash_bisection() {
-    enum Case {
-        Payload(u64),
-        Regex(usize),
-    }
-    let payloads = |range: std::ops::Range<u64>| range.map(Case::Payload).collect::<Vec<_>>();
-    let plans: Vec<(&str, Vec<Case>)> = vec![
-        ("payloads 0..150, then regex-2", payloads(0..150)),
-        (
-            "regex-0 and regex-1, then regex-2",
-            vec![Case::Regex(0), Case::Regex(1)],
-        ),
-        ("payloads 0..75, then regex-2", payloads(0..75)),
-        ("payloads 75..150, then regex-2", payloads(75..150)),
-    ];
-    let regexes = fuzz::regex_cases();
-    let mut lines = Vec::new();
-    let mut failed = false;
-    for (plan, mut cases) in plans {
-        cases.push(Case::Regex(2));
-        let mut parent = common::parent();
-        parent.budgets.js_time_micros = 200_000;
-        parent.deadline = Duration::from_secs(15);
-        let mut tally = fuzz::Tally::default();
-        for case in cases {
-            let (label, trigger) = match case {
-                Case::Payload(index) => (
-                    format!("payload-{index}"),
-                    json!({ "raw": fuzz::payload(0x5EED, index) }),
-                ),
-                Case::Regex(index) => {
-                    let (pattern, subject) = &regexes[index];
-                    (
-                        format!("regex-{index}"),
-                        json!({ "raw": "\"x\"", "pattern": pattern, "subject": subject }),
-                    )
-                }
-            };
-            fuzz::run_case(&mut parent, &mut tally, &label, trigger);
-        }
-        failed |= !tally.unexpected.is_empty();
-        lines.push(format!("{plan}: unexpected {:#?}", tally.unexpected));
-    }
-    let report = lines.join("\n");
-    println!("{report}");
-    assert!(!failed, "{report}");
-}
-
 /// A worker that dies during an activation is reported with its exit status,
 /// so a fuzz case that kills the worker names how it died (on Windows, an
 /// exception code) instead of only the closed channel.
