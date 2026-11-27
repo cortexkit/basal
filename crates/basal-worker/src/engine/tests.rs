@@ -13,6 +13,8 @@ use basal_proto::{
 use super::{run_activation, run_activation_with_raw_bridge};
 use crate::link::{HostLink, LinkError, WaitReply};
 
+mod regex_crash_diagnostic;
+
 /// Answers every call with its own arguments, in issue order.
 #[derive(Default)]
 struct EchoLink {
